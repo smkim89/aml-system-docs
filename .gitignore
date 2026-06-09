@@ -4,3 +4,7 @@
 # Editor / local
 .vscode/
 .idea/
+
+# Python
+__pycache__/
+*.py[cod]
