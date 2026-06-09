@@ -1,0 +1,853 @@
+# FDS DB 설계서 (fds-svc 스키마)
+
+> 정본: `.claude/skills/_shared/target-architecture.md` (PostgreSQL · Flyway · 서비스별 별도 스키마 · 멀티테넌시 · PII 마스킹 · 4-eyes).
+> 입력 설계서: `docs/software/01-fdsSvc-sass.md` v1.1 (특히 §7 공통 데이터 모델, §8 event taxonomy, §9 수단/채널, §10 룰/feature, §11 action/case/결재, §13 멀티테넌시, §14 DDL, §16 PII/규제).
+> 책임 서비스: **`services/fds-svc`** (Java 25, Spring Boot 3.5.x, 헥사고날, `adapter/out/persistence`). AML 규제 케이스는 `aml-svc`, 결재·감사·IAM 운영은 `bo-api`가 별도 스키마로 보유한다.
+
+## 목차
+1. [범위·원칙](#1-범위원칙)
+2. [스키마 격리·멀티테넌시](#2-스키마-격리멀티테넌시)
+3. [ERD](#3-erd)
+4. [enum 사전 (코드값·표시값)](#4-enum-사전-코드값표시값)
+5. [테이블 명세](#5-테이블-명세)
+6. [인덱스 명세](#6-인덱스-명세)
+7. [PII·감사·보존 정책](#7-pii감사보존-정책)
+8. [Flyway 마이그레이션 순서](#8-flyway-마이그레이션-순서)
+9. [서비스 경계 주의 (fds-svc vs aml-svc vs bo-api)](#9-서비스-경계-주의)
+10. [downstream 확정 명칭](#10-downstream-확정-명칭)
+11. [변경 이력](#11-변경-이력)
+
+---
+
+## 1. 범위·원칙
+
+- 본 문서는 **fds-svc 소유 스키마 `fds`** 의 물리 데이터 모델을 확정한다. 모든 테이블 prefix `fds_`, 스키마 `fds`.
+- 4서비스는 별도 스키마/DB를 갖는다: `fds`(fds-svc) · `aml`(aml-svc) · `bo`(bo-api). bo-web은 DB 미보유(bo-api 경유).
+- 멀티테넌시 3단 격리(`tenant_id` / `workspace_id` / `data_scope`)를 **모든 운영 테이블**에 강제한다(§2).
+- raw PII 미저장: 식별자는 tenant별 keyed hash 또는 token(`*_ref`, `*_hash`) 컬럼만 저장한다(§7).
+- 감사 컬럼: 모든 운영 테이블에 `created_at` / `updated_at`, 변경 주체가 있는 테이블에 `created_by` / `updated_by`(운영자 subject token).
+- 금액: `NUMERIC(24,8)`로 통화 원단위 + 소수 자릿수 보존(가상자산 8자리 수용). 표시 통화와 base 통화를 분리 저장. KRW는 정수부만 사용.
+- enum은 DB에서 `VARCHAR` + CHECK 또는 애플리케이션 enum으로 관리(§4 코드값·표시값 병기). Flyway additive migration 원칙(§8).
+
+---
+
+## 2. 스키마 격리·멀티테넌시
+
+설계서 §13(배포 모델 + 온보딩 프로비저닝 + 키 의미 재정의) 및 정본 `target-architecture.md` §4.1을 물리 모델에 다음과 같이 고정한다.
+
+### 2.1 배포 모델 (deployment topology) — 격리의 1차 경계
+
+격리는 DB 행/스키마 토글이 아니라 **배포 단위 결정**이다. 화면 라디오 즉석 선택이 아니라 **온보딩 프로비저닝 프로세스**의 산출이다. `fds_tenants.deployment_model`(구 `isolation_mode` 대체).
+
+| 모델(`deployment_model`) | 의미 | 대상 | 프로비저닝 | tenant_id 의미 |
+|---|---|---|---|---|
+| **`MANAGED_DEDICATED`**(기본) | 플랫폼 클라우드에 **고객사별 전용 DB·스택** | 일반 금융사 | 온보딩 IaC(Terraform) 자동(승인→프로비저닝→배포→검증→운영전환) | 배포=고객사 단일 값 |
+| **`SELF_HOSTED`** | **고객 자체 인프라**에 설치형 패키지(Helm/Docker) | 은행·고PII·내부망 요건 | 플랫폼은 산출물·가이드·라이선스 제공, 고객 측이 배포·등록 콜백 | 배포=고객사 단일 값 |
+| **`SHARED`**(옵션) | 공유 DB + `tenant_id` 행 격리 | 소규모/체험 | 즉시(프로비저닝 없음) | 고객사 간 행 격리 키 |
+
+- **한 고객사 = 한 배포(전용 DB)** 가 기본. 전용 배포(`MANAGED_DEDICATED`/`SELF_HOSTED`)에서 고객사 간 격리는 **배포 경계**가 보장하며, `tenant_id`는 사실상 단일 값이다. `SHARED`에서만 `tenant_id`가 고객사 간 격리로 동작한다.
+- "고객사 등록"은 격리 라디오가 아니라 **배포 유형 선택 + 온보딩 신청·상태**(`onboarding_status`) 관리다. 온보딩 상태머신은 §4.1a 참조.
+
+### 2.2 멀티테넌시 키 (배포 내부 분리)
+
+| 격리 키 | 컬럼 | 타입 | 역할 |
+|---|---|---|---|
+| tenant | `tenant_id` | `VARCHAR(64) NOT NULL` | **배포의 고객사**. 전용 배포에선 단일 값. 모든 `fds_*` PK 선두 컬럼, 모든 API `Tenant-Id` |
+| workspace | `workspace_id` | `VARCHAR(64) NOT NULL DEFAULT 'default'` | 그 고객사의 **서비스/환경**(retail/corporate, prod/sandbox). rule set·connector·case 큐·결재 분리 |
+| data-scope | `data_scope` | `VARCHAR(128)` (nullable, 다중은 `fds_*_scope` 또는 JSONB) | 운영자 row-level **권한 필터**. 저장 격리 아님 — bo-api가 운영자 토큰 scope로 강제 필터 |
+
+규칙:
+- 모든 운영 테이블 PK는 `(tenant_id, workspace_id, <natural key>)` 순. UNIQUE·조회 인덱스도 `(tenant_id, workspace_id, ...)` 선두.
+- 격리의 1차 경계는 **배포 모델**(§2.1)이다. 전용 배포는 배포 자체가 고객사 경계이며, 본 DDL은 단일 배포 내부 모델을 기술한다(`SHARED` 배포일 때만 `tenant_id` 행 격리가 고객사 간 경계로 동작).
+- `sandbox` workspace 는 shadow-only(실제 action outbox 미발행). connector가 `workspace_id` 미지정 시 `default`로 적재.
+- API key·OAuth2 client·webhook은 `(tenant_id, workspace_id)`에 바인딩(§5.29 `fds_api_credentials`).
+- `data_scope`는 row 단위 다중 적용을 위해 핵심 운영 테이블(subject/transaction/case)에 `data_scope VARCHAR(128)` 단일 컬럼 + 보조 `fds_case_scopes`(다대다) 패턴 허용. bo-api는 `dataScope` 집합 IN 필터를 fds-svc 조회에 주입한다.
+- 온보딩·배포 메타(`deployment_model`/`onboarding_status`/`default_region`/`infra_ref`)는 `fds_tenants`(§5.1)에 보존한다. 매니지드 전용 IaC 파이프라인 도구·self-hosted 라이선스 발급/검증 방식은 P8 인프라 설계에서 확정(오픈결정).
+
+---
+
+## 3. ERD
+
+```mermaid
+erDiagram
+    FDS_TENANTS ||--o{ FDS_WORKSPACES : has
+    FDS_TENANTS ||--o{ FDS_SOURCE_SYSTEMS : registers
+    FDS_TENANTS ||--o{ FDS_API_CREDENTIALS : owns
+    FDS_SOURCE_SYSTEMS ||--o{ FDS_SCHEMA_MAPPINGS : maps
+    FDS_SOURCE_SYSTEMS ||--o{ FDS_CONNECTOR_OFFSETS : tracks
+
+    FDS_SUBJECTS ||--o{ FDS_ACCOUNTS : owns
+    FDS_SUBJECTS ||--o{ FDS_INSTRUMENTS : holds
+    FDS_ACCOUNTS ||--o{ FDS_INSTRUMENTS : backs
+    FDS_SUBJECTS ||--o{ FDS_TRANSACTIONS : initiates
+
+    FDS_CANONICAL_EVENTS ||--o{ FDS_DECISIONS : triggers
+    FDS_TRANSACTIONS ||--o{ FDS_CANONICAL_EVENTS : groups
+    FDS_DECISIONS ||--o{ FDS_ACTIONS : routes
+    FDS_DECISIONS ||--o{ FDS_DECISION_REASONS : explains
+    FDS_DECISIONS }o--o{ FDS_RULES : matched_by
+
+    FDS_RULE_SETS ||--o{ FDS_RULES : contains
+    FDS_RULES ||--o{ FDS_RULE_VERSIONS : versioned
+    FDS_RULES ||--o{ FDS_RULE_SIMULATIONS : simulated
+    FDS_FEATURE_CATALOG ||--o{ FDS_RULES : references
+    FDS_RISK_GROUPS ||--o{ FDS_RISK_GROUP_MEMBERS : includes
+
+    FDS_CASES ||--o{ FDS_CASE_EVENTS : timeline
+    FDS_CASES ||--o{ FDS_CASE_SCOPES : scoped_by
+    FDS_DECISIONS ||--o{ FDS_CASES : escalates
+    FDS_ACTIONS ||--o{ FDS_CASES : attaches
+
+    FDS_APPROVAL_REQUESTS ||--o{ FDS_APPROVAL_STEPS : routed
+    FDS_APPROVAL_REQUESTS ||--o{ FDS_ACTIONS : gates
+
+    FDS_TRANSACTIONS ||--o{ FDS_BUSINESS_DOCUMENTS : evidenced
+    FDS_TRANSACTIONS ||--o{ FDS_COMMERCE_ORDERS : linked
+    FDS_TRANSACTIONS ||--o{ FDS_SETTLEMENTS : settles
+
+    FDS_EXTERNAL_DECISIONS ||--o{ FDS_DECISIONS : crossref
+    FDS_EVIDENCE_EXPORTS ||--o{ FDS_AUDIT_LOGS : recorded
+```
+
+---
+
+## 4. enum 사전 (코드값·표시값)
+
+설계서 enum을 DB 코드값으로 확정한다. 코드값 = DB 저장값, 표시값 = UI 라벨(bo-web i18n 키 기준).
+
+### 4.1 tenant_status / deployment_model / onboarding_status / ingest_mode / connector_status
+| 도메인 | 코드값 | 표시값 |
+|---|---|---|
+| tenant_status | `ACTIVE` / `SUSPENDED` / `ONBOARDING` / `OFFBOARDED` | 활성/정지/온보딩/해지 (운영 생명주기 — onboarding_status와 직교) |
+| deployment_model | `MANAGED_DEDICATED` / `SELF_HOSTED` / `SHARED` (3종) | 매니지드 전용/자체 인프라 설치형/소규모 공유 (구 isolation_mode 대체, §2.1) |
+| onboarding_status | `REQUESTED` / `PROVISIONING` / `DEPLOYED` / `VERIFIED` / `ACTIVE` / `PACKAGE_ISSUED` / `CUSTOMER_DEPLOYED` / `REGISTERED` (8종) | 신청/프로비저닝중/배포완료/검증완료/운영전환 / 패키지발급/고객배포완료/등록완료 (§4.1a 상태머신) |
+| ingest_mode | `REST_PUSH` / `QUEUE` / `POLLING` / `CDC` / `SNAPSHOT` | REST 푸시/큐/폴링/CDC/스냅샷 (설계서 §2.3, §12) |
+| connector_status | `HEALTHY` / `LAGGING` / `ERROR` / `DISABLED` | 정상/지연/오류/비활성 |
+
+> **마이그레이션**: 구 `isolation_mode` enum(`SHARED`/`SCHEMA`/`DB`)은 폐기한다. 데이터 매핑은 `SHARED→SHARED`, `SCHEMA`/`DB → MANAGED_DEDICATED`(§8 V17). `deployment_model`/`onboarding_status` 정본은 설계서 §11.6.11/§11.6.11a, API `DeploymentModel`/`OnboardingStatus` enum과 1:1 동기화한다.
+
+### 4.1a onboarding_status 상태머신 (§2.1, 설계서 §11.6.11a)
+
+`tenant_status`(운영 생명주기)와 `onboarding_status`(온보딩 진행)는 직교한다. 배포 유형별 경로:
+
+```mermaid
+stateDiagram-v2
+    [*] --> REQUESTED
+    state "MANAGED_DEDICATED" as M {
+        REQUESTED --> PROVISIONING
+        PROVISIONING --> DEPLOYED
+        DEPLOYED --> VERIFIED
+        VERIFIED --> ACTIVE
+    }
+    state "SELF_HOSTED" as S {
+        REQUESTED --> PACKAGE_ISSUED
+        PACKAGE_ISSUED --> CUSTOMER_DEPLOYED
+        CUSTOMER_DEPLOYED --> REGISTERED
+    }
+    REQUESTED --> ACTIVE : SHARED 즉시
+    ACTIVE --> [*]
+    REGISTERED --> [*]
+```
+
+- 매니지드: `REQUESTED → PROVISIONING → DEPLOYED → VERIFIED → ACTIVE`.
+- self-hosted: `REQUESTED → PACKAGE_ISSUED → CUSTOMER_DEPLOYED → REGISTERED`(인스턴스 등록 콜백으로 `REGISTERED` 도달).
+- SHARED: `REQUESTED → ACTIVE`(즉시).
+- 온보딩이 `ACTIVE` 또는 `REGISTERED`에 도달하면 `tenant_status`를 `ACTIVE`로 전환한다.
+
+### 4.2 subject_type / actor_type (§8.2, §7.2)
+| 도메인 | 코드값 |
+|---|---|
+| subject_type | `PERSON` / `BUSINESS` / `MERCHANT` / `EMPLOYEE_SUBJECT` |
+| actor_type | `CUSTOMER` / `EMPLOYEE` / `SYSTEM` / `PARTNER` / `API_KEY` |
+
+> **정본 정렬**: `subject_type`의 `BUSINESS`·`MERCHANT`·`EMPLOYEE_SUBJECT`는 설계서 §7.1 핵심 객체(Business Entity·Subject/Actor 분리)를 물리 모델로 흡수한 값이다. 설계서 §8.2가 `PERSON` 예시만 보였더라도 §7.1·§7.2의 객체 분류가 enum 정본 근거이며, 본 §4.2 4종을 정본으로 고정한다(설계서 §7에 subject_type enum 표 역삽입은 설계 측 후속 보강 대상). `actor`(actor_type/role) 프로파일은 별도 마스터를 두지 않고 `fds_subjects`(subject_type=`EMPLOYEE_SUBJECT`)로 흡수하며, 이벤트·거래는 `actor_ref` token만 보존한다(내부감사 룰 `actor.role=TELLER` feature는 canonical_payload·feature_snapshot에서 materialize).
+
+### 4.3 instrument_type (§9.1)
+`WALLET` / `BANK_ACCOUNT` / `CARD` / `VIRTUAL_ACCOUNT` / `CRYPTO_ADDRESS` / `CASH` / `MERCHANT_ACCOUNT` / `API_KEY` / `EMPLOYEE_ACCOUNT` / `CORPORATE_BANK_ACCOUNT` / `SELLER_SETTLEMENT_ACCOUNT` / `ESCROW_ACCOUNT`
+
+### 4.4 channel_type (§9.2)
+`CARD_PRESENT` / `CARD_NOT_PRESENT` / `ATM` / `BANK_TRANSFER` / `DOMESTIC_REMIT` / `CROSS_BORDER_REMIT` / `PG_PAYMENT` / `WALLET_PAYMENT` / `WALLET_WITHDRAWAL` / `VIRTUAL_ACCOUNT_DEPOSIT` / `CRYPTO_DEPOSIT` / `CRYPTO_WITHDRAWAL` / `EXCHANGE_TRADE` / `INTERNAL_OPERATION` / `BATCH_SETTLEMENT` / `TRADE_PAYMENT` / `CROSS_BORDER_ECOMMERCE_SETTLEMENT` / `MARKETPLACE_SELLER_PAYOUT` / `B2B_INVOICE_PAYMENT`
+
+### 4.5 payment_rail (§9.3)
+`INTERNAL_LEDGER` / `CARD_NETWORK` / `ATM_SWITCH` / `BANK_ACH` / `OPEN_BANKING` / `FIRM_BANKING` / `CMS` / `BANK_CD_NETWORK` / `EASY_PAY` / `VAN_PG` / `SWIFT` / `LOCAL_RTP` / `PARTNER_API` / `BLOCKCHAIN` / `MANUAL_BACKOFFICE` / `ESCROW` / `MARKETPLACE_SETTLEMENT` / `TRADE_FINANCE`
+
+### 4.6 control_capability (§9.4)
+`CAN_BLOCK_BEFORE_AUTH` / `CAN_DECLINE_AUTH` / `CAN_HOLD_FUNDS` / `CAN_EXTEND_HOLD` / `CAN_RELEASE_HOLD` / `CAN_CANCEL_BEFORE_SETTLEMENT` / `CAN_REQUEST_REVERSAL` / `CAN_SUSPEND_INSTRUMENT` / `CAN_OPEN_CASE_ONLY`
+
+### 4.7 decision (§11.1)
+| 코드값 | 표시값 |
+|---|---|
+| `ALLOW` | 허용 |
+| `MONITOR` | 모니터(기록만) |
+| `REVIEW` | 검토 필요 |
+| `CHALLENGE` | 추가 인증 |
+| `BLOCK` | 차단 |
+| `HOLD` | 자금 보류 |
+| `FREEZE` | 동결 |
+| `REPORT` | 규제 보고 후보 |
+
+### 4.8 action_type (§11.2)
+> **정본 = API `ActionType` enum(전수 23종)**. 본 DB enum은 API 명세 `docs/design/api/01-fds-api.md` §9 `ActionType`과 1:1로 동기화한다(설계서 §11.2/§15의 서술이 어긋날 경우 API enum이 우선). 코드값은 DB 저장값.
+
+`DECLINE_AUTHORIZATION` / `BLOCK_TRANSACTION` / `HOLD_FUNDS` / `EXTEND_HOLD` / `RELEASE_HOLD` / `CANCEL_TRANSACTION` / `REQUEST_REVERSAL` / `SUSPEND_ACCOUNT` / `SUSPEND_INSTRUMENT` / `HOLD_SETTLEMENT` / `SUSPEND_SELLER_PAYOUT` / `INCREASE_RESERVE` / `REQUEST_ADDITIONAL_DOCUMENT` / `ADD_TO_GROUP` / `OPEN_CASE` / `SEND_ALERT` / `REQUIRE_SECOND_APPROVAL` / `BLOCK_WITHDRAWAL` / `SUSPEND_API_KEY` / `SUSPEND_EMPLOYEE_SESSION` / `REQUEST_TRAVEL_RULE_INFO` / `OPEN_AML_CASE` / `REGULATORY_REPORT` (23종)
+
+> 위임: `OPEN_AML_CASE`, `REGULATORY_REPORT`, `REQUEST_TRAVEL_RULE_INFO`는 fds-svc가 후보를 생성하나 실제 케이스/보고 처리는 **aml-svc**로 위임된다(§9).
+>
+> **정규화 매핑(설계서 §15의 비정본 verb → 정본 enum)**: 설계서 §15에 흩어진 도메인별 'verb'는 본 enum에 다음으로 매핑하여 저장한다. 별도 코드값을 신설하지 않는다.
+> - `SUSPEND_MERCHANT`(§15.5 PG / §15.8 마켓플레이스) → `SUSPEND_INSTRUMENT` (대상 `target_ref`=merchant/seller token). 미지원 채널은 `OPEN_CASE` + `case_type=MERCHANT_RISK`로 강등.
+> - `SEND_SECURITY_ALERT`(§15.11 내부감사) → `SEND_ALERT`.
+> - `CHALLENGE`/`REVIEW`(§15.2/§15.5) → action 아님. decision enum(§4.7)으로 분류. 추가 인증 의도면 `SEND_ALERT`로 매핑.
+> - `OPEN_*_CASE`(`OPEN_CHARGEBACK_REVIEW`/`OPEN_MULE_ACCOUNT_CASE`/`OPEN_MERCHANT_RISK_CASE`/`OPEN_TRADE_FINANCE_CASE`/`OPEN_INTERNAL_AUDIT_CASE`/`OPEN_COMPLIANCE_CASE`) → `action_type=OPEN_CASE` + `case_type=<§4.10>` 조합. `OPEN_COMPLIANCE_CASE`(코인 룰 §10.2)는 `case_type=AML_REVIEW`(또는 Travel Rule 맥락 시 `CRYPTO_TRAVEL_RULE`)로 매핑.
+
+### 4.9 action_status (§14.5 outbox)
+`PENDING` / `APPROVAL_REQUIRED` / `APPROVED` / `SENT` / `ACKED` / `FAILED` / `CANCELLED`
+
+### 4.10 case_type (§11.3)
+`FRAUD_REVIEW` / `AML_REVIEW` / `CHARGEBACK_REVIEW` / `MULE_ACCOUNT_REVIEW` / `CRYPTO_TRAVEL_RULE` / `INTERNAL_AUDIT` / `MERCHANT_RISK` / `REGULATORY_REPORT` / `TRADE_FINANCE_REVIEW` / `ECOMMERCE_SETTLEMENT_REVIEW` / `B2B_INVOICE_REVIEW`
+
+### 4.11 case_status / case_priority
+| 도메인 | 코드값 |
+|---|---|
+| case_status | `OPEN` / `ASSIGNED` / `IN_REVIEW` / `ESCALATED` / `PENDING_APPROVAL` / `CLOSED_CONFIRMED` / `CLOSED_FALSE_POSITIVE` / `CLOSED_REPORTED` (8종, 표시: 신규/배정/조사중/규제전환/종결상신/사기확정종결/오탐종결/보고후종결) |
+| case_priority | `LOW` / `MEDIUM` / `HIGH` / `CRITICAL` (4종, 표시: 낮음/중간/높음/치명) |
+
+> **status enum 정본**: `tenant_status`(§4.1)·`connector_status`(§4.1)·`case_status`·`case_priority`·`rule_status`/`rule_version_status`(§4.13)의 코드 집합은 본 DB §4를 정본으로 한다. 설계서 §14 DDL이 `status VARCHAR(32)`만 보이고 상태머신을 명시하지 않은 부분은 본 enum이 정본 코드 집합이며, 설계서 측 상태전이도 추가는 후속 보강 대상이다. PRD §11.1·PPT slide 27은 위 case_status 8종·case_priority 4종(`CRITICAL` 포함)을 그대로 참조한다.
+
+### 4.12 approval (§11.5)
+| 도메인 | 코드값 |
+|---|---|
+| approval_line | `SELF_APPROVAL_DISABLED` / `MAKER_CHECKER` / `COMPLIANCE_MANAGER` / `RISK_MANAGER` / `SECURITY_ADMIN` / `EXECUTIVE_APPROVAL` |
+| approval_status | `DRAFT` / `SUBMITTED` / `APPROVED` / `REJECTED` / `CANCELLED` / `EXPIRED` / `EXECUTED` / `EXECUTION_FAILED` |
+
+### 4.13 rule_status / rule_version_status
+| 도메인 | 코드값 |
+|---|---|
+| rule_status | `DRAFT` / `PENDING_APPROVAL` / `ACTIVE` / `DISABLED` / `ARCHIVED` |
+| rule_version_status | `DRAFT` / `SIMULATED` / `APPROVED` / `DEPLOYED` / `ROLLED_BACK` |
+
+### 4.14 risk_group_type (§3.1, §10.1)
+`BLACKLIST` / `WHITELIST` / `WATCHLIST` / `MULE_NETWORK` / `ALLOWLIST` / `DENYLIST`
+
+### 4.15 document_type (§14.6)
+`INVOICE` / `PURCHASE_ORDER` / `BILL_OF_LADING` / `AIR_WAYBILL` / `CUSTOMS_DECLARATION` / `DELIVERY_PROOF` / `TAX_INVOICE` / `PLATFORM_ORDER`
+
+### 4.16 event_family (§8.1, `event_type` 접두)
+`transaction` / `authorization` / `settlement` / `trade` / `invoice` / `order` / `seller` / `account` / `instrument` / `member` / `device` / `session` / `aml` / `case` / `employee` / `market`
+
+### 4.17 export_format / export_status (§16.4)
+| 도메인 | 코드값 |
+|---|---|
+| export_format | `CSV` / `EXCEL` / `PDF` / `JSON_API` |
+| export_status | `REQUESTED` / `BUILDING` / `READY` / `DOWNLOADED` / `EXPIRED` / `FAILED` |
+
+### 4.18 external_decision_mode (§12.6 Legacy Vendor Bridge)
+`VENDOR_RESULT_INGEST` / `DB_MIRROR` / `DUAL_RUN` / `SHADOW_DECISION` / `RULE_MIGRATION`
+
+---
+
+## 5. 테이블 명세
+
+모든 테이블은 스키마 `fds` 소속. 격리 컬럼 `tenant_id`, `workspace_id`는 §2 규칙으로 전 테이블 공통 적용(아래 표에서 명시). 감사 컬럼 `created_at`/`updated_at`은 운영 테이블 공통.
+
+### 5.1 fds_tenants
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| tenant_id | VARCHAR(64) | N | | PK | SaaS 고객사 ID |
+| display_name | VARCHAR(160) | N | | | 표시명 |
+| tenant_status | VARCHAR(32) | N | `'ONBOARDING'` | enum 4.1 | 운영 생명주기 상태(onboarding_status와 직교) |
+| deployment_model | VARCHAR(32) | N | `'MANAGED_DEDICATED'` | enum 4.1 (`MANAGED_DEDICATED`/`SELF_HOSTED`/`SHARED`) | 배포 유형(구 isolation_mode 대체, §2.1) |
+| onboarding_status | VARCHAR(32) | N | `'REQUESTED'` | enum 4.1 (8종) | 온보딩 진행 상태(§4.1a 상태머신) |
+| default_region | VARCHAR(32) | N | `'KR'` | | 기본 리전(한국 우선)·전용 배포 region |
+| infra_ref | VARCHAR(160) | Y | | | 배포 메타 참조(매니지드 IaC 워크스페이스/스택 ref, self-hosted 인스턴스/라이선스 ref). 발급·검증 방식은 P8 인프라 설계 확정 |
+| retention_policy | JSONB | Y | | | 보존정책 override |
+| created_at | TIMESTAMPTZ | N | now() | | |
+| updated_at | TIMESTAMPTZ | N | now() | | |
+
+> **마이그레이션(§8 V17)**: 구 `isolation_mode` 컬럼은 `deployment_model`/`onboarding_status`/`infra_ref` 추가 후 데이터 매핑(`SHARED→SHARED` & `onboarding_status='ACTIVE'`, `SCHEMA`/`DB → MANAGED_DEDICATED` & `onboarding_status='ACTIVE'`)을 거쳐 DROP한다. `default_region`은 기존 유지. 신규 고객사 등록은 `deployment_model` 선택 + `onboarding_status='REQUESTED'`로 시작한다.
+
+### 5.2 fds_workspaces
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| tenant_id | VARCHAR(64) | N | | PK, FK→fds_tenants | |
+| workspace_id | VARCHAR(64) | N | | PK | retail/corporate/prod/sandbox |
+| display_name | VARCHAR(160) | N | | | |
+| is_sandbox | BOOLEAN | N | FALSE | | true면 shadow-only |
+| created_at | TIMESTAMPTZ | N | now() | | |
+| updated_at | TIMESTAMPTZ | N | now() | | |
+
+### 5.3 fds_source_systems
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| tenant_id | VARCHAR(64) | N | | PK | |
+| workspace_id | VARCHAR(64) | N | `'default'` | PK | |
+| source_system | VARCHAR(64) | N | | PK | card-processor 등 |
+| display_name | VARCHAR(160) | N | | | |
+| ingest_mode | VARCHAR(32) | N | | enum 4.1 | |
+| schema_version | VARCHAR(80) | N | | | `atm-switch.v1` |
+| enabled | BOOLEAN | N | TRUE | | |
+| fail_policy | VARCHAR(32) | N | `'CASE_ONLY'` | `FAIL_CLOSED`/`FAIL_OPEN`/`CASE_ONLY` | 실시간 판단 장애정책(D-14) |
+| created_at | TIMESTAMPTZ | N | now() | | |
+| updated_at | TIMESTAMPTZ | N | now() | | |
+
+### 5.4 fds_schema_mappings
+원천 payload → canonical field 매핑(§5.1, §12.5 PII allowlist 포함).
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| tenant_id | VARCHAR(64) | N | | PK | |
+| workspace_id | VARCHAR(64) | N | `'default'` | PK | |
+| source_system | VARCHAR(64) | N | | PK | |
+| schema_version | VARCHAR(80) | N | | PK | |
+| mapping_def | JSONB | N | | | field map + pii_allowlist |
+| status | VARCHAR(32) | N | `'DRAFT'` | rule_status 재사용 | 4-eyes 승인 대상 |
+| created_by | VARCHAR(128) | Y | | | 운영자 token |
+| updated_by | VARCHAR(128) | Y | | | |
+| created_at / updated_at | TIMESTAMPTZ | N | now() | | |
+
+### 5.5 fds_canonical_events
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| tenant_id | VARCHAR(64) | N | | PK | |
+| workspace_id | VARCHAR(64) | N | `'default'` | PK | |
+| event_id | VARCHAR(160) | N | | PK | 원천 이벤트 id |
+| idempotency_key | VARCHAR(256) | N | | UNIQUE(tenant,ws,key) | 중복 방지 |
+| source_system | VARCHAR(64) | N | | | |
+| schema_version | VARCHAR(80) | N | | | |
+| event_type | VARCHAR(100) | N | | event_family 접두 | `transaction.requested` |
+| event_family | VARCHAR(32) | N | | enum 4.16 | 라우팅·인덱스용 |
+| occurred_at | TIMESTAMPTZ | N | | | 원천 발생 시각 |
+| received_at | TIMESTAMPTZ | N | now() | | |
+| subject_ref | VARCHAR(256) | Y | | | keyed hash/token |
+| actor_ref | VARCHAR(256) | Y | | | |
+| transaction_ref | VARCHAR(256) | Y | | | |
+| instrument_ref | VARCHAR(256) | Y | | | token |
+| counterparty_ref | VARCHAR(256) | Y | | | |
+| channel_type | VARCHAR(64) | Y | | enum 4.4 | |
+| payment_rail | VARCHAR(64) | Y | | enum 4.5 | |
+| amount | NUMERIC(24,8) | Y | | | 표시 통화 금액 |
+| currency | VARCHAR(12) | Y | | | |
+| amount_base | NUMERIC(24,8) | Y | | | base 통화 환산 |
+| base_currency | VARCHAR(12) | Y | | | |
+| payload_hash | VARCHAR(128) | Y | | | `sha256:...` 원천 payload 해시 |
+| canonical_payload | JSONB | N | | | PII 제거된 정규화 payload |
+| data_scope | VARCHAR(128) | Y | | | row-level 가시 필터 |
+
+> raw payload 미저장. `canonical_payload`는 PII 제거 후. 식별자는 모두 token/hash.
+
+### 5.6 fds_subjects
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | (ws `'default'`) | PK | |
+| subject_ref | VARCHAR(256) | N | | PK | keyed hash/token |
+| subject_type | VARCHAR(32) | N | | enum 4.2 | |
+| country | VARCHAR(8) | Y | | | |
+| kyc_level | VARCHAR(32) | Y | | | |
+| risk_rating | VARCHAR(32) | Y | | | |
+| status | VARCHAR(32) | Y | | | |
+| data_scope | VARCHAR(128) | Y | | | |
+| first_seen_at | TIMESTAMPTZ | Y | | | |
+| created_at / updated_at | TIMESTAMPTZ | N | now() | | |
+
+### 5.7 fds_accounts
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| account_ref | VARCHAR(256) | N | PK | token |
+| subject_ref | VARCHAR(256) | Y | | 소유 subject |
+| account_type | VARCHAR(32) | Y | | |
+| institution_code | VARCHAR(80) | Y | | |
+| country | VARCHAR(8) | Y | | |
+| status | VARCHAR(32) | Y | | |
+| opened_at | TIMESTAMPTZ | Y | | |
+| created_at / updated_at | TIMESTAMPTZ | N | | |
+
+### 5.8 fds_instruments
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| instrument_ref | VARCHAR(256) | N | PK | token (카드/계좌/주소 hash) |
+| subject_ref | VARCHAR(256) | Y | | |
+| account_ref | VARCHAR(256) | Y | | |
+| instrument_type | VARCHAR(64) | N | enum 4.3 | |
+| institution_code | VARCHAR(80) | Y | | |
+| country | VARCHAR(8) | Y | | |
+| status | VARCHAR(32) | Y | | |
+| first_seen_at | TIMESTAMPTZ | Y | | first-seen feature용 |
+| created_at / updated_at | TIMESTAMPTZ | N | | |
+
+### 5.9 fds_transactions
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| transaction_ref | VARCHAR(256) | N | PK | |
+| subject_ref / actor_ref / instrument_ref / counterparty_ref | VARCHAR(256) | Y | | token |
+| transaction_type | VARCHAR(64) | N | | |
+| direction | VARCHAR(32) | Y | `INBOUND`/`OUTBOUND` | |
+| channel_type | VARCHAR(64) | Y | enum 4.4 | |
+| payment_rail | VARCHAR(64) | Y | enum 4.5 | |
+| amount / amount_base | NUMERIC(24,8) | Y | | |
+| currency / base_currency | VARCHAR(12) | Y | | |
+| status | VARCHAR(32) | Y | | |
+| data_scope | VARCHAR(128) | Y | | |
+| requested_at / completed_at | TIMESTAMPTZ | Y | | |
+| created_at / updated_at | TIMESTAMPTZ | N | | |
+
+### 5.10 fds_decisions
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| decision_id | UUID | N | PK | |
+| event_id | VARCHAR(160) | N | FK→fds_canonical_events | |
+| transaction_ref | VARCHAR(256) | Y | | |
+| subject_ref | VARCHAR(256) | Y | | |
+| decision | VARCHAR(32) | N | enum 4.7 | |
+| risk_score | NUMERIC(8,4) | Y | | 0~100 |
+| matched_rules | JSONB | N | `'[]'` | rule_id+version 배열 |
+| rule_set_version | VARCHAR(80) | Y | | 평가 시점 rule set 버전 |
+| feature_snapshot | JSONB | Y | | 판단 입력 feature(증적) |
+| input_event_hash | VARCHAR(128) | Y | | 원천 이벤트 hash 증적 |
+| expires_at | TIMESTAMPTZ | Y | | 실시간 decision 만료 |
+| data_scope | VARCHAR(128) | Y | | |
+| created_at | TIMESTAMPTZ | N | now() | 불변(append-only) |
+
+### 5.11 fds_decision_reasons
+decision API의 reason code 정규화(§12.8 reasonCodes).
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| decision_id | UUID | N | PK, FK→fds_decisions | |
+| reason_code | VARCHAR(64) | N | PK | `NEW_BENEFICIARY` 등 |
+| reason_detail | JSONB | Y | | feature 값·임계값 |
+
+### 5.12 fds_actions (action outbox)
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| action_id | UUID | N | PK | |
+| decision_id | UUID | Y | FK→fds_decisions | |
+| case_id | UUID | Y | FK→fds_cases | case-originated action |
+| action_type | VARCHAR(64) | N | enum 4.8 | |
+| target_system | VARCHAR(64) | Y | | |
+| target_ref | VARCHAR(256) | Y | | token |
+| status | VARCHAR(32) | N | `'PENDING'` | enum 4.9 |
+| approval_request_id | UUID | Y | FK→fds_approval_requests | 결재 필요 시 |
+| idempotency_key | VARCHAR(256) | N | UNIQUE(tenant,ws,key) | |
+| retry_count | INT | N | 0 | |
+| requested_at | TIMESTAMPTZ | N | now() | |
+| completed_at | TIMESTAMPTZ | Y | | |
+| error_code | VARCHAR(120) | Y | | |
+| created_by / updated_by | VARCHAR(128) | Y | | |
+
+### 5.13 fds_cases
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| case_id | UUID | N | PK | |
+| case_type | VARCHAR(64) | N | enum 4.10 | |
+| subject_ref / transaction_ref | VARCHAR(256) | Y | | |
+| origin_decision_id | UUID | Y | FK→fds_decisions | 발단 decision |
+| status | VARCHAR(32) | N | `'OPEN'` | enum 4.11 |
+| priority | VARCHAR(32) | Y | enum 4.11 | |
+| assigned_to | VARCHAR(128) | Y | | 운영자 token |
+| close_reason | VARCHAR(64) | Y | | 종결 사유 코드 |
+| aml_case_id | VARCHAR(96) | Y | | aml-svc cross-ref(FK 아님). API `CaseDto.amlCaseRef` 매핑·integration §9.1과 동일 타입. AML 위임 케이스만 채움 |
+| data_scope | VARCHAR(128) | Y | | |
+| created_by / updated_by | VARCHAR(128) | Y | | |
+| created_at / updated_at | TIMESTAMPTZ | N | now() | |
+
+> `case_type IN (AML_REVIEW, CRYPTO_TRAVEL_RULE, REGULATORY_REPORT)`는 fds-svc에서 발단(origin)만 기록하고, 실제 조사·STR/CTR/Travel Rule 처리는 **aml-svc**가 보유(§9). fds_cases는 cross-reference(`aml_case_id VARCHAR(96) NULL`)만 보존하며, aml-svc 소유 본 케이스를 가리키는 식별자다(저장 격리상 FK 미설정). API `amlCaseRef`↔DB `aml_case_id`, integration §9.1 동일 타입으로 확정.
+
+### 5.14 fds_case_events
+case timeline(append-only).
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| case_event_id | UUID | N | PK | |
+| case_id | UUID | N | FK→fds_cases | |
+| event_kind | VARCHAR(48) | N | `ASSIGNED`/`COMMENT`/`STATUS_CHANGE`/`EVIDENCE_ATTACHED`/`APPROVAL`/`CLOSED` | |
+| payload | JSONB | Y | | masked |
+| actor_subject | VARCHAR(128) | Y | | 수행 운영자 token |
+| created_at | TIMESTAMPTZ | N | now() | 불변 |
+
+### 5.15 fds_case_scopes
+case의 다중 data-scope(다대다).
+| 컬럼 | 타입 | NULL | 제약 |
+|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK |
+| case_id | UUID | N | PK, FK→fds_cases |
+| data_scope | VARCHAR(128) | N | PK |
+
+### 5.16 fds_rule_sets
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | rule set은 workspace 단위 |
+| rule_set_id | VARCHAR(80) | N | PK | |
+| display_name | VARCHAR(160) | N | | |
+| active_version | VARCHAR(80) | Y | | 배포된 버전 |
+| created_by / updated_by | VARCHAR(128) | Y | | |
+| created_at / updated_at | TIMESTAMPTZ | N | | |
+
+### 5.17 fds_rules
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| rule_id | UUID | N | PK | |
+| rule_set_id | VARCHAR(80) | N | FK→fds_rule_sets | |
+| name | VARCHAR(160) | N | | |
+| channel_scope | VARCHAR(64) | Y | enum 4.4 | 적용 채널 |
+| dsl_source | TEXT | Y | | no-code 컴파일 전 표현 |
+| rule_json | JSONB | N | | 컴파일된 룰 |
+| decision_outcome | VARCHAR(32) | Y | enum 4.7 | hit 시 decision |
+| status | VARCHAR(32) | N | `'DRAFT'` | enum 4.13 |
+| created_by / updated_by | VARCHAR(128) | Y | | |
+| created_at / updated_at | TIMESTAMPTZ | N | | |
+
+### 5.18 fds_rule_versions
+rule version rollback 증적(§2.1).
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| rule_id | UUID | N | PK, FK→fds_rules | |
+| version_no | INT | N | PK | |
+| rule_json | JSONB | N | | 버전 스냅샷 |
+| status | VARCHAR(32) | N | enum 4.13 | |
+| approval_request_id | UUID | Y | FK→fds_approval_requests | 4-eyes 승인 |
+| effective_from / effective_to | TIMESTAMPTZ | Y | | 적용 기간(증적) |
+| created_by | VARCHAR(128) | Y | | |
+| created_at | TIMESTAMPTZ | N | now() | |
+
+### 5.19 fds_rule_simulations
+rule 영향도 분석(§12.8 Rule Simulation API).
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| simulation_id | UUID | N | PK | |
+| rule_id | UUID | Y | FK→fds_rules | |
+| rule_json | JSONB | N | | 평가한 룰 |
+| sample_window | JSONB | Y | | 평가 데이터 기간 |
+| estimated_hit_rate | NUMERIC(8,4) | Y | | 예상 hit rate |
+| result_summary | JSONB | Y | | |
+| created_by | VARCHAR(128) | Y | | |
+| created_at | TIMESTAMPTZ | N | now() | |
+
+### 5.20 fds_feature_catalog
+no-code rule builder가 노출하는 feature 정의(§10.1).
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id | VARCHAR(64) | N | PK | global feature는 `'_global'` |
+| workspace_id | VARCHAR(64) | N | PK | |
+| feature_key | VARCHAR(96) | N | PK | `velocity.count.subject.24h` |
+| category | VARCHAR(48) | N | | Subject/Velocity/AML 등 |
+| value_type | VARCHAR(32) | N | `NUMBER`/`STRING`/`BOOL`/`ENUM` | |
+| display_label | VARCHAR(160) | N | | UI 라벨 |
+| enabled | BOOLEAN | N | TRUE | |
+| created_at / updated_at | TIMESTAMPTZ | N | | |
+
+### 5.21 fds_risk_groups
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| group_id | VARCHAR(96) | N | PK | `mule_accounts` |
+| group_type | VARCHAR(32) | N | enum 4.14 | |
+| display_name | VARCHAR(160) | N | | |
+| created_by / updated_by | VARCHAR(128) | Y | | 4-eyes 대상 |
+| created_at / updated_at | TIMESTAMPTZ | N | | |
+
+### 5.22 fds_risk_group_members
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| group_id | VARCHAR(96) | N | PK, FK→fds_risk_groups | |
+| member_ref | VARCHAR(256) | N | PK | token(계좌/주소/subject) |
+| member_kind | VARCHAR(32) | N | `SUBJECT`/`INSTRUMENT`/`COUNTERPARTY` | |
+| added_by | VARCHAR(128) | Y | | |
+| expires_at | TIMESTAMPTZ | Y | | |
+| created_at | TIMESTAMPTZ | N | now() | |
+
+### 5.23 fds_approval_requests (결재 §11.5)
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| approval_request_id | UUID | N | PK | |
+| subject_kind | VARCHAR(48) | N | `ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE` | 결재 대상 종류. `CASE_CLOSE`=case 종결 4-eyes(대상=`fds_cases.case_id`). API §8 case 종결 결재 매핑 |
+| subject_ref | VARCHAR(256) | Y | | 대상 식별자 |
+| approval_line | VARCHAR(48) | N | enum 4.12 | |
+| status | VARCHAR(32) | N | `'DRAFT'` | enum 4.12 |
+| payload_hash | VARCHAR(128) | N | | 결재 payload 고정 hash(변경 시 무효화) |
+| maker_subject | VARCHAR(128) | N | | 상신자(승인자와 불일치 강제) |
+| reason | TEXT | Y | | 상신 사유 |
+| expires_at | TIMESTAMPTZ | Y | | 승인 만료 |
+| max_executions | INT | Y | | 실행 가능 횟수 |
+| created_at / updated_at | TIMESTAMPTZ | N | | |
+
+> 제약: `CHECK(maker_subject <> checker_subject)`는 fds_approval_steps에서 보장. `SELF_APPROVAL_DISABLED`. AI agent는 maker만 가능(checker 불가)는 bo-api IAM에서 강제.
+
+### 5.24 fds_approval_steps
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| approval_request_id | UUID | N | PK, FK→fds_approval_requests | |
+| step_no | INT | N | PK | |
+| checker_subject | VARCHAR(128) | Y | | 승인자 token |
+| decision | VARCHAR(32) | Y | `APPROVED`/`REJECTED` | |
+| decided_at | TIMESTAMPTZ | Y | | |
+| comment | TEXT | Y | | |
+
+### 5.25 fds_business_documents (§14.6)
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| document_ref | VARCHAR(256) | N | PK | |
+| document_type | VARCHAR(64) | N | enum 4.15 | |
+| source_system | VARCHAR(64) | N | | |
+| subject_ref / counterparty_ref / transaction_ref | VARCHAR(256) | Y | | |
+| document_no_hash | VARCHAR(256) | Y | | 인보이스 번호 hash |
+| issue_date | DATE | Y | | |
+| amount | NUMERIC(24,8) | Y | | |
+| currency | VARCHAR(12) | Y | | |
+| country_from / country_to | VARCHAR(8) | Y | | |
+| document_status | VARCHAR(32) | Y | | |
+| evidence_hash | VARCHAR(128) | Y | | |
+| created_at | TIMESTAMPTZ | N | now() | |
+
+### 5.26 fds_commerce_orders (§14.6)
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| order_ref | VARCHAR(256) | N | PK | |
+| marketplace_ref / seller_ref / buyer_ref / transaction_ref | VARCHAR(256) | Y | | |
+| order_status | VARCHAR(32) | Y | | |
+| amount | NUMERIC(24,8) | Y | | |
+| currency | VARCHAR(12) | Y | | |
+| shipping_country | VARCHAR(8) | Y | | |
+| delivery_status | VARCHAR(32) | Y | | |
+| ordered_at | TIMESTAMPTZ | Y | | |
+| updated_at | TIMESTAMPTZ | N | now() | |
+
+### 5.27 fds_settlements (§14.6)
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| settlement_ref | VARCHAR(256) | N | PK | |
+| settlement_type | VARCHAR(64) | N | | |
+| seller_ref / merchant_ref / payout_instrument_ref | VARCHAR(256) | Y | | |
+| amount / amount_base / reserve_amount / chargeback_exposure | NUMERIC(24,8) | Y | | |
+| currency / base_currency | VARCHAR(12) | Y | | |
+| status | VARCHAR(32) | Y | | |
+| scheduled_at / paid_at | TIMESTAMPTZ | Y | | |
+| updated_at | TIMESTAMPTZ | N | now() | |
+
+### 5.28 fds_connector_offsets (§14.7)
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| connector_id | VARCHAR(128) | N | PK | |
+| source_system | VARCHAR(64) | N | | |
+| cursor_value | TEXT | Y | | polling cursor |
+| connector_status | VARCHAR(32) | N | `'HEALTHY'` | enum 4.1 |
+| last_success_at | TIMESTAMPTZ | Y | | |
+| last_error_code | VARCHAR(120) | Y | | |
+| lag_seconds | BIGINT | Y | | reconciliation 지표 |
+| updated_at | TIMESTAMPTZ | N | now() | |
+
+### 5.29 fds_api_credentials (§12.8, §13.0)
+API key/OAuth2 client/webhook을 `(tenant, workspace)`에 바인딩. **secret 원문 미저장 — hash만.**
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| credential_id | VARCHAR(96) | N | PK | |
+| credential_type | VARCHAR(32) | N | `API_KEY`/`OAUTH2_CLIENT`/`MTLS`/`WEBHOOK` | |
+| secret_hash | VARCHAR(256) | Y | | HMAC secret keyed hash |
+| scopes | JSONB | N | `'[]'` | `fds:event:write` 등 |
+| ip_allowlist | JSONB | Y | | |
+| webhook_url | VARCHAR(512) | Y | | callback URL |
+| enabled | BOOLEAN | N | TRUE | |
+| created_by / updated_by | VARCHAR(128) | Y | | secret 변경은 SECURITY_ADMIN 결재 |
+| created_at / updated_at | TIMESTAMPTZ | N | | |
+
+### 5.30 fds_external_decisions (§12.6 Legacy Vendor Bridge)
+vendor 결과를 evidence로 보존(원천 이벤트 아님).
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| external_decision_id | UUID | N | PK | |
+| vendor_name | VARCHAR(96) | N | | 옥타솔루션 등 |
+| vendor_decision_ref | VARCHAR(256) | Y | | cross-reference |
+| bridge_mode | VARCHAR(32) | N | enum 4.18 | |
+| transaction_ref | VARCHAR(256) | Y | | |
+| fds_decision_id | UUID | Y | FK→fds_decisions | dual-run 비교 |
+| vendor_decision | VARCHAR(32) | Y | | |
+| evidence_hash | VARCHAR(128) | Y | | |
+| received_at | TIMESTAMPTZ | N | now() | |
+
+### 5.31 fds_evidence_exports (§12.7, §16.4)
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| export_id | UUID | N | PK | |
+| export_kind | VARCHAR(64) | N | `DECISION_TIMELINE`/`CASE_TIMELINE`/`DECISION_REPORT`/`CONNECTOR_RECON`/`FALSE_POSITIVE`/`PII_ACCESS` | evidence pack 종류 |
+| export_format | VARCHAR(16) | N | enum 4.17 | |
+| status | VARCHAR(32) | N | `'REQUESTED'` | enum 4.17 |
+| query_params | JSONB | Y | | from/to 등 |
+| manifest_hash | VARCHAR(128) | Y | | export manifest hash(증적) |
+| approval_request_id | UUID | Y | FK→fds_approval_requests | 최종본은 결재 대상 |
+| created_by | VARCHAR(128) | N | | |
+| created_at / updated_at | TIMESTAMPTZ | N | | |
+
+### 5.32 fds_audit_logs (§16.3 append-only)
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| audit_id | UUID | N | PK | |
+| audit_action | VARCHAR(64) | N | | `RULE_UPDATE`/`CONNECTOR_CHANGE`/`MAPPING_CHANGE`/`CASE_CLOSE`/`ACTION_OVERRIDE`/`RAW_DATA_ACCESS`/`PERMISSION_CHANGE` 등 |
+| target_kind | VARCHAR(48) | Y | | |
+| target_ref | VARCHAR(256) | Y | | |
+| actor_subject | VARCHAR(128) | N | | 수행 주체 token |
+| trace_id | VARCHAR(64) | Y | | 관측성 전파(§17) |
+| before_hash / after_hash | VARCHAR(128) | Y | | 변경 전후 hash |
+| detail | JSONB | Y | | masked |
+| created_at | TIMESTAMPTZ | N | now() | 불변 |
+
+### 5.33 fds_idempotency_keys (§12.8 장애 원칙)
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| scope | VARCHAR(32) | N | PK | `EVENT`/`DECISION`/`ACTION` |
+| idempotency_key | VARCHAR(256) | N | PK | |
+| result_ref | VARCHAR(256) | Y | | 매핑된 결과 id |
+| created_at | TIMESTAMPTZ | N | now() | TTL 정리 대상 |
+
+---
+
+## 6. 인덱스 명세
+
+| 테이블 | 인덱스 | 컬럼 | 목적 |
+|---|---|---|---|
+| fds_canonical_events | uq_events_idem | UNIQUE `(tenant_id, workspace_id, idempotency_key)` | dedup |
+| fds_canonical_events | ix_events_subject_time | `(tenant_id, workspace_id, subject_ref, occurred_at DESC)` | subject velocity |
+| fds_canonical_events | ix_events_tx | `(tenant_id, workspace_id, transaction_ref)` | transaction 단위 조회 |
+| fds_canonical_events | ix_events_type_time | `(tenant_id, workspace_id, event_family, occurred_at DESC)` | family 라우팅/통계 |
+| fds_decisions | ix_dec_event | `(tenant_id, workspace_id, event_id)` | event→decision |
+| fds_decisions | ix_dec_tx | `(tenant_id, workspace_id, transaction_ref, created_at DESC)` | tx timeline |
+| fds_decisions | ix_dec_decision_time | `(tenant_id, workspace_id, decision, created_at DESC)` | decision 추이 대시보드 |
+| fds_actions | uq_action_idem | UNIQUE `(tenant_id, workspace_id, idempotency_key)` | action dedup |
+| fds_actions | ix_action_status | `(tenant_id, workspace_id, status, requested_at)` | outbox relay·실패 큐 |
+| fds_cases | ix_case_status | `(tenant_id, workspace_id, status, priority, updated_at DESC)` | case 큐·SLA |
+| fds_cases | ix_case_assignee | `(tenant_id, workspace_id, assigned_to, status)` | 담당자 case |
+| fds_cases | ix_case_aml_ref | `(tenant_id, workspace_id, aml_case_id)` WHERE `aml_case_id IS NOT NULL` | aml-svc cross-ref 역조회 |
+| fds_case_events | ix_case_ev | `(tenant_id, workspace_id, case_id, created_at)` | timeline |
+| fds_rules | ix_rules_set_status | `(tenant_id, workspace_id, rule_set_id, status)` | active rule 로딩 |
+| fds_rule_versions | uq_rule_ver | UNIQUE `(tenant_id, workspace_id, rule_id, version_no)` | 버전 관리 |
+| fds_risk_group_members | ix_group_member | `(tenant_id, workspace_id, member_ref)` | group match 룰 |
+| fds_approval_requests | ix_appr_status | `(tenant_id, workspace_id, status, expires_at)` | 결재 대기·만료 |
+| fds_connector_offsets | ix_conn_status | `(tenant_id, workspace_id, connector_status, lag_seconds DESC)` | connector health |
+| fds_settlements | ix_settle_status | `(tenant_id, workspace_id, status, scheduled_at)` | 정산 보류 큐 |
+| fds_audit_logs | ix_audit_action_time | `(tenant_id, workspace_id, audit_action, created_at DESC)` | 감사 조회 |
+| fds_evidence_exports | ix_export_status | `(tenant_id, workspace_id, status, created_at DESC)` | export 큐 |
+| fds_external_decisions | ix_ext_tx | `(tenant_id, workspace_id, transaction_ref)` | dual-run 비교 |
+
+> 대용량 테이블(`fds_canonical_events`, `fds_decisions`, `fds_audit_logs`)은 `(tenant_id, occurred_at/created_at)` 월 단위 RANGE 파티션을 운영 옵션으로 둔다. 보존정책(§7)에 따라 파티션 단위 파기.
+
+---
+
+## 7. PII·감사·보존 정책
+
+### 7.1 PII 미저장 (§16.1)
+- 주민등록번호·카드 PAN·계좌번호·여권번호·휴대폰번호·CI/DI·가상자산 주소 **원문 저장 금지**.
+- 식별자는 tenant별 **keyed hash(HMAC)** 또는 **token**으로만 저장 → `subject_ref`, `account_ref`, `instrument_ref`, `counterparty_ref`, `document_no_hash`, `target_ref`, `member_ref`.
+- raw payload 미저장. 필요 시 tenant region 암호화 object storage에 저장하고 `payload_hash` reference만 DB 보존.
+- ingest 단계에서 원천 payload에 주민번호/PAN 포함 시 reject 또는 tokenization 후 원문 폐기.
+- secret(API key/HMAC/webhook): `fds_api_credentials.secret_hash`로만 저장. 원문 미저장.
+
+### 7.2 감사 컬럼
+- 운영 테이블 공통: `created_at`, `updated_at`.
+- 변경 주체 보유 테이블: `created_by`, `updated_by`(운영자 subject token).
+- append-only(불변): `fds_decisions`, `fds_decision_reasons`, `fds_case_events`, `fds_rule_versions`, `fds_audit_logs`, `fds_external_decisions` → UPDATE/DELETE 금지(트리거 또는 권한으로 강제).
+
+### 7.3 보존·파기 (§13.3, §16)
+| 데이터 | 보존 | 파기 |
+|---|---|---|
+| audit log / 감사 증적 | 7년 이상(금융권 감사) | 파티션 단위 만료 파기 |
+| decision / case / action | tenant retention policy(`fds_tenants.retention_policy`), 기본 7년 | |
+| canonical event | tenant 설정(기본 5년) | 파티션 파기 |
+| evidence export 산출물 | manifest hash 보존 + 파일 TTL | 다운로드/삭제도 감사 |
+| idempotency key | 단기 TTL(예: 30일) | 정리 job |
+| ML feature snapshot | PII 제거 후 저장 | |
+
+---
+
+## 8. Flyway 마이그레이션 순서
+
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(롤백은 신규 보정 migration). `services/fds-svc` 빌드에 포함.
+
+| 버전 | 파일 | 내용 |
+|---|---|---|
+| V1 | `V1__fds_schema.sql` | `CREATE SCHEMA fds`; search_path 설정 |
+| V2 | `V2__tenant_workspace.sql` | fds_tenants, fds_workspaces |
+| V3 | `V3__source_systems.sql` | fds_source_systems, fds_schema_mappings, fds_connector_offsets |
+| V4 | `V4__canonical_events.sql` | fds_canonical_events (+ 파티션 옵션), fds_idempotency_keys |
+| V5 | `V5__subject_account_instrument.sql` | fds_subjects, fds_accounts, fds_instruments |
+| V6 | `V6__transactions.sql` | fds_transactions |
+| V7 | `V7__decisions_actions.sql` | fds_decisions, fds_decision_reasons, fds_actions |
+| V8 | `V8__cases.sql` | fds_cases, fds_case_events, fds_case_scopes |
+| V9 | `V9__rules_features.sql` | fds_rule_sets, fds_rules, fds_rule_versions, fds_rule_simulations, fds_feature_catalog |
+| V10 | `V10__risk_groups.sql` | fds_risk_groups, fds_risk_group_members |
+| V11 | `V11__approval.sql` | fds_approval_requests, fds_approval_steps |
+| V12 | `V12__commerce_trade.sql` | fds_business_documents, fds_commerce_orders, fds_settlements |
+| V13 | `V13__api_credentials.sql` | fds_api_credentials |
+| V14 | `V14__external_bridge.sql` | fds_external_decisions |
+| V15 | `V15__evidence_audit.sql` | fds_evidence_exports, fds_audit_logs |
+| V16 | `V16__indexes.sql` | §6 인덱스 일괄 생성 (CONCURRENTLY 옵션 별도 migration) |
+| V17 | `V17__deployment_model.sql` | `fds_tenants`에 `deployment_model`/`onboarding_status`/`infra_ref` 컬럼 추가(default `MANAGED_DEDICATED`/`REQUESTED`) → 데이터 매핑(`isolation_mode='SHARED'`→`deployment_model='SHARED'`, `SCHEMA`/`DB`→`MANAGED_DEDICATED`; 매핑 row는 `onboarding_status='ACTIVE'`) → `isolation_mode` 컬럼 DROP. additive-then-drop 2단(`V17a` 추가/백필, `V17b` DROP) 권장 |
+
+FK 의존: V7은 V4·V6, V8은 V7, V12는 V6, V14는 V7에 의존하므로 위 순서 고정. V17은 V2(fds_tenants) 이후 임의 시점에 적용하는 배포 모델 전환 마이그레이션이다.
+
+---
+
+## 9. 서비스 경계 주의
+
+| 항목 | fds-svc (스키마 `fds`) | aml-svc (스키마 `aml`) | bo-api (스키마 `bo`) |
+|---|---|---|---|
+| canonical event / decision / action / rule | 소유 | — | 조회(admin API 경유) |
+| AML/STR/CTR/Travel Rule 케이스 | 발단 `fds_cases`(origin) + cross-ref만 | **본 케이스·sanction/PEP screening·규제보고 소유** | 결재·감사 집약 |
+| 결재(maker-checker) 실행 권한·운영자 IAM | `fds_approval_requests`(엔진 측 게이트) | — | **운영자 인증·권한·승인 라인 IAM 소유** |
+| 감사 로그 | `fds_audit_logs`(엔진 동작) | aml 감사 | **운영자 행위 감사 집약** |
+
+- fds-svc의 `OPEN_AML_CASE`/`REGULATORY_REPORT`/`REQUEST_TRAVEL_RULE_INFO` action은 aml-svc로 위임. cross-ref 컬럼 `fds_cases.aml_case_id VARCHAR(96) NULL`을 본 DB가 정본으로 확정(§5.13); API `amlCaseRef`·integration §9.1·tasks는 이 타입을 인용한다.
+- **운영자 집계 API 소유 경계**: 대시보드·고객사 관리·감사 조회는 **bo-api**가 소유·집약·인증한다. fds-svc는 저수준 데이터(decision/action/case/rule/audit row) 조회 API만 제공하며, fds-svc API 명세에 운영자 집계 엔드포인트(대시보드/고객사/감사)를 두지 않는다. bo-api는 `fds_decisions`/`fds_cases`/`fds_audit_logs` 등을 `(tenant_id, workspace_id, data_scope)` 필터로 읽어 집계한다.
+- **고객사 관리(배포/온보딩) 소유 경계**: 고객사 등록은 격리 토글이 아니라 **배포 유형 선택 + 온보딩 신청·상태 관리**다. bo-api가 `deployment_model`/`onboarding_status` 기준으로 소유·집약하며, 온보딩 프로비저닝/상태조회/self-hosted 등록 콜백 엔드포인트(`POST/GET /api/v1/bo/fds/tenants/{tenantId}/onboarding/**`)는 **bo-api 전용**이다. fds-svc 엔진 API에는 온보딩 엔드포인트를 두지 않는다. `fds_tenants`의 `deployment_model`/`onboarding_status`/`infra_ref`/`default_region`은 fds-svc 스키마가 소유하되 운영 변경은 bo-api 온보딩 워크플로우가 트리거한다.
+- bo-web은 DB 미보유. bo-api 경유로만 `fds` 스키마 접근.
+- `data_scope` 필터링은 bo-api가 운영자 토큰 scope로 fds-svc 조회에 주입(저장 격리 아님).
+
+**엔티티 모델링 결정(ref-only / 마스터 미보유)**: 설계서 §7.1 핵심 객체 중 일부는 전용 마스터 테이블 없이 token ref로만 모델링한다. 결정 근거를 명문화한다.
+- **Counterparty(상대방)**: 전용 마스터(`fds_counterparties`) 미보유. `counterparty_ref`(keyed hash/token)로만 참조하며, 속성은 `fds_canonical_events.canonical_payload`에 정규화 보존한다. 상대방은 tenant 외부 식별자라 마스터 materialize 가치 대비 PII 노출 위험이 커 ref-only로 확정.
+- **Business Entity(buyer/seller/merchant/vendor/shipper)**: 전용 마스터 미보유. seller/merchant 프로파일(온보딩 age·risk grade 등 §15.7/§15.8 feature 입력)은 `fds_subjects`(subject_type=`MERCHANT`/`BUSINESS`)로 흡수하고, 주문·정산 맥락은 `fds_commerce_orders`·`fds_settlements`의 `*_ref` token으로 연결한다. AML 측 법인/실소유자 graph는 `aml-svc`(`aml_entities`/`aml_relationships`)가 소유한다.
+- **Actor**: 전용 마스터 미보유. `actor_ref` token + `fds_subjects`(subject_type=`EMPLOYEE_SUBJECT`) 흡수(§4.2 주석 참조).
+
+---
+
+## 10. downstream 확정 명칭
+
+API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
+
+- **스키마**: `fds` (fds-svc). 형제 스키마 `aml`, `bo`.
+- **격리 키**: `tenant_id`(=배포의 고객사·전용 배포에선 단일 값), `workspace_id`(default `'default'`, sandbox `'sandbox'`·서비스/환경), `data_scope`(권한 필터).
+- **배포/온보딩 메타(`fds_tenants`)**: `deployment_model`(`MANAGED_DEDICATED`/`SELF_HOSTED`/`SHARED`, 3종), `onboarding_status`(`REQUESTED`/`PROVISIONING`/`DEPLOYED`/`VERIFIED`/`ACTIVE`/`PACKAGE_ISSUED`/`CUSTOMER_DEPLOYED`/`REGISTERED`, 8종), `default_region`, `infra_ref`. 구 `isolation_mode` 컬럼·enum(`SHARED`/`SCHEMA`/`DB`) 폐기. API `DeploymentModel`/`OnboardingStatus` enum, `TenantDto.deploymentModel`/`onboardingStatus`/`region`/`infraRef` 필드와 1:1. 온보딩 엔드포인트는 bo-api 전용(`POST .../onboarding/provision`, `GET .../onboarding`, `POST .../onboarding/register`).
+- **핵심 테이블**: `fds_canonical_events`, `fds_decisions`, `fds_decision_reasons`, `fds_actions`, `fds_cases`, `fds_case_events`, `fds_rules`, `fds_rule_versions`, `fds_rule_simulations`, `fds_feature_catalog`, `fds_risk_groups`, `fds_risk_group_members`, `fds_approval_requests`, `fds_approval_steps`, `fds_api_credentials`, `fds_external_decisions`, `fds_evidence_exports`, `fds_audit_logs`, `fds_idempotency_keys`, `fds_business_documents`, `fds_commerce_orders`, `fds_settlements`, `fds_connector_offsets`, `fds_schema_mappings`, `fds_source_systems`, `fds_subjects`, `fds_accounts`, `fds_instruments`, `fds_transactions`, `fds_tenants`, `fds_workspaces`.
+- **PK 패턴**: `(tenant_id, workspace_id, <natural key>)`. decision/action/case/approval/export/audit는 `UUID` 식별자, event는 원천 `event_id`(VARCHAR).
+- **enum 코드값**: §4 전체(decision 8종, **action_type 23종 — API `ActionType` enum이 정본, §4.8과 1:1**, case_type 11종, instrument 12종, channel 19종, payment_rail 18종, capability 9종, approval_line 6종, approval_status 8종). `subject_kind`에 `CASE_CLOSE` 포함(case 종결 4-eyes).
+- **AML cross-ref 컬럼**: `fds_cases.aml_case_id VARCHAR(96) NULL`(API `amlCaseRef`, integration §9.1). FK 아님.
+- **금액 타입**: `NUMERIC(24,8)`, base/표시 통화 분리(`amount`/`amount_base`, `currency`/`base_currency`).
+- **증적 컬럼**: `payload_hash`, `input_event_hash`, `feature_snapshot`, `matched_rules`, `manifest_hash`, `evidence_hash`.
+
+---
+
+## 11. 변경 이력
+
+| 일자 | 버전 | 변경 내용 | 비고 |
+|---|---|---|---|
+| 2026-06-06 | v1.0 | 정본(4서비스·PostgreSQL·Flyway) 및 설계서 `01-fdsSvc-sass.md` v1.1 기준 fds-svc DB 설계서 신규 생성. §14 DDL을 물리 모델로 확정하고 설계서 §7~17의 누락 엔티티(rule/version/simulation, feature catalog, risk group, approval, api credentials, external decisions, evidence export, audit log, idempotency, decision reasons, case events/scopes)를 보강. 3단 격리(`tenant_id/workspace_id/data_scope`)·PII 미저장·감사·보존·Flyway 순서 확정. enum 코드값/표시값 병기. aml-svc/bo-api 서비스 경계 명시. | data-modeler |
+| 2026-06-06 | v1.1 | doc-consistency(fds) 정합화: (1) `fds_cases.aml_case_id VARCHAR(96) NULL`을 §5.13 명세 정식 행으로 추가(API `amlCaseRef`·integration §9.1 동일 타입, FK 아님) + 역조회 인덱스 `ix_case_aml_ref` 추가. (2) §4.8 action_type 정본을 **API `ActionType` enum(23종)**으로 명문화하고 설계서 §15 비정본 verb(SUSPEND_MERCHANT→SUSPEND_INSTRUMENT, SEND_SECURITY_ALERT→SEND_ALERT, OPEN_*_CASE→OPEN_CASE+case_type, CHALLENGE/REVIEW→decision)의 정규화 매핑 명시. (3) `subject_kind`에 `CASE_CLOSE` 추가(case 종결 4-eyes 대상 식별). (4) §9에 운영자 집계 API 소유 경계(대시보드/고객사/감사=bo-api 소유, fds-svc는 저수준 데이터 API만) 명문화. | data-modeler |
+| 2026-06-06 | v1.2 | doc-consistency(fds) design-db low 5건 정합화(추적성 보강): (1) §4.2 `subject_type` 4종(`BUSINESS`/`MERCHANT`/`EMPLOYEE_SUBJECT` 포함)의 설계서 §7.1/§7.2 정본 근거 주석화 + actor 프로파일 `fds_subjects` 흡수 결정 명시. (2) §4.11 `case_status` 8종·`case_priority` 4종 표시값 병기 + tenant/connector/case/rule status enum 코드 집합이 본 DB §4 정본임을 명문화(PRD §11.1·PPT slide 27 참조 정렬). (3) §9에 엔티티 모델링 결정(Counterparty·Business Entity·Actor 마스터 미보유, ref-only/`fds_subjects` 흡수) 명문화. action_type/case_type/subject_kind enum은 v1.1에서 이미 정본 동기화 완료(잔존 이격 없음). | data-modeler |
+| 2026-06-08 | v1.3 | **격리(isolation_mode) → 배포 모델(deployment topology) 재설계** 동기화(설계서 `01-fdsSvc-sass.md` v1.5 §13/§11.6.11/§11.6.11a/§14.1/§12.8 + 정본 target-architecture §4.1 기준): (1) §2를 '배포 모델(§2.1)+멀티테넌시 키 재정의(§2.2)'로 재작성 — 전용 배포가 기본, `tenant_id`=배포의 고객사(전용 단일)·`workspace_id`=서비스/환경·`data_scope`=권한 필터, 격리 1차 경계=배포. (2) §4.1에 `deployment_model`(3종)·`onboarding_status`(8종) enum 추가 + §4.1a 온보딩 상태머신(Mermaid) 신설, 구 `isolation_mode` enum(`SHARED`/`SCHEMA`/`DB`) 폐기 명시. (3) §5.1 `fds_tenants`: `isolation_mode` 컬럼 DROP → `deployment_model`(default `MANAGED_DEDICATED`)·`onboarding_status`(default `REQUESTED`)·`infra_ref` 추가, `default_region` 유지 + 마이그레이션 주석. (4) §8에 V17 마이그레이션(컬럼 추가/백필/DROP, `SHARED→SHARED`·`SCHEMA`/`DB→MANAGED_DEDICATED`) 추가. (5) §9에 고객사 관리(배포/온보딩) 소유 경계 추가(bo-api 전용 온보딩 엔드포인트, fds-svc 엔진 API 미보유). (6) §10 downstream 명칭에 배포/온보딩 메타·enum·엔드포인트 확정. | data-modeler |
+| 2026-06-08 | v1.3.1 | doc-consistency(fds) cross:naming low 정합화: §4.1 `onboarding_status` 표시값 `CUSTOMER_DEPLOYED` 라벨을 '고객배포'→**'고객배포완료'**로 정정해 상위 설계서 `01-fdsSvc-sass.md` v1.5 §11.6.11a 정본 라벨과 동일화(코드값·종수·상태머신은 기존 일치, 표시 라벨만 동기화). default_region DEFAULT 'KR'·PII 여권번호 미저장 목록(§7.1)은 본 DB가 이미 정본이라 변경 없음(설계서 측 정렬 대상). | data-modeler |
+| 2026-06-08 | v1.3.2 | QA #4 MED 정합화(cross:naming-tenancy-pii): §4.1a Mermaid 다이어그램에서 비정규 상태명 `ACTIVE_SHARED`(enum 8종 코드값에 없음) 제거 — `state "SHARED" as H { REQUESTED --> ACTIVE_SHARED : 즉시 }` 컨테이너를 최상위 전이 `REQUESTED --> ACTIVE : SHARED 즉시`로 교체. 본문 텍스트(§4.1a 하단 bullet)·설계서 §11.6.11a는 이미 `ACTIVE`로 올바르게 표기. enum 8종 코드값 및 그 외 상태머신 내용 변경 없음. | data-modeler |
