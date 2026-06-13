@@ -76,7 +76,7 @@ while (iter < maxIter) {
 
   // ── 재QA ──
   phase('재QA')
-  qa = await workflow('doc-consistency-qa', { service })
+  qa = await workflow({ scriptPath: '.claude/workflows/doc-consistency-qa.js' }, { service })
   log(`재QA ${iter}/${maxIter}: ${qa && qa.status} (높음 ${qa && qa.highGaps})`)
   if (qa && qa.status === 'PASS') break
 }

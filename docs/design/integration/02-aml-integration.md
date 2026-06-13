@@ -77,7 +77,7 @@ flowchart LR
 
 | 큐 논리명 | 방향 | 발행자 | 구독자 | 페이로드 family | DLQ | 비고 |
 |---|---|---|---|---|---|---|
-| `aml-ingest` | in | 외부 source system / connector | `aml-svc` IngestEventConsumer | `customer.*`·`entity.*`·`transaction.*`·`settlement.*`·`trade.*`·`invoice.*`·`order.*`·`crypto.*`·`employee.*` | `aml-ingest-dlq` | 대량 비동기 ingest |
+| `aml-ingest` | in | 외부 source system / connector | `aml-svc` IngestEventConsumer | `customer.*`·`entity.*`·`beneficial-owner.*`·`account.*`·`instrument.*`·`transaction.*`·`settlement.*`·`trade.*`·`invoice.*`·`order.*`·`crypto.*`·`employee.*` | `aml-ingest-dlq` | 대량 비동기 ingest. SW §8.1 IN 방향 15종 family 중 비동기 수신 대상(screening.*·case.*·vendor.*·fds.* 제외) |
 | `aml-ingest.fifo` | in | core-banking / 정산 | `aml-svc` IngestEventConsumer(FIFO) | 동일 customer/account 순서보장 필요 이벤트 | `aml-ingest-dlq` | `MessageGroupId=tenantId:subjectRef` |
 | `aml-fds-decision` | in | `fds-svc` | `aml-svc` FdsDecisionConsumer | `fds.decision.*`·`fds.case.escalated` | `aml-fds-decision-dlq` | D-07 event 연동 |
 | `aml-screening-async` | internal | `aml-svc` ScreenUseCase | `aml-svc` ScreeningWorker | `screening.requested` | `aml-screening-dlq` | 대량 재screening·watchlist 재적용 |
@@ -141,9 +141,9 @@ flowchart LR
 
 | eventType | 트리거 | 키 | 외부 대상 |
 |---|---|---|---|
-| `report.submission.requested` | STR/CTR/Travel Rule 결재 EXECUTED | `reportId`·`reportType`·`approvalId` | ReportSubmissionPort → tenant adapter(D-04) |
-| `report.submission.acked` | 보고기관/adapter ack | `reportId`·`submittedRef` | → `aml_regulatory_reports.submitted_ref`, status=`SUBMITTED` |
-| `report.submission.failed` | 제출 실패 | `reportId`·`errorCode` | → status=`REJECTED`, 재제출 큐 |
+| `report.submission.requested` | STR/CTR/Travel Rule 결재 EXECUTED | `reportId`·`reportType`·`approvalId` | ReportSubmissionPort → tenant adapter(D-04). dispatch 시 status=`SUBMITTED`(전송 완료·회신 대기) |
+| `report.submission.acked` | FIU/보고기관 접수 회신 | `reportId`·`fiuAckRef`(FIU 접수번호) | → `aml_regulatory_reports.fiu_ack_ref` 저장, status=`ACKNOWLEDGED`(종단 — 폐루프 완성, 설계서 §14.1a) |
+| `report.submission.failed` | 전송 실패·FIU 오류 반려 | `reportId`·`submissionErrorCode`(API §3.6·§8.1 정본) | → `submission_error_code` 저장, status=`SUBMISSION_FAILED` → 운영자 정정 후 재제출(§6.2) |
 | `webhook.callback.requested` | screening/case/report 상태 변경 | `subjectRef`·`eventName`(API §8.1) | 고객 webhook URL(서명) |
 
 > webhook 아웃박스 row는 고객사 콜백 envelope(API §8.2 정본)을 발행한다. envelope 키: `schemaVersion`(`aml.webhook.v1`)·`eventName`(`AmlScreeningResolved`/`AmlCaseStatusChanged`/`AmlReportSubmitted`)·`eventFamily`(`screening`/`case`/`report`, **`eventName` 접두에서 서버 파생** — 입력 아님)·`eventId`·`tenantId`·`dataScope`·`occurredAt`·`traceId`·`data`. 모든 키 camelCase, payload는 token/hash·마스킹만(원문 미포함). 서명·재시도·멱등은 API §8.3/§8.4 정본.
@@ -190,6 +190,8 @@ API `IngestEventRequest`(02-aml-api §3.1)·`aml_canonical_events` 컬럼과 1:1
 | `traceId` | string | N | `trace_id` | 없으면 consumer가 생성. REST=`X-Trace-Id` 헤더 ↔ 큐=envelope `traceId` 본문(API §1.1 매핑) |
 | `payloadHash` | string | N | `payload_hash`(NOT NULL) | raw payload sha256. **선택(미제공 시 aml-svc ingest 어댑터가 수신 payload의 sha256을 자동 계산하여 INSERT — 서버 자동계산 방식 확정, API §3.1 정본)**. 호출자가 직접 계산해 제공해도 무방(서버 값 우선). 구 `rawPayload.payloadHash` 중첩 경로 폐기 — 최상위 키로 통일(API §3.1·DB `payload_hash` NOT NULL 1:1) |
 | `payload` | object | Y | `payload`(JSONB) | 정규화 payload(ref/hash만) |
+
+> **Cross-service envelope 정책(`workspaceId` ↔ `dataScope`) — 정본**: AML envelope는 **`dataScope` 최상위(선택)**(`workspaceId` 미탑재 — AML `workspace_id` 미적용·보류, SW §16.2.1)이고, FDS envelope(`01-fds-integration.md` §4.1)는 **`workspaceId` 최상위 필수**(`dataScope` 미탑재)다. 이는 **의도된 비대칭**이며, **FDS→AML 핸드오프(`fds-aml-handoff`, §9) 시 핸드오프 어댑터(aml-svc 소비 측)가 FDS `workspaceId`→AML `dataScope`로 변환**한다(`default`→`default` 매핑 포함). 교차 주석: AML 설계서 §8.2 ↔ FDS 설계서 §8.2/§8.3.
 
 ### 4.2 transaction payload (canonical, 설계서 §8.2)
 
@@ -355,9 +357,11 @@ sequenceDiagram
     DSP->>OB: poll PENDING → publish aml-outbox-dispatch
     DSP->>SUB: submit(reportId, payload ref)
     SUB->>EXT: 제출 (tenant adapter, D-04)
-    EXT-->>SUB: ack(submittedRef) via aml-report-callback
-    SUB->>RPT: status=SUBMITTED, submitted_ref, submitted_at
-    Note over RPT: 제출 결과·식별자 별도 evidence 저장(설계서 §13.5)
+    SUB->>RPT: status=SUBMITTED, submitted_ref, submitted_at (전송 완료·회신 대기)
+    EXT-->>SUB: FIU 회신 via aml-report-callback (acked | failed)
+    SUB->>RPT: acked → status=ACKNOWLEDGED, fiu_ack_ref(FIU 접수번호) — 종단
+    SUB->>RPT: failed → status=SUBMISSION_FAILED, submission_error_code → 정정 후 재제출(:submit 재사용, resubmit_count+1)
+    Note over RPT: 제출·회신 결과·식별자 별도 evidence 저장(설계서 §13.5·§14.1a 폐루프)
 ```
 
 ---
@@ -377,7 +381,7 @@ sequenceDiagram
 | 일시 오류(DB lock, 외부 timeout) | ACK 안 함 → SQS `visibilityTimeout` 후 재전달, exponential backoff(redrive policy) |
 | `maxReceiveCount` | 5회(기본). 초과 시 DLQ 이동 |
 | 결정적 오류(스키마 위반·미등록 source) | 재시도 무의미 → 즉시 DLQ + `aml_audit_events`(category=`POLICY_CHANGE`/ingest reject) 기록 |
-| report 제출 실패(`report.submission.failed`) | `aml_regulatory_reports.status=REJECTED` → 운영자 재제출(`:submit` 신규 결재 사이클, 재제출 evidence 별도) |
+| report 제출 실패(`report.submission.failed`) | `aml_regulatory_reports.status=SUBMISSION_FAILED`(`submission_error_code` 저장, 설계서 §14.1a) → 운영자 정정 후 재제출(RESUBMIT: 기존 `:submit` 4-eyes 신규 결재 사이클 재사용, `resubmit_count` 증가·회차별 재제출 evidence 별도 보존) |
 
 ### 6.3 DLQ 운영
 
@@ -403,7 +407,7 @@ sequenceDiagram
 | Polling | `POLLING` | in/scheduled | 주기적 read(API/DB replica) | `<source>:<cursor>` |
 | CDC | `CDC` | in/scheduled | change stream → canonical | `<source>:<lsn>` |
 | Snapshot | `SNAPSHOT` | in/scheduled | 전체/증분 file import | `<source>:<snapshotId>:<row>` |
-| Vendor Bridge | `VENDOR_BRIDGE` | out/external→in | 벤더 export/replica → canonical event | `<vendor>:<alertId>` |
+| Vendor Bridge | `VENDOR_BRIDGE` | out/external→in(설계서 §8.1 기준 IN방향: 외부 벤더가 데이터를 내보내고 aml-svc가 수신·정규화) | 벤더 export/replica → canonical event(`source_origin=VENDOR`) — 물리 흐름은 벤더→adapter/out/external pull→aml-svc ingest | `<vendor>:<alertId>` |
 
 > 모든 커넥터는 **Schema Registry**(`SchemaRegistryPort`)로 `sourceSchemaVersion`을 검증하고, **PII Tokenization**(`PiiTokenizationPort`)을 통과시킨 뒤 canonical event로 정규화한다. 어느 커넥터도 raw PII를 `aml_*`에 저장하지 않는다.
 
@@ -458,9 +462,11 @@ stateDiagram-v2
 
 `status` enum(approval_status): `DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED`. 🔒 Admin 엔드포인트(`:apply`/`:activate`/`:close`/`:submit`/`:approve` 등, 02-aml-api §2.7)는 모두 이 머신을 통과.
 
+> **`DRAFT`는 내부 전이 상태로 API 미노출.** `DRAFT`는 결재 객체의 내부 초기화 단계이며 외부 호출자(bo-api/bo-web)에게 노출되지 않는다. API 표면 첫 관찰 가능 상태는 `SUBMITTED`(상신 완료, 202 응답)이다(API §1.5 정본). PRD/화면은 `DRAFT` 배지 표시 불필요.
+
 ```mermaid
 stateDiagram-v2
-    [*] --> DRAFT
+    [*] --> DRAFT : 내부 초기화 (API 미노출)
     DRAFT --> SUBMITTED : maker 상신 (payload_hash 고정)
     SUBMITTED --> APPROVED : checker 승인 (CHECK maker_id<>checker_id)
     SUBMITTED --> REJECTED : checker 반려 (reason)
@@ -502,7 +508,7 @@ stateDiagram-v2
 
 ## 9. 규제 제출 연동(STR/CTR/Travel Rule)
 
-### 9.1 STR 제출 흐름 (설계서 §14.2, 4-eyes)
+### 9.1 STR 제출 흐름 (설계서 §14.2·§14.1a, 4-eyes)
 
 ```mermaid
 sequenceDiagram
@@ -513,6 +519,7 @@ sequenceDiagram
     participant OB as outbox
     participant ADP as ReportSubmissionPort (D-04 tenant adapter)
     participant FIU as 보고기관
+    participant CB as aml-report-callback
     ALERT->>CASE: case open
     CASE->>RPT: report_type=STR, status=DRAFT, report_payload(masked evidence ref)
     RPT->>BO: :submit (REPORTING_OFFICER 결재)
@@ -520,18 +527,32 @@ sequenceDiagram
     BO->>OB: report.submission.requested (EXECUTED)
     OB->>ADP: dispatch
     ADP->>FIU: 제출
-    FIU-->>ADP: submittedRef (aml-report-callback)
-    ADP->>RPT: status=SUBMITTED, submitted_ref, submitted_at
+    ADP->>RPT: status=SUBMITTED, submitted_ref, submitted_at (전송 완료·회신 대기)
+    FIU-->>CB: acked|failed (aml-report-callback)
+    alt FIU 접수 성공
+        CB->>RPT: status=ACKNOWLEDGED, fiu_ack_ref(FIU 접수번호) — 종단(폐루프 완성)
+    else FIU 오류/반려
+        CB->>RPT: status=SUBMISSION_FAILED, submission_error_code — 정정 후 재제출
+        Note over RPT,BO: SUBMISSION_FAILED → 정정 후 :submit 4-eyes 재사용(resubmit_count 증가, §6.2)
+    end
 ```
 
-- report_type enum(§5.10 DB): `STR/CTR/TRAVEL_RULE/EDD_REGISTER/WLF_REGISTER/RA_REPORT/AUDIT_EXPORT`.
-- report_status: `DRAFT/UNDER_REVIEW/APPROVED/SUBMITTED/REJECTED/CANCELLED`.
-- 제출 식별자(`submitted_ref`)·결과는 결재 완료와 별도 evidence로 보존(설계서 §13.5). 실패 시 `REJECTED`→재제출(신규 결재 사이클, 재제출 이력 누적).
+- report_type enum(DB §5.10): `STR/CTR/TRAVEL_RULE/EDD_REGISTER/WLF_REGISTER/RA_REPORT/AUDIT_EXPORT`.
+- **report_status(8종 정본, 설계서 §14.1a·DB §5.11)**: `DRAFT`/`UNDER_REVIEW`/`APPROVED`/`SUBMITTED`/`REJECTED`/`CANCELLED`/`ACKNOWLEDGED`/`SUBMISSION_FAILED`. `SUBMITTED`=외부 전송 완료(FIU 회신 대기). `ACKNOWLEDGED`=FIU 접수 확정(`fiu_ack_ref` 저장, 종단). `SUBMISSION_FAILED`=전송 실패/FIU 오류 반려(`submission_error_code` 저장). `REJECTED`/`CANCELLED`=4-eyes 기각/취소(사유 코드 필수·REPORTING_OFFICER 결재, 설계서 §14.1a).
+- 제출 식별자(`submitted_ref`)·FIU 접수번호(`fiu_ack_ref`)·결과는 결재 완료와 별도 evidence로 보존(설계서 §13.5·§14.1a 폐루프). **재제출 전략**: `SUBMISSION_FAILED` 건은 보고 본문 정정 후 **기존 `:submit` 4-eyes 결재 절차 재사용**(`resubmit_count` 증가·회차별 이력 보존, §6.2). 신규 report 생성·`supersedesReportId` 방식은 사용하지 않는다.
 
-### 9.2 CTR — 데이터 수집·검증 보조
+### 9.2 CTR — 데이터 수집·검증 보조 및 면제(제외) 처리
 
 - `transaction.completed`·`crypto.*` ingest 시 tenant policy pack `effective version`의 기준금액으로 CTR 후보 집계(`aml_canonical_events` window aggregation). 기준금액·대상은 policy pack version으로 관리(법령 변경 수용).
 - CTR evidence export는 `aml_evidence_exports`(export_type=`CTR_EVIDENCE`) + manifest hash.
+- **CTR 제외(면제) 처리(설계서 §14.3, API §3.6 정본)**: 법정 면제 대상 확정 시 `aml_regulatory_reports.status=CANCELLED`로 전이하며, `ctr_exemption_code`(면제 사유 코드, 설계서 §14.3 법정 제외 규칙)를 **필수** 기록한다. 면제 확정은 **REPORTING_OFFICER 4-eyes 결재**(`subject_type=CTR_SUBMIT`, 자기승인 금지)를 거친다. 결재 EXECUTED 후 아웃박스에 면제 감사 이벤트를 기록하며, 증적은 `aml_evidence_exports`로 보존한다. 면제 결재 흐름:
+
+  ```
+  CTR 후보 → DRAFT → :submit(REPORTING_OFFICER) → APPROVED → 면제 사유 확정
+    → status=CANCELLED + ctr_exemption_code 기록(4-eyes EXECUTED) → 감사 append-only
+  ```
+
+  비면제 건은 §9.1 STR 흐름과 동일하게 `:submit` → 외부 제출(`CTR_SUBMIT`) → SUBMITTED → ACKNOWLEDGED 폐루프.
 
 ### 9.3 Travel Rule — VASP 정보 보존·전달 (설계서 §18.4)
 
@@ -542,7 +563,12 @@ sequenceDiagram
 ### 9.4 증빙·재제출
 
 - 모든 제출(STR/CTR/TravelRule)은 `aml_evidence_exports`로 manifest hash·row count·query snapshot 저장(D-11 UI+API+manifest hash).
-- 재제출: 기존 report `CANCELLED`/`REJECTED` 후 신규 report 생성, `report_payload`에 `supersedesReportId` 링크. 제출 이력은 append-only.
+- **재제출 전략(설계서 §14.1a·DB §3.12·API §3.6 정본)**: `SUBMISSION_FAILED` 건은 **기존 report row를 유지**하며 보고 본문 정정 후 **`:submit` 4-eyes 결재 절차를 재사용**한다. `resubmit_count`(DB `aml_regulatory_reports.resubmit_count`)를 증가시키고 회차별 제출·회신 이력을 evidence로 보존한다. **신규 report 생성·`supersedesReportId` 방식은 사용하지 않는다.** 재제출 흐름:
+  ```
+  SUBMISSION_FAILED → 정정(보고 본문) → :submit(REPORTING_OFFICER 4-eyes, resubmit_count+1)
+    → APPROVED → 아웃박스 dispatch → SUBMITTED → FIU 회신 → ACKNOWLEDGED 또는 재귀 SUBMISSION_FAILED
+  ```
+- 재제출 각 회차의 증적(payload, fiu_ack_ref, submission_error_code, 결재 이력)은 append-only로 보존한다.
 
 ---
 
@@ -645,7 +671,7 @@ sequenceDiagram
 | TM evaluate | `aml-ingest` / `POST /api/v1/aml/transactions/evaluate` | tx natural key | — | ref/hash | — |
 | FDS escalation | `aml-fds-decision` / `POST /internal/v1/aml/fds-escalations` | fraudCaseRef | — | ref | STR 후보 |
 | WLF true match 전파 | `aml-fds-feedback` | screeningId | 🔒 WLF_DECISION | ref | — |
-| STR/CTR/Travel Rule 제출 | `aml-outbox-dispatch`→adapter | approvalId | 🔒 STR/CTR/TR_SUBMIT | masked ref | STR/CTR/TravelRule |
+| STR/CTR/Travel Rule 제출 | `aml-outbox-dispatch`→adapter | approvalId | 🔒 `STR_SUBMIT`/`CTR_SUBMIT`/`TRAVEL_RULE_EXCEPTION` | masked ref | STR/CTR/TravelRule |
 | Evidence export | `POST /api/v1/evidence/aml/exports` | exportId | reason+권한 | manifest hash | Audit |
 | Vendor bridge | `VENDOR_BRIDGE` connector | vendor alertId | — | 표준 evidence | dual-run |
 | Merchant AML review | `settlement.*`/`entity.*` → `MERCHANT_AML_REVIEW` case | entityRef+scenario | 🔒 case 결재 | ref/hash | — |
@@ -658,6 +684,11 @@ sequenceDiagram
 
 | 일자 | 버전 | 변경 | 비고 |
 |---|---|---|---|
+| 2026-06-11 | v2.1 | QA HIGH(L145) 해소: §3.4 `report.submission.failed` 핵심 키 `errorCode` → `submissionErrorCode`(API §3.6·§8.1 정본, DB `submission_error_code` 1:1). | integration-designer |
+| 2026-06-11 | v2.0 | QA HIGH cross(L307) 해소: §4.1에 cross-service envelope 정책 명문화 — AML envelope=`dataScope` 최상위(선택) / FDS envelope=`workspaceId` 최상위 필수(의도된 비대칭), `fds-aml-handoff` 어댑터(aml-svc 소비 측)가 FDS `workspaceId`→AML `dataScope` 변환(`default` 매핑 포함). 양 설계서(AML §8.2·FDS §8.2/§8.3) 교차 주석과 동기. | integration-designer |
+| 2026-06-11 | v1.9 | **doc-consistency-report-all-latest 연동 담당 이격 정합(aml:design-integration·aml:dbapi-integration)**. **(1) HIGH §2.1 `aml-ingest` 페이로드 family 3종 추가** — `account.*`·`instrument.*`·`beneficial-owner.*`를 큐 카탈로그 페이로드 family 열에 추가(SW §8.1 IN 방향 15종 정본과 정합, 기존 9종에서 12종으로 확장). **(2) HIGH §8.2 `DRAFT` 내부 전이 주석 추가** — API §1.5 정본(`DRAFT`는 내부 전이 상태, API 미노출)에 맞춰 §8.2 상태머신 도입부에 '내부 전이·API 미노출' 주석 및 Mermaid 레이블 추가. **(3) MEDIUM §12 capability 매트릭스 `TR_SUBMIT` → `TRAVEL_RULE_EXCEPTION`** — 비정본 코드 `TR_SUBMIT`를 API §3.7·SW §13.4 정본 `TRAVEL_RULE_EXCEPTION`으로 교체. 정본 = SW §8.1(IN 방향 family 15종) / API §1.5(DRAFT 내부 전이) / API §3.7(subjectType `TRAVEL_RULE_EXCEPTION`). | integration-designer |
+| 2026-06-10 | v1.8 | **doc-consistency-report-all-latest 연동 담당 이격 정합(#32·#33·#34·#35·#36·#41·#42·#43·#44)**. **(1) #32·#41 HIGH §9.1 report_status 6종→8종** — 본문 열거를 설계서 §14.1a·API §3.6 정본 8종(`DRAFT`/`UNDER_REVIEW`/`APPROVED`/`SUBMITTED`/`REJECTED`/`CANCELLED`/`ACKNOWLEDGED`/`SUBMISSION_FAILED`)으로 교체. **(2) #33·#42 HIGH §9.4 재제출 전략 전면 교체** — `supersedesReportId` 방식(신규 report 생성) 삭제, 설계서 §14.1a·DB §3.12·API §3.6 정본인 **기존 `:submit` 4-eyes 재사용+`resubmit_count` 증가** 방식으로 전면 교체. **(3) #34 MED §9.1 시퀀스 FIU 회신 폐루프 추가** — `SUBMITTED`(전송 완료·회신 대기) → `report.submission.acked` → `ACKNOWLEDGED`(FIU 접수번호 `fiu_ack_ref`, 종단) / `report.submission.failed` → `SUBMISSION_FAILED`(오류코드 저장, 정정 후 재제출) 분기 시퀀스 추가. **(4) #35·#43 MED §9.1 `submittedRef`→`fiuAckRef`** — 시퀀스 내 FIU 접수번호 식별자 키명을 `fiuAckRef`로 통일(설계서 §14.1a·연동 §3.4(v1.7) 정본). **(5) #36 LOW §7.1 Vendor Bridge 방향 주석** — 물리 흐름(벤더→adapter/out/external pull→aml-svc ingest) 및 설계서 §8.1 IN방향 기준 주석 추가. **(6) #44 LOW §9.2 CTR 면제(ctrExemptionCode) 흐름 추가** — 법정 면제 시 `status=CANCELLED`+`ctr_exemption_code` 필수+REPORTING_OFFICER 4-eyes 결재 흐름 및 증적 보존 명세 신설(설계서 §14.3·API §3.6 정본). 정본 = 설계서 §14.1a·§14.3 / DB §3.12·§5.11 / API §3.6. | integration-designer |
+| 2026-06-10 | v1.7 | **준법감시인 검토 반영 — FIU 제출 회신 폐루프 동기화**(상위 정본=설계서 §14.1a·DB §3.12/§5.11·API §3.6 2026-06-10 갱신). **(1) §3.4 콜백 이벤트 효과 정정** — `report.submission.acked`: 키 `submittedRef`→`fiuAckRef`(FIU 접수번호), 효과 `status=SUBMITTED`→`status=ACKNOWLEDGED`+`fiu_ack_ref` 저장(종단). `report.submission.failed`: 효과 `status=REJECTED`→`status=SUBMISSION_FAILED`+`submission_error_code` 저장. `report.submission.requested` dispatch 시 `status=SUBMITTED`(전송 완료·회신 대기) 명시. **(2) §5.4 시퀀스** — 전송 완료(SUBMITTED) → FIU 회신(acked→ACKNOWLEDGED / failed→SUBMISSION_FAILED) 폐루프로 재작성. **(3) §6.2 재처리** — 제출 실패 효과를 `SUBMISSION_FAILED`+정정 후 재제출(기존 `:submit` 4-eyes 재사용, `resubmit_count` 증가)로 정정. | integration-designer. 정본=설계서 §14.1a(report_status 8종)·DB §5.11. webhook `AmlReportSubmitted` payload 확장은 API §8.1 정본 동기 완료. |
 | 2026-06-08 | v1.6 | doc-consistency-report-aml-latest QA 이격 중 **연동 담당** 3건 정합(정본=API §3.1 서버 자동계산 확정·SW §8.1 15종 정본). **(1) #34 HIGH §4.1 `payloadHash` 방향 정정**: 필수 `Y` → `N`(선택)으로 수정, 설명을 '서버 자동계산(미제공 시 aml-svc ingest 어댑터 sha256 자동 INSERT — API §3.1 정본)'으로 교체. '호출자 반드시 전송' 문구 삭제. §4.1 prose 주석도 `R=— 선택, 서버 자동계산`으로 동기화. **(2) #35 MED §7.2 필드매핑 `payloadHash` 경로 수정**: 구 `rawPayload.payloadHash` 중첩 경로를 최상위 `payloadHash`로 교체, 변환 설명을 '서버 자동계산' 방식으로 갱신. **(3) #30 HIGH §3.1 `vendor.*` family 카운트 수정**: '14종에 포함되지 않는다' → 'SW §8.1 15종 중 하나로 등재되어 있다'로 수정, SW §8.1 정본 동기화 완료 상태 명시. | integration-designer. 정본=API §3.1(payloadHash R=— 선택, 서버 자동계산 방식 확정, 2026-06-08)·SW §8.1(vendor.* 15종 등재). |
 | 2026-06-08 | v1.5 | doc-consistency-report-aml-latest QA 이격 중 **연동 담당** 항목 정합(정본=API §3.1·§1.1·§3.7·§5 `OnboardingStatus`·target-architecture §4.1): **(1) `aml:db-api-integration` HIGH — `payloadHash` JSON 경로·필수 여부 수정(§4.1)**: 구 `rawPayload.payloadHash` 중첩 구조를 최상위 `payloadHash: string` 으로 수정(API §3.1 정본 경로 일치). envelope 표의 `rawPayload.payloadHash` 행(서버 파생, 선택)을 `payloadHash`(Y=필수, 호출자 계산·전송 명시)로 교체 — API §3.1 `payloadHash` R=필수 정본과 동기화. **(2) `aml:db-api-integration` MEDIUM — `dataScope` 필수 여부 수정(§4.1)**: envelope 표 `dataScope` 필수 `Y` → `N`(선택, NULL=tenant 전역) 으로 정정 — API §1.1 정본(N=선택)과 동기화. **(3) `aml:db-api-integration` HIGH — `OnboardingStatus` SELF_HOSTED 경로 `CUSTOMER_DEPLOYED` 상태 추가(§10.3)**: Mermaid 시퀀스에서 `PACKAGE_ISSUED→REGISTERED` 바로 전이하던 구조를 `PACKAGE_ISSUED→CUSTOMER_DEPLOYED→REGISTERED` 3단계 완전 상태머신으로 수정 — API §5 `OnboardingStatus` enum 8종(정본: `CUSTOMER_DEPLOYED` 포함) 및 target-architecture §4.1 `SELF_HOSTED` 상태머신과 동기화. **(4) `aml:db-api-integration` MEDIUM — §8.3 결재 subject_type `CHECKLIST_CHANGE`·`PERIODIC_REVIEW_CHANGE` 2종 추가**: 아웃박스 효과 표에 두 항목 추가(내부, audit) — API §3.7 `ApprovalDto.subjectType` 16종 정본 전수 커버 달성. **(5) `aml:design-integration` MEDIUM — §2.1 큐 카탈로그 `aml-fds-feedback` 페이로드 family에 `aml.case.str_recommended` 추가**: SW §12.3 아웃바운드 이벤트로 명시된 `aml.case.str_recommended`를 `aml-fds-feedback` 큐 페이로드 family 열에 등재. | integration-designer. 정본=API §3.1(payloadHash R=필수)·API §1.1(dataScope N=선택)·API §3.7(subjectType 16종)·API §5 OnboardingStatus enum·SW §12.3·target-architecture §4.1. API §3.1 payloadHash 필수 여부는 API 명세가 정본이며(R=필수, 호출자 계산·전송), DB NOT NULL과 일치. CUSTOMER_DEPLOYED 상태는 API §5 enum·target-architecture §4.1 자기호스팅 상태머신 근거. |
 | 2026-06-08 | v1.4 | doc-consistency-report-aml-latest QA 이격 중 **연동 담당** 항목 정합(정본=DB §3.14/§3.15/§5.22·SW §8.1·target-architecture §4): **(1) `aml:sw-integration` HIGH — `vendor.*` family·`IngestVendorAlert` 교정(§3.1)**: `vendor.alert-ingested` 후속 usecase를 `IngestVendorAlert`(SW §6.2 미정의)에서 **`IngestEvent(source_origin=VENDOR)`**로 교정. `vendor.*` family는 SW §8.1 미등재이므로 독립 family 선언 없이 기존 `IngestEvent` 경로로 흡수하며, SW §8.1 갱신 후 연동 §3.1 `eventType`·`eventFamily` 라우팅 재정렬 예정임을 주석 명시. **(2) `aml:sw-integration` MEDIUM — `aml_outbox.created_by` 컬럼 매핑 추가(§8.1)**: 핵심 컬럼 열거에 **`created_at`·`created_by`**(공통 감사 컬럼, append 중심) 추가 — DB §3.15 정본 동기화. **(3) `aml:db-api-integration` MEDIUM — `exception_reason` payload 매핑(§4.3·§4.5)**: §4.3 Travel Rule payload JSON에 `exceptionReason` 필드 추가(DB `aml_travel_rule_transfers.exception_reason VARCHAR(256) NULL` 매핑, DB §3.14). §4.5 outbox dispatch payload에 Travel Rule exception 확정 케이스(`reportType=TRAVEL_RULE`, `exceptionReason` 포함) 예시 추가. **(4) `aml:db-api-integration` MEDIUM — `completeness_status` exception 트리거 조건 완전화(§9.3)**: `completeness_status=INCOMPLETE` 단일 조건을 **`completeness_status∈{MISSING_ORIGINATOR, MISSING_BENEFICIARY, INCOMPLETE}`** 3종(DB §5.22 정본)으로 확장 — `MISSING_ORIGINATOR`(송신정보 누락)·`MISSING_BENEFICIARY`(수신정보 누락)·`INCOMPLETE`(복합 누락) 모두 동일 exception 큐 라우팅 명시. **(5) `aml:db-api-integration` LOW — `dataScope` envelope 설명 교정(§4.1)**: 필드 설명 "멀티테넌시 격리"를 **"운영자 row-level 권한 필터(영업점·법인그룹 하위 격리, NULL=tenant 전역, §10.1 정본·DB §2.1)"**으로 업데이트 — §10.1·DB §2.1 재정의와 동기화. | integration-designer. 정본=DB §3.14/§3.15/§5.22·SW §8.1 미등재 vendor.* 편입 결정·target-architecture §4. vendor.* family SW §8.1 추가는 system-architect 담당(QA 이격 상위 SW 담당). completeness_status 3종 트리거 기준은 DB §5.22 정본 채택. exceptionReason PII 없음(사유 텍스트, raw 신원정보 미포함) 확인. |

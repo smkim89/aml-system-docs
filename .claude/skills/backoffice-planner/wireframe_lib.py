@@ -233,12 +233,12 @@ def tab_chips(slide, y, tabs, active=0):
     """탭 칩 스트립(상세/폼 화면 상단). active 탭만 파란 강조."""
     x = CON_X
     for i, t in enumerate(tabs):
-        w = max(1.0, 0.30 + len(t) * 0.095)
+        w = max(1.0, 0.30 + len(t) * 0.13)
         on = (i == active)
         rect(slide, x, y, w, 0.26, C["active"] if on else C["white"],
              line=(C["blue"] if on else C["border"]), line_w=(0.9 if on else 0.5))
         text(slide, x + 0.08, y + 0.045, w - 0.14, 0.18,
-             [(t, 9, C["blue"] if on else C["sub"], on)])
+             [(t, 9, C["blue"] if on else C["sub"], on)], wrap=False)
         x += w + 0.10
     return y + 0.26 + 0.16
 

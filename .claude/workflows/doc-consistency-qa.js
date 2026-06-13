@@ -89,7 +89,7 @@ const checked = await pipeline(
       `문서 정합성 대조. 대조쌍=${pair.key} (${pair.basis}). 상위=${pair.docA}, 파생=${pair.docB}. ` +
       `두 문서를 읽고 ${pair.basis} 수준에서 명칭·타입·필수·enum값·상태·엔드포인트·화면요소가 어긋나거나 누락된 항목을 이격으로 보고하라. ` +
       (pair.key.endsWith(':ppt-flow')
-        ? `**PPT흐름 점검**: 생성기(generate_<svc>.py)를 읽고 — ① 멀티탭 상세/플로우 화면이 1탭=1슬라이드·같은 부모 탭 바·active 일치인가(한 함수/슬라이드에 여러 탭 내용을 욱여넣음·빈 라벨 탭·부모와 다른 탭 바 분리 화면 = high 이격). ② 다른 기능 ID로 가는 드릴다운(xxx_002 등) 첫 슬라이드에 wf.entry_banner(진입 경로)가 있고 소스 목록 화면 행/버튼에 ▶ + "→XXX"가 있는가(없으면 medium~high). ③ 변경이력 history_slide 행 문구가 한 줄 요약인가(장문이면 low). ④ SCREENS 순서상 드릴다운이 소스 화면과 멀리 떨어졌는가(흐름 단절=medium). 단순 필터 탭(내케이스/전체, 대기/상신/완료)은 1슬라이드 정상 — 이격 아님. PRD의 화면 순서·기능 ID와 생성기 SCREENS가 일치하는지도 확인. ` +
+        ? `**PPT흐름 점검**: 생성기(generate_<svc>.py)를 읽고 — ① 멀티탭 상세/플로우 화면이 1탭=1슬라이드·같은 부모 탭 바·active 일치인가(한 함수/슬라이드에 여러 탭 내용을 욱여넣음·빈 라벨 탭·부모와 다른 탭 바 분리 화면 = high 이격). ② 다른 기능 ID로 가는 드릴다운(xxx_002 등) 첫 슬라이드에 wf.entry_banner(진입 경로)가 있고 소스 목록 화면 행/버튼에 ▶ + "→XXX"가 있는가(없으면 medium~high). ③ 변경이력 history_slide 행 문구가 한 줄 요약인가(장문이면 low). ④ SCREENS 순서상 드릴다운이 소스 화면과 멀리 떨어졌는가(흐름 단절=medium). 단순 필터 탭(내케이스/전체, 대기/상신/완료)은 1슬라이드 정상 — 이격 아님. PRD의 화면 순서·기능 ID와 생성기 SCREENS가 일치하는지도 확인. `
         : '') +
       `${SPEC} 정본과 다르면 정본을 기준으로 어느 문서가 틀렸는지 명시. 이격이 없으면 findings=[].`,
       { schema: GAP_SCHEMA, phase: 'Check', label: `check:${pair.key}`, model: 'sonnet' }
