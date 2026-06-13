@@ -365,10 +365,11 @@ com.hanpass.fds
 │                  #   Decision, Action, Case, RiskGroup, RuleSet 등 ADT·불변식
 ├── application/
 │   ├── usecase/   # IngestEvent, EvaluateDecision, RouteAction, ManageCase,
-│   │              #   ManageApproval, SimulateRule, ManageGroup, ExportEvidence,
+│   │              #   ManageApproval, ManageRule, SimulateRule, ManageGroup, ExportEvidence,
 │   │              #   ManageSourceSystem, VendorBridge
 │   ├── port/in/   # IngestEventUseCase, EvaluateDecisionUseCase, RouteActionUseCase,
-│   │              #   ManageCaseUseCase, ManageApprovalUseCase, SimulateRuleUseCase,
+│   │              #   ManageCaseUseCase, ManageApprovalUseCase,
+│   │              #   ManageRuleUseCase, SimulateRuleUseCase,
 │   │              #   ManageGroupUseCase, ExportEvidenceUseCase,
 │   │              #   ManageSourceSystemUseCase, VendorBridgeUseCase
 │   │              #   (유스케이스↔API 그룹 정본은 API 명세 §4)
@@ -386,7 +387,7 @@ com.hanpass.fds
 └── global/        # tenant context, traceId 전파, 보안/마스킹 필터, 설정
 ```
 
-> `adapter/in/rest`의 엔드포인트 전수·요청/응답 스키마 정본은 **API 명세(`docs/design/api/01-fds-api.md` §4)** 이며, 위 주석은 그룹 요약이다(Case·Action·Evidence·Admin·Approval·External Vendor Bridge). `port/in`의 유스케이스 포트는 API §4 그룹(ManageCase·ManageApproval·ExportEvidence·ManageGroup·ManageSourceSystem·VendorBridge 등)과 1:1 대응한다.
+> `adapter/in/rest`의 엔드포인트 전수·요청/응답 스키마 정본은 **API 명세(`docs/design/api/01-fds-api.md` §4)** 이며, 위 주석은 그룹 요약이다(Case·Action·Evidence·Admin·Approval·External Vendor Bridge). `port/in`의 유스케이스 포트는 API §4 그룹(ManageCase·ManageApproval·ExportEvidence·ManageGroup·ManageSourceSystem·VendorBridge 등)과 1:1 대응한다. **`ManageRuleUseCase`는 룰 생성·수정·활성화·rollback(API §4.6 Rule Admin 11종, 4-eyes `subjectKind=RULE`)의 생명주기 관리 포트이며, `SimulateRuleUseCase`(룰 시뮬레이션/백테스트, `POST /api/v1/admin/fds/rules/simulations`)와 역할이 분리된다.**
 >
 > bo-api·bo-web은 정본의 별도 레이아웃(패키지-바이-피처 / Next.js App Router)을 따르며, 본 문서의 enum·API·규칙을 그대로 입력으로 사용한다.
 
@@ -508,6 +509,7 @@ FDS는 각 event를 평가하되, decision과 action은 transaction 단위로도
   "idempotencyKey": "atm-switch:atm-evt-001",
   "eventType": "transaction.requested",
   "correlationId": "corr-atm-evt-001",
+  "traceparent": "00-8f3c...-...-01",
   "occurredAt": "2026-06-06T19:00:00+09:00",
   "subject": {
     "subjectType": "PERSON",
@@ -560,6 +562,7 @@ FDS는 각 event를 평가하되, decision과 action은 transaction 단위로도
 | `messageVersion` | 필수 | 큐 메시지 직렬화 버전(enum `v1`, integration §4.1) |
 | `schemaVersion` | 조건부 필수 | 이벤트 메시지 필수. `sourceSystem`별 canonical schema 버전(예 `atm-switch.v1`, integration §4.1) |
 | `correlationId` | 필수 | end-to-end 추적 키. SQS message attribute로도 전파(integration §4.1) |
+| `traceparent` | 선택 | W3C traceparent. 분산 추적 전파 ↔ `fds_audit_logs.trace_id`(integration §4.1) |
 | `tenantId` | 필수 | multi-tenant partition key |
 | `workspaceId` | 필수 | tenant 내 서비스/환경 분리 키. 미지정 시 `default`(§13.0b, integration §4.1) |
 | `sourceSystem` | 필수 | connector와 schema 식별 |
@@ -570,11 +573,13 @@ FDS는 각 event를 평가하되, decision과 action은 transaction 단위로도
 | `subject.subjectRef` | 조건부 필수 | 고객 중심 거래에는 필수 |
 | `actor.actorRef` | 조건부 필수 | 내부 감사·직원 작업에는 필수 |
 | `transaction.transactionRef` | 조건부 필수 | 거래 이벤트에는 필수 |
-| `transaction.transactionType` | 조건부 필수 | 거래 이벤트에는 필수(enum 정본 DB §4.x, 예 `WITHDRAWAL`) |
+| `transaction.transactionType` | 조건부 필수 | 거래 이벤트에는 필수. **폐쇄 enum 정본 = DB §4.19 `transaction_type` 12종**(예 `WITHDRAWAL`) — 본 설계서는 enum을 재정의하지 않고 DB §4.19를 참조한다 |
 | `amount/currency` | 조건부 필수 | 금액성 이벤트에는 필수 |
 | `instrument.instrumentRef` | 권장 | 수단 기반 룰에 필요 |
 | `channel.channelType` | 필수 | 도메인 routing과 룰 필드에 필요 |
 | `payloadHash` | 권장 | 원천 payload 무결성 해시(최상위 평면 필드 `sha256:...`, integration §4.2) |
+
+> **교차 주석(AML 설계서 §8.2 대응)**: FDS envelope는 `workspaceId` 최상위 필수, AML envelope는 `dataScope` 최상위(선택)로 **의도된 비대칭**이다(연동 §4.1 cross-service 정책 정본). FDS→AML 핸드오프(`fds-aml-handoff`) 시 핸드오프 어댑터(aml-svc 소비 측)가 `workspaceId`→`dataScope`로 변환한다(`default` 매핑 포함).
 
 ---
 
@@ -856,6 +861,7 @@ THEN OPEN_INTERNAL_AUDIT_CASE
 - 규제 보고 제출
 - 룰 활성화
 - field mapping 변경
+- source system 속성·capability 매트릭스 수정(`MAPPING` subjectKind, API §8)
 - connector secret 변경
 - 내부 감사 case 종결
 - high-risk merchant 정상화
@@ -908,7 +914,7 @@ DRAFT
 
 > **`APPROVAL_REQUIRED`는 approval_status가 아니다.** 자금/규제성 action 상신 시 대응 `fds_actions.status`가 `APPROVAL_REQUIRED`(action_status enum, DB §4: `PENDING/APPROVAL_REQUIRED/APPROVED/SENT/ACKED/FAILED/CANCELLED`)로 hold되어 결재 게이트를 거친다. 결재 요청 자체의 상태는 `SUBMITTED`다. 즉 동일 흐름을 action 축(`APPROVAL_REQUIRED`)과 approval 축(`SUBMITTED`)이 각각 표현하며, 두 enum을 혼동하지 않는다(API §4.3/§8 참조).
 
-승인 범위(scope) 원칙: 각 승인은 단일 `payload_hash`에 바인딩되며 `subjectKind`(정본 DB `fds_approval_requests.subject_kind` / API `ApprovalRequestDto.subjectKind` **8종**: `ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`), `approvalLine`, `expiresAt`, `maxExecutions`로 범위가 한정된다. 승인 후 payload가 바뀌면 결재를 무효화(`FDS-APPROVAL-PAYLOAD-CHANGED`)한다.
+승인 범위(scope) 원칙: 각 승인은 단일 `payload_hash`에 바인딩되며 `subjectKind`(정본 DB `fds_approval_requests.subject_kind` / API `ApprovalRequestDto.subjectKind` **9종**: `ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`/`POLICY_PACK`), `approvalLine`, `expiresAt`, `maxExecutions`로 범위가 한정된다. 승인 후 payload가 바뀌면 결재를 무효화(`FDS-APPROVAL-PAYLOAD-CHANGED`)한다.
 
 `subjectKind`별 결재 대상은 다음과 같다. case 종결(`POST /fds/cases/{caseId}/close`, 내부감사·규제 case)은 **`CASE_CLOSE`**(`subjectRef=fds_cases.case_id`)로 적재하며 `ACTION`이 아니다(API §8 일치, 4-eyes 게이트 분기 정합).
 
@@ -916,12 +922,13 @@ DRAFT
 |---|---|---|
 | `ACTION` | 자금/규제성 action 상신(`fds_actions`, `subjectRef=action_id`) | 자금 영향 시 필수 |
 | `RULE` | rule 활성화·rollback(`POST /admin/fds/rules/{ruleId}/activate`·`/rollback`) | `COMPLIANCE_MANAGER` |
-| `MAPPING` | field mapping/PII allowlist 변경(`PUT /admin/fds/source-systems/{ss}/mappings`) | `MAKER_CHECKER` |
+| `MAPPING` | field mapping/PII allowlist 변경(`PUT /admin/fds/source-systems/{ss}/mappings`) **및 source system 속성·capability 매트릭스 수정**(`PUT /admin/fds/source-systems/{id}`, `subjectRef=source_system` — source-system 구성 도메인, API §8) | `MAKER_CHECKER` |
 | `GROUP` | risk group 멤버 추가·제거(watchlist/denylist) | `RISK_MANAGER` |
 | `SECRET` | credential 생성·secret/webhook 회전 | `SECURITY_ADMIN` |
 | `EXPORT` | 검사 대응 evidence export 최종본 생성 | `COMPLIANCE_MANAGER` |
 | `MERCHANT_NORMALIZE` | high-risk merchant 정상화(`POST /api/v1/admin/fds/merchants/{merchantRef}/normalize`) | `RISK_MANAGER`(기본) / `EXECUTIVE_APPROVAL`(대규모 예외) |
 | `CASE_CLOSE` | 내부감사·규제 case 종결(`subjectRef=case_id`) | `COMPLIANCE_MANAGER` |
+| `POLICY_PACK` | 규제 팩(`compliance_policy`) 토글 변경 — named pack on/off·확장 활성화(`PUT /api/v1/bo/fds/tenants/{tenantId}` compliance_policy, `subjectRef=tenant_id`, §16.2) | `COMPLIANCE_MANAGER` |
 
 설계 원칙:
 
@@ -971,10 +978,30 @@ stateDiagram-v2
     PENDING_APPROVAL --> CLOSED_FALSE_POSITIVE
     PENDING_APPROVAL --> CLOSED_REPORTED
     PENDING_APPROVAL --> IN_REVIEW: 반려(재조사)
+    CLOSED_CONFIRMED --> IN_REVIEW: 재오픈(REOPEN)
+    CLOSED_FALSE_POSITIVE --> IN_REVIEW: 재오픈(REOPEN)
+    CLOSED_REPORTED --> IN_REVIEW: 재오픈(REOPEN)
     CLOSED_CONFIRMED --> [*]
     CLOSED_FALSE_POSITIVE --> [*]
     CLOSED_REPORTED --> [*]
 ```
+
+> **재오픈(REOPEN) 정책**: 종결 상태(`CLOSED_CONFIRMED`/`CLOSED_FALSE_POSITIVE`/`CLOSED_REPORTED`)에서 `IN_REVIEW`로 재오픈 전이를 허용한다. 조건 — ① 재오픈 사유 입력 필수(모달), ② 책임자(`SFDS_CASE:APPROVE` 권한) 이상만 수행 가능, ③ 자기가 종결(승인)한 케이스는 본인이 재오픈할 수 없음(4-eyes), ④ 재오픈 이력은 감사 로그(append-only)에 기록. 재오픈 횟수 제한은 없으며, 재오픈 시 케이스 SLA는 재기산한다. (PRD §1.6.1·§11.2 화면 [재오픈] 버튼과 1:1)
+
+#### 11.6.1a close_reason (8종) — DB §4.11 정본
+
+종결(`CLOSED_*` 전이) 시 `fds_cases.close_reason`에 종결 사유 코드를 **필수** 기록한다. 자유 텍스트 사유는 코드와 분리해 **보조 메모**(`fds_case_events` `CLOSED` payload)로 저장한다(코드=통계·룰 튜닝 축, 메모=정성 보충).
+
+| 코드값 | 표시값 |
+|---|---|
+| `FP_THRESHOLD` | 오탐-임계과민 |
+| `FP_NORMAL_PATTERN` | 오탐-정상거래패턴 |
+| `FP_DATA_QUALITY` | 오탐-데이터품질 |
+| `CONFIRMED_FRAUD` | 확정-사기거래 |
+| `CONFIRMED_MULE` | 확정-대포통장 |
+| `CONFIRMED_ATO` | 확정-도용 |
+| `ESCALATED_AML` | 추가조사-AML이관 |
+| `OTHER` | 기타 |
 
 #### 11.6.2 case_priority (4종) — DB §4.11 정본
 
@@ -1081,6 +1108,8 @@ stateDiagram-v2
     OFFBOARDED --> [*]
 ```
 
+> **AML과의 모델 동기화(cross-service)**: FDS는 운영 생명주기 **4종**(`ONBOARDING`/`ACTIVE`/`SUSPENDED`/`OFFBOARDED`, DB §4.1 정본). AML `aml_tenants.status`도 **4종 `OFFBOARDED` 동일 코드값**으로 정합 완료(AML §16.0c V20 교정 후 동기화, AML DB §5.28b 정본 — 구 'AML 3종 `OFFBOARDING`' 표기 폐기). 온보딩 진입 단계는 양 서비스 모두 직교 컬럼 `onboarding_status`(8종, FDS §11.6.11a / AML §16.0b)로 분리 추적한다. bo-api/bo-web 운영자 화면 표시 라벨도 단일 셋: `ONBOARDING`→'온보딩', `ACTIVE`→'활성', `SUSPENDED`→'정지', `OFFBOARDED`→'해지'.
+
 #### 11.6.8 ingest_mode (5종) — DB §4.1 정본
 
 `fds_source_systems.ingest_mode`. §2.3 제품 모듈·§12 connector 방식의 코드 정본이다.
@@ -1092,6 +1121,8 @@ stateDiagram-v2
 | `POLLING` | 폴링 | §12.3 |
 | `CDC` | CDC | §12.5 |
 | `SNAPSHOT` | 스냅샷 | §12.4 |
+
+> **AML과의 차이(의도적, cross-service)**: AML은 명단/제재 벤더 연동을 위한 `VENDOR_BRIDGE` ingest_mode를 추가로 둬 **6종**이다(AML DB §5.14, AML §15·§8.1 vendor bridge). FDS는 vendor bridge 연동이 도메인 범위 밖이라 `VENDOR_BRIDGE`를 두지 않고 **5종**으로 유지한다(FDS DB §4.1 정본). 두 서비스 모두 자기 DB가 정본이므로 코드 집합을 강제 일치시키지 않는다 — QA cross 이격(#121)은 도메인 차이로 명문화하여 해소한다(FDS에 VENDOR_BRIDGE 미추가).
 
 #### 11.6.9 connector_status (4종) + 상태 전이 — DB §4.1 정본
 
@@ -1128,6 +1159,8 @@ stateDiagram-v2
 | `FAIL_OPEN` | 허용 통과 | 평가 불가 시 거래 허용 통과 |
 | `CASE_ONLY` | 케이스만 | 자동 제어 없이 `REVIEW`+case 후보만 생성 |
 
+> **FDS `fail_policy`는 AML `aml_source_systems.failure_policy`(`MANUAL_REVIEW`/`FAIL_CLOSED`/`DELAY_ALLOWED`, AML 설계서 §17.1)와 별도 enum — 혼동 금지.** 컬럼명·값 집합이 서로 다르며 통합하지 않는다. bo-web 표시명 매핑은 bo-api에서 정의한다.
+
 #### 11.6.11 deployment_model (3종) — DB §5.1 정본
 
 `fds_tenants.deployment_model`(구 `isolation_mode` 대체). 격리는 DB 행/스키마 토글이 아니라 **배포 단위 결정**이며, 화면 라디오 즉석 선택이 아니라 **온보딩 프로비저닝 프로세스의 산출**이다. 정본 target-architecture §4.1·본 설계서 §13.1·§19 D-01의 코드 정본이다(기본값 `MANAGED_DEDICATED`).
@@ -1146,7 +1179,7 @@ stateDiagram-v2
 
 | 코드값 | 표시값(권고) | 적용 배포 모델 | 의미 |
 |---|---|---|---|
-| `REQUESTED` | 온보딩 신청 | MANAGED_DEDICATED, SHARED | 배포 유형 선택 + 온보딩 신청 접수 |
+| `REQUESTED` | 온보딩 신청 | MANAGED_DEDICATED, SHARED, SELF_HOSTED | 배포 유형 선택 + 온보딩 신청 접수(전 경로 공통 시작 상태) |
 | `PROVISIONING` | 프로비저닝중 | MANAGED_DEDICATED | IaC(Terraform) 실행: DB·스택·시크릿·DNS 생성 |
 | `DEPLOYED` | 배포완료 | MANAGED_DEDICATED | 전용 스택 배포 완료, 검증 대기 |
 | `VERIFIED` | 검증완료 | MANAGED_DEDICATED | 연동·헬스체크·스모크 검증 통과 |
@@ -1672,6 +1705,8 @@ CREATE TABLE fds_tenants (
   default_region VARCHAR(32) NOT NULL DEFAULT 'KR',          -- 배포 리전(DB §5.1 정본, 한국 리전 우선 §13.3)
   infra_ref VARCHAR(160),                                    -- 매니지드: Terraform stack/workspace ID, self-hosted: 라이선스/설치 인스턴스 ID
   retention_policy JSONB,                                    -- 보존정책 override (DB §5.1, §7.3 tenant별 7년 감사 보존)
+  compliance_policy JSONB NOT NULL                           -- §16.2 규제 팩 토글 상태(named pack on/off). base는 필수·잠금(끄기 불가)
+    DEFAULT '{"base":"KR_BASE","packs":["EFIN","SPECIAL_AML","PIPA","INTERNAL_CONTROL"],"optional":[]}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -1861,7 +1896,7 @@ CREATE TABLE fds_cases (
   status VARCHAR(32) NOT NULL DEFAULT 'OPEN',
   priority VARCHAR(32),
   assigned_to VARCHAR(128),                            -- 운영자 token
-  close_reason VARCHAR(64),                            -- 종결 사유 코드(§16.3 감사 필수)
+  close_reason VARCHAR(64),                            -- 종결 사유 코드(8종, §11.6.1a·DB §4.11, §16.3 감사 필수)
   aml_case_id VARCHAR(96),                             -- aml-svc cross-ref(FK 아님, §6.1 AmlCasePort). AML 위임 케이스만 채움
   data_scope VARCHAR(128),                             -- row-level 가시 필터(§13.0b)
   created_by VARCHAR(128),
@@ -1912,6 +1947,7 @@ CREATE TABLE fds_commerce_orders (
   shipping_country VARCHAR(8),
   delivery_status VARCHAR(32),
   ordered_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, workspace_id, order_ref)
 );
@@ -1933,6 +1969,7 @@ CREATE TABLE fds_settlements (
   status VARCHAR(32),
   scheduled_at TIMESTAMPTZ,
   paid_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, workspace_id, settlement_ref)
 );
@@ -2290,6 +2327,19 @@ CREATE TABLE fds_connector_offsets (
 | 가상자산 | 특금법상 VASP 의무, Travel Rule, 지갑주소 위험평가 |
 | 내부통제 | 금융회사 지배구조법, 내부통제기준, 권한 오남용·4-eyes |
 
+**규제 팩 카탈로그(named pack · BO 토글 단위).** 위 영역을 백오피스(고객사 상세 ④ Policy Pack, 기능정의서 §3.2 ④)에서 고객사별로 토글하는 **named pack**으로 묶는다. `KR_BASE`(한국 기본팩)는 **필수 baseline으로 잠금(끄기 불가)** 이며, 나머지는 개별 토글, `TRAVEL_RULE`/`PCI`는 해당 도메인 **계약 후** 활성화한다. 활성 상태는 `fds_tenants.compliance_policy`(§14.1) JSONB에 저장한다. 토글 변경은 **스테이징 → 영향 미리보기(STR/CTR 영향 건수) → 일괄 상신 → 4-eyes(`subjectKind=POLICY_PACK`, §11.5) → effective** 워크플로를 따른다(즉시 반영 아님). 각 팩이 생성하는 보고 후보 큐는 규제 보고 화면(SFDS-REG-001)으로 연동된다.
+
+| 팩 코드 | 표시명 | 기본 | 트리거·보고 양식 | 비고 |
+|---|---|---|---|---|
+| `KR_BASE` | 한국 기본팩 | ● ON(잠금·필수) | STR/CTR 기본 양식 · KoFIU(금융정보분석원) 포맷 | 끄기 불가(최소 규제 요건) |
+| `EFIN` | 전자금융거래법 | ● ON | 전자금융거래 이상행위 보고 | 토글 |
+| `SPECIAL_AML` | 특금법(AML/CFT) | ● ON | 의심거래·고액현금 보고(STR/CTR) | 토글 |
+| `PIPA` | 개인정보보호법 | ● ON | 개인정보 침해 대응 보고 | 토글 |
+| `INTERNAL_CONTROL` | 내부통제기준 | ● ON | 내부 감사 케이스 생성 | 토글 |
+| `TRAVEL_RULE` / `PCI` | Travel Rule / PCI | ○ OFF | 가상자산·카드 계약 후 활성화 | 도메인 계약 게이트 |
+
+> AML 서비스는 단일 `KR_DEFAULT` baseline 번들(필수·잠금) + 국가·업권 확장 plugin 모델(AML 설계서 §5.5)이고, 본 FDS는 **법령·관할별 named pack 개별 토글** 카탈로그 모델이다 — 서비스별 규제 책임 범위 차이에 따른 의도된 구조 차이.
+
 ### 16.3 감사 원칙
 
 다음 행위는 모두 append-only audit log를 남긴다.
@@ -2527,8 +2577,14 @@ SaaS FDS는 한국 policy pack을 기본으로 하되, 국가별 규정을 plugi
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-06-11 | v2.3 | QA HIGH cross(L303) 해소: §11.6.7 교차 주석 'AML 3종 OFFBOARDING'(구버전) → 'AML 4종 OFFBOARDED(§16.0c V20 교정 후 동기화)'로 갱신 — 모델 차이 서술을 동기화 완료 서술로 교체, bo-web 표시 라벨 매핑 단순화. | system-architect |
+| 2026-06-11 | v2.2 | QA HIGH cross 2건(L307·L308) 해소: §8.3 말미에 FDS `workspaceId` 최상위 ↔ AML `dataScope` 최상위 **의도된 비대칭** 교차 주석 추가(연동 §4.1 cross-service 정책 정본 — `fds-aml-handoff` 어댑터가 `workspaceId`→`dataScope` 변환, `default` 매핑 포함), §11.6.10에 'FDS `fail_policy` ↔ AML `failure_policy` 별도 enum — 혼동 금지, bo-web 표시명 매핑=bo-api' 대칭 주석 추가. | system-architect |
+| 2026-06-11 | v2.1 | doc-consistency-report-all-latest **FDS HIGH 이격 설계서 담당분 해소**: (1) §14.6 `fds_commerce_orders`/`fds_settlements` DDL에 `created_at TIMESTAMPTZ NOT NULL DEFAULT now()` 추가(DB §5.26·§5.27 v1.6 정본 동기화). (2) §8.3 `transaction.transactionType`을 DB §4.19 `transaction_type` 폐쇄 enum(12종) 참조로 격상. (3) §11.4 4-eyes 목록에 'source system 속성·capability 매트릭스 수정' 추가 + §11.5 `MAPPING` 행에 `PUT /admin/fds/source-systems/{id}`(subjectRef=`source_system`) 확장(API §8 정본). (4) §8.3 표에 W3C `traceparent`(선택) 행 추가 + §8.2 예시 JSON 반영(integration §4.1 정본). | system-architect |
+| 2026-06-10 | v2.0 | doc-consistency 리포트(`docs/qa/doc-consistency-report-all-latest.md`) **설계서(docs/software) 담당 이격** 정합 — design-api·cross. (#19 HIGH design-api) §6.2 usecase·port/in에 `ManageRule`/`ManageRuleUseCase` 추가(룰 생성·수정·활성화·rollback=API §4.6 Rule Admin 11종·4-eyes `subjectKind=RULE`), `SimulateRuleUseCase`(룰 시뮬레이션/백테스트 `POST /api/v1/admin/fds/rules/simulations`)와 역할 분리 명문화. (#120 HIGH cross) §11.6.11a `onboarding_status` 표 `REQUESTED` '적용 배포 모델'을 `MANAGED_DEDICATED, SHARED`→`MANAGED_DEDICATED, SHARED, SELF_HOSTED`로 정정(상태머신·DB §4.1a가 REQUESTED→PACKAGE_ISSUED self-hosted 경로를 이미 명시 — 전 경로 공통 시작 상태, AML §16.0b와 일치). (#119 cross) §11.6.7 `tenant_status`(FDS 4종, DB §4.1 정본)와 AML `status`(3종, AML DB §5.28b 정본)의 의도적 모델 차이를 명문화 — 두 서비스 모두 자기 DB가 정본이라 enum 강제 일치 대신 bo-api/bo-web 표기 통합 매핑(온보딩/활성/정지/해지)으로 해소. (#121 cross) §11.6.8 `ingest_mode`(FDS 5종, DB §4.1 정본)에 AML 전용 `VENDOR_BRIDGE`(6종)를 추가하지 않고 도메인 차이로 명문화(vendor bridge는 AML 명단/제재 연동 영역). 정본=target-architecture §4.1·DB §4.x > API §1.1/§4. 참고: 사용자 지시의 §12.8 HOLD_FUNDS·action_type 23종·approval_status 8종/scope·OPEN_*_CASE=OPEN_CASE+case_type 매핑은 v1.2~v1.6에서 이미 정합 완료(재확인). | system-architect |
+| 2026-06-10 | v1.9 | **준법감시인 검토 반영 — 케이스 재오픈(REOPEN)·종결 사유 코드(close_reason) 신설.** (1) §11.6.1 case_status 상태머신에 종결 상태(`CLOSED_*`) → `IN_REVIEW` **재오픈(REOPEN)** 전이 추가 + 정책 명문화(①사유 입력 필수 ②책임자 `SFDS_CASE:APPROVE` 이상 ③자기 종결 건 재오픈 금지(4-eyes) ④감사로그 기록 · 횟수 제한 없음 · SLA 재기산). (2) §11.6.1a `close_reason` enum **8종** 신설(`FP_THRESHOLD`/`FP_NORMAL_PATTERN`/`FP_DATA_QUALITY`/`CONFIRMED_FRAUD`/`CONFIRMED_MULE`/`CONFIRMED_ATO`/`ESCALATED_AML`/`OTHER`) — 코드 필수·자유 텍스트는 보조 메모(`fds_case_events` CLOSED payload) 분리. (3) §14.5 `fds_cases.close_reason` DDL 주석 enum 참조 동기화. 파생: DB `01-fds-db.md` v1.5(§4.11 enum), API `01-fds-api.md` v1.9(CaseDto enum), PRD v3.5·PPT v4.8. | system-architect |
 | 2026-06-08 | v1.8 | doc-consistency 리포트(설계서 담당분) HIGH/MED 정합 — design-db·design-api·design-integration·roadmap-design. (#9·#11) §14.3 `fds_subjects`/`fds_accounts`/`fds_instruments`에 `workspace_id` 추가·PK 3열 교체, `fds_subjects`에 `data_scope`·`created_at` 추가(DB §5.6~5.8). (#10) §14.4 `fds_transactions`에 `workspace_id`·`data_scope`·`created_at` 추가·PK 3열(DB §5.9). (#12) §14.6 `fds_business_documents`/`fds_commerce_orders`/`fds_settlements`에 `workspace_id` 추가·PK 3열(DB §5.25~5.27). (#13·#14) §12.8 External Vendor Bridge `POST /api/v1/fds/external-decisions`(API §4.10), Approval API `/admin/` prefix·`{approvalRequestId}`로 정정(API §4.9). (#17) §12.6a `FdsDecisionConsumer` 행 삭제 → 실존 `FdsEventsConsumer`/`SqsFdsActionPublisher`/`FdsExternalDecisionConsumer`로 교체, decision은 Decision Engine이 `fds-webhook`에 `FdsDecisionCreated` 발행 주석(integration §3.2). (#18·#19) §8.3 표에 `schemaVersion`(조건부 필수)·`correlationId`(필수) 추가. (#21) §8.2 `occurredAt` 예시 `+09:00` 통일·§8.3 비고에 ISO-8601 TZ 정책 명시. (#38) §18 Phase 5 주석을 P5-FDS-04(T-11)·P5-FDS-07/08(T-16) BO UI / 엔진 T-11·T-16=P2·P4 완성으로 교체. 정본=DB §5.x > integration §3·§4 > API §4. | system-architect | (1) **§14 DDL 정본 동기화**(HIGH design-db 5건 + cross 5건): `fds_decisions`에 `rule_set_version`/`feature_snapshot`/`input_event_hash`/`expires_at`/`data_scope`/`workspace_id` 추가; `fds_actions` `decision_id` nullable화 + `case_id`/`approval_request_id`/`retry_count`/`created_by`/`updated_by`/`workspace_id` 추가, status DEFAULT `'PENDING'`; `fds_cases`에 `origin_decision_id`/`close_reason`/`aml_case_id`/`data_scope`/`created_by`/`updated_by`/`workspace_id` 추가; `fds_source_systems`에 `workspace_id`/`fail_policy`/`updated_at` 추가 + PK `(tenant_id, workspace_id, source_system)`; `fds_tenants`에 `retention_policy`/`updated_at` 추가; `fds_canonical_events`에 `event_family`/`data_scope`/`workspace_id` 추가; `fds_connector_offsets`에 `connector_status`/`workspace_id` 추가. 핵심 테이블 PK에 `workspace_id` 명시(§14 서두 주석 강화, DB §5.x 물리 정본 위임). (2) **§6.2 패키지 루트**(HIGH roadmap-design): 정본 표기를 '설계 표기 `com.hanpass.fds` — 구현 `com.aegis.fds`'로 정정(target-architecture §5). (3) **§8 integration 구조 정합**(HIGH 2 + MEDIUM/LOW): §8.2 `rawPayload:{payloadHash,stored}` 중첩 → `payloadHash` 최상위 평면 필드(`stored` 삭제), `workspaceId`/`messageVersion`/`transaction.transactionType` 추가, `location.city` `Makati`→`Seoul`; §8.3 표에 동일 4행 추가; §8.1에 `aml.*`·`case.*` inbound 제외 주석 + `trade.*`/`invoice.*` 경계 명시. (4) **§6.2 헥사고날 포트·어댑터 보강·§12.8 API 그룹 표 보강**(MEDIUM): port/in·usecase 전수 + adapter/in/rest 그룹 요약, Action/Approval/External Vendor Bridge 3개 그룹 행·scope 열 추가, scope 11종 설명 인라인(API §2.3 정본 위임), 폐기 경로 취소선. (5) **§16.1 PII 명칭 통일**(cross): '가상자산 지갑주소'→'가상자산 주소', 영한 혼재 → DB §7.1 한국어 표기로 통일. (6) **§18 Phase 매핑 주석**(roadmap-design): Phase 5 BO UI=P5(bo-web), Phase 6=로드맵 P6 재조합, Phase 7=로드맵 미반영 보류 주석. 정본=DB §5.x > integration §4 > API §4/§5 > target-architecture. | system-architect |
 | 2026-06-08 | v1.6 | doc-consistency 이격(설계서 담당분) 정본 정합 — design-api·roadmap-design·cross. (1) **REST 경로 prefix 통일**(design-api): §6.2 rest 어댑터 주석·§12.1/§12.7/§12.8 HTTP 예시·API group 표를 정본 API(§1.1·§3.1) `/api/v1/...`로 정정, §12.1에 경로 표기 정본 주석 추가(`/v1/...` 약식 폐기). (2) **MERCHANT_NORMALIZE 정합**(design-api): §11.5 subjectKind 표에 호출 엔드포인트 `POST /api/v1/admin/fds/merchants/{merchantRef}/normalize` 바인딩 + approval_line을 `RISK_MANAGER`(기본)/`EXECUTIVE_APPROVAL`(대규모 예외)로 API §8과 동일 표기. (3) **핸드오프·SQS 토폴로지 실재화**(roadmap-design): §12.6a 신설 — `*-events/*-actions/*-webhook/*-vendor-ingest`·`fds-aml-handoff` 큐, `FdsAmlHandoff` 메시지, `FdsDecisionConsumer` 컨슈머의 정본 위치를 integration 명세로 명시 링크, AML 케이스 cross-ref는 설계/DB 정본 `aml_case_id`로 통일(`amlCaseRef` 파생 표기 정정). (4) **default_region DEFAULT**(cross): §14.1 DDL `default_region`에 `DEFAULT 'KR'` 추가(DB §5.1 정본). (5) **CUSTOMER_DEPLOYED 라벨**(cross): §11.6.11a에 표시값=권고치·코드값/종수=DB 정본·라벨 정본=bo-web i18n 키 주석 추가. (6) **PII 여권번호**(cross): §16.1 민감도 등급 한국어 목록에 '여권번호' 추가(DB §7.1 미저장 대상 집합과 동일). 정본=target-architecture·API/DB. | system-architect |
+| 2026-06-10 | v1.6 | **규제 팩(Policy Pack) 토글 모델 정본화**(기능정의서 §3.2 ④ back-fill, doc-consistency QA #14/#15/#16 해소): (1) §16.2에 **named 규제 팩 카탈로그 표**(`KR_BASE` 잠금·필수 / `EFIN`·`SPECIAL_AML`·`PIPA`·`INTERNAL_CONTROL` 토글 / `TRAVEL_RULE`·`PCI` 계약 게이트) + 토글→스테이징→영향 미리보기→일괄 상신→4-eyes→effective 워크플로 + AML 모델 차이 주석 신설. (2) §14.1 `fds_tenants` DDL에 `compliance_policy JSONB`(named pack 토글 상태) 컬럼 추가. (3) §11.5 `subjectKind` **8종→9종**(`POLICY_PACK` 추가, 규제 팩 토글 4-eyes·대상=`tenant_id`) + 결재 대상 표 행 추가. 파생 동기화: DB `01-fds-db.md` v1.4(컬럼·enum·V18), API `01-fds-api.md`(SubjectKind enum·DTO·매핑표). 정본=기능정의서 §3.2 ④ 승인 화면. | system-architect |
 | 2026-06-08 | v1.5 | **고객사 격리(isolation_mode) → 배포 모델(deployment topology) 재설계**(정본 target-architecture §4.1: 고객사별 전용 배포 기본). (1) §13 멀티테넌시를 '배포 모델 + 온보딩 프로비저닝(IaC/설치형) + 키 의미 재정의' 3층으로 재작성 — §13.0 `deployment_model` 3종(`MANAGED_DEDICATED`/`SELF_HOSTED`/`SHARED`), §13.0a 온보딩 프로비저닝(매니지드 IaC / self-hosted 설치형 경로표·flowchart), §13.0b tenant/workspace/data-scope 의미 재정의(전용 배포=tenant_id 단일), §13.1 배포 내 데이터 분리표. §13.4 데이터 분리 행·§5.4 원칙 갱신. (2) §11.6.11 `isolation_mode`(SHARED/SCHEMA/DB) → `deployment_model`(3종)로 교체 + §11.6.11a `onboarding_status`(8종: REQUESTED→PROVISIONING→DEPLOYED→VERIFIED→ACTIVE / PACKAGE_ISSUED→CUSTOMER_DEPLOYED→REGISTERED) 상태머신 신설, §11.6.7 tenant_status는 운영 생명주기로 직교 명시. (3) §14.1 `fds_tenants` DDL: `isolation_mode` → `deployment_model` enum + `onboarding_status` + 배포 메타(`default_region`·`infra_ref`) 추가·마이그레이션 주석. (4) §12.8 고객사 관리 API를 '격리 토글'→'배포 유형 선택+온보딩 신청/상태'로 — 프로비저닝 트리거(`POST .../onboarding/provision`)·온보딩 상태 조회(`GET .../onboarding`)·self-hosted 등록 콜백(`.../onboarding/register`) 엔드포인트 신설, `isolation_mode` 설정 제거. (5) §19 D-01 'DB 격리' → '배포 모델(deployment topology)'로 교체. 정본=target-architecture §4.1, DB 01-fds-db.md. | system-architect |
 | 2026-06-07 | v1.4 | DB-정본 enum/상태머신 일괄 역삽입(설계서 미열거 이격 클래스 단위 근절): §11.6 신설 — DB(`docs/design/db/01-fds-db.md` §4·§5)가 정본 확정했으나 설계서가 산문/예시로만 다룬 enum을 일괄 정본화. (1) **상태형+전이도**: `case_status`(8종,§11.6.1)·`rule_status`(5종,§11.6.5)·`rule_version_status`(5종,§11.6.6)·`tenant_status`(4종,§11.6.7)·`connector_status`(4종,§11.6.9)·`export_status`(6종,§11.6.15) Mermaid 상태도 추가. (2) **값집합**: `case_priority`(4,§11.6.2)·`subject_type`(4,§11.6.3)·`actor_type`(5,§11.6.4)·`ingest_mode`(5,§11.6.8)·`fail_policy`(3,§11.6.10)·`isolation_mode`(3,§11.6.11)·`risk_group_type`(6,§11.6.12)·`member_kind`(3,§11.6.13)·`case_event_kind`(6,§11.6.14)·`export_kind`(6)/`export_format`(4)(§11.6.15)·`credential_type`(4,§11.6.16)·`bridge_mode`(5,§11.6.17)·보조 enum `direction`/단계`decision`/`value_type`/idempotency`scope`(§11.6.18). 각 표 코드값+한국어 표시값 병기, DB §4.x/§5.x 정본 인용 명시, 값·종수 100% 일치. `audit_action`은 DB 개방형이므로 폐쇄 enum 미고정. 이미 표로 명시된 enum(decision/action_type/case_type/approval·subject_kind/event_family/instrument/channel/payment_rail/capability/document_type)은 중복 미추가. 정본=DB 01-fds-db.md, target-architecture. | system-architect |
 | 2026-06-06 | v1.3 | doc-consistency 잔여 이격(설계서 담당) 정합: (1) §11.2 `action_type` 마스터 참조를 API **§5.7·§7·§10(OpenAPI)**로 정정(§9는 Webhook 콜백, enum 마스터 아님). (2) §11.5 approval `subjectKind`를 정본 **8종**(…/`CASE_CLOSE`)으로 보강 + subjectKind별 결재대상·approval_line 매핑표 추가, case 종결=`CASE_CLOSE`(subjectRef=case_id, API §8 일치) 명문화. (3) §12.8 운영자 집계 API(대시보드/고객사/감사) bo-api 실경로 `/api/v1/bo/fds/**`(API §11.2) 병기 + 엔진 직접 경로 `/api/v1/admin/fds/dashboard\|tenants\|audit` 폐기 명시. (4) §19 D-14·§12.8 장애정책을 FDS 정본 enum `FAIL_OPEN`/`FAIL_CLOSED`/`CASE_ONLY` 3종으로 통일(manual-review는 `CASE_ONLY` 운영표현, AML `MANUAL_REVIEW`와 구분). 정본=API/DB enum, target-architecture. | system-architect |

@@ -152,7 +152,7 @@ erDiagram
 - 식별은 `customer_ref`/`entity_ref`(원천 시스템 ref, 토큰/HMAC) 사용.
 - 매칭 보조 필드는 **이름→hash / 문서번호→hash / 계좌→hash / 지갑주소→hash 의미 패턴**(tenant-keyed HMAC-SHA256)으로, 실제 컬럼명은 테이블별 prefix를 따른다: customer는 `name_hash`/`doc_hash`(§3.3), entity는 `legal_name_hash`/`biz_no_hash`(§3.4), watchlist는 `primary_name_hash`(§3.7), travel-rule은 `wallet_address_hash`(§3.14). (account_hash는 canonical event payload·`USES_ACCOUNT` edge 속성으로 보존, §1 Account/Instrument 미보유 결정.)
 - 원문이 필요한 WLF matching은 메모리 일시 처리 후 폐기, 저장은 hash/token만(설계서 §19.2).
-- `raw_payload`는 기본 미저장. `payload_hash`(sha256)와 `stored=false` 플래그만 보존(설계서 §8.2).
+- `raw_payload`는 기본 미저장. `payload_hash`(sha256: `sha256:<hex>` 형식) 참조만 보존한다. **`stored` 플래그는 설계서 §8.2(2026-06-07 변경이력) 기준 폐기됨 — DB에 `stored` 컬럼을 두지 않는다**(QA issue #7 low 정합).
 
 ### 2.3 enum 코드·표시값 병기 규약
 
@@ -172,14 +172,14 @@ enum은 컬럼에 **코드값(대문자 스네이크)** 저장, 표시값(라벨
 | `onboarding_status` | VARCHAR(32) | N | `'REQUESTED'` | enum §5.28a (8종) | 온보딩 진행 상태. 상태머신: 매니지드=`REQUESTED→PROVISIONING→DEPLOYED→VERIFIED→ACTIVE`, self-hosted=`REQUESTED→PACKAGE_ISSUED→CUSTOMER_DEPLOYED→REGISTERED`, SHARED=`REQUESTED→ACTIVE` |
 | `default_region` | VARCHAR(32) | N | `'KR'` | | 기본 데이터 리전(한국 우선, §16.3). 전용 배포 region. |
 | `infra_ref` | VARCHAR(160) | Y | NULL | | 배포 메타 참조. 매니지드=Terraform stack/workspace ID, self-hosted=라이선스·설치 인스턴스 ID. 발급·검증 방식은 P8 인프라 설계 확정(오픈결정) |
-| `status` | VARCHAR(32) | N | `'ACTIVE'` | enum §5.28b (3종) | **운영 생명주기** — `onboarding_status`와 직교. `ACTIVE`/`SUSPENDED`/`OFFBOARDING` |
+| `status` | VARCHAR(32) | N | `'ONBOARDING'` | enum §5.28b (**4종**, FDS §11.6.7 동기화) | **운영 생명주기** — `onboarding_status`와 직교. `ONBOARDING`/`ACTIVE`/`SUSPENDED`/`OFFBOARDED` (QA cross #119 high·#127 medium 정합 — FDS `fds_tenants.tenant_status` 4종과 코드값·DEFAULT 동기화. 신규 등록 시 DEFAULT `'ONBOARDING'`, 온보딩 완료 시 `ACTIVE` 전환) |
 | `policy_pack_code` | VARCHAR(64) | N | `'KR_DEFAULT'` | | 적용 Policy Pack(STR/CTR/Travel Rule) |
 | `retention_policy` | JSONB | N | `'{}'` | | 고객사별 보존·파기 override |
 | `created_at/created_by/updated_at/updated_by` | (공통 §2.1) | | | | 감사 컬럼 |
 
 PK: `(tenant_id)`
 
-> **마이그레이션 V17**: 구 `isolation_mode` 컬럼은 `deployment_model`/`onboarding_status`/`infra_ref` 컬럼 추가 후 데이터 매핑(`SHARED→SHARED` & `onboarding_status='ACTIVE'`, `SCHEMA`/`DB → MANAGED_DEDICATED` & `onboarding_status='ACTIVE'`)을 거쳐 DROP한다. `default_region` 기본값은 `'KR'`(대문자)으로 정규화. 신규 고객사 등록은 `deployment_model` 선택 + `onboarding_status='REQUESTED'`로 시작한다. 자세한 내용은 §7 V17 참조.
+> **마이그레이션 V17·V20**: 구 `isolation_mode` 컬럼은 V17a/V17b에서 `deployment_model`/`onboarding_status`/`infra_ref` 교체 후 DROP한다. **V20**: `status` enum 3종→4종 갱신(`ONBOARDING` 추가, `OFFBOARDING`→`OFFBOARDED`), DEFAULT `'ACTIVE'`→`'ONBOARDING'` 변경. 자세한 내용은 §7 V17/V20 참조.
 
 ### 3.2 `aml_source_systems` — 데이터 원천 (설계서 §17.1, §15)
 
@@ -193,6 +193,8 @@ PK: `(tenant_id)`
 | `secret_ref` | VARCHAR(256) | Y | NULL | | API key/secret **참조만**(원문 미저장, secret store) |
 | `failure_policy` | VARCHAR(32) | N | 'MANUAL_REVIEW' | enum | `MANUAL_REVIEW`/`FAIL_CLOSED`/`DELAY_ALLOWED` (§15.7, D-14) |
 | `enabled` | BOOLEAN | N | TRUE | | 활성 여부 |
+| `status` | VARCHAR(32) | N | `'ACTIVE'` | enum | 운영 상태. `ACTIVE`/`DISABLED`(설계서 §17.1 DDL·§16.2.1 정본 — QA issue #4 HIGH 정합) |
+| `data_scope` | VARCHAR(64) | Y | NULL | | 고객사 하위 격리(§2.1 공통 규약 — §2.1에서 전 운영 테이블 적용 원칙이 적용되는 테이블임을 명시. QA issue #5 MEDIUM 정합) |
 | `created_at/created_by/updated_at/updated_by/trace_id` | (공통) | | | | |
 
 PK: `(tenant_id, source_system)`
@@ -381,11 +383,15 @@ PK: `(tenant_id, case_id)`
 | `report_type` | VARCHAR(64) | N | — | enum | §5.10 report_type(STR/CTR/TRAVEL_RULE/EDD_REGISTER/WLF_REGISTER/RA_REPORT/AUDIT_EXPORT) |
 | `case_id` | UUID | Y | NULL | FK→aml_cases | 연관 케이스 |
 | `target_ref` | VARCHAR(256) | Y | NULL | | 대상 |
-| `status` | VARCHAR(32) | N | 'DRAFT' | enum | §5.11 report_status(DRAFT/UNDER_REVIEW/APPROVED/SUBMITTED/REJECTED/CANCELLED) |
+| `status` | VARCHAR(32) | N | 'DRAFT' | enum | §5.11 report_status(DRAFT/UNDER_REVIEW/APPROVED/SUBMITTED/ACKNOWLEDGED/SUBMISSION_FAILED/REJECTED/CANCELLED — 8종, 설계서 §14.1a FIU 회신 폐루프) |
 | `report_payload` | JSONB | N | '{}' | | 보고 본문(PII는 hash/token) |
 | `approval_id` | UUID | Y | NULL | FK→aml_approvals | 결재 결과(§13.5) |
 | `submitted_ref` | VARCHAR(256) | Y | NULL | | 외부 제출 식별자(§13.5 evidence) |
 | `submitted_at` | TIMESTAMPTZ | Y | NULL | | 제출 시각 |
+| `fiu_ack_ref` | VARCHAR(256) | Y | NULL | | FIU 접수번호(`ACKNOWLEDGED` 확정 시 저장, 설계서 §14.1a) |
+| `submission_error_code` | VARCHAR(64) | Y | NULL | | 전송 실패/FIU 오류 반려 오류코드(`SUBMISSION_FAILED` 시 저장) |
+| `resubmit_count` | INT | N | 0 | | 재제출 횟수(RESUBMIT — 기존 `:submit` 4-eyes 재사용, 회차별 이력 보존) |
+| `ctr_exemption_code` | VARCHAR(64) | Y | NULL | | CTR 제외(면제) 사유 코드(설계서 §14.3 — `GOV_ENTITY`/`FINANCIAL_INSTITUTION`/`OTHER_STATUTORY`, `CANCELLED` 제외 처리 시 필수·감사 대상) |
 | `evidence_hash` | VARCHAR(128) | Y | NULL | | 제출 manifest hash(§19.4) |
 | `created_at/created_by/updated_at/updated_by/trace_id` | (공통) | | | | |
 
@@ -452,7 +458,7 @@ PK: `(tenant_id, transfer_ref)`
 | `event_type` | VARCHAR(80) | N | | §8.1 event family(transaction.completed 등) |
 | `occurred_at` | TIMESTAMPTZ | N | | |
 | `payload` | JSONB | N | | 정규화 payload(PII는 ref/hash) |
-| `payload_hash` | VARCHAR(128) | N | NOT NULL | **API 요청 DTO(`IngestEventRequest.payloadHash`)는 optional — DB는 서버 채움 NOT NULL.** 호출자가 미제공 시 aml-svc ingest 어댑터가 수신 raw payload의 sha256을 자동 계산하여 INSERT. `stored=false` 플래그는 원문 비저장을 표시. (QA 이격 aml:db-api HIGH 정합 완료: API §3.1 `payloadHash` optional 방향 확정, DB NOT NULL 유지) |
+| `payload_hash` | VARCHAR(128) | N | NOT NULL | **API 요청 DTO(`IngestEventRequest.payloadHash`)는 optional — DB는 서버 채움 NOT NULL.** 호출자가 미제공 시 aml-svc ingest 어댑터가 수신 raw payload의 sha256을 자동 계산하여 INSERT. raw_payload 원문 미저장은 §2.2 기준(설계서 §8.2 폐기 `stored` 플래그 미사용). (QA 이격 aml:db-api HIGH 정합 완료: API §3.1 `payloadHash` optional 방향 확정, DB NOT NULL 유지. QA #7 low: `stored` 참조 제거 완료) |
 | `trace_id` | VARCHAR(64) | Y | | |
 | `created_at/created_by` | (공통) | | | append-only |
 
@@ -617,9 +623,7 @@ stateDiagram-v2
         PACKAGE_ISSUED --> CUSTOMER_DEPLOYED
         CUSTOMER_DEPLOYED --> REGISTERED
     }
-    state "SHARED" as H {
-        REQUESTED --> ACTIVE_SHARED : 즉시
-    }
+    REQUESTED --> ACTIVE : SHARED 즉시
     ACTIVE --> [*]
     REGISTERED --> [*]
 ```
@@ -627,13 +631,16 @@ stateDiagram-v2
 - 온보딩이 `ACTIVE` 또는 `REGISTERED`에 도달하면 `aml_tenants.status`를 `ACTIVE`로 전환한다.
 - 표시 라벨(특히 `CUSTOMER_DEPLOYED` '고객배포완료')의 최종 정본은 bo-web i18n 키로 일원화(오픈결정).
 
-#### §5.28b status (3종) — 운영 생명주기 (`onboarding_status`와 직교)
+#### §5.28b status (**4종**, FDS §11.6.7 동기화) — 운영 생명주기 (`onboarding_status`와 직교)
 
-| 코드값 | 표시값 |
-|---|---|
-| `ACTIVE` | 활성 |
-| `SUSPENDED` | 정지 |
-| `OFFBOARDING` | 해지진행 |
+> **QA cross #119 high 정합**: FDS `fds_tenants.tenant_status`(ONBOARDING/ACTIVE/SUSPENDED/OFFBOARDED 4종)와 코드값·종수 동기화. 구 3종(`ACTIVE`/`SUSPENDED`/`OFFBOARDING`) 폐기. `ONBOARDING` 추가(온보딩 진행 중 상태), `OFFBOARDING`→`OFFBOARDED` 교정(해지 완료 상태. 진행 중 상태는 `onboarding_status` 축이 담당). DEFAULT `'ACTIVE'` → `'ONBOARDING'` 변경(신규 등록 직후 초기 상태). 설계서 §16.0c도 이 4종으로 동기화 대상.
+
+| 코드값 | 표시값 | 비고 |
+|---|---|---|
+| `ONBOARDING` | 온보딩중 | 신규 등록·온보딩 진행 (DEFAULT) |
+| `ACTIVE` | 활성 | 온보딩 완료·운영 중 |
+| `SUSPENDED` | 정지 | 일시 정지 |
+| `OFFBOARDED` | 해지완료 | 해지·데이터 반출·파기 진행 완료 |
 
 ---
 
@@ -682,8 +689,10 @@ stateDiagram-v2
 ### 5.10 report_type (설계서 §14.1)
 `STR` / `CTR` / `TRAVEL_RULE` / `EDD_REGISTER` / `WLF_REGISTER` / `RA_REPORT` / `AUDIT_EXPORT`
 
-### 5.11 report_status (설계서 §13.5, §14)
-`DRAFT` / `UNDER_REVIEW` / `APPROVED` / `SUBMITTED` / `REJECTED` / `CANCELLED`
+### 5.11 report_status (설계서 §13.5, §14.1a)
+`DRAFT` / `UNDER_REVIEW` / `APPROVED` / `SUBMITTED` / `ACKNOWLEDGED` / `SUBMISSION_FAILED` / `REJECTED` / `CANCELLED` (8종)
+
+> **FIU 회신 폐루프(설계서 §14.1a 정본).** `SUBMITTED`(전송 완료·회신 대기) → `ACKNOWLEDGED`(FIU 접수, `fiu_ack_ref` 저장, 종단) | `SUBMISSION_FAILED`(전송 실패/FIU 오류 반려, `submission_error_code` 저장). `SUBMISSION_FAILED → UNDER_REVIEW`(정정 후 재제출 RESUBMIT — 기존 `:submit` 4-eyes 재사용, `resubmit_count` 증가). 기각·취소(`REJECTED`/`CANCELLED`) 전이는 사유 코드 필수 + 보고책임자 결재(4-eyes, 자기승인 금지). CTR 제외 처리는 `CANCELLED` + `ctr_exemption_code`로 기록.
 
 ### 5.12 approval_line (설계서 §13.5)
 `MAKER_CHECKER` / `AML_OFFICER` / `COMPLIANCE_MANAGER` / `REPORTING_OFFICER` / `SECURITY_ADMIN` / `EXECUTIVE_APPROVAL` (+ `SELF_APPROVAL_DISABLED` 불변식은 CHECK 제약으로 강제)
@@ -825,6 +834,7 @@ stateDiagram-v2
 
 - raw PII는 §2.2에 따라 애초에 미저장(hash/token만). 파기는 token 매핑 폐기로 갈음.
 - 보존정책은 `aml_tenants.retention_policy` JSONB로 tenant별 override.
+- **법정 수치 정본(설계서 §19.3)**: STR/CTR 보고기록·고객확인(CDD) 기록·의심거래 관련 자료 = **5년**(특정금융정보법 제5조의4), 감사로그(`aml_audit_events`) = **7년**(`REGULATORY_LONG` 7년 override, hash chain 영구).
 
 ---
 
@@ -853,6 +863,8 @@ stateDiagram-v2
 | V17a | `V17a__aml_tenant_deployment_model.sql` | `aml_tenants`에 `deployment_model VARCHAR(32) NOT NULL DEFAULT 'MANAGED_DEDICATED'`, `onboarding_status VARCHAR(32) NOT NULL DEFAULT 'REQUESTED'`, `infra_ref VARCHAR(160)` 컬럼 추가. 기존 row 백필: `isolation_mode='SHARED'` → `deployment_model='SHARED', onboarding_status='ACTIVE'`; `isolation_mode IN ('SCHEMA','DB')` → `deployment_model='MANAGED_DEDICATED', onboarding_status='ACTIVE'`. `default_region` 기본값 `'kr'` → `'KR'` 정규화 UPDATE. 구 `isolation_mode` 컬럼은 V17b에서 DROP(additive-then-drop 2단 분리 권장). | V01 |
 | V17b | `V17b__aml_tenant_drop_isolation_mode.sql` | `aml_tenants.isolation_mode` 컬럼 DROP(V17a 백필 검증 후 적용). | V17a |
 | V18 | `V18__aml_evidence_export_status.sql` | `aml_evidence_exports`에 `status VARCHAR(32) NOT NULL DEFAULT 'PENDING'` 컬럼 추가(QA #19); `reason VARCHAR(512)` nullable→`NOT NULL DEFAULT ''` 강화(QA #20): ① `UPDATE aml.aml_evidence_exports SET reason='' WHERE reason IS NULL`, ② `ALTER TABLE aml.aml_evidence_exports ALTER COLUMN reason SET NOT NULL`. | V14 |
+| V19 | `V19__aml_report_submission_loop.sql` | `aml_regulatory_reports`에 FIU 회신 폐루프 컬럼 추가(설계서 §14.1a/§14.3): `fiu_ack_ref VARCHAR(256)`, `submission_error_code VARCHAR(64)`, `resubmit_count INT NOT NULL DEFAULT 0`, `ctr_exemption_code VARCHAR(64)`. `status` CHECK를 8종(`ACKNOWLEDGED`/`SUBMISSION_FAILED` 추가, §5.11)으로 확장. | V10 |
+| V20 | `V20__aml_source_systems_status_and_tenant_status.sql` | (1) `aml_source_systems`에 `status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE'` 컬럼 추가 + `data_scope VARCHAR(64)` 컬럼 추가(§3.2 QA #4 HIGH·#5 MEDIUM 정합). (2) `aml_tenants.status` CHECK 제약을 **4종**(`ONBOARDING`/`ACTIVE`/`SUSPENDED`/`OFFBOARDED`)으로 갱신 + DEFAULT `'ACTIVE'` → `'ONBOARDING'` 변경(QA cross #119 HIGH·#127 MEDIUM): ① `ALTER TABLE aml.aml_tenants ALTER COLUMN status SET DEFAULT 'ONBOARDING'`; ② 기존 row 중 `onboarding_status NOT IN ('ACTIVE','REGISTERED')` → `status='ONBOARDING'` 백필(신규 등록 미완 고객사); ③ `OFFBOARDING` → `OFFBOARDED` 데이터 마이그레이션. CHECK 제약 DROP→재생성(4종 포함). | V01,V17a |
 
 > 롤백: Flyway는 forward-only이므로 각 V는 idempotent하게 작성하고, 데이터 변형은 별도 보정 마이그레이션으로 분리. 운영 롤백은 `UNDO` 대신 보상 마이그레이션 + feature flag로 처리. V17a/V17b는 2-phase 적용(additive-then-drop) 권장 — V17a 적용 후 운영 검증을 거쳐 V17b를 별도 배포로 진행한다.
 
@@ -878,6 +890,9 @@ stateDiagram-v2
 | `subject_type` 16종 확정(`CHECKLIST_CHANGE`·`PERIODIC_REVIEW_CHANGE` 추가, 구 `CDD_CHECKLIST` 교정) | §5.16 enum 16종 확정(API 정본 `CHECKLIST_CHANGE` 채택) — T-12 착수 전 API §3.7·§10 동기화 필수. §3.15 인라인 목록·V09 CHECK 제약 동기화 완료 |
 | `edd_trigger` enum 8종 물리 정본 | §5.29 신설 — 설계서 §13.2 코드값 SCREAMING_SNAKE_CASE 확정 |
 | `payload_hash` NOT NULL 서버 자동계산 결정 | `aml_canonical_events.payload_hash` NOT NULL 유지; 서버 sha256 자동계산 방식으로 API 정합 — API §3.1 IngestEventRequest 주석 추가 필요 |
+| `aml_source_systems.status` + `data_scope` 추가(QA #4 HIGH·#5 MEDIUM) | §3.2에 `status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE'`·`data_scope VARCHAR(64)` 정식 행 추가. V20 마이그레이션. 설계서 §17.1 DDL·§16.2.1과 일치 |
+| `aml_tenants.status` 4종 동기화·DEFAULT 변경(QA cross #119 HIGH·#127 MEDIUM) | §3.1 `status` DEFAULT `'ACTIVE'`→`'ONBOARDING'`·3종→4종(`ONBOARDING`/`ACTIVE`/`SUSPENDED`/`OFFBOARDED`). §5.28b 4종으로 교체. V20 마이그레이션. FDS §11.6.7·`fds_tenants.tenant_status` 4종과 동기화 |
+| `stored` 플래그 폐기(QA #7 low) | §2.2 '`stored=false` 플래그' 표현 제거 + 설계서 §8.2(2026-06-07 폐기 확정) 근거 명시. §3.15 `aml_canonical_events.payload_hash` 설명에서 `stored=false` 참조 제거 |
 
 ---
 
@@ -885,6 +900,8 @@ stateDiagram-v2
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-06-10 | **QA 이격 DB 담당 정합화 (doc-consistency-report-all 기준)**: (1) **HIGH §3.2 `aml_source_systems`에 `status` 컬럼 추가** — `status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE'`(`ACTIVE`/`DISABLED` enum, 설계서 §17.1 DDL·§16.2.1 정본·QA #4). (2) **MEDIUM §3.2 `aml_source_systems`에 `data_scope` 컬럼 추가** — `data_scope VARCHAR(64) Y NULL`(§2.1 공통 규약 전 운영 테이블 적용 원칙, QA #5). (3) **LOW §2.2 `stored` 플래그 폐기 명문화** — §2.2 `stored=false` 표현 제거(설계서 §8.2 2026-06-07 폐기 확정, QA #7); §3.15 `aml_canonical_events.payload_hash` 설명에서 `stored=false` 참조도 제거. (4) **HIGH §5.28b `aml_tenants.status` 4종 동기화** — 3종(`ACTIVE`/`SUSPENDED`/`OFFBOARDING`) 폐기 → 4종(`ONBOARDING`/`ACTIVE`/`SUSPENDED`/`OFFBOARDED`) 신설, §3.1 DEFAULT `'ACTIVE'` → `'ONBOARDING'` 변경(FDS §11.6.7·`fds_tenants.tenant_status` 동기화, QA cross #119 HIGH·#127 MEDIUM). (5) §7 V20 마이그레이션 신설(aml_source_systems 컬럼 추가·aml_tenants.status 4종 갱신·OFFBOARDING→OFFBOARDED 데이터 마이그레이션). (6) §8 동기화 확인 표에 4개 항목 추가. | data-modeler. 설계서 §16.0c도 4종으로 동기화 대상(파생→정본 역삽입). |
+| 2026-06-10 | **준법감시인 검토 반영(상위 정본=설계서 §14.1a/§14.3/§19.3 2026-06-10 갱신) 동기화.** (1) **§5.11 report_status 8종 확장** — `ACKNOWLEDGED`(FIU 접수)·`SUBMISSION_FAILED`(전송 실패/FIU 오류 반려) 추가 + FIU 회신 폐루프·재제출(RESUBMIT)·기각/취소 4-eyes 통제 주석. (2) **§3.12 `aml_regulatory_reports` 컬럼 4종 추가** — `fiu_ack_ref`(FIU 접수번호)·`submission_error_code`(오류코드)·`resubmit_count`(재제출 횟수)·`ctr_exemption_code`(CTR 제외 사유 코드, §14.3 제외 처리=CANCELLED+코드·4-eyes·감사). (3) **§6 보존정책 법정 수치 명문화** — STR/CTR·CDD·의심거래 자료 5년(특금법 §5의4)·감사로그 7년. (4) **§7 V19 마이그레이션 등재**(V10 의존). | data-modeler. API §3.6 DTO·연동 §3.4/§5.4·PRD §1.7/§9 동기화 대상. |
 | 2026-06-08 | **QA #19/#20 DB 정합화(aml:db-api)**: §3.15 `aml_evidence_exports`에 `status VARCHAR(32) NOT NULL DEFAULT 'PENDING'` 컬럼 추가(API `EvidenceExportResponse.status` backing, QA #19 HIGH); `reason VARCHAR(512)` nullable→`NOT NULL DEFAULT ''` 강화(API 필수 일치, QA #20 MED). §5.30 `evidence_export_status` enum(4종) 신설. §7 V18 마이그레이션 등재(V14 의존). QA #21 확인 — `aml_risk_scores` §3.9의 `target_type`·`model_code`·`is_override` 3컬럼 기존 존재 확인, DB 변경 불필요(API §3.3 추가 대상). QA #24 — DB 변경 불필요. | data-modeler |
 | 2026-06-06 | 신규 작성(부트스트랩). 설계서 `02-amlSvc-sass.md` §7~§19를 물리 모델로 확정: `aml` 전용 스키마, 도메인 14종(aml_tenants/source_systems/customers/entities/relationships/watchlist_sources/watchlist_entries/screening_results/risk_scores/alerts/cases/regulatory_reports/business_documents/travel_rule_transfers) + 지원 4종(canonical_events/approvals/audit_events/evidence_exports). 멀티테넌시(tenant_id PK+RLS+data_scope), PII hash/token, 감사 컬럼, append-only audit+hash chain, 4-eyes CHECK, 보존정책, enum 코드·표시 병기, 인덱스, Flyway V01~V15 순서 확정. 정본 4서비스·별도 스키마·규제 Policy Pack 100% 반영. | 정본=`target-architecture.md`, 입력 진실=설계서. `docs/plan/02-aml-sass-functional-spec.md`·PPT는 본 명칭 기준 정합화 대상. API/integration/tasks는 §3 테이블·§5 enum·§7 마이그레이션 명칭을 참조한다. |
 | 2026-06-06 | doc-consistency(fds) 정합화 연동: `aml_cases.origin_fds_case_ref VARCHAR(96) NULL`(cross-ref, FK 아님) 추가. fds-svc `fds_cases.aml_case_id`(VARCHAR(96))와 동일 폭으로 FDS↔AML 위임 케이스 양방향 cross-ref 확정. `source_origin=FDS`일 때 채움. | 운영자 집계(대시보드/고객사/감사)는 bo-api 소유 경계 유지. aml-svc는 저수준 데이터 API만 제공. |

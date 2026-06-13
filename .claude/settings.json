@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s --connect-timeout *)",
+      "mcp__paper__get_screenshot",
+      "mcp__paper__get_tree_summary",
+      "mcp__paper__get_basic_info",
+      "mcp__paper__get_font_family_info",
+      "mcp__paper__get_computed_styles",
+      "mcp__paper__get_guide",
+      "mcp__paper__get_selection",
+      "mcp__paper__get_jsx",
+      "mcp__notion-dev-log__API-query-data-source",
+      "mcp__notion-dev-log__API-retrieve-a-data-source",
+      "Bash(find /Users/smkim/workspace/smkim89/aml-system-docs *)"
+    ]
+  }
+}

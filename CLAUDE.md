@@ -34,7 +34,8 @@ aml-system-docs/
 └── .claude/
     ├── README.md             # 하네스 개요
     ├── agents/               # 7개: system-architect·data-modeler·api-designer·integration-designer·backoffice-planner·task-planner·design-reviewer
-    ├── workflows/            # doc-consistency-qa (문서 간 이격 대조 팬아웃)
+    ├── eval/                 # 루프 엔지니어링 자산 — golden-set/(8 루브릭)·scoreboard.md·lessons.md (README=정본)
+    ├── workflows/            # doc-consistency-qa(정합)·doc-eval(완성도 채점)·doc-improvement-loop(개선 루프)·feature-docs-pipeline·reconcile-doc-gaps
     └── skills/
         ├── INDEX.md          # 스킬·에이전트 맵 (먼저 읽기)
         ├── _shared/          # target-architecture.md (정본)
@@ -57,6 +58,21 @@ Workflow({ name: "feature-docs-pipeline", args: { feature: "<기능 설명>", se
 ```
 
 개별 단계만 돌리고 싶을 때는 아래 라이프사이클의 각 에이전트를 직접 호출한다.
+
+## 루프 엔지니어링 (점점 완성되는 구조)
+
+> 측정 가능한 **골든셋**을 만들고, **한 번에 하나(기능 1건)만** 바꿔, **점수가 오를 때만** 반영하며 순환시킨다. 사람은 선수가 아니라 **코치**로서 루프 **위**에서 승인·최종 QA를 맡는다. 정본 = **[`.claude/eval/README.md`](.claude/eval/README.md)**.
+
+**두 축**: 정합 축(싱크 = `doc-consistency-qa`, 높음 이격 0 = HARD GATE) + 완성도 축(품질 = `doc-eval` 골든셋 점수, 오를 때만 머지).
+
+```
+# 측정만 (체중계)
+Workflow({ scriptPath: ".claude/workflows/doc-eval.js", args: { service: "all" } })
+# 개선 루프 1바퀴 (평가→제안→적용→재채점→점수↑일 때만 유지, 아니면 revert+오답노트)
+Workflow({ scriptPath: ".claude/workflows/doc-improvement-loop.js", args: { service: "fds", feature: "<기능 또는 비우면 결손 자동 제안>" } })
+```
+
+**머지 조건**: `score_after > score_before` **그리고** 정합 PASS → 유지(미commit, 사람이 검토 후 commit). 아니면 폐기 + `lessons.md` 오답노트. **골든셋(`.claude/eval/golden-set`)은 사람만 version을 올려 수정**(시험지 불변 — 비교 가능성 보존). 루프는 1바퀴 돌고 멈춰 사람의 다음 승인을 기다린다.
 
 ## 작업 흐름 (개발 착수용 문서 일습 — 단계별)
 
