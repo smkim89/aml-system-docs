@@ -32,8 +32,8 @@
 
 ```mermaid
 flowchart LR
-    Ext["External Financial Systems<br/>(core-banking/card/remit/crypto/commerce/trade/audit)"]
-    Ext -->|REST push / file| AMLIN["aml-svc adapter/in/rest"]
+    Ext["hanpass-ph source services<br/>(member-svc / walletchg-svc / domestic-svc / remit-svc / wallet-svc / tx-history-svc / inbound-svc)"]
+    Ext -->|REST sync push| AMLIN["aml-svc adapter/in/rest"]
     Ext -->|queue / CDC| SQSIN[["SQS: aml-ingest"]]
     SQSIN --> AMLSQS["aml-svc adapter/in/sqs"]
     FDS["fds-svc"] -->|fraud decision / escalation| SQSFDS[["SQS: aml-fds-decision"]]
@@ -98,18 +98,18 @@ flowchart LR
 
 | eventType | 발행자(source_system 예) | 트리거 | 핵심 페이로드 키(ref/hash) | 후속 usecase | 산출 |
 |---|---|---|---|---|---|
-| `customer.created` | core-banking·onboarding | 개인 고객 생성 | `customer.customerRef`·`customerType`·`country` | IngestEvent→ScreenSubject | `aml_customers`, `aml_screening_results` |
-| `customer.kyc-updated` | onboarding·core-banking | KYC 갱신 | `customer.customerRef`·`kycStatus`·`docHash` | IngestEvent→EvaluateRisk | `aml_customers`, `aml_risk_scores` |
-| `customer.status-changed` | core-banking | 상태 변경 | `customer.customerRef`·`status` | IngestEvent | `aml_customers` |
-| `entity.created` | kyb·merchant-onboarding | 법인/merchant/seller 생성 | `entity.entityRef`·`entityType`·`legalNameHash` | IngestEvent→ScreenSubject | `aml_entities` |
-| `entity.updated` | kyb | 법인 정보 변경 | `entity.entityRef`·`industryCode` | IngestEvent | `aml_entities` |
-| `beneficial-owner.changed` | kyb | UBO/대표자 변경 | `relationship.fromRef`·`toRef`·`relationshipType`·`ownershipPercent` | IngestEvent→ScreenSubject(UBO) | `aml_relationships`, `aml_screening_results` |
-| `account.created` / `account.closed` | core-banking | 계좌 개설/폐쇄 | `account.accountHash`·`customerRef` | IngestEvent | (graph 보강) |
-| `instrument.registered` | card·wallet·crypto | 카드/지갑/가상계좌 등록 | `instrument.walletAddressHash`·`chain` | IngestEvent→ScreenSubject(crypto) | `aml_screening_results` |
-| `transaction.requested` | remit·card·bank | 자금 이동 요청 | `transaction.transactionRef`·`amount`·`amountMinor`·`currency`·`direction` | IngestEvent→EvaluateTransaction | `aml_canonical_events` |
-| `transaction.completed` | core-banking·remit | 거래 완료 | `transaction.transactionRef`·`counterparty.counterpartyRef`·`channelType` | EvaluateTransaction(TM) | `aml_alerts` |
+| `customer.created` | member-svc | 개인 고객 생성 | `customer.customerRef`(←`member.member_id`)·`customerType`·`country` | IngestEvent→ScreenSubject | `aml_customers`, `aml_screening_results` |
+| `customer.kyc-updated` | member-svc | KYC/CDD 갱신·zoloz 스크리닝 | `customer.customerRef`·`kycStatus`·`docHash` | IngestEvent→EvaluateRisk | `aml_customers`, `aml_risk_scores` |
+| `customer.status-changed` | member-svc | 상태 변경 | `customer.customerRef`·`status` | IngestEvent | `aml_customers` |
+| `entity.created` | member-svc(kyb) | 법인/merchant/seller 생성 | `entity.entityRef`·`entityType`·`legalNameHash` | IngestEvent→ScreenSubject | `aml_entities` |
+| `entity.updated` | member-svc(kyb) | 법인 정보 변경 | `entity.entityRef`·`industryCode` | IngestEvent | `aml_entities` |
+| `beneficial-owner.changed` | member-svc(kyb) | UBO/대표자 변경 | `relationship.fromRef`·`toRef`·`relationshipType`·`ownershipPercent` | IngestEvent→ScreenSubject(UBO) | `aml_relationships`, `aml_screening_results` |
+| `account.created` / `account.closed` | wallet-svc | 월렛/계좌 개설·폐쇄(`transfer_links` 자금그래프) | `account.accountHash`·`customerRef` | IngestEvent | (graph 보강) |
+| `instrument.registered` | wallet-svc·member-svc | 지갑/가상계좌 등록 | `instrument.walletAddressHash`·`chain` | IngestEvent→ScreenSubject(crypto) | `aml_screening_results` |
+| `transaction.requested` | walletchg-svc(충전)·domestic-svc(국내)·remit-svc(해외)·inbound-svc(인바운드) | 자금 이동 요청 | `transaction.transactionRef`(←`charge_order_id`/`transaction_id`/`transfer_number`/`wallet_transaction_id`)·`amount`·`amountMinor`·`currency`·`direction`·`corridor` | IngestEvent→EvaluateTransaction | `aml_canonical_events` |
+| `transaction.completed` | walletchg/domestic/remit/inbound-svc | 거래 완료 | `transaction.transactionRef`·`counterparty.counterpartyRef`·`channelType` | EvaluateTransaction(TM) | `aml_alerts` |
 | `transaction.cancelled` / `transaction.refunded` | card·pg | 취소/환불 | `transaction.transactionRef`·`originalTransactionRef` | EvaluateTransaction(refund_laundering) | `aml_alerts` |
-| `settlement.executed` | pg·marketplace | merchant/seller 정산 | `entity.entityRef`·`amountMinor`·`payoutAccountHash` | EvaluateTransaction·EvaluateRisk | `aml_alerts` |
+| `settlement.executed` / `settlement.posted` | remit-svc·wallet-svc | 해외송금 정산·월렛 원장 정산 | `entity.entityRef`·`amountMinor`·`payoutAccountHash`(←`remit.account_hash`) | EvaluateTransaction·EvaluateRisk | `aml_alerts` |
 | `trade.invoiced` / `trade.shipped` | trade·b2b | 무역대금·선적·통관 | `document.documentRef`·`amount`·`countryFrom`·`countryTo` | EvaluateTransaction(trade_mispricing) | `aml_business_documents`, `aml_alerts` |
 | `invoice.issued` | b2b | B2B 인보이스 | `document.documentRef`·`subjectRef`·`counterpartyRef` | EvaluateTransaction | `aml_business_documents` |
 | `order.placed` / `order.refunded` | ecommerce | 주문·반품 | `document.documentRef`·`sellerRef` | EvaluateTransaction(round_tripping) | `aml_business_documents` |
@@ -117,6 +117,8 @@ flowchart LR
 | `crypto.travel-rule-submitted` | crypto-exchange·vasp | Travel Rule 정보 전달 | `transfer.transferRef`·`originatorRef`·`beneficiaryRef`·`originatorVasp`·`beneficiaryVasp` | ManageTravelRule | `aml_travel_rule_transfers` |
 | `employee.operation` | audit·iam·hr | 내부자 작업/override | `employeeRef`·`operationType`·`targetRef` | EvaluateTransaction(internal_override_abuse) | `aml_alerts` |
 | `vendor.alert-ingested` | legacy-vendor-bridge | 기존 벤더 alert/case 수신 | `externalAlertRef`·`vendorVerdict`·`targetRef` | IngestEvent(source_origin=`VENDOR`) | `aml_alerts`(source_origin=`VENDOR`) |
+
+> **hanpass-ph 소스 재그라운딩 주석(REST sync)**: 발행자 열의 source_system 은 hanpass-ph 7실서비스(DB §3.2 카탈로그 정본)다 — `member-svc`(회원/KYC/CDD/제재·PEP zoloz → customer.*/entity.*/beneficial-owner.*), `walletchg-svc`(월렛충전 cash-in), `domestic-svc`(국내송금 PHP), `remit-svc`(해외송금 cross-border, `sanction_screening_event`·`str_indicators` 보유 → transaction.requested·settlement.posted), `wallet-svc`(월렛 원장 `transfer_links` 자금그래프 → account.*·settlement.posted), `inbound-svc`(파트너 인바운드). `tx-history-svc`(회원 통합 이력 read model)는 ingest 발행자가 아니라 **대상 360°(DB §3.16)** 피드 소스다. card/pg/crypto-exchange/trade/ecommerce 등 잔존 generic 발행자는 hanpass-ph 실서비스의 예시 추상이며, 운영 등록값은 위 7코드다. corridor(remit `send/receive_country·currency`·USD `usd_amount/report_amount`→`amountBase`)는 transaction payload 에 보존(§4.2)된다.
 
 > **`vendor.*` family 정합 주석**: `vendor.alert-ingested`의 `vendor.*` family는 SW §8.1 AML Canonical Event Taxonomy **15종 중 하나로 등재**되어 있다(SW §8.1 v1.x, Legacy Vendor Bridge 경유 `source_origin=VENDOR` 행 포함). 본 연동 명세에서는 독립 family 선언 대신 **`IngestEvent(source_origin=VENDOR)`** 경로로 흡수한다 — 즉 `vendor.alert-ingested`는 `source_origin=VENDOR`를 태그한 일반 ingest event로 처리되며, SW §8.1 `vendor.*` 행과 본 표의 `eventType`·`eventFamily` 라우팅은 동기화 완료 상태이다.
 
@@ -202,13 +204,16 @@ API `IngestEventRequest`(02-aml-api §3.1)·`aml_canonical_events` 컬럼과 1:1
   "transaction": {
     "transactionRef": "tx_123", "direction": "OUTBOUND",
     "amount": "9500000.00000000", "amountMinor": 9500000, "currency": "KRW",
-    "purpose": "REMITTANCE", "channelType": "BANK_TRANSFER"
+    "purpose": "REMITTANCE", "channelType": "BANK_TRANSFER",
+    "corridor": { "sendCountry": "KR", "receiveCountry": "PH", "sendCurrency": "KRW", "receiveCurrency": "PHP" },
+    "amountBase": "7000.00"
   },
   "screeningContext": { "requiresSanctionsScreening": true, "requiresTravelRule": false }
 }
 ```
 
 > 금액은 `amount`(NUMERIC(24,8) 문자열, 외화/crypto 소수 수용) + `amountMinor`(BIGINT 정수 최소단위) 병행(DB §3 규약과 일치).
+> **corridor·amountBase(hanpass-ph cross-border, remit-svc)**: `corridor`(`sendCountry`/`receiveCountry` ← `remit.send_country/receive_country`, `sendCurrency`/`receiveCurrency` ← `remit.send_currency/receive_currency`)와 USD 정규화 `amountBase`(← `remit.usd_amount/report_amount`)는 cross-border 거래에 한해 채운다(국내 walletchg/domestic 은 corridor 동일국·생략 가능). TM corridor 시나리오·대상 360° 거래 표시·canonical event payload(DB §3.15)에 보존. 임계·기준금액은 규제 레이어(Policy Pack) 정본 — 본 필드는 데이터 신호일 뿐 임계 교체 아님.
 
 ### 4.3 crypto / Travel Rule payload (`aml_travel_rule_transfers`)
 
@@ -413,17 +418,23 @@ sequenceDiagram
 
 ### 7.2 필드매핑 (원천 → canonical, PII는 ref/hash)
 
-| 원천 필드(예: core-banking) | canonical 경로 | 변환 | DB 컬럼 |
+> 원천 필드는 **hanpass-ph 실서비스 컬럼**(DB §3.2 카탈로그). 식별자 원문은 절대 저장하지 않고 keyed HMAC token / hash 로만 흐른다. **주의**: `member_id` 가 `domestic-svc`만 varchar(36) 이므로 통합뷰 join 전 문자열 정규화(trim·case)한다.
+
+| 원천 필드(hanpass-ph 서비스) | canonical 경로 | 변환 | DB 컬럼 |
 |---|---|---|---|
-| `member_id` | `payload.customer.customerRef` | tenant-keyed HMAC token | `aml_customers.customer_ref` |
-| `member_name` | `payload.customer.nameHash` | HMAC-SHA256(tenant key) | `aml_customers.name_hash` |
-| `rrn`/`passport`/`doc_no` | `payload.customer.docHash` | HMAC, 원문 폐기 | `aml_customers.doc_hash` |
-| `corp_name` | `payload.entity.legalNameHash` | normalize→HMAC | `aml_entities.legal_name_hash` |
-| `biz_no` | `payload.entity.bizNoHash` | HMAC | `aml_entities.biz_no_hash` |
-| `account_no` | `payload.*.accountHash` | HMAC | (`account_hash`) |
-| `wallet_address` | `payload.transfer.walletAddressHash` | HMAC | `aml_*.wallet_address_hash` |
+| `member.member_id`(member-svc) | `payload.customer.customerRef` / FDS `subjectRef` | tenant-keyed HMAC token | `aml_customers.customer_ref` |
+| `member.member_name` | `payload.customer.nameHash` | HMAC-SHA256(tenant key) | `aml_customers.name_hash` |
+| `member` rrn/passport/doc_no | `payload.customer.docHash` | HMAC, 원문 폐기 | `aml_customers.doc_hash` |
+| `member` corp_name(kyb) | `payload.entity.legalNameHash` | normalize→HMAC | `aml_entities.legal_name_hash` |
+| `member` biz_no(kyb) | `payload.entity.bizNoHash` | HMAC | `aml_entities.biz_no_hash` |
+| `remit.account_hash` / wallet account_no | `payload.*.accountHash` / counterparty·recipient ref | HMAC | (`account_hash`) |
+| `wallet_address`(wallet-svc) | `payload.transfer.walletAddressHash` | HMAC | `aml_*.wallet_address_hash` |
 | `amount` + `currency` | `payload.transaction.amount`+`amountMinor` | NUMERIC(24,8)+BIGINT(minor) | `amount`/`amount_minor` |
-| `tx_id` | `payload.transaction.transactionRef` | passthrough | `transaction_ref` |
+| `remit.usd_amount`/`report_amount` | `payload.transaction.amountBase` | USD 정규화 | (canonical payload) |
+| `wallet_transaction_id` / `remit.transfer_number` / `walletchg.charge_order_id` / `domestic.transaction_id` | `payload.transaction.transactionRef` | passthrough/token | `transaction_ref` |
+| `remit.send_country/receive_country`·`send_currency/receive_currency` | `payload.transaction.corridor.*` | passthrough(ISO) | (canonical payload) |
+| `member.zoloz_aml_screening`(decision/risk_level/total_hits/hit_results) | `payload`·screening 정규화 | zoloz→§5.5 status·§5.2 risk_grade·score_breakdown | `aml_screening_results` |
+| `remit.str_indicators`(STR_001~015) | `evidence.strIndicator`(데이터 신호) | 데이터 신호 매핑(규제 STR 분류는 KR 정본) | `aml_alerts.evidence` |
 | `counterparty_*` | `payload.counterparty.*Ref/*Hash` | HMAC/token | — |
 | `country`/`nationality` | `payload.*.country` | ISO-3166 alpha-2 | `country` |
 | `event_ts` | `occurredAt` | ISO-8601 UTC | `occurred_at` |
@@ -684,6 +695,7 @@ sequenceDiagram
 
 | 일자 | 버전 | 변경 | 비고 |
 |---|---|---|---|
+| 2026-06-19 | v2.2 | **데이터 레이어 hanpass-ph 재그라운딩(REST sync).** §1.1 외부 시스템 박스를 hanpass-ph 7실서비스(member/walletchg/domestic/remit/wallet/tx-history/inbound-svc)로 교체. §3.1 인바운드 event family 발행자(source_system)를 실서비스별로 매핑(member-svc=customer/entity/beneficial-owner, walletchg/domestic/remit/inbound=transaction.requested, remit/wallet=settlement.posted, wallet=account.*) + 재그라운딩 주석(tx-history-svc=대상 360° 피드). §4.2 transaction payload 에 `corridor`(send/receive country·currency ← remit)·`amountBase`(USD ← remit usd_amount/report_amount) 추가. §7.2 필드매핑을 hanpass-ph 실컬럼(member_id/wallet_transaction_id/transfer_number/charge_order_id/transaction_id·account_hash·zoloz_aml_screening·str_indicators)으로 현행화. **규제 임계·기한 불변** — `str_indicators`·`sanction_screening_event`는 데이터 신호로만 매핑(규제 STR 분류 KR 정본 유지). | integration-designer. 식별자 keyed-HMAC. domestic-svc member_id varchar(36) join 정규화. DB §3.2/§3.8/§3.10/§3.15/§3.16·API·PRD §1.5/§7 동기화. |
 | 2026-06-11 | v2.1 | QA HIGH(L145) 해소: §3.4 `report.submission.failed` 핵심 키 `errorCode` → `submissionErrorCode`(API §3.6·§8.1 정본, DB `submission_error_code` 1:1). | integration-designer |
 | 2026-06-11 | v2.0 | QA HIGH cross(L307) 해소: §4.1에 cross-service envelope 정책 명문화 — AML envelope=`dataScope` 최상위(선택) / FDS envelope=`workspaceId` 최상위 필수(의도된 비대칭), `fds-aml-handoff` 어댑터(aml-svc 소비 측)가 FDS `workspaceId`→AML `dataScope` 변환(`default` 매핑 포함). 양 설계서(AML §8.2·FDS §8.2/§8.3) 교차 주석과 동기. | integration-designer |
 | 2026-06-11 | v1.9 | **doc-consistency-report-all-latest 연동 담당 이격 정합(aml:design-integration·aml:dbapi-integration)**. **(1) HIGH §2.1 `aml-ingest` 페이로드 family 3종 추가** — `account.*`·`instrument.*`·`beneficial-owner.*`를 큐 카탈로그 페이로드 family 열에 추가(SW §8.1 IN 방향 15종 정본과 정합, 기존 9종에서 12종으로 확장). **(2) HIGH §8.2 `DRAFT` 내부 전이 주석 추가** — API §1.5 정본(`DRAFT`는 내부 전이 상태, API 미노출)에 맞춰 §8.2 상태머신 도입부에 '내부 전이·API 미노출' 주석 및 Mermaid 레이블 추가. **(3) MEDIUM §12 capability 매트릭스 `TR_SUBMIT` → `TRAVEL_RULE_EXCEPTION`** — 비정본 코드 `TR_SUBMIT`를 API §3.7·SW §13.4 정본 `TRAVEL_RULE_EXCEPTION`으로 교체. 정본 = SW §8.1(IN 방향 family 15종) / API §1.5(DRAFT 내부 전이) / API §3.7(subjectType `TRAVEL_RULE_EXCEPTION`). | integration-designer |

@@ -153,6 +153,7 @@ erDiagram
 - 매칭 보조 필드는 **이름→hash / 문서번호→hash / 계좌→hash / 지갑주소→hash 의미 패턴**(tenant-keyed HMAC-SHA256)으로, 실제 컬럼명은 테이블별 prefix를 따른다: customer는 `name_hash`/`doc_hash`(§3.3), entity는 `legal_name_hash`/`biz_no_hash`(§3.4), watchlist는 `primary_name_hash`(§3.7), travel-rule은 `wallet_address_hash`(§3.14). (account_hash는 canonical event payload·`USES_ACCOUNT` edge 속성으로 보존, §1 Account/Instrument 미보유 결정.)
 - 원문이 필요한 WLF matching은 메모리 일시 처리 후 폐기, 저장은 hash/token만(설계서 §19.2).
 - `raw_payload`는 기본 미저장. `payload_hash`(sha256: `sha256:<hex>` 형식) 참조만 보존한다. **`stored` 플래그는 설계서 §8.2(2026-06-07 변경이력) 기준 폐기됨 — DB에 `stored` 컬럼을 두지 않는다**(QA issue #7 low 정합).
+- **PII reveal 원천 = 가역암호 vault (T3 AML-ENG-03, ADR 2026-06-15 D1).** 위 hash 컬럼은 단방향이라 마스킹 토큰→원문 역참조가 불가능하다. reveal(`POST /internal/v1/aml/pii/reveal`, API §2.6)의 cleartext 산출 원천으로 **`aml_pii_vault`(§3.21)** 를 둔다. vault 는 원문의 **암호문(`ciphertext`)** 만 저장하므로 위 "원문(=평문) 컬럼 금지" 규약은 그대로 유지된다(평문 컬럼 0개). 암복호는 `SecretCipherPort`(AES-256-GCM, `aws`=KMS 스왑). reveal cleartext 는 이 요청 한정 transient — 영속·로그 금지(§19.2). vault 적재 시점·전 필드 확장은 후속(가정 A2).
 
 ### 2.3 enum 코드·표시값 병기 규약
 
@@ -186,7 +187,7 @@ PK: `(tenant_id)`
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
 |---|---|---|---|---|---|
 | `tenant_id` | VARCHAR(64) | N | — | PK,FK→aml_tenants | |
-| `source_system` | VARCHAR(64) | N | — | PK | 원천 코드(core-banking 등) |
+| `source_system` | VARCHAR(64) | N | — | PK | 원천 코드. **hanpass-ph 실서비스 카탈로그(REST sync 인입 정본)**: `member-svc`(회원/KYC/CDD/제재·PEP zoloz 스크리닝 — `customer.*`/`entity.*`/`beneficial-owner.*`), `walletchg-svc`(월렛충전 cash-in — `transaction.requested`), `domestic-svc`(국내송금 PHP — `transaction.requested`), `remit-svc`(해외송금 cross-border, `sanction_screening_event`·`str_indicators` 보유 — `transaction.requested`·`settlement.posted`), `wallet-svc`(월렛 원장 `transfer_links` 자금그래프 — `account.*`·`settlement.posted`), `tx-history-svc`(회원 통합 이력 read model — 대상 360° 피드), `inbound-svc`(파트너 인바운드 송금 — `transaction.requested`). generic placeholder(core-banking/kyb/card/wallet/remit)는 위 실서비스의 예시 추상으로만 잔존 — 운영 등록값은 hanpass-ph 코드 |
 | `ingest_mode` | VARCHAR(32) | N | — | enum | `REST_PUSH`/`QUEUE`/`POLLING`/`CDC`/`SNAPSHOT`/`VENDOR_BRIDGE` (§15) |
 | `schema_version` | VARCHAR(80) | N | — | | schema registry 버전 |
 | `auth_mode` | VARCHAR(32) | N | 'API_KEY_HMAC' | enum | `API_KEY_HMAC`/`OAUTH2`/`MTLS` (§15.7, D-13) |
@@ -265,10 +266,10 @@ PK: `(tenant_id, relationship_id)`
 | `tenant_id` | VARCHAR(64) | N | — | PK | |
 | `source_code` | VARCHAR(80) | N | — | PK | source 코드 |
 | `source_type` | VARCHAR(64) | N | — | enum | §5.4 watchlist_source_type(SANCTIONS/PEP/RCA/ADVERSE_MEDIA/INTERNAL/LAW_ENFORCEMENT/VASP_RISK) |
-| `provider` | VARCHAR(128) | Y | NULL | | 제공처(UN/OFAC/internal 등) |
+| `provider` | VARCHAR(128) | Y | NULL | | 제공처(UN/OFAC/internal 등 — generic 유지). **hanpass-ph 정합**: 실시간 제재·PEP 스크리닝 신호 소스는 `member-svc`의 `zoloz_aml_screening`(`decision`/`risk_level`/`total_hits`/`hit_results`)으로, screening 결과(§3.8)에 `member-svc` decision 을 정합 매핑한다. `source_type`(§5.4 SANCTIONS/PEP/RCA/ADVERSE_MEDIA/INTERNAL/LAW_ENFORCEMENT/VASP_RISK)는 유지 |
 | `status` | VARCHAR(32) | N | 'ACTIVE' | enum | `ACTIVE`/`DISABLED` |
 | `active_version` | VARCHAR(80) | Y | NULL | | 적용 중 import 버전(4-eyes 승인본) |
-| `last_imported_at` | TIMESTAMPTZ | Y | NULL | | freshness 모니터링(§20.2) |
+| `last_imported_at` | TIMESTAMPTZ | Y | NULL | | freshness 모니터링(§20.2). **48h 신선도 초과 시 fail-closed**(스크리닝 차단·재import 강제 — `member-svc zoloz` 신호 포함 전 소스 동일 적용) |
 | `created_at/created_by/updated_at/updated_by/trace_id` | (공통) | | | | |
 
 PK: `(tenant_id, source_code)`
@@ -301,8 +302,8 @@ PK: `(tenant_id, entry_id)`
 | `target_type` | VARCHAR(64) | N | — | enum | §5.23 target_type(CUSTOMER/ENTITY/COUNTERPARTY/CRYPTO_ADDRESS) |
 | `status` | VARCHAR(32) | N | — | enum | §5.5 screening_status(NO_MATCH/POSSIBLE_MATCH/TRUE_MATCH/FALSE_POSITIVE/AUTO_DISCOUNTED/ESCALATED) |
 | `score` | NUMERIC(8,4) | Y | NULL | | 유사도 score |
-| `score_breakdown` | JSONB | N | '{}' | | name/dob/country/document/address/relationship 분해(§10.3) |
-| `reason_codes` | JSONB | N | '[]' | | reasonCodes(§15.7) |
+| `score_breakdown` | JSONB | N | '{}' | | name/dob/country/document/address/relationship 분해(§10.3). **hanpass-ph 정합**: `member-svc zoloz_aml_screening.hit_results`(매칭 후보·항목별 점수)를 본 분해로 정규화 — `risk_level`→§5.2 risk_grade, `total_hits`→`matched_entries` 카운트 매핑 |
+| `reason_codes` | JSONB | N | '[]' | | reasonCodes(§15.7). zoloz `decision`(승인/거절/검토) 을 본 status(§5.5)로 정규화하고 reason 을 코드화 |
 | `matched_entries` | JSONB | N | '[]' | | 후보 entry_id 목록 |
 | `rule_version` | VARCHAR(80) | N | — | | 적용 WLF 룰/threshold 버전 |
 | `decided_by` | VARCHAR(128) | Y | NULL | | 판정자(분석가) |
@@ -341,11 +342,11 @@ PK: `(tenant_id, score_id)`
 | `alert_id` | UUID | N | — | PK | `alertId` |
 | `alert_type` | VARCHAR(64) | N | — | enum | §5.18 alert_type(TM_SCENARIO/SCREENING/RA/FDS_ESCALATION/VENDOR_ALERT). API `alertType` 정본 동기화 |
 | `scenario_code` | VARCHAR(80) | Y | NULL | enum | §5.6 tm_scenario(STRUCTURING/RAPID_MOVEMENT/...) |
-| `target_ref` | VARCHAR(256) | Y | NULL | | 대상 고객/법인 |
-| `transaction_ref` | VARCHAR(256) | Y | NULL | | 관련 거래 ref |
+| `target_ref` | VARCHAR(256) | Y | NULL | | 대상 고객/법인(`member.member_id`→`customer_ref` keyed HMAC). **대상 360°(§3.16 뷰)·TM 알림 상세의 대상 링크 키** |
+| `transaction_ref` | VARCHAR(256) | Y | NULL | | 관련 거래 ref. **hanpass-ph 정합**: `walletchg.charge_order_id`(충전)·`domestic.transaction_id`(국내)·`remit.transfer_number`(해외)·`*.wallet_transaction_id` 중 하나의 keyed token. TM 알림 상세 '관련 거래 목록'의 join 키 — 다건 거래는 `evidence.relatedTransactions[]`(아래)에 transaction_ref 배열로 보존 |
 | `severity` | VARCHAR(32) | N | — | enum | §5.19 alert_severity(LOW/MEDIUM/HIGH/CRITICAL) |
 | `status` | VARCHAR(32) | N | 'DETECTED' | enum,CHECK | §5.7 alert_status **6종 종결**(DETECTED/TRIAGED/CASE_OPENED/DISMISSED/ESCALATED/STR_RECOMMENDED, CHECK 6종). 이후 조사·보고·종결(INVESTIGATING/REPORTED/CLOSED)은 `aml_cases.status`(§5.9)가 인계 — alert enum에 미포함 |
-| `evidence` | JSONB | N | '{}' | | 생성 근거(velocity/window/feature) |
+| `evidence` | JSONB | N | '{}' | | **TM 알림 상세 데이터모델(정본).** ① 트리거: `scenarioCode`·`strIndicator`(데이터 신호 STR_001~015, `remit.str_indicators` 매핑) ·설명. ② 집계 패턴(측정값/기간/기준 충족, 예 `{ "measure":"분할충전 합계", "window":"5BD", "count":9, "amount":"480000.00", "currency":"PHP", "threshold":"…" }`). ③ `relatedTransactions[]`(관련 거래 — `transactionRef`·`channel`(충전/국내/해외)·`amount`·`currency`·`corridor`·`counterpartyRef`·`occurredAt`·`fdsDecisionRef` 링크). ④ `fundGraph`(자금그래프 funnel 미니뷰 — `wallet.transfer_links` 그래프 노드/엣지 요약). 모든 식별자 token/hash, raw PII 금지 |
 | `source_origin` | VARCHAR(32) | N | 'AML' | enum | §5.20 source_origin(AML/FDS/VENDOR, §15.5 dual-run 구분) |
 | `external_alert_ref` | VARCHAR(256) | Y | NULL | | 외부 vendor alert 식별자(Legacy Vendor Bridge `vendor_alert_id`). SaaS alert와 dual-run 구분 영속화(integration §7.3). `source_origin=VENDOR`일 때 채움 |
 | `created_at/created_by/updated_at/updated_by/trace_id/data_scope` | (공통) | | | | |
@@ -392,6 +393,7 @@ PK: `(tenant_id, case_id)`
 | `submission_error_code` | VARCHAR(64) | Y | NULL | | 전송 실패/FIU 오류 반려 오류코드(`SUBMISSION_FAILED` 시 저장) |
 | `resubmit_count` | INT | N | 0 | | 재제출 횟수(RESUBMIT — 기존 `:submit` 4-eyes 재사용, 회차별 이력 보존) |
 | `ctr_exemption_code` | VARCHAR(64) | Y | NULL | | CTR 제외(면제) 사유 코드(설계서 §14.3 — `GOV_ENTITY`/`FINANCIAL_INSTITUTION`/`OTHER_STATUTORY`, `CANCELLED` 제외 처리 시 필수·감사 대상) |
+| `closure_reason_code` | VARCHAR(64) | Y | NULL | | 종결(비제출) 사유 코드 — `REJECTED`/`CANCELLED` 전이 시 영속(설계서 §14.1a). `ctr_exemption_code`(CTR 면제 사유)와 **별개 의미·공존**. STR 미보고 사유 분포(API §2.7 `unreported-reasons`, PRD §12-B.3 ①)의 집계 원천. legacy 미영속 행은 통계에서 `UNSPECIFIED` 버킷(소급 seed 없음). 코드값(raw PII 아님). (T4 AML-ENG-04, V16 — **확정**) |
 | `evidence_hash` | VARCHAR(128) | Y | NULL | | 제출 manifest hash(§19.4) |
 | `created_at/created_by/updated_at/updated_by/trace_id` | (공통) | | | | |
 
@@ -442,6 +444,94 @@ PK: `(tenant_id, transfer_ref)`
 
 > 위 §3.1~§3.14가 정본 downstream의 **`aml_*` 도메인 테이블 14종**이다.
 
+### 3.17 `aml_ira_reports` — 기관위험평가(IRA, ML/TF) 회차 (T1 AML-ENG-01, 부록 E v6.0-2 확정)
+
+KoFIU 기관위험평가 지표 보고 회차. KR 확장 plugin 활성 고객사 한정(부록 E). 멀티테넌시 키 `(tenant_id, report_id)` — tenant 단위 규제보고(workspace 차원 없음).
+
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| `tenant_id` | VARCHAR(64) | N | — | PK | |
+| `report_id` | UUID | N | gen_random_uuid() | PK | 회차 식별자 |
+| `report_year` | INTEGER | N | — | | 보고 연도 |
+| `period` | VARCHAR(16) | N | — | | 회차/반기(예: `H1`) |
+| `status` | VARCHAR(32) | N | 'DRAFT' | enum,CHECK | §5.31 ira_report_status 6종(DRAFT/CONFIRMED/SUBMITTED/ACKNOWLEDGED/SUBMISSION_FAILED/CANCELLED) |
+| `indicator_total` | INTEGER | N | 0 | | 지표 총수 |
+| `indicator_confirmed` | INTEGER | N | 0 | | 확정 지표 수(지표 확정 n/N) |
+| `report_file_hash` | VARCHAR(128) | Y | NULL | | 보고파일 manifest hash(§19.4, CONFIRMED 전제) |
+| `approval_id` | UUID | Y | NULL | FK→aml_approvals | 제출 4-eyes 결재(`IRA_SUBMIT`) |
+| `submitted_ref` | VARCHAR(256) | Y | NULL | | 외부 제출 ref(=evidence_hash, FIU 폐루프 역참조) |
+| `submitted_at` | TIMESTAMPTZ | Y | NULL | | 제출 시각 |
+| `fiu_ack_ref` | VARCHAR(256) | Y | NULL | | FIU 접수번호 |
+| `submission_error_code` | VARCHAR(64) | Y | NULL | | 전송 실패/FIU 반려 코드 |
+| `fiu_score` | DOUBLE PRECISION | Y | NULL | | FIU 회신 점수 |
+| `peer_average` | DOUBLE PRECISION | Y | NULL | | 동종 peer 평균(FIU 회신) |
+| `evidence_hash` | VARCHAR(128) | Y | NULL | | 제출 manifest hash(§19.4) |
+| `created_at/created_by/updated_at/updated_by/data_scope/trace_id` | (공통) | | | | |
+
+PK: `(tenant_id, report_id)`. FK `(tenant_id)`→`aml_tenants`, `(tenant_id, approval_id)`→`aml_approvals`. 인덱스 `ix_ira_status (tenant_id, status, created_at DESC)`, UNIQUE `ux_ira_submitted (tenant_id, submitted_ref) WHERE submitted_ref IS NOT NULL`(FIU 폐루프 멱등). PII 미저장 — 지표는 집계 수치·evidence_hash 토큰만(§19.2).
+
+상태머신: `DRAFT → CONFIRMED → SUBMITTED → ACKNOWLEDGED|SUBMISSION_FAILED`, `DRAFT|CONFIRMED → CANCELLED`. CONFIRMED는 전 마스터 지표 확정 시 자동 도출. SUBMITTED 회차는 cancel/편집 차단(FIU 폐루프 보존).
+
+### 3.18 `aml_ira_indicators` — IRA 회차 지표값 (T1 AML-ENG-01)
+
+회차별 지표값(자동 수집 + 수동 입력). 자동 수집(auto-collection)은 엔진 RA/TM/screening metric에서 파생(고객 위험분포·STR/CTR 건수·제재 적중률·PEP 노출 등) — bo-api 로컬 파생 아님.
+
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| `tenant_id` | VARCHAR(64) | N | — | PK | |
+| `report_id` | UUID | N | — | PK,FK→aml_ira_reports | |
+| `indicator_code` | VARCHAR(64) | N | — | PK | 지표 코드(KR plugin 마스터 8종) |
+| `label` | VARCHAR(128) | Y | NULL | | 표시명 |
+| `unit` | VARCHAR(32) | Y | NULL | | 단위(ratio/percent/count/amount) |
+| `source` | VARCHAR(16) | N | 'MANUAL' | enum,CHECK | §5.32 ira_indicator_source 2종(AUTO/MANUAL) |
+| `auto_value` | DOUBLE PRECISION | Y | NULL | | 엔진 파생 자동값(AUTO) |
+| `manual_value` | DOUBLE PRECISION | Y | NULL | | 수동 입력값 |
+| `confirmed` | BOOLEAN | N | FALSE | | 지표 확정 여부 |
+| `evidence_hash` | VARCHAR(128) | Y | NULL | | 증빙 hash 토큰(원문 미저장) |
+| `note` | VARCHAR(512) | Y | NULL | | 비고 |
+
+PK: `(tenant_id, report_id, indicator_code)`. FK `(tenant_id, report_id)`→`aml_ira_reports` ON DELETE CASCADE. 지표 마스터 8종: `CUSTOMER_RISK_DISTRIBUTION`/`HIGH_RISK_CUSTOMER_RATIO`/`STR_FILING_COUNT`/`CTR_FILING_COUNT`/`SANCTIONS_HIT_RATE`/`PEP_EXPOSURE`(AUTO 파생) · `CROSS_BORDER_VOLUME`/`TRAINING_COMPLETION`(MANUAL 전용 — 엔진 원천 부재).
+
+### 3.19 `aml_high_risk_registry` — 당연고위험 레지스트리 헤더 (T2 AML-ENG-02, 부록 E v7.0 확정)
+
+당연고위험 분류 정책의 tenant별 헤더(참조 리스트 변경 버전 관리). 멀티테넌시 키 `(tenant_id)` — tenant 단위 정책(workspace 차원 없음, 가정 A3). 분류 기준(criteria)은 엔진 seed 정책(read-only, 가정 A2)으로 별도 테이블 미보유 — 엔진이 코드로 보유하고 GET 응답에 read-only 파생.
+
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| `tenant_id` | VARCHAR(64) | N | — | PK | |
+| `version` | BIGINT | N | 1 | | 참조 리스트 변경 시마다 증가(결재 EXECUTED 적용 시점). subjectRef `UPDATE\|<version>` 와 일치 |
+| `created_at/created_by/updated_at/updated_by` | (공통) | | | | |
+
+PK: `(tenant_id)`. FK `(tenant_id)`→`aml_tenants`. 1 tenant = 1 row(GET 첫 접근 시 seed). PII 미저장.
+
+### 3.20 `aml_high_risk_registry_items` — 참조 리스트 항목 (T2 AML-ENG-02)
+
+참조 리스트(상품·VASP·고액자산가) 항목(편집 대상). 항목 일치 고객은 RA 강제 상향 재평가 대상(가정 A6·A7).
+
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| `tenant_id` | VARCHAR(64) | N | — | PK,FK→aml_high_risk_registry | |
+| `list_type` | VARCHAR(32) | N | — | PK,enum,CHECK | §5.33 reference_list_type 3종(PRODUCT/VASP/HIGH_NET_WORTH, 가정 A4) |
+| `subject_ref` | VARCHAR(128) | N | — | PK | tokenized 고객/상품 식별자(원문 미저장, §19.2) |
+| `tier` | VARCHAR(16) | N | — | enum,CHECK | §5.34 classification_tier 2종(HIGH/VERY_HIGH, 가정 A5) |
+| `label` | VARCHAR(128) | Y | NULL | | 마스킹 표시명 |
+
+PK: `(tenant_id, list_type, subject_ref)`. FK `(tenant_id)`→`aml_high_risk_registry` ON DELETE CASCADE. 인덱스 `ix_hrr_items_subject (tenant_id, subject_ref)`(RA 강제 상향 매칭 조회). tier→RA 강제 floor: `VERY_HIGH`→PROHIBITED, `HIGH`→HIGH(상향만 보장, 가정 A6).
+
+### 3.21 `aml_pii_vault` — PII reveal 가역암호 vault (T3 AML-ENG-03, ADR 2026-06-15 확정, Flyway V15)
+
+마스킹 토큰(`target_ref`)·필드별 원문의 **암호문** 역참조 저장소. reveal(`POST /internal/v1/aml/pii/reveal`, API §2.6)의 cleartext 산출 원천이다(§2.2). **평문 컬럼 0개** — `ciphertext` 만 저장(§2.2 "원문 컬럼 금지" 유지). 멀티테넌시 키 `(tenant_id, target_ref, field)` — PII reveal 은 고객 단위(workspace 차원 없음, 가정 A3).
+
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| `tenant_id` | VARCHAR(64) | N | — | PK,FK→aml_tenants | |
+| `target_ref` | VARCHAR(128) | N | — | PK | tokenized 대상 식별자(원문 미저장, §19.2) |
+| `field` | VARCHAR(16) | N | — | enum,CHECK | §5.35 pii_field 4종(NAME/DOC/ACCOUNT/WALLET, §2.2 의미 패턴) |
+| `ciphertext` | TEXT | N | — | | `SecretCipherPort.encrypt(원문)`(AES-256-GCM, `aws`=KMS). 평문 절대 미저장 |
+| `created_at/updated_at` | TIMESTAMPTZ | N | now() | | upsert 시 갱신 |
+
+PK: `(tenant_id, target_ref, field)`. FK `(tenant_id)`→`aml_tenants`. 인덱스 `ix_aml_pii_vault_target (tenant_id, target_ref)`(target 단위 reveal 역참조). reveal 은 복호화로 transient cleartext 산출 — 영속·로그 금지(§19.2, 가정 A6). vault 적재 시점·전 필드 확장은 후속(가정 A2).
+
 ### 3.15 지원 인프라 테이블 (도메인 14종을 떠받치는 필수 보조)
 
 설계서 §8(canonical event), §13.5(결재·아웃박스), §15.7(idempotency), §19.3(append-only audit)이 요구하는 보조 테이블 5종(canonical_events/approvals/audit_events/evidence_exports/outbox).
@@ -455,9 +545,9 @@ PK: `(tenant_id, transfer_ref)`
 | `source_system` | VARCHAR(64) | N | FK | |
 | `schema_version` | VARCHAR(80) | N | | |
 | `idempotency_key` | VARCHAR(256) | N | UNIQUE(tenant_id,...) | 중복 ingest 방지(§15.7) |
-| `event_type` | VARCHAR(80) | N | | §8.1 event family(transaction.completed 등) |
+| `event_type` | VARCHAR(80) | N | | §8.1 event family(transaction.completed 등). **hanpass-ph 소스별 emit**: `member-svc`→customer.*/entity.*/beneficial-owner.*, `walletchg/domestic/remit/inbound-svc`→transaction.requested, `remit/wallet-svc`→settlement.posted, `wallet-svc`→account.* |
 | `occurred_at` | TIMESTAMPTZ | N | | |
-| `payload` | JSONB | N | | 정규화 payload(PII는 ref/hash) |
+| `payload` | JSONB | N | | 정규화 payload(PII는 ref/hash). **corridor 주석(hanpass-ph)**: cross-border 거래(remit-svc)는 `corridor` 객체(`sendCountry`/`receiveCountry`·`sendCurrency`/`receiveCurrency` ← `remit.send_country/receive_country`·`send_currency/receive_currency`)와 USD 정규화 `amountBase`(← `remit.usd_amount/report_amount`)를 payload 에 보존. TM corridor 시나리오·대상 360°의 거래 corridor 표시 입력 |
 | `payload_hash` | VARCHAR(128) | N | NOT NULL | **API 요청 DTO(`IngestEventRequest.payloadHash`)는 optional — DB는 서버 채움 NOT NULL.** 호출자가 미제공 시 aml-svc ingest 어댑터가 수신 raw payload의 sha256을 자동 계산하여 INSERT. raw_payload 원문 미저장은 §2.2 기준(설계서 §8.2 폐기 `stored` 플래그 미사용). (QA 이격 aml:db-api HIGH 정합 완료: API §3.1 `payloadHash` optional 방향 확정, DB NOT NULL 유지. QA #7 low: `stored` 참조 제거 완료) |
 | `trace_id` | VARCHAR(64) | Y | | |
 | `created_at/created_by` | (공통) | | | append-only |
@@ -470,7 +560,7 @@ PK: `(tenant_id, event_id)` · UNIQUE: `(tenant_id, idempotency_key)`
 |---|---|---|---|---|
 | `tenant_id` | VARCHAR(64) | N | PK | |
 | `approval_id` | UUID | N | PK | |
-| `subject_type` | VARCHAR(64) | N | enum,CHECK | §5.16 subject_type 16종: `WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL`/`RISK_OVERRIDE`/`EDD_CLOSE`/`STR_SUBMIT`/`CTR_SUBMIT`/`TRAVEL_RULE_EXCEPTION`/`WATCHLIST_IMPORT`/`COUNTRY_RISK`/`POLICY_PACK`/`SECRET_CHANGE`/`RELATIONSHIP_REJECT`/`TM_SCENARIO`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE` (§13.5). **API `ApprovalDto.subjectType` enum이 정본**(전수), DB는 이를 동기화. V09 DDL CHECK 제약도 16종 기준. |
+| `subject_type` | VARCHAR(64) | N | enum,CHECK | §5.16 subject_type 18종: `WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL`/`RISK_OVERRIDE`/`EDD_CLOSE`/`STR_SUBMIT`/`CTR_SUBMIT`/`TRAVEL_RULE_EXCEPTION`/`WATCHLIST_IMPORT`/`COUNTRY_RISK`/`POLICY_PACK`/`SECRET_CHANGE`/`RELATIONSHIP_REJECT`/`TM_SCENARIO`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`/`IRA_SUBMIT`/`HIGH_RISK_REGISTRY` (§13.5). **API `ApprovalDto.subjectType` enum이 정본**(전수), DB는 이를 동기화. V09 DDL CHECK 16종 → V13 17종(`IRA_SUBMIT`) → V14 18종(`HIGH_RISK_REGISTRY`). |
 | `subject_ref` | VARCHAR(256) | N | | 결재 대상 식별(case_id/report_id 등) |
 | `approval_line` | VARCHAR(64) | N | enum | §5.12 approval_line(MAKER_CHECKER/AML_OFFICER/COMPLIANCE_MANAGER/REPORTING_OFFICER/SECURITY_ADMIN/EXECUTIVE_APPROVAL) |
 | `status` | VARCHAR(32) | N | enum | §5.13 approval_status(DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED) |
@@ -541,6 +631,19 @@ PK: `(tenant_id, export_id)`
 | `created_at/created_by` | (공통, append 중심) | | | | |
 
 PK: `(tenant_id, outbox_id)` · UNIQUE: `(tenant_id, aggregate_type, aggregate_ref, event_type, payload_hash)` (발행 멱등)
+
+### 3.16 대상 360° 통합 뷰 (read model, 신규 — hanpass-ph 재그라운딩)
+
+> **물리 마스터 테이블 미보유** — `tx-history-svc` 회원 통합 이력(read model) + `member-svc` CDD/screening + `wallet-svc` `transfer_links` 자금그래프를 결합한 **읽기 전용 통합 대상뷰**다. RA-003 드릴다운·CASE 타임라인·TM 알림 상세의 공통 골격이며, API `GET /api/v1/bo/aml/subjects/{customerRef}/360`(API §2.x·§3.x)·`GET /aml/customers/{customerRef}/profile`(CDD-002)의 backing 모델로 투영한다(별도 영속 테이블이 아닌 join/aggregation 산출).
+
+| 결합 축 | 원천(hanpass-ph) | AML 매핑 | 비고 |
+|---|---|---|---|
+| 신원·CDD·screening | `member-svc`(`zoloz_aml_screening`) | `aml_customers`·`aml_screening_results`·`aml_risk_scores` | risk_grade·next_review_due_at·당연고위험 사유 |
+| 거래 이력(360° 피드) | `tx-history-svc`(read model) | `aml_canonical_events`(transaction.*) + `aml_alerts.transaction_ref` | 충전/국내/해외 통합 타임라인·corridor |
+| 자금그래프(funnel) | `wallet-svc`(`transfer_links`) | `aml_relationships`(`USES_ACCOUNT`/`REPEATED_PAYEE`) | TM 알림 `evidence.fundGraph` 미니뷰 원천 |
+
+- 식별 키: `customer_ref`(= `member.member_id` keyed HMAC). **주의**: `member_id` 가 `domestic-svc`만 varchar(36) 이므로 통합뷰 join 시 문자열 정규화(trim·case) 필요.
+- raw PII 미노출(token/hash·마스킹). STR 건수 등 tipping-off 민감 항목은 준법감시 전담 scope 한정 투영(§19.2a).
 
 ---
 
@@ -708,7 +811,7 @@ stateDiagram-v2
 
 > **DB가 정본 enum**(CHECK 4종). integration §4.3/§9.3 payload의 `REVIEW`는 본 enum에 없으므로 `HIGH_RISK`로 정규화 매핑한다(exception 큐 트리거는 `risk_status IN (HIGH_RISK, SANCTIONED_ADDRESS, MIXER_EXPOSURE)` 또는 `completeness_status=INCOMPLETE`). integration의 `REVIEW` 표기는 본 enum 4종으로 교정 대상.
 
-### 5.16 subject_type — 결재 대상 (설계서 §13.5)
+### 5.16 subject_type — 결재 대상 (설계서 §13.5) — **17종(확정)**
 
 | 코드값 | 표시값 | 결재 트리거 |
 |---|---|---|
@@ -728,7 +831,11 @@ stateDiagram-v2
 | `TM_SCENARIO` | TM 시나리오 변경 | TM 시나리오 활성화(`tm-scenarios/{code}:activate`, 4-eyes) |
 | `CHECKLIST_CHANGE` | CDD 체크리스트 변경 | CDD checklist 항목 변경·상신(§13.4 CDD, T-12). **API 정본 코드값** — 구 `CDD_CHECKLIST`는 비정본이므로 사용 금지 |
 | `PERIODIC_REVIEW_CHANGE` | 주기적 재확인 변경 | periodic review 기준·주기 변경(§11.2 재심사) |
+| `IRA_SUBMIT` | 기관위험평가 제출/취소 | IRA(기관위험평가, ML/TF) 회차 보고파일 제출·취소(부록 E v6.0-2, T1 AML-ENG-01). `SUBMIT`\|`reportId` / `CANCEL`\|`reportId` subjectRef 접두로 분기 |
+| `HIGH_RISK_REGISTRY` | 당연고위험 레지스트리 변경 | 당연고위험 참조 리스트(상품·VASP·고액자산가) 변경 상신(부록 E v7.0, T2 AML-ENG-02). `UPDATE`\|`<version>` subjectRef, 전체 staged payload drift guard. 결재 EXECUTED 시 적용 + 일치 고객 RA 강제 상향 재평가 트리거 |
 
+> **HIGH_RISK_REGISTRY 추가(17→18종, 확정)**: T2(AML-ENG-02)로 aml-svc 엔진에 당연고위험 레지스트리(HRR) admin surface 정식 구축(부록 E v7.0 "제안 상태" → "확정"). scope `aml:admin:high-risk-registry`(가정 A1). 분류 기준(criteria)은 read-only seed(가정 A2), PUT 변경 대상은 참조 리스트로 한정. `HIGH_RISK_REGISTRY` 단일 subjectType이 참조 리스트 변경을 `UPDATE|<version>` subjectRef + 전체 staged payload self-consistency drift guard(PERIODIC_REVIEW_CHANGE/SECRET_CHANGE 군)로 커버. maker≠checker 일관. 적용은 결재 EXECUTED 시점이며 이때 일치 고객을 엔진 RA가 강제 상향 재평가(VERY_HIGH→PROHIBITED·HIGH→HIGH floor, 상향만 보장, 가정 A6·A7). V14 `aml_approvals.subject_type` CHECK 18종으로 갱신(V3 인라인 + V13 명명 CHECK 양쪽 DROP 후 18종 단일 제약 통합).
+> **IRA_SUBMIT 추가(16→17종, 확정)**: T1(AML-ENG-01)로 aml-svc 엔진에 IRA admin surface 정식 구축(부록 E v6.0-2 "제안 상태" → "확정"). `IRA_SUBMIT` 단일 subjectType이 submit·cancel 양 액션을 `subjectRef` 접두(`SUBMIT|`/`CANCEL|`)로 커버(STR_SUBMIT 패턴 차용). maker≠checker·payload drift guard 일관(submit 라인은 live 지표 재파생, cancel 라인은 staged self-consistency). V13 `aml_approvals.subject_type` CHECK 17종으로 갱신.
 > **API `ApprovalDto.subjectType` enum이 정본(전수)**, DB `aml_approvals.subject_type`은 이를 동기화한다. `TM_SCENARIO`는 TM 시나리오 활성화 결재 대상으로 추가(API §3.7·PRD §11.1 동기화). `CHECKLIST_CHANGE`(구 `CDD_CHECKLIST` — QA 이격 aml:db-api HIGH 해소: API 정본 코드값으로 교정)·`PERIODIC_REVIEW_CHANGE`는 T-12 결재 상신 API 계약(`PUT .../cdd/checklists/{id}`, API §10) 착수 전 필수. API §3.7 ApprovalDto·§10 등재표도 본 16종(`CHECKLIST_CHANGE` 포함)으로 동기화해야 한다. V09 `aml_approvals.subject_type` DDL CHECK 제약도 16종 기준(`CHECKLIST_CHANGE` 포함)으로 갱신.
 
 ### 5.17 outbox_status (integration §8.1)
@@ -738,6 +845,31 @@ stateDiagram-v2
 `PENDING`(대기) / `PROCESSING`(생성중) / `COMPLETED`(완료) / `FAILED`(실패)
 
 > API `EvidenceExportResponse.status` 필드의 backing enum. DB가 물리 정본.
+
+### 5.31 ira_report_status (`aml_ira_reports.status`, T1 AML-ENG-01, 부록 E v6.0-2)
+`DRAFT`(작성중) / `CONFIRMED`(지표 확정 N/N) / `SUBMITTED`(제출·FIU 회신 대기) / `ACKNOWLEDGED`(FIU 접수, fiu_score·peer_average 회신) / `SUBMISSION_FAILED`(전송 실패/FIU 반려) / `CANCELLED`(취소)
+
+> 상태머신 `DRAFT→CONFIRMED→SUBMITTED→ACKNOWLEDGED|SUBMISSION_FAILED`, `DRAFT|CONFIRMED→CANCELLED`. DB가 물리 정본(CHECK 6종, V13). 도메인 enum `IraReportStatus`와 1:1.
+
+### 5.32 ira_indicator_source (`aml_ira_indicators.source`, T1 AML-ENG-01)
+`AUTO`(엔진 RA/TM/screening metric 파생) / `MANUAL`(수동 입력 — CROSS_BORDER_VOLUME·TRAINING_COMPLETION 등 엔진 원천 부재 지표)
+
+### 5.33 reference_list_type (`aml_high_risk_registry_items.list_type`, T2 AML-ENG-02, 부록 E v7.0)
+`PRODUCT`(당연고위험 상품군) / `VASP`(가상자산사업자) / `HIGH_NET_WORTH`(고액자산가)
+
+> DB가 물리 정본(CHECK 3종, V14). 도메인 enum `ReferenceListType`·bo-api 계약(가정 A4)과 1:1.
+
+### 5.34 classification_tier (`aml_high_risk_registry_items.tier`, T2 AML-ENG-02, 부록 E v7.0)
+`HIGH`(당연고위험) / `VERY_HIGH`(당연초고위험)
+
+> DB가 물리 정본(CHECK 2종, V14). 도메인 enum `ClassificationTier`와 1:1. tier→RA 강제 floor: `VERY_HIGH`→PROHIBITED·`HIGH`→HIGH(상향만 보장, 가정 A6).
+
+### 5.35 pii_field (`aml_pii_vault.field`, T3 AML-ENG-03, ADR 2026-06-15)
+`NAME`(이름) / `DOC`(신분증·문서번호) / `ACCOUNT`(계좌) / `WALLET`(지갑주소)
+
+> DB가 물리 정본(CHECK 4종, V15). 도메인 enum `PiiField`와 1:1. §2.2 hash 의미 패턴(이름/문서번호/계좌/지갑주소)과 정합. reveal vault(§3.21) 키의 일부.
+
+> DB가 물리 정본(CHECK 2종, V13). 도메인 enum `IraIndicatorSource`와 1:1.
 
 ### 5.18 alert_type (설계서 §12, `aml_alerts.alert_type`)
 | 코드 | 표시 | 비고 |
@@ -865,6 +997,10 @@ stateDiagram-v2
 | V18 | `V18__aml_evidence_export_status.sql` | `aml_evidence_exports`에 `status VARCHAR(32) NOT NULL DEFAULT 'PENDING'` 컬럼 추가(QA #19); `reason VARCHAR(512)` nullable→`NOT NULL DEFAULT ''` 강화(QA #20): ① `UPDATE aml.aml_evidence_exports SET reason='' WHERE reason IS NULL`, ② `ALTER TABLE aml.aml_evidence_exports ALTER COLUMN reason SET NOT NULL`. | V14 |
 | V19 | `V19__aml_report_submission_loop.sql` | `aml_regulatory_reports`에 FIU 회신 폐루프 컬럼 추가(설계서 §14.1a/§14.3): `fiu_ack_ref VARCHAR(256)`, `submission_error_code VARCHAR(64)`, `resubmit_count INT NOT NULL DEFAULT 0`, `ctr_exemption_code VARCHAR(64)`. `status` CHECK를 8종(`ACKNOWLEDGED`/`SUBMISSION_FAILED` 추가, §5.11)으로 확장. | V10 |
 | V20 | `V20__aml_source_systems_status_and_tenant_status.sql` | (1) `aml_source_systems`에 `status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE'` 컬럼 추가 + `data_scope VARCHAR(64)` 컬럼 추가(§3.2 QA #4 HIGH·#5 MEDIUM 정합). (2) `aml_tenants.status` CHECK 제약을 **4종**(`ONBOARDING`/`ACTIVE`/`SUSPENDED`/`OFFBOARDED`)으로 갱신 + DEFAULT `'ACTIVE'` → `'ONBOARDING'` 변경(QA cross #119 HIGH·#127 MEDIUM): ① `ALTER TABLE aml.aml_tenants ALTER COLUMN status SET DEFAULT 'ONBOARDING'`; ② 기존 row 중 `onboarding_status NOT IN ('ACTIVE','REGISTERED')` → `status='ONBOARDING'` 백필(신규 등록 미완 고객사); ③ `OFFBOARDING` → `OFFBOARDED` 데이터 마이그레이션. CHECK 제약 DROP→재생성(4종 포함). | V01,V17a |
+| IRA(구현 `V13__phase_ira_surface.sql`) | `V13__phase_ira_surface.sql` | **T1 AML-ENG-01**: (1) `aml_ira_reports` 생성(§3.17, status CHECK 6종, FK→aml_tenants/aml_approvals, `ix_ira_status`·`ux_ira_submitted`). (2) `aml_ira_indicators` 생성(§3.18, source CHECK 2종, FK→aml_ira_reports ON DELETE CASCADE). (3) `aml_approvals.subject_type` CHECK **16→17종**(`IRA_SUBMIT` 추가, §5.16). (4) `aml_outbox.aggregate_type` CHECK에 `IRA_REPORT` 추가(§3.15 제출 폐루프 enqueue). additive only. | 구현 V1~V12 |
+| HRR(구현 `V14__phase_high_risk_registry.sql`) | `V14__phase_high_risk_registry.sql` | **T2 AML-ENG-02**: (1) `aml_high_risk_registry` 생성(§3.19, tenant 1행 헤더, FK→aml_tenants). (2) `aml_high_risk_registry_items` 생성(§3.20, list_type CHECK 3종·tier CHECK 2종, FK→aml_high_risk_registry ON DELETE CASCADE, `ix_hrr_items_subject`). (3) `aml_approvals.subject_type` CHECK **17→18종**(`HIGH_RISK_REGISTRY` 추가, §5.16) — V3 인라인 `aml_approvals_subject_type_check` + V13 명명 `ck_aml_approvals_subject_type` 양쪽 DROP 후 18종 단일 제약 통합. additive only. | 구현 V1~V13 |
+| PII vault(구현 `V15__phase_pii_vault.sql`) | `V15__phase_pii_vault.sql` | **T3 AML-ENG-03**: `aml_pii_vault` 생성(§3.21, PK `(tenant_id, target_ref, field)`, field CHECK 4종 §5.35, `ciphertext` 평문 미저장, FK→aml_tenants, `ix_aml_pii_vault_target`). reveal(`/internal/v1/aml/pii/reveal`) cleartext 산출 원천(가역암호). additive only. | 구현 V1~V14 |
+| 보고 종결 사유(구현 `V16__report_closure_reason.sql`) | `V16__report_closure_reason.sql` | **T4 AML-ENG-04**: `aml_regulatory_reports`에 `closure_reason_code VARCHAR(64)` 컬럼 추가(§3.12, nullable — legacy 행 무영향). `REJECTED`/`CANCELLED` 종결 시 사유 코드 영속 → STR 미보고 사유 분포(API §2.7 `unreported-reasons`) 집계 원천. `ctr_exemption_code`와 별개·공존. additive only(`ADD COLUMN IF NOT EXISTS`). | 구현 V1~V15 |
 
 > 롤백: Flyway는 forward-only이므로 각 V는 idempotent하게 작성하고, 데이터 변형은 별도 보정 마이그레이션으로 분리. 운영 롤백은 `UNDO` 대신 보상 마이그레이션 + feature flag로 처리. V17a/V17b는 2-phase 적용(additive-then-drop) 권장 — V17a 적용 후 운영 검증을 거쳐 V17b를 별도 배포로 진행한다.
 
@@ -900,6 +1036,9 @@ stateDiagram-v2
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-06-19 | **데이터 레이어 hanpass-ph 재그라운딩 + TM 알림 evidence·거래·대상360° 재설계.** §3.2 `aml_source_systems.source_system` 카탈로그를 hanpass-ph 7실서비스(member/walletchg/domestic/remit/wallet/tx-history/inbound-svc)로 현행화(REST sync). §3.6/§3.7 watchlist provider 를 `member-svc zoloz_aml_screening` 신호로 정합·48h 신선도 fail-closed 명시. §3.8 screening score_breakdown/reason_codes 를 zoloz decision/risk_level/total_hits/hit_results 로 매핑. §3.10 `aml_alerts.transaction_ref`·`evidence` 를 **TM 알림 상세 데이터모델**(트리거·집계 패턴·관련 거래 목록·자금그래프 funnel)로 보강. §3.15 canonical_events `event_type`/`payload` 에 hanpass-ph 소스별 emit·corridor(send/receive country·currency·USD amount_base) 주석. **§3.16 대상 360° 통합 뷰 신설**(tx-history + member CDD/screening + wallet transfer_links read model). **규제 레이어(CTR/STR 임계·기한·KoFIU 의심유형) 불변** — 데이터 신호(`StrIndicator`·`sanction_screening_event`)만 매핑하고 규제 STR 분류는 KR 정본 유지. | data-modeler. 식별자 원문 금지(token/keyed-HMAC). domestic-svc `member_id` varchar(36) join 정규화 주의. PRD §1.5/§7·API §2~§3·integration §3/§7 동기화. |
+| 2026-06-15 | **T4 (AML-ENG-04) STR 통계 원천 — 보고 종결 사유 컬럼 역삽입 (확정).** **§3.12 `aml_regulatory_reports`에 `closure_reason_code VARCHAR(64)` 컬럼 추가** — nullable(기존 행 무영향). `REJECTED`/`CANCELLED` 종결 시 사유 코드 영속(설계서 §14.1a), STR 미보고 사유 분포(API §2.7 `GET /admin/aml/reports/stats/unreported-reasons`, PRD §12-B.3 ①) 집계 원천. `ctr_exemption_code`(CTR 면제 사유)와 별개 의미·공존. legacy 미영속 행은 통계에서 `UNSPECIFIED`(소급 seed 없음). 코드값(raw PII 아님). **§7 V16(구현 `V16__report_closure_reason.sql`) 마이그레이션 등재**(구현 V1~V15 의존, `ADD COLUMN IF NOT EXISTS` additive only). 지연일수 분포(`str-delay`)는 신규 컬럼 없이 기존 `created_at`/`submitted_at`에서 파생. 정본=태스크 `20260615-exposed-gap-development-tasks.md` §T4·plan `docs/ai/plans/2026-06-15-t4-aml-stat-source-surface.md`·API §2.7/§3.6·PRD §12-B.3. | aegis-java-implementer. API §2.7 stats 행·§3.6 DelayBucket/UnreportedReason DTO와 동기화. |
+| 2026-06-15 | **T3 (AML-ENG-03) PII reveal vault 역삽입 (확정).** (1) **§3.21 `aml_pii_vault` 신설** — PK `(tenant_id, target_ref, field)`, `ciphertext`(평문 미저장, AES-256-GCM `SecretCipherPort`), FK→aml_tenants, `ix_aml_pii_vault_target`. reveal(`POST /internal/v1/aml/pii/reveal`, API §2.6) cleartext 산출 원천(가역암호 vault — §2.2 "원문 컬럼 금지" 유지). (2) **§2.2 보강** — "PII reveal 원천 = 가역암호 vault" 명문화(단방향 hash 로는 역참조 불가, vault 는 암호문만 저장하므로 평문 컬럼 금지 유지). (3) **§5.35 pii_field enum 신설** — 4종(NAME/DOC/ACCOUNT/WALLET, CHECK, 도메인 `PiiField` 1:1). (4) **§7 V15(구현 `V15__phase_pii_vault.sql`) 마이그레이션 등재**(구현 V1~V14 의존, additive only). 정본=태스크 `20260615-exposed-gap-development-tasks.md` §T3·ADR `docs/ai/decisions/2026-06-15-aml-eng-03-pii-reveal.md`. vault 적재 시점·전 필드 확장은 후속(가정 A2). | aegis-java-implementer. API §2.6 reveal 행과 동기화. |
 | 2026-06-10 | **QA 이격 DB 담당 정합화 (doc-consistency-report-all 기준)**: (1) **HIGH §3.2 `aml_source_systems`에 `status` 컬럼 추가** — `status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE'`(`ACTIVE`/`DISABLED` enum, 설계서 §17.1 DDL·§16.2.1 정본·QA #4). (2) **MEDIUM §3.2 `aml_source_systems`에 `data_scope` 컬럼 추가** — `data_scope VARCHAR(64) Y NULL`(§2.1 공통 규약 전 운영 테이블 적용 원칙, QA #5). (3) **LOW §2.2 `stored` 플래그 폐기 명문화** — §2.2 `stored=false` 표현 제거(설계서 §8.2 2026-06-07 폐기 확정, QA #7); §3.15 `aml_canonical_events.payload_hash` 설명에서 `stored=false` 참조도 제거. (4) **HIGH §5.28b `aml_tenants.status` 4종 동기화** — 3종(`ACTIVE`/`SUSPENDED`/`OFFBOARDING`) 폐기 → 4종(`ONBOARDING`/`ACTIVE`/`SUSPENDED`/`OFFBOARDED`) 신설, §3.1 DEFAULT `'ACTIVE'` → `'ONBOARDING'` 변경(FDS §11.6.7·`fds_tenants.tenant_status` 동기화, QA cross #119 HIGH·#127 MEDIUM). (5) §7 V20 마이그레이션 신설(aml_source_systems 컬럼 추가·aml_tenants.status 4종 갱신·OFFBOARDING→OFFBOARDED 데이터 마이그레이션). (6) §8 동기화 확인 표에 4개 항목 추가. | data-modeler. 설계서 §16.0c도 4종으로 동기화 대상(파생→정본 역삽입). |
 | 2026-06-10 | **준법감시인 검토 반영(상위 정본=설계서 §14.1a/§14.3/§19.3 2026-06-10 갱신) 동기화.** (1) **§5.11 report_status 8종 확장** — `ACKNOWLEDGED`(FIU 접수)·`SUBMISSION_FAILED`(전송 실패/FIU 오류 반려) 추가 + FIU 회신 폐루프·재제출(RESUBMIT)·기각/취소 4-eyes 통제 주석. (2) **§3.12 `aml_regulatory_reports` 컬럼 4종 추가** — `fiu_ack_ref`(FIU 접수번호)·`submission_error_code`(오류코드)·`resubmit_count`(재제출 횟수)·`ctr_exemption_code`(CTR 제외 사유 코드, §14.3 제외 처리=CANCELLED+코드·4-eyes·감사). (3) **§6 보존정책 법정 수치 명문화** — STR/CTR·CDD·의심거래 자료 5년(특금법 §5의4)·감사로그 7년. (4) **§7 V19 마이그레이션 등재**(V10 의존). | data-modeler. API §3.6 DTO·연동 §3.4/§5.4·PRD §1.7/§9 동기화 대상. |
 | 2026-06-08 | **QA #19/#20 DB 정합화(aml:db-api)**: §3.15 `aml_evidence_exports`에 `status VARCHAR(32) NOT NULL DEFAULT 'PENDING'` 컬럼 추가(API `EvidenceExportResponse.status` backing, QA #19 HIGH); `reason VARCHAR(512)` nullable→`NOT NULL DEFAULT ''` 강화(API 필수 일치, QA #20 MED). §5.30 `evidence_export_status` enum(4종) 신설. §7 V18 마이그레이션 등재(V14 의존). QA #21 확인 — `aml_risk_scores` §3.9의 `target_type`·`model_code`·`is_override` 3컬럼 기존 존재 확인, DB 변경 불필요(API §3.3 추가 대상). QA #24 — DB 변경 불필요. | data-modeler |
