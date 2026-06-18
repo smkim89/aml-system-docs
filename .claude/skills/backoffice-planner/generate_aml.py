@@ -324,11 +324,13 @@ def wlf_001(p):
          ["scr-4a18", "cust_…340", "개인", "PEP관련자", "0.66", "검토필요", "▶"]],
         [0.19, 0.22, 0.10, 0.18, 0.10, 0.13, 0.08])
     y = wf.tab_chips(s, y, ["매칭 후보·근거", "점수 분해", "이전 판정 이력"], active=0)
-    y = wf.two_panels(s, y, 1.5,
+    y = wf.two_panels(s, y, 1.65,
         ("선택 후보 근거 — scr-9f3a (매칭 명단·마스킹)", ["엔트리 / 항목", "값"],
-         [["OFAC SDN (제재)", "제재명 유사·생년 일치"], ["UN 제재", "제재명 유사"],
+         [["스크리닝 소스", "member-svc zoloz_aml_screening"],
+          ["신선도", "12h 전 (48h 초과 시 fail-closed)"],
+          ["OFAC SDN (제재)", "제재명 유사·생년 일치"], ["UN 제재", "제재명 유사"],
           ["적용 룰버전", "WLF-KR v12"]],
-         [0.45, 0.55]),
+         [0.42, 0.58]),
         ("점수 분해 (factor 기여)", ["factor", "기여"],
          [["이름 유사", "0.55"], ["생년월일", "0.20"], ["국가", "0.10"], ["문서", "0.07"]],
          [0.6, 0.4]))
@@ -338,6 +340,7 @@ def wlf_001(p):
         "상단 [시뮬레이션] 버튼 → AML-WLF-004 (단건 테스트·임의 수행)  /  하단 ③ [이전 판정 이력] 탭 → 과거 판정"])
     wf.info_panel(s, "AML-WLF-001", [
         "• 권한 조회 aml:case:read · 판정 상신 aml:case:update · 오탐 면제 aml:admin:watchlist",
+        "• 스크리닝 소스 member-svc zoloz_aml_screening(decision/risk_level/total_hits/hit_results) · 48h 초과 fail-closed",
         "• 탭 ①검토 필요 → ②상위 승인 → ③처리 이력 (업무 순서)",
         "• 상단 [시뮬레이션] 버튼 → AML-WLF-004 도구 화면 (QA #5 정합)",
         "• 하단 상세 탭: 매칭 후보·근거 / 점수 분해 / 이전 판정 이력 (master-detail 3탭)",
@@ -1243,28 +1246,46 @@ def tm_001(p, tab=0):
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, TM_001_TABS, active=tab)
     if tab == 0:
-        y = wf.filters(s, y, ["시나리오 전체", "출처 전체", "심각도 전체", "상태 전체", "기간 전체"])
-        y = wf.table_block(s, y, 1.95, "TM 알림 적체 [고객사: 은행 A] · 행 ▶ → AML-CASE-002 (케이스 생성)",
-            ["알림ID", "시나리오", "대상(식별자)", "발생 출처", "심각도", "상태", "동작"],
-            [["alt-3301", "구조화거래", "cust_…12", "AML 모니터링", "높음", "탐지", "[케이스]"],
-             ["alt-3290", "뮬 네트워크", "ent_…77", "AML 모니터링", "매우높음", "1차분류", "[케이스]"],
-             ["alt-3277", "급속이동", "cust_…90", "FDS 에스컬레이션", "높음", "케이스생성", "▶"],
-             ["alt-3260", "고위험 corridor", "cust_…45", "AML 모니터링", "중간", "탐지", "[케이스]"]],
-            [0.11, 0.18, 0.14, 0.18, 0.11, 0.13, 0.15])
-        wf.callout(s, y, "① 알림 적체 — [케이스] 클릭 → AML-CASE-002 케이스 생성", [
-            "발생 출처 컬럼·필터 — AML 모니터링 / FDS 에스컬레이션(source_origin) 구분",
-            "[기각](사유) · [상위 escalation]은 결재 불필요·감사",
-            "다음 → ② 시나리오 관리 탭에서 시나리오 클릭 → AML-TM-002"])
+        y = wf.filters(s, y, ["시나리오", "출처", "심각도", "상태", "기간"])
+        y = wf.filters(s, y, ["채널", "corridor", "대상 식별자(customerRef)"])
+        y = wf.table_block(s, y, 1.05, "TM 알림 적체 [고객사: 은행 A] · 행 클릭 → 하단 알림 상세 · [케이스] → AML-CASE-002",
+            ["알림ID", "시나리오(StrIndicator)", "대상", "발생 출처", "심각도", "상태", "동작"],
+            [["alt-3301", "구조화거래·STR_003", "cust_…12", "AML 모니터링", "높음", "탐지", "[케이스]"],
+             ["alt-3290", "뮬 네트워크·STR_007", "ent_…77", "AML 모니터링", "매우높음", "1차분류", "[케이스]"],
+             ["alt-3277", "급속이동·STR_005", "cust_…90", "FDS 에스컬레이션", "높음", "케이스생성", "▶"]],
+            [0.11, 0.22, 0.11, 0.17, 0.11, 0.13, 0.15])
+        y = wf.two_panels(s, y, 1.65,
+            ("▼ alt-3301 알림 상세 — ① 트리거 · ② 근거(evidence) 집계",
+             ["항목", "값"],
+             [["트리거 시나리오", "구조화거래(STRUCTURING)"],
+              ["데이터 신호", "StrIndicator STR_003(분할거래)"],
+              ["측정 · 기간", "분할충전 합계 · 5영업일"],
+              ["충족(evidence)", "9건 합계 ₱480,000 (기준 충족)"],
+              ["대상 360°", "subject360Ref → [대상 360° ▶]"]],
+             [0.30, 0.70]),
+            ("③ 관련 거래 (transactionRef·금액·통화·corridor·FDS판정)",
+             ["txRef", "채널", "금액·통화", "corridor", "FDS판정"],
+             [["chg_…01", "충전", "₱60,000", "PH→PH", "허용 ▶"],
+              ["chg_…04", "충전", "₱55,000", "PH→PH", "허용 ▶"],
+              ["rmt_…07", "해외", "₱120,000", "PH→VN", "보류 ▶"],
+              ["rmt_…09", "해외", "₱90,000", "PH→VN", "허용 ▶"]],
+             [0.18, 0.13, 0.24, 0.20, 0.25]))
+        wf.callout(s, y, "⑤ 자금그래프(funnel) 미니뷰 — wallet.transfer_links · [케이스 생성(STR_REVIEW)] [기각(사유)] [상위 escalation]", [
+            "[충전 9건] → [월렛] → [해외송금 2건] · 분할충전→집금→해외송금 funnel (transfer_links 미니뷰)",
+            "발생 출처 AML 모니터링 / FDS 에스컬레이션(source_origin) 구분 · FDS판정 링크 = 거래별 fdsDecisionRef 역참조",
+            "[케이스] → AML-CASE-002 · [기각]·[상위 escalation] 결재 불필요·감사 · 다음 → ② 시나리오 관리"])
         wf.info_panel(s, "AML-TM-001", [
-            "• 권한 조회 aml:case:read / 케이스 전환 aml:case:update",
-            "• 탭 ① 알림 적체 / ② 시나리오 관리",
-            "• 필터 시나리오·발생 출처·심각도·상태·기간 + 대상 식별자",
-            "• 컬럼 알림ID·시나리오·대상(식별자)·발생 출처·심각도·상태·동작",
+            "• 권한 조회 aml:case:read / 케이스 전환 aml:case:update (분석가 트리아지)",
+            "• 탭 ① 알림 적체(트리아지) / ② 시나리오 관리(준법감시 4-eyes) — 역할 분리(BR-008)",
+            "• 필터 시나리오·출처·심각도·상태·기간·채널·corridor + 대상 식별자(customerRef)",
+            "• 알림 상세(BR-007) ① 트리거·StrIndicator ② evidence 집계 ③ 관련 거래 ④ 대상360° ⑤ 자금그래프",
+            "• evidence 예 '5영업일 9건 분할충전 합계 ₱480,000'(측정/기간/기준 충족)",
+            "• 관련 거래 txRef→충전/국내/해외·금액·통화·corridor·FDS decision 링크(fdsDecisionRef)",
+            "• 대상 360° subject360Ref → GET /api/v1/bo/aml/subjects/{customerRef}/360",
+            "• 자금그래프 funnel = wallet.transfer_links 미니뷰",
             "• 발생 출처 AML 모니터링 / FDS 에스컬레이션 / 벤더 경보 (source_origin)",
-            "• 심각도 낮음/중간/높음/매우높음",
-            "• 상태 탐지/1차분류/케이스생성/기각/상위승인/STR권고",
-            "• 다음 → ② 시나리오 관리",
-            "▸ API GET /aml/alerts?status=PENDING&sourceOrigin="])
+            "• 식별자 token/hash·마스킹 · 원문 대조 aml:pii:reveal+감사(RAW_DATA_ACCESS)",
+            "▸ API GET /aml/alerts/{alertId}(evidence·relatedTransactions·subject360Ref) · /subjects/{ref}/360"])
     else:  # tab == 1
         y = wf.filters(s, y, ["시나리오 상태 전체", "시나리오 유형 전체"])
         y = wf.table_block(s, y, 2.50, "TM 시나리오 목록 [고객사: 은행 A] · 행 ▶ → AML-TM-002 (빌더) · 효과성 ▶ → AML-STAT-001",
@@ -2162,10 +2183,12 @@ def ing_001(p, tab=0):
              ["벤더브릿지 (VENDOR_BRIDGE)", "마지막 벤더 경보 · VENDOR 인입 건수"]],
             [0.28, 0.72])
         wf.callout(s, y, "① 카탈로그 — 어떤 API로 데이터가 들어오는가 (read-only)", [
+            "소스 카탈로그 = hanpass-ph 7실서비스(member/walletchg/domestic/remit/wallet/tx-history/inbound-svc, REST sync) → ② 탭",
             "신호 상태 ● 수신중(기본 60초 내 수신) / ⚠ 지연(SLA 초과) / ✕ 중단 (§1.11 ③ 확정)",
             "초기 셋업(백필) = /aml/events 대량 적재·SNAPSHOT — 진행률 ② 탭 · 다음 → ② 인입 라이브"])
         wf.info_panel(s, "AML-ING-001", [
             "• 권한 aml:admin:source-system (read-only 집계)",
+            "• 소스 = hanpass-ph 7실서비스 · 연동 키 token/keyed-HMAC(원문 금지, 연동 §7.2)",
             "• 진입 NAV 감사·증적 / AML-TNT-002 ③ [인입 모니터링 ▶]",
             "• 탭 ① 수신 API 카탈로그 / ② 인입 라이브 모니터링",
             "• 컬럼 API·용도·방식(동기/비동기)·인증·24h 호출·마지막 호출·신호",
@@ -2177,18 +2200,20 @@ def ing_001(p, tab=0):
             "▸ API GET /api/v1/bo/aml/ingest/catalog (제안 · 후속 API 정합)"])
     else:
         y = wf.kpi_cards(s, y, [
-            ("24h 수신 이벤트", "1.58 M", "15 family", "blue"),
-            ("라이브 소스", "4 / 5", "● 수신중 기준", "green"),
-            ("DLQ 적체", "3 건", "aml-ingest-dlq ⚠", "red"),
-            ("마지막 수신", "2초 전", "전체 소스 최신", "orange")])
-        y = wf.table_block(s, y, 2.05, "소스×연동 방식별 라이브 상태 (행 ▶ → AML-AUD-001 ③ 소스 관리)",
-            ["소스", "연동 방식", "마지막 수신", "신호", "방식별 상태 (PRD §1.11 ① 확정)"],
-            [["src-core", "REST 전송", "8초 전", "●", "TPS 42 · 서명(HMAC) 실패 0"],
-             ["src-txn", "큐 aml-ingest.fifo", "2초 전", "●", "depth 120 · lag 4초 · DLQ 0"],
-             ["src-kyc", "폴링", "38분 전", "✕", "마지막 09:10 · 다음 09:40 · 주기 30분"],
-             ["src-legacy", "벤더브릿지", "4분 전", "●", "벤더 경보 12건/24h (VENDOR)"],
-             ["snapshot-init", "스냅샷", "—", "—", "초기 적재(백필) 78% (1.2M/1.55M)"]],
-            [0.14, 0.18, 0.12, 0.08, 0.48])
+            ("24h 수신 이벤트", "1.58 M", "hanpass-ph 7실서비스", "blue"),
+            ("라이브 소스", "7 / 7", "● 수신중 기준", "green"),
+            ("DLQ 적체", "0 건", "aml-ingest-dlq", "red"),
+            ("마지막 수신", "1초 전", "전체 소스 최신", "orange")])
+        y = wf.table_block(s, y, 2.45, "hanpass-ph 소스×연동 방식별 라이브 상태 (행 ▶ → AML-AUD-001 ③ 소스 관리)",
+            ["소스(hanpass-ph)", "연동 방식", "마지막 수신", "신호", "방식별 상태 (PRD §1.11 ① 확정)"],
+            [["member-svc", "REST sync(큐 aml-ingest)", "2초 전", "●", "회원/KYC·zoloz 제재·PEP · 신선도 48h"],
+             ["walletchg-svc", "REST sync", "1초 전", "●", "TPS 86 · 월렛충전(CASH_IN)"],
+             ["domestic-svc", "REST sync", "3초 전", "●", "TPS 51 · 국내송금(DOMESTIC_REMIT)"],
+             ["remit-svc", "REST sync", "1초 전", "●", "해외송금 · corridor·str_indicators·USD"],
+             ["wallet-svc", "REST sync", "5초 전", "●", "원장 transfer_links(자금그래프)"],
+             ["tx-history-svc", "REST(read·ingest 미발행)", "4초 전", "●", "통합 이력 read(대상 360° 피드)"],
+             ["inbound-svc", "REST sync", "8초 전", "●", "파트너 인바운드(INBOUND_REMIT) · DLQ 0"]],
+            [0.16, 0.21, 0.11, 0.07, 0.45])
         wf.callout(s, y, "② 라이브 모니터링 — 지금 데이터가 들어오고 있는가 (30~60초 캐시·자동 새로고침)", [
             "⚠/✕ 행은 AML-DASH-001 운영 알림과 동일 이벤트 소스 (알림 클릭 → 본 탭 딥링크)",
             "운영 조치(소스 비활성·secret 변경 2인)는 AML-AUD-001 ③ 소관 — 본 화면 모니터링 전용",
@@ -2255,7 +2280,7 @@ def build():
          "좌 75% 와이어프레임(실제 도형) + 우 25% 기능 설명",
          "WLF(+시뮬레이션)·명단(+내부 명단·오탐 면제)·국가위험·RA/CDD(+당연고위험·고객 프로필)·TM·케이스·규제 보고·기관 RBA 보고·Travel Rule·Policy Pack·결재·통계·내부통제·감사·인입 모니터링·고객사 관리",
          "용어 고객사(tenant)·서비스(workspace) · enum 괄호 병기 · 책임 경계 명시",
-         "버전 BO-AML-SAAS-Planning v9.0 (메뉴 IA 운영/설정 2영역·3단 재구성 — 혼재 메뉴 TM/RA/CDD 분리, 32화면 불변)"],
+         "버전 BO-AML-SAAS-Planning v9.1 (데이터 레이어 hanpass-ph 재그라운딩 + TM 알림 evidence·거래·대상360° 재설계)"],
         brand="HANPASS  ·  SaaS AML Platform")
     # 2 변경 이력
     wf.history_slide(p, "변경 이력",
@@ -2283,12 +2308,13 @@ def build():
          ["v6.0", "2026-06-12", "Hanpass Global", "실계 벤치마크 보강(GTone 80화면): WLF-004·IRA-001·STAT-001·EDU-001 신설(28화면)"],
          ["v7.0", "2026-06-12", "Hanpass Global", "벤치마크 2차 보강: WL-003(내부 명단·오탐 면제)·HRR-001(당연고위험)·CDD-002(고객 프로필) 신설 + TNT-002 ① 보고기관 패널(31화면)"],
          ["v8.0", "2026-06-12", "Hanpass Global", "데이터 인입 가시성: ING-001(수신 API 카탈로그·인입 라이브) 신설·TNT-002 ③ 인입 신호 컬럼·인입 유형 확정 §1.11(32화면)"],
-         ["v9.0", "2026-06-19", "Hanpass Global Team", "메뉴 IA 재구성 — 운영(조사·모니터링/고객위험·심사/케이스·처리/거버넌스·보고)·설정(연동·데이터/탐지·심사 정책/감사·증적·내부통제) 2영역 3단. 혼재 메뉴 분리: TM 알림(TM-001)↔시나리오 빌더(TM-002), RA 분포·고객위험(RA-001/003)↔RA 모델(RA-002), 고객 프로필(CDD-002)↔CDD 정책(CDD-001). 32화면·콘텐츠 불변, nav_tree 렌더"]],
+         ["v9.0", "2026-06-19", "Hanpass Global Team", "메뉴 IA 재구성 — 운영(조사·모니터링/고객위험·심사/케이스·처리/거버넌스·보고)·설정(연동·데이터/탐지·심사 정책/감사·증적·내부통제) 2영역 3단. 혼재 메뉴 분리: TM 알림(TM-001)↔시나리오 빌더(TM-002), RA 분포·고객위험(RA-001/003)↔RA 모델(RA-002), 고객 프로필(CDD-002)↔CDD 정책(CDD-001). 32화면·콘텐츠 불변, nav_tree 렌더"],
+         ["v9.1", "2026-06-19", "Hanpass Global Team", "데이터 레이어 hanpass-ph 재그라운딩 + TM 알림 evidence/관련거래/대상360°/자금그래프 재설계 — 규제 불변"]],
         col_w=[0.07, 0.11, 0.12, 0.70])
     # 3+ 기능 전수
     for fn in SCREENS:
         fn(p)
-    out = "/Users/smkim/workspace/smkim89/aml-system-docs/docs/plan/BO-AML-SAAS-Planning_v9.0.pptx"
+    out = "/Users/smkim/workspace/smkim89/aml-system-docs/docs/plan/BO-AML-SAAS-Planning_v9.1.pptx"
     p.save(out)
     print(f"saved {out} · slides={len(p.slides._sldIdLst)}")
 

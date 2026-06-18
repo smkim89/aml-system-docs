@@ -322,27 +322,30 @@ def conn_001(p):
               "소스 시스템·커넥터 목록", action="+ 새 커넥터")
     y = wf.CON_TOP
     y = wf.filters(s, y, ["연동 방식 전체", "사용 전체", "상태 전체", "소스시스템 검색"])
-    y = wf.table_block(s, y, 2.55, "소스 시스템·커넥터 (총 5 · 사용 4) · 행 ▶ → SFDS-CONN-002 · [인입 모니터링 → SFDS-CONN-004]",
-        ["소스 시스템", "연동 방식", "사용", "지연", "마지막 수신", "신호", "최근 오류"],
-        [["core-banking", "큐(Queue)", "○", "12초", "2초 전", "●", "— ▶"],
-         ["atm-switch", "REST Push", "○", "8초", "1초 전", "●", "— ▶"],
-         ["audit-log", "폴링", "○", "312초 ⚠", "5분 전", "⚠", "타임아웃 ▶"],
-         ["legacy-card", "CDC", "○", "24초", "24초 전", "●", "— ▶"],
-         ["snapshot-init", "스냅샷", "—", "—", "—", "—", "완료 ▶"]],
-        [0.18, 0.15, 0.07, 0.13, 0.14, 0.08, 0.25])
-    wf.callout(s, y, "흐름 · 커넥터 운영 (인입 신호 표준 = PRD §4.0 확정)", [
+    y = wf.table_block(s, y, 2.85, "소스 시스템·커넥터 (hanpass-ph 7실서비스 · REST sync) · 행 ▶ → SFDS-CONN-002 · [인입 모니터링 → SFDS-CONN-004]",
+        ["소스 시스템", "연동 방식", "사용", "발행 이벤트(채널)", "마지막 수신", "신호", "최근 오류"],
+        [["member-svc", "REST sync", "○", "회원/KYC/제재·PEP(대상 자재화)", "2초 전", "●", "— ▶"],
+         ["walletchg-svc", "REST sync", "○", "월렛충전 → CASH_IN", "1초 전", "●", "— ▶"],
+         ["domestic-svc", "REST sync", "○", "국내송금 → DOMESTIC_REMIT", "3초 전", "●", "— ▶"],
+         ["remit-svc", "REST sync", "○", "해외송금 → CROSS_BORDER_REMIT", "1초 전", "●", "— ▶"],
+         ["wallet-svc", "REST sync", "○", "월렛 원장(transfer_links)", "5초 전", "●", "— ▶"],
+         ["tx-history-svc", "REST sync", "○", "통합 이력 read(대상 360°)", "4초 전", "●", "— ▶"],
+         ["inbound-svc", "REST sync", "○", "파트너 인바운드 → INBOUND_REMIT", "8초 전", "●", "— ▶"]],
+        [0.16, 0.13, 0.06, 0.35, 0.12, 0.07, 0.11])
+    wf.callout(s, y, "흐름 · 커넥터 운영 (소스 = hanpass-ph 실서비스 · 인입 신호 §4.0 확정)", [
+        "소스 = hanpass-ph 송금/월렛 마이크로서비스(REST sync) · cross-border는 corridor·base USD 보존(DB §5.5·연동 §7.2)",
         "행 클릭 → SFDS-CONN-002 (상세·커서·재처리) · [인입 모니터링] → SFDS-CONN-004 (수신 API·라이브)",
-        "[+ 새 커넥터] → SFDS-CONN-003 (등록) → 샘플 이벤트 검증 통과 전 ingest 비활성",
-        "신호 ● 수신중/⚠ 지연/✕ 중단 · 지연·오류 행(⚠) SFDS-DASH-001 알림 드릴다운 · 스키마 MAP-001 연계"])
+        "신호 ● 수신중/⚠ 지연/✕ 중단 · 채널 21종(+CASH_IN·INBOUND_REMIT) · 스키마 MAP-001 연계 · 규제 불변"])
     wf.info_panel(s, "SFDS-CONN-001", [
         "• 권한 조회 :READ / 신규·운영 SFDS_CONNECTOR:OPERATE",
-        "• 필터 연동 방식·사용·상태 3축 + 소스시스템 검색",
-        "• 컬럼 소스시스템·연동방식·사용·지연·마지막 수신·신호·최근오류",
-        "• 마지막 수신·신호(v7.0) §4.0 확정 — ● 수신중/⚠ 지연/✕ 중단",
-        "• 연동방식 REST Push/큐/폴링/스냅샷/CDC (스키마 버전은 상세)",
+        "• 소스 = hanpass-ph 7실서비스(member/walletchg/domestic/remit/wallet/tx-history/inbound-svc)",
+        "• 발행 이벤트 walletchg→CASH_IN·domestic→DOMESTIC_REMIT·remit→CROSS_BORDER_REMIT·inbound→INBOUND_REMIT",
+        "• 연동 방식 REST sync(REST_PUSH) · 인증 API Key+HMAC(Source-System 헤더)",
+        "• 컬럼 소스시스템·연동방식·사용·발행 이벤트(채널)·마지막 수신·신호·최근오류",
+        "• 마지막 수신·신호 §4.0 확정 — ● 수신중/⚠ 지연/✕ 중단",
+        "• 연동 키 token/keyed-HMAC(원문 금지, 연동 §7.2) · 규제(CTR/STR/KoFIU) 불변",
         "• [인입 모니터링] → SFDS-CONN-004 수신 API 카탈로그·라이브",
         "• 흐름 행 클릭 → SFDS-CONN-002 · [+ 새 커넥터] → SFDS-CONN-003",
-        "• 서브 메뉴 커넥터 목록 / 커넥터 등록",
         "▸ API GET /api/v1/admin/fds/source-systems · /connectors"])
 
 
@@ -439,6 +442,7 @@ def conn_004(p, tab=0):
              ["스냅샷 (SNAPSHOT)", "최근 스냅샷 일시 · 초기 적재(백필) 진행률 %"]],
             [0.28, 0.72])
         wf.callout(s, y, "① 카탈로그 — 어떤 API로 데이터가 들어오는가 (read-only · 인증 API Key+HMAC)", [
+            "소스 카탈로그 = hanpass-ph 7실서비스(member/walletchg/domestic/remit/wallet/tx-history/inbound-svc, REST sync) → ② 탭",
             "신호 상태 ● 수신중(기본 60초 내 수신) / ⚠ 지연(SLA 초과) / ✕ 중단 (§4.0 ③ 확정)",
             "초기 셋업(백필) = /fds/events:batch — 진행률 ② 탭 · 다음 → ② 인입 라이브 모니터링"])
         wf.info_panel(s, "SFDS-CONN-004", [
@@ -458,14 +462,16 @@ def conn_004(p, tab=0):
             ("라이브 커넥터", "4 / 5", "● 수신중 기준", "green"),
             ("DLQ 적체", "2 건", "fds-events-dlq ⚠", "red"),
             ("마지막 수신", "1초 전", "전체 커넥터 최신", "orange")])
-        y = wf.table_block(s, y, 2.05, "커넥터×연동 방식별 라이브 상태 (행 ▶ → SFDS-CONN-002 운영)",
-            ["커넥터", "연동 방식", "마지막 수신", "신호", "방식별 상태 (PRD §4.0 ① 확정)"],
-            [["core-banking", "큐 fds-events(FIFO)", "2초 전", "●", "depth 84 · lag 12초 · DLQ 2 ⚠"],
-             ["atm-switch", "REST Push", "1초 전", "●", "TPS 86 · 서명 실패 0"],
-             ["audit-log", "폴링", "5분 전", "⚠", "마지막 09:58 · 다음 10:28 · 주기 30분"],
-             ["legacy-card", "CDC", "24초 전", "●", "change stream lag 24초"],
-             ["snapshot-init", "스냅샷", "—", "—", "초기 적재 100% 완료 (06-01)"]],
-            [0.15, 0.19, 0.12, 0.08, 0.46])
+        y = wf.table_block(s, y, 2.45, "hanpass-ph 소스×연동 방식별 라이브 상태 (행 ▶ → SFDS-CONN-002 운영)",
+            ["소스(hanpass-ph)", "연동 방식", "마지막 수신", "신호", "방식별 상태 (PRD §4.0 ① 확정)"],
+            [["member-svc", "REST sync(큐 fds-events)", "2초 전", "●", "TPS 42 · depth 12 · 제재·PEP 신호"],
+             ["walletchg-svc", "REST sync", "1초 전", "●", "TPS 86 · CASH_IN · 서명 실패 0"],
+             ["domestic-svc", "REST sync", "3초 전", "●", "TPS 51 · DOMESTIC_REMIT(PHP)"],
+             ["remit-svc", "REST sync", "1초 전", "●", "TPS 38 · CROSS_BORDER · corridor·USD base"],
+             ["wallet-svc", "REST sync", "5초 전", "●", "TPS 64 · 원장 transfer_links"],
+             ["tx-history-svc", "REST sync(read)", "4초 전", "●", "통합 이력 read(대상 360°)"],
+             ["inbound-svc", "REST sync", "8초 전", "●", "TPS 9 · INBOUND_REMIT · DLQ 0"]],
+            [0.16, 0.20, 0.11, 0.07, 0.46])
         wf.callout(s, y, "② 라이브 모니터링 — 지금 데이터가 들어오고 있는가 (30~60초 캐시·자동 새로고침)", [
             "DLQ 감시 = depth poller PT60S (fds-events-dlq·fds-vendor-ingest-dlq, integration §2·§6)",
             "⚠/✕ 행 → SFDS-DASH-001 알림 동일 소스 · 운영 조치(재처리·일시중지)는 SFDS-CONN-002",
@@ -730,7 +736,7 @@ def rule_003(p):
               "룰 빌더 (멀티도메인, 문장형)", action="DSL 토글")
     y = wf.CON_TOP
     y = wf.form_block(s, y, 2.00, "기본 조건 (문장형) [고객사: 은행 A]",
-        [("① 도메인/채널 *", "가상자산 출금 ▼   ·   평가 방식 [사후 ▼]", "input"),
+        [("① 도메인/채널 *", "해외송금(CROSS_BORDER_REMIT) ▼   ·   평가 방식 [사후 ▼]", "input"),
          ("② 탐지 대상 기준 *", "회원별 ▼ (회원/계좌/수단/상대방/단말기/가맹점/셀러/직원)", "input"),
          ("③ 측정 항목 *", "지갑주소 위험점수 ▼ (금액합계/건수/상대방수/주소위험/믹서…)", "input"),
          ("④ 집계 기간 *", "최근 24시간 ▼ (1시간/6시간/24시간/7일/30일)", "input"),
@@ -749,6 +755,7 @@ def rule_003(p):
         "→ 자금 보류 + 컴플라이언스 케이스 자동 개설      [임시저장(DRAFT)]   [시뮬레이션 후 결재 상신(SUBMITTED)]"])
     wf.info_panel(s, "SFDS-RULE-003", [
         "• 권한 SFDS_RULE:AUTHOR",
+        "• ① 채널 21종(DB §4.4) — 월렛충전(CASH_IN)·국내송금(DOMESTIC_REMIT)·해외송금(CROSS_BORDER_REMIT)·파트너인바운드(INBOUND_REMIT) 등 hanpass-ph 재그라운딩",
         "• 문장형 빌더 ①도메인 ②대상 ③측정 ④기간 ⑤기준값 ⑥추가조건 ⑦동작",
         "• ⑥ 추가 조건 여러 조건을 AND(모두 만족)/OR(하나라도)로 결합",
         "• 각 조건 = 필드 + 연산자 + 값 (업무 용어 드롭다운, 변수·필드명 미노출)",
@@ -901,22 +908,24 @@ def grp_003(p):
 def dec_001(p):
     s = frame(p, "SFDS-DEC-001", "FDS Console > 탐지 결정", "탐지 결정 조회")
     y = wf.CON_TOP
-    y = wf.filters(s, y, ["룰 번호", "대상", "동작 전체", "기간 from~to"])
+    y = wf.filters(s, y, ["룰 번호", "대상", "동작", "채널", "통화"])
+    y = wf.filters(s, y, ["금액 min~max", "corridor 출발→도착", "기간 from~to"])
     y = wf.table_block(s, y, 2.55, "탐지 결정 조회 [고객사: 은행 A] (거래 1건 ≠ 결정 1건) · 행 ▶ → SFDS-DEC-002",
-        ["처리시각", "룰 번호", "동작", "결과", "대상", "평가"],
-        [["06-06 11:02:17", "MULE_BANK", "거래차단", "차단", "subj_8f..", "즉시 ▶"],
-         ["06-06 11:01:55", "ATM_GEO", "추가인증", "추가인증", "subj_3a..", "즉시 ▶"],
-         ["06-06 11:00:02", "CRYPTO_RISK", "자금보류", "보류", "subj_7c..", "사후 ▶"],
-         ["06-06 10:58:44", "TBML_INV", "검토", "통과", "subj_55..", "사후 ▶"]],
-        [0.22, 0.20, 0.16, 0.14, 0.16, 0.12])
+        ["처리시각", "룰 번호", "동작", "결과", "대상", "채널", "금액·통화", "corridor", "평가"],
+        [["06-06 11:02:17", "MULE_BANK", "거래차단", "차단", "subj_8f..", "국내송금", "₱180,000", "PH→PH", "즉시 ▶"],
+         ["06-06 11:01:55", "ATM_GEO", "추가인증", "추가인증", "subj_3a..", "월렛충전", "₱60,000", "PH→PH", "즉시 ▶"],
+         ["06-06 11:00:02", "CRYPTO_RISK", "자금보류", "보류", "subj_7c..", "해외송금", "₱120,000", "PH→VN", "사후 ▶"],
+         ["06-06 10:58:44", "TBML_INV", "검토", "통과", "subj_55..", "인바운드", "$2,400", "KR→PH", "사후 ▶"]],
+        [0.13, 0.13, 0.10, 0.08, 0.10, 0.10, 0.12, 0.11, 0.13])
     wf.callout(s, y, "흐름 · 결정에서 조사로", [
         "행 클릭 → SFDS-DEC-002 (결정 상세·판정 근거·후속 조치 링크)",
         "대상(subject) 클릭 → SFDS-DEC-003 (Subject 통합 타임라인) · 룰 번호 → SFDS-RULE-002 최근 Hit 탭",
         "결정 → 액션(SFDS-ACT-001) → 케이스(SFDS-CASE-001) → 결재(SFDS-APPR-001) → 규제 보고(SFDS-REG-001)로 이어짐"])
     wf.info_panel(s, "SFDS-DEC-001", [
         "• 권한 SFDS_DECISION:READ",
-        "• 필터 룰 번호·대상·동작·기간(기본 최근 24h)",
-        "• 컬럼 처리시각·룰 번호·동작·결과·대상·평가",
+        "• 필터 룰 번호·대상·동작·채널·통화·금액(min~max)·corridor(출발→도착)·기간(기본 24h)",
+        "• 채널·통화·corridor = hanpass-ph 데이터 레이어(DB §5.5·연동 §7.2) — 규제 임계와 무관",
+        "• 컬럼 처리시각·룰 번호·동작·결과·대상·채널·금액·통화·corridor·평가",
         "• 결과 통과/차단/추가인증/보류",
         "• 동작 허용/검토/추가인증/차단/자금보류/동결/규제보고",
         "• 한 거래 여러 룰 → 여러 행",
@@ -1534,7 +1543,7 @@ def build():
          "좌 75% 와이어프레임(실제 도형) + 우 25% 기능 설명",
          "표시 용어=PRD 한국어 업무 용어 · enum 괄호 병기 · 책임 경계 명시",
          "목록→상세→액션→케이스→결재→규제 보고 시나리오 흐름 연결(딥링크 전수)",
-         "버전 BO-FDS-SASS-Planning v8.0 (메뉴 IA 운영/설정 2영역·3단 재구성 — 34화면 불변, NAV·순서 변경)"])
+         "버전 BO-FDS-SASS-Planning v8.1 (데이터 레이어 hanpass-ph 소스 재그라운딩 — 소스 카탈로그·channel 21종·corridor)"])
     # 2 변경 이력
     wf.history_slide(p, "변경 이력",
         ["버전", "일자", "작성자", "변경 내역"],
@@ -1557,12 +1566,13 @@ def build():
          ["v5.3", "2026-06-11", "SM Kim", "QA 정합화: TNT-002 ⑤ 소스표 5컬럼·CONN-002 경로 변수 정정"],
          ["v6.0", "2026-06-12", "SM Kim", "실계 벤치마크 보강(GTone 80화면·AML §12-B 대응): STAT-001 룰 효과성 통계 신설·RULE-001 효과성 컬럼(33화면)"],
          ["v7.0", "2026-06-12", "SM Kim", "데이터 인입 가시성: CONN-004(수신 API 카탈로그·인입 라이브) 신설·CONN-001/002 인입 신호·인입 유형 확정 §4.0(34화면)"],
-         ["v8.0", "2026-06-19", "SM Kim", "메뉴 IA 재구성 — 운영(조사·모니터링/케이스·처리/거버넌스·보고)·설정(연동·데이터/탐지 정책/감사·증적) 2영역 3단 분리, NAV·슬라이드 순서 재정렬(34화면·콘텐츠 불변), nav_tree 렌더"]],
+         ["v8.0", "2026-06-19", "SM Kim", "메뉴 IA 재구성 — 운영(조사·모니터링/케이스·처리/거버넌스·보고)·설정(연동·데이터/탐지 정책/감사·증적) 2영역 3단 분리, NAV·슬라이드 순서 재정렬(34화면·콘텐츠 불변), nav_tree 렌더"],
+         ["v8.1", "2026-06-19", "SM Kim", "데이터 레이어 hanpass-ph 소스 재그라운딩(소스 카탈로그·CASH_IN/INBOUND_REMIT·corridor·연동 키) — 규제 불변"]],
         col_w=[0.08, 0.12, 0.10, 0.70])
     # 3+ 기능 전수
     for fn in SCREENS:
         fn(p)
-    out = "/Users/smkim/workspace/smkim89/aml-system-docs/docs/plan/BO-FDS-SASS-Planning_v8.0.pptx"
+    out = "/Users/smkim/workspace/smkim89/aml-system-docs/docs/plan/BO-FDS-SASS-Planning_v8.1.pptx"
     p.save(out)
     print(f"saved {out} · slides={len(p.slides._sldIdLst)}")
 
