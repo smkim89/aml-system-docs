@@ -1,6 +1,6 @@
 """
-BO-FDS-SASS-Planning_v7.0.pptx 생성 (도형 기반 — 데이터 인입 가시성 보강)
-======================================================================
+BO-FDS-SASS-Planning_v8.0.pptx 생성 (도형 기반 — 메뉴 IA 운영/설정 2영역·3단 재구성)
+======================================================================================
 정본 PRD: docs/plan/01-fds-sass-functional-spec.md (표시 용어=진실)
 시각 정본: docs/plan/sample.pptx (맑은 고딕·Ant Design·순수 rect)
 컴포넌트: wireframe_lib.py (ASCII 금지, 실제 rect 도형)
@@ -12,20 +12,28 @@ BO-FDS-SASS-Planning_v7.0.pptx 생성 (도형 기반 — 데이터 인입 가시
 import wireframe_lib as wf
 
 TOP = "SaaS FDS Platform 백오피스"
-NAV = ["플랫폼 대시보드", "고객사 관리", "커넥터 관리", "스키마·매핑", "룰 관리",
-       "그룹·명단", "탐지 결정", "이벤트 조회", "액션 운영", "케이스 관리",
-       "결재함", "규제 보고", "Evidence", "감사 로그"]
-# 기능 ID prefix → NAV active 인덱스
-ACTIVE = {"DASH": 0, "TNT": 1, "CONN": 2, "MAP": 3, "RULE": 4, "STAT": 4,
-          "GRP": 5, "DEC": 6, "EVT": 7, "ACT": 8, "CASE": 9, "APPR": 10,
-          "REG": 11, "EXP": 12, "AUDIT": 13}
+# 2영역·3단 NAV (운영/설정) — leaf key = 기능 ID prefix
+NAV = [
+    ("운영", [
+        ("조사·모니터링", [("플랫폼 대시보드", "DASH"), ("탐지 결정", "DEC"),
+                          ("이벤트 조회", "EVT"), ("룰 효과 통계", "STAT")]),
+        ("케이스·처리", [("케이스 관리", "CASE"), ("액션 운영", "ACT")]),
+        ("거버넌스·보고", [("결재함", "APPR"), ("규제 보고", "REG")]),
+    ]),
+    ("설정", [
+        ("연동·데이터", [("고객사 관리", "TNT"), ("커넥터 관리", "CONN"),
+                        ("스키마·매핑", "MAP")]),
+        ("탐지 정책", [("룰 관리", "RULE"), ("그룹·명단", "GRP")]),
+        ("감사·증적", [("감사 로그", "AUDIT"), ("Evidence", "EXP")]),
+    ]),
+]
 
 
 def frame(p, sid, crumb, title, search="검색...", admin="관리자 admin ▼", action=None):
     s = wf.add_slide(p)
     wf.page_title(s, TOP, sid)
     wf.header_bar(s, search_ph=search, admin=admin, action=action)
-    wf.nav_panel(s, NAV, active=ACTIVE[sid.split("-")[1]])
+    wf.nav_tree(s, NAV, active_key=sid.split("-")[1])
     wf.breadcrumb_title(s, crumb, title)
     return s
 
@@ -1490,20 +1498,28 @@ def stat_001(p, tab=0):
 
 
 SCREENS = [
-    dash_001, dash_002, tnt_001,
-    tnt_002_basic, tnt_002_deploy, tnt_002_security, tnt_002_policy, tnt_002_notify,  # 고객사 상세 5탭(SFDS-TNT-002)
+    # ── 운영: 조사·모니터링 ──
+    dash_001, dash_002,
+    dec_001, dec_002, dec_003,
+    evt_001,
+    lambda p: stat_001(p, 0), lambda p: stat_001(p, 1),
+    # ── 운영: 케이스·처리 ──
+    case_001, case_002, case_002_timeline, case_002_decisions, case_002_comments,
+    act_001, act_002,
+    # ── 운영: 거버넌스·보고 ──
+    appr_001, reg_001, reg_002,
+    # ── 설정: 연동·데이터 ──
+    tnt_001, tnt_002_basic, tnt_002_deploy, tnt_002_security, tnt_002_policy, tnt_002_notify,
     tnt_003,
     conn_001, conn_002, conn_003,
-    lambda p: conn_004(p, 0), lambda p: conn_004(p, 1),  # 수신 API 카탈로그·인입 라이브(SFDS-CONN-004, v7.0)
+    lambda p: conn_004(p, 0), lambda p: conn_004(p, 1),
     map_001, map_002,
-    rule_001,
-    rule_002, rule_002_versions, rule_002_threshold, rule_002_hits, rule_002_approval_log,  # 룰 상세 5탭(SFDS-RULE-002)
+    # ── 설정: 탐지 정책 ──
+    rule_001, rule_002, rule_002_versions, rule_002_threshold, rule_002_hits, rule_002_approval_log,
     rule_003, rule_004, rule_005, rule_006,
-    lambda p: stat_001(p, 0), lambda p: stat_001(p, 1),  # 룰 효과성 통계 2탭(SFDS-STAT-001, v6.0 벤치마크)
-    grp_001, grp_002, grp_003, dec_001, dec_002, dec_003,
-    evt_001, act_001, act_002, case_001,
-    case_002, case_002_timeline, case_002_decisions, case_002_comments,  # 케이스 상세 4탭(SFDS-CASE-002)
-    appr_001, reg_001, reg_002, exp_001, audit_001,
+    grp_001, grp_002, grp_003,
+    # ── 설정: 감사·증적 ──
+    audit_001, exp_001,
 ]
 
 
@@ -1518,7 +1534,7 @@ def build():
          "좌 75% 와이어프레임(실제 도형) + 우 25% 기능 설명",
          "표시 용어=PRD 한국어 업무 용어 · enum 괄호 병기 · 책임 경계 명시",
          "목록→상세→액션→케이스→결재→규제 보고 시나리오 흐름 연결(딥링크 전수)",
-         "버전 BO-FDS-SASS-Planning v7.0 (데이터 인입 가시성 — CONN-004·인입 유형 확정 §4.0, 34화면)"])
+         "버전 BO-FDS-SASS-Planning v8.0 (메뉴 IA 운영/설정 2영역·3단 재구성 — 34화면 불변, NAV·순서 변경)"])
     # 2 변경 이력
     wf.history_slide(p, "변경 이력",
         ["버전", "일자", "작성자", "변경 내역"],
@@ -1540,12 +1556,13 @@ def build():
          ["v5.2", "2026-06-11", "SM Kim", "QA 정합화: GRP-003 용도 필드 groupType 통합 표기"],
          ["v5.3", "2026-06-11", "SM Kim", "QA 정합화: TNT-002 ⑤ 소스표 5컬럼·CONN-002 경로 변수 정정"],
          ["v6.0", "2026-06-12", "SM Kim", "실계 벤치마크 보강(GTone 80화면·AML §12-B 대응): STAT-001 룰 효과성 통계 신설·RULE-001 효과성 컬럼(33화면)"],
-         ["v7.0", "2026-06-12", "SM Kim", "데이터 인입 가시성: CONN-004(수신 API 카탈로그·인입 라이브) 신설·CONN-001/002 인입 신호·인입 유형 확정 §4.0(34화면)"]],
+         ["v7.0", "2026-06-12", "SM Kim", "데이터 인입 가시성: CONN-004(수신 API 카탈로그·인입 라이브) 신설·CONN-001/002 인입 신호·인입 유형 확정 §4.0(34화면)"],
+         ["v8.0", "2026-06-19", "SM Kim", "메뉴 IA 재구성 — 운영(조사·모니터링/케이스·처리/거버넌스·보고)·설정(연동·데이터/탐지 정책/감사·증적) 2영역 3단 분리, NAV·슬라이드 순서 재정렬(34화면·콘텐츠 불변), nav_tree 렌더"]],
         col_w=[0.08, 0.12, 0.10, 0.70])
     # 3+ 기능 전수
     for fn in SCREENS:
         fn(p)
-    out = "/Users/smkim/workspace/smkim89/aml-system-docs/docs/plan/BO-FDS-SASS-Planning_v7.0.pptx"
+    out = "/Users/smkim/workspace/smkim89/aml-system-docs/docs/plan/BO-FDS-SASS-Planning_v8.0.pptx"
     p.save(out)
     print(f"saved {out} · slides={len(p.slides._sldIdLst)}")
 
