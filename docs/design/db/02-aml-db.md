@@ -811,7 +811,7 @@ stateDiagram-v2
 
 > **DB가 정본 enum**(CHECK 4종). integration §4.3/§9.3 payload의 `REVIEW`는 본 enum에 없으므로 `HIGH_RISK`로 정규화 매핑한다(exception 큐 트리거는 `risk_status IN (HIGH_RISK, SANCTIONED_ADDRESS, MIXER_EXPOSURE)` 또는 `completeness_status=INCOMPLETE`). integration의 `REVIEW` 표기는 본 enum 4종으로 교정 대상.
 
-### 5.16 subject_type — 결재 대상 (설계서 §13.5) — **17종(확정)**
+### 5.16 subject_type — 결재 대상 (설계서 §13.5) — **18종(확정)**
 
 | 코드값 | 표시값 | 결재 트리거 |
 |---|---|---|
