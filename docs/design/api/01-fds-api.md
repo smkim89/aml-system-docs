@@ -192,6 +192,9 @@
 | POST | `/api/v1/admin/fds/merchants/{merchantRef}/normalize` | high-risk merchant 정상화 상신(설계서 §11.5, `subjectKind=MERCHANT_NORMALIZE`, subjectRef=`merchant_ref`) | `fds:admin:group` | **필수** |
 
 ### 4.8 Source/Connector/Credential Admin API (위임) — `fds:admin:source-system` / `fds:admin:credential`
+
+> **소스 시스템 카탈로그(hanpass-ph 재그라운딩, DB §5.3a)**: `source_system` 식별자는 hanpass-ph 트랜잭션 마이크로서비스(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`)로 등록·예시화한다(generic `card-processor`/`core-banking`/`atm-switch` 대체). 업스트림은 `REST_PUSH`(REST sync 인입, 연동 §7.1) 기준이며, 거래 소스는 `transaction.requested`를 emit하고 `channel_type`은 소스별로 `CASH_IN`(walletchg)/`DOMESTIC_REMIT`(domestic)/`CROSS_BORDER_REMIT`(remit)/`INBOUND_REMIT`(inbound)에 대응한다. 연동 키 매핑은 연동 §7.2 정본(원문 금지·token/HMAC). **데이터 레이어 한정 — 규제(CTR/STR) 임계·기한 불변.**
+
 | 메서드 | 경로 | 설명 | scope | 4-eyes |
 |---|---|---|---|---|
 | GET | `/api/v1/admin/fds/source-systems` | source system 목록 | `fds:admin:source-system` | — |
@@ -203,8 +206,8 @@
 | POST | `/api/v1/admin/fds/connectors/{connectorId}/pause` | connector 일시중지(`connector_status`→`DISABLED`, ingest/poll suspend) | `fds:admin:source-system` | — |
 | POST | `/api/v1/admin/fds/connectors/{connectorId}/resume` | connector 재개(`connector_status`→`HEALTHY`, offset 유지 후 소비 재개) | `fds:admin:source-system` | — |
 | POST | `/api/v1/admin/fds/connectors/{connectorId}/replay` | replay/reconciliation 트리거 | `fds:admin:source-system` | — |
-| GET | `/api/v1/admin/fds/notify-channels` | tenant 알림 채널 목록(설계서 §13.2 alert channel — `channel`(`SLACK`/`EMAIL`/`WEBHOOK`)·`target`(채널명/주소/URL)·`events`(구독 이벤트, §9.1 webhook eventName 부분집합)) | `fds:admin:source-system` | — |
-| PUT | `/api/v1/admin/fds/notify-channels` | tenant 알림 채널 설정 변경(전체 교체, 멱등). `SFDS_TENANT:ADMIN` 전용·감사 기록(PRD TNT-002 ⑤ BR-001). webhook URL 변경은 credential 서명키 정책(rotate) 연계 | `fds:admin:source-system` | — |
+| GET | `/api/v1/admin/fds/notify-channels` | tenant 알림 채널 목록(설계서 §13.2 alert channel — `channel`(`SLACK`/`EMAIL`/`WEBHOOK`)·`target`(채널명/주소/URL)·`events`(구독 이벤트, §9.1 webhook eventName 부분집합)). DTO §5.22, `fds_notify_channels`(DB §5.34) | `fds:admin:source-system` | — |
+| PUT | `/api/v1/admin/fds/notify-channels` | tenant 알림 채널 설정 변경(전체 교체, 멱등). `SFDS_TENANT:ADMIN` 전용·감사 기록(`NOTIFY_CHANNEL_CHANGE`, PRD TNT-002 ⑤ BR-001). webhook URL 변경은 credential 서명키 정책(rotate) 연계(헤더 `X-Webhook-Url-Changed`). DTO §5.22 | `fds:admin:source-system` | — |
 | GET | `/api/v1/admin/fds/credentials` | API credential 목록(secret 미노출) | `fds:admin:credential` | — |
 | POST | `/api/v1/admin/fds/credentials` | credential 생성(secret 1회 반환) | `fds:admin:credential` | **필수(SECURITY_ADMIN)** |
 | POST | `/api/v1/admin/fds/credentials/{credentialId}/rotate` | secret/webhook 회전 | `fds:admin:credential` | **필수(SECURITY_ADMIN)** |
@@ -250,9 +253,10 @@
 > `Tenant-Id`/`Workspace-Id`/`Source-System`/`Idempotency-Key`는 헤더로 전달(body 미포함). **rawPayload·PAN·주민번호 포함 시 ingest reject 또는 tokenization 후 폐기**(§16.1).
 
 SubjectDto: `subjectType`(enum subject_type ●), `subjectRef`(string token ●), `country`(string(8)), `kycLevel`, `riskRating`.
-TransactionDto: `transactionRef`(string ●), `transactionType`(enum `TransactionType` ●, **DB §4.19 폐쇄 12종 정본** — `WITHDRAWAL`/`DEPOSIT`/`TRANSFER`/`REMITTANCE`/`PAYMENT`/`REFUND`/`REVERSAL`/`CHARGE`/`SETTLEMENT`/`PAYOUT`/`EXCHANGE`/`ADJUSTMENT`, 자유 문자열 금지, §10 `TransactionType` schema), `direction`(enum `INBOUND`/`OUTBOUND`), `amount`(decimal(24,8), ≥0), `currency`(string(12)), `amountBase`(decimal(24,8)), `baseCurrency`, `status`.
+TransactionDto: `transactionRef`(string ●), `transactionType`(enum `TransactionType` ●, **DB §4.19 폐쇄 12종 정본** — `WITHDRAWAL`/`DEPOSIT`/`TRANSFER`/`REMITTANCE`/`PAYMENT`/`REFUND`/`REVERSAL`/`CHARGE`/`SETTLEMENT`/`PAYOUT`/`EXCHANGE`/`ADJUSTMENT`, 자유 문자열 금지, §10 `TransactionType` schema), `direction`(enum `INBOUND`/`OUTBOUND`), `amount`(decimal(24,8), ≥0), `currency`(string(12)), `amountBase`(decimal(24,8) — **base 통화 USD**; cross-border는 remit `usd_amount`/`report_amount`에서 산출, DB §5.5), `baseCurrency`(cross-border 기본 `USD`), `corridor`(CorridorDto △, cross-border 송금 시), `status`.
+CorridorDto(△, cross-border `CROSS_BORDER_REMIT`/`INBOUND_REMIT` 시): `sendCountry`(string(2), `send_country`), `receiveCountry`(string(2), `receive_country`), `sendCurrency`(string(12), `send_currency`), `receiveCurrency`(string(12), `receive_currency`) — hanpass-ph `remit-svc`/`inbound-svc` corridor 매핑, DB §5.5. 미탑재 시 `canonical_payload.corridor`로 표기.
 InstrumentDto: `instrumentType`(enum instrument_type ●), `instrumentRef`(string token ●), `accountRef`, `institutionCode`, `country`.
-ChannelDto: `channelType`(enum channel_type ●), `paymentRail`(enum payment_rail), `entryMode`.
+ChannelDto: `channelType`(enum channel_type ● **21종** — `CASH_IN`(월렛충전)·`INBOUND_REMIT`(파트너 인바운드) 포함, DB §4.4), `paymentRail`(enum payment_rail), `entryMode`.
 
 ### 5.2 IngestEventResponse (202 신규 수신 / 200·201 멱등 재반환)
 `POST /fds/events`는 **비동기 큐 적재**다(§4.1). 신규 수신 성공 = **202 Accepted**(`status=ACCEPTED`, 큐 적재 완료·정규화/평가는 후속). 멱등 재요청(동일 `Idempotency-Key`+동일 payload)은 저장된 결과를 **200/201**로 재반환(`Idempotency-Replayed: true`, §3.3). 중복 event(`event_id` 충돌)는 `status=DUPLICATE`, reject는 `status=REJECTED`(422 계열, §6).
@@ -271,8 +275,8 @@ ChannelDto: `channelType`(enum channel_type ●), `paymentRail`(enum payment_rai
 | decisionId | uuid | `decision_id` |
 | decision | enum decision (8종) | `decision` |
 | reasonCodes | string[] | `fds_decision_reasons.reason_code` |
-| riskScore | decimal(8,4) (0~100) | `risk_score` |
-| recommendedActions | enum action_type[] | (matched rule outcome) |
+| riskScore | decimal(8,4) (0~100) | `risk_score` (산출 정책 = 소프트웨어 §11.1.1: outcome severity 단조 매핑; 응답은 JSON `number`, webhook은 `"82.0000"` 문자열 — §9·integration §4.5) |
+| recommendedActions | enum action_type[] | emit된 `fds_actions.action_type` 투영(capability/4-eyes 게이트·downgrade 반영, integration §142) — 단일 컬럼 1:1 매핑 아님 |
 | matchedRules | RuleRef[] (`ruleId`,`versionNo`) | `matched_rules` |
 | ruleSetVersion | string(80) | `rule_set_version` |
 | expiresAt | datetime | `expires_at` |
@@ -466,6 +470,18 @@ case timeline 단건(append-only). raw PII 없음(`payload`는 마스킹, `actor
 
 > `event_kind` 6종은 DB §5.14 정본과 1:1. 응답 envelope는 §3.2 목록 페이지네이션 포맷(`content[]`)을 따른다.
 
+### 5.22 NotifyChannelDto (GET/PUT /admin/fds/notify-channels) — `fds_notify_channels` (§5.34)
+
+tenant 알림 채널 1건(설계서 §13.2 alert channel, PRD TNT-002 ⑤). GET은 `NotifyChannelDto[]`, PUT 요청 body는 `{ "channels": NotifyChannelDto[] }`(전체 desired state — **전체 교체·멱등**), PUT 응답은 교체 후 `NotifyChannelDto[]`. raw PII 없음(`target`은 운영 설정값). **확정**(엔진 T8 FDS-ENG-04 구현 완료 — 컨트롤러 매핑·도메인·Flyway `V14`·감사·Testcontainers 통합 테스트).
+
+| 필드 | 타입 | 매핑 | 설명 |
+|---|---|---|---|
+| channel | enum notify_channel_type (3종 `SLACK`/`EMAIL`/`WEBHOOK`) | `channel` | 미지원 값 400 `FDS-VALIDATION-001` |
+| target | string(512) | `target` | 채널명/주소/URL. WEBHOOK은 `http(s)` URL 강제 |
+| events | enum[] (§9.1 webhook eventName 4종 부분집합) | `events`(CSV) | null/빈 배열 허용. 미지원 값 400 `FDS-VALIDATION-001` |
+
+> 멱등: `(channel, target)` 자연키 기준 전체교체 — 동일 payload 재PUT 시 동일 최종 상태·중복 감사 없음. 변경 시 `fds_audit_logs`(`audit_action=NOTIFY_CHANNEL_CHANGE`) 1건. webhook target URL 변경 시 응답 헤더 `X-Webhook-Url-Changed: true` + 감사 detail `rotateRequired=true`(서명키 rotate 정책 §13.2 BR-003 연계 신호 — 실제 rotate 상신/실행은 credential admin 4-eyes 경로). 엔진 scope `fds:admin:source-system`만 강제, 운영자 역할(`SFDS_TENANT:ADMIN`) 게이트는 bo-api 소유(후속 T16).
+
 ---
 
 ## 6. 에러 코드
@@ -531,6 +547,8 @@ case timeline 단건(append-only). raw PII 없음(`payload`는 마스킹, `actor
 ## 9. Webhook 콜백 계약 (outbound)
 
 설계서 §12.8 'Webhook API'를 정본으로 확정한다. fds-svc는 decision/case/action 이벤트를 고객사 등록 URL로 **outbound HTTP POST** 발행한다(`fds_api_credentials.credential_type=WEBHOOK`, `webhook_url`/`secret_hash` 사용, `/admin/fds/credentials/{id}/rotate`로 회전). bo-web/bo-api 운영자 화면과 무관한 **고객사 서버 간 콜백** 채널이다.
+
+> **전송 어댑터 구현 확정(T10)**: 전송은 `fds_webhook_outbox`(DB §5.35, transactional outbox) + 스케줄드 디스패처(`WebhookRelayScheduler`/`WebhookRelayService`/`HttpWebhookSenderAdapter`, 연동 §6.2.2)로 실현된다 — 도메인 변경 트랜잭션 내 enqueue → `SELECT … FOR UPDATE SKIP LOCKED` 클레임 → 서명 POST → 2xx `DISPATCHED` / 비2xx·타임아웃 `FAILED`+지수 backoff(MAX 5) → `DEAD_LETTERED`(DLQ + `WEBHOOK_DEAD_LETTER` 감사). `sandbox`는 미발행(shadow). 서명 material(`timestamp + "." + rawBody`)은 **인바운드 ingest 필터 material(`timestamp + "\n" + apiKey + "\n" + body`)과 분리**되며 fds/aml 양 엔진 아웃바운드가 동일하다(AML §8.3).
 
 ### 9.1 이벤트 타입 (`eventName`)
 | eventName | 트리거 | 발행 주체(엔진) | 핵심 payload |
@@ -972,7 +990,7 @@ paths:
         - name: channelScope
           in: query
           required: false
-          description: enum channel_type(DB §4.4 19종)
+          description: enum channel_type(DB §4.4 21종 — `CASH_IN`·`INBOUND_REMIT` 포함, hanpass-ph 재그라운딩)
           schema: { type: string, maxLength: 64 }
         - name: decisionOutcome
           in: query
@@ -1320,6 +1338,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-06-18 | v2.4 | **데이터 레이어 hanpass-ph 소스 재그라운딩 — 소스 카탈로그·channel·corridor·연동 키**(규제 불변): (1) §4.8 source-systems 엔드포인트에 hanpass-ph 소스 카탈로그(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`, REST sync 인입) 주석. (2) §5.1 `ChannelDto.channelType`을 **21종**(`CASH_IN`·`INBOUND_REMIT` 추가) 참조로 갱신, `TransactionDto`에 corridor(`CorridorDto`: `sendCountry`/`receiveCountry`/`sendCurrency`/`receiveCurrency`) + `amountBase`(USD) 출처(remit `usd_amount`/`report_amount`) 명시. (3) §10 OpenAPI `channelScope` enum desc 19→21종. **CTR/STR 임계·기한·KoFIU 분류 미변경(규제 불변)**. | api-designer |
 | 2026-06-11 | v2.3 | QA HIGH 3건(L59·L155·L156) 해소: §5.7 `ActionResponse`에 `actionType`(enum action_type 23종, DB §5.12) 필수 응답 필드 추가, §5.6 `CasePatchRequest`에 `reason`(선택 — `status=IN_REVIEW` 재오픈 시 필수, PRD §11.2 BR-006) 추가, §4.6 `GET /admin/fds/rules` 필터에 `decisionOutcome`·`evaluationMode`·`ruleNo` 추가(PRD §6.1 BR-001 5축) — §10 OpenAPI에 `ActionResponse`·`CasePatchRequest` schema 및 `/admin/fds/rules` path 반영. | api-designer |
 | 2026-06-11 | v2.2 | QA HIGH 3건(L115·L116·L190) 해소: §5.1 `TransactionDto.transactionType`을 DB §4.19 폐쇄 enum 12종 참조로 변경 + §10 `TransactionType` schema 신설, 헤더 DB 핀 v1.5→v1.7 갱신, §4.8 connector 경로 변수 `{id}`→`{connectorId}` 전수 통일(단건·pause·resume·replay, §5.15/§5.16/§10/§11.1 동기). | api-designer |
 | 2026-06-11 | v2.1 | doc-consistency 리포트(all-latest) HIGH 이격 정정: §5.11 evidence export 응답 DTO에 `createdBy`(string(128)) 추가 — DB §5.31 `created_by NOT NULL` 정본 동기화. | api-designer |

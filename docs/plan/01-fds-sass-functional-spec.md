@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **6.1** | **2026-06-18** | **SM Kim** | **데이터 레이어 hanpass-ph 소스 재그라운딩 — 소스 카탈로그·channel CASH_IN/INBOUND_REMIT·corridor·연동 키(규제 불변).** ① **§3.2 ⑤ 연결된 소스 시스템**을 hanpass-ph 트랜잭션 마이크로서비스(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`, REST sync)로 현행화(generic `core-banking`/`atm-switch` 대체). ② **§4.0 ④ 소스 시스템 카탈로그 신설** + 채널 21종(`CASH_IN`·`INBOUND_REMIT` 추가)·corridor·base 통화 USD 명시(DB §5.3a·§4.4·§5.5·연동 §3.1/§7 정본). ③ **§8.1 SFDS-DEC-001 검색조건에 금액/통화/corridor/채널 추가**(데이터 기반 — API 필터·와이어프레임·데이터 항목·BR-001). **CTR/STR 임계·기한·KoFIU 분류 미변경(규제 불변)** — PH 운영은 Policy Pack `PH_AMLC` 옵션 병기만. 화면 수·규제 내용 불변. |
 | **6.0** | **2026-06-19** | **SM Kim** | **메뉴 IA 운영/설정 2영역 재구성 — §1.0 정보구조·메뉴 체계 신설(운영: 조사·모니터링/케이스·처리/거버넌스·보고, 설정: 연동·데이터/탐지 정책/감사·증적), §16.1 인벤토리에 영역/기능그룹 열 추가·순서 재정렬. 화면 34종·콘텐츠 불변. 짝 PPT `BO-FDS-SASS-Planning_v8.0.pptx` 재빌드(nav_tree 2영역·3단 NAV).** |
 | **5.0** | **2026-06-12** | **SM Kim** | **데이터 인입 가시성 보강 — 33→34화면, 47→49슬라이드.** ① **§4.0 데이터 인입 유형(확정) 신설**: 연동 방식(`ingest_mode` 5종, DB §4.1·API §4.8 정본) × 화면 표시 신호(REST Push=마지막 수신·TPS·● 수신중 / 큐=depth·lag·DLQ·마지막 메시지 / 폴링=마지막·다음 폴링·주기·커서 / CDC=change stream lag / 스냅샷=최근 스냅샷·초기 적재(백필) 진행률)와 **수신 API 카탈로그 5종**(`POST /api/v1/fds/events`(비동기 202)·`:batch`(최대 500·초기 적재 겸용)·`POST .../decisions/evaluate`(동기)·`POST .../external-decisions`(벤더)·`GET .../events/{eventId}`, API §4.1·§5.1 정본), **인입 신호 상태 3종**(● 수신중/⚠ 지연/✕ 중단)을 PRD 확정 표로 고정. ② **§4.4 SFDS-CONN-004 신설(수신 API 카탈로그·인입 라이브 모니터링, 2탭)**: ① 이 고객사가 사용하는 수신 API 전체 리스트(용도·방식·인증·24h 호출량·마지막 호출·신호) ② 커넥터×연동 방식별 라이브 모니터링(마지막 수신 n초 전 ● 신호·TPS·마지막/다음 폴링·큐 depth/lag/DLQ 적체(`fds-events-dlq`·`fds-vendor-ingest-dlq`, depth poller PT60S — integration §2·§6 정본)·초기 적재 진행률). 집계 API **제안** bo-api `GET /api/v1/bo/fds/ingest/catalog`·`GET .../ingest/health`(후속 API 정합). ③ **§4.1 CONN-001 보강**: `마지막 수신`·`신호(●/⚠/✕)` 컬럼 추가 + 상단 `[인입 모니터링 → SFDS-CONN-004]`(BR-005). ④ **§4.2 CONN-002 보강**: 폴링=다음 폴링 예정·주기, 큐=depth·DLQ 적체, 라이브 신호 표시(BR-006). ⑤ 부록 16.1 행·16.2 권한 주석 추가. ⑥ 짝 PPT `BO-FDS-SASS-Planning_v7.0.pptx` 재빌드·렌더 검증. |
 | **4.0** | **2026-06-12** | **SM Kim** | **실계 AML 운영 시스템 벤치마크(GTone AML RBA Xpress 80화면, `docs/samples/gtone/1~80.png` — AML PRD v6.0/v7.0 §12-B·부록 H) FDS 적용 검토 — 32→33화면, 45→47슬라이드.** ① **§6.7 SFDS-STAT-001 신설(룰 효과성 통계, 2탭)**: 룰 라이프사이클(정의→임계값→시뮬레이션→배치→**효과성 평가**) 폐루프 완성(gtone 33 STR 룰평가 모니터링·54~56 룰별 요약 통계 벤치마크, AML-STAT-001 대응) — ① 룰 효과성(룰별 평가→탐지→차단/보류→케이스 전환 퍼널·전환율·전월 대비·튜닝 권고 ⚠, 행 ▶ → RULE-002·[백테스트] → RULE-006) ② 오탐 피드백 분석(케이스 종결 사유 `FP_*` 3종 분포·룰별 오탐율 추이·튜닝 후보 — §11.2 BR-002 오탐 피드백 폐루프의 분석 화면). API **제안** bo-api `GET /api/v1/bo/fds/stats/rules`·`GET .../stats/false-positives`(집계 소유 bo-api — 후속 API 정합 필요). ② **§6.1 RULE-001 보강**: 목록에 효과성 요약 컬럼(최근 30일 탐지·오탐율 — 화면 파생값) + 행 컨텍스트 `[효과성 ▶ → SFDS-STAT-001]` 드릴다운(BR-006). ③ **비적용 판정 기록**: 스크리닝 시뮬레이션(=SFDS-RULE-006 백테스트 기보유)·명단 만료/연장 생명주기(=SFDS-GRP-001/002 기보유)·대상 360°(=SFDS-DEC-003 기보유)·당연고위험 레지스트리(RA 등급 개념 없음 — 그룹·명단으로 수용)·CDD 프로필/기관 위험평가(IRA)/교육·자격(EDU)/보고기관 정보(특금법·KoFIU 소관 — aml-svc 위임, §13 책임 경계). ④ 부록 16.1에 SFDS-STAT-001 행·16.2에 권한 주석 추가. ⑤ 짝 PPT `BO-FDS-SASS-Planning_v6.0.pptx` 재빌드(NAV '룰 관리' 그룹)·렌더 검증. |
@@ -661,12 +662,13 @@ SaaS 제품이지만 AML/FDS는 고객 PII·규제·내부보안 요건상 **고
 │  이메일         ops-bank-a@example.com        정기 리포트·장애 알림       │
 │  웹훅(Webhook)  https://bank-a.example/hook   FdsDecisionCreated          │
 │                                                                            │
-│  ─ 연결된 소스 시스템 ─────────────────────────────────────────────────── │
+│  ─ 연결된 소스 시스템 (hanpass-ph 실서비스) ─────────────────────────────── │
 │  소스 시스템       연동 방식     사용     지연     최근 오류               │
-│  core-banking      큐(Queue)     ○        12초     —                      │
-│  atm-switch        REST Push     ○        8초      —                      │
-│  audit-log         폴링          ○        312초⚠   페이지 타임아웃         │
-│  legacy-card       CDC           ○        24초     —                      │
+│  remit-svc         REST Push     ○        8초      —                      │
+│  walletchg-svc     REST Push     ○        6초      —                      │
+│  domestic-svc      REST Push     ○        9초      —                      │
+│  member-svc        REST Push     ○        12초     —                      │
+│  inbound-svc       REST Push     ○        14초     —                      │
 │  (상세 및 운영 → SFDS-CONN-001/002 연계)                                  │
 │                                                          [←④ 이전]        │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -676,7 +678,7 @@ SaaS 제품이지만 AML/FDS는 고객 PII·규제·내부보안 요건상 **고
 |------|------|
 | 알림 채널 (`alert_channel`) | Slack 채널명, 이메일 주소, 웹훅 URL 목록. 알림 이벤트 유형 표시 |
 | 웹훅 이벤트 | `FdsDecisionCreated` 등 구독 이벤트 종류 |
-| 연결된 소스 시스템 | 이 고객사에 등록된 소스 시스템·커넥터 요약(소스시스템명·연동 방식·사용 여부·지연·최근 오류). 상세 운영은 SFDS-CONN-001/002 연계 |
+| 연결된 소스 시스템 | 이 고객사에 등록된 소스 시스템·커넥터 요약(소스시스템명·연동 방식·사용 여부·지연·최근 오류). 상세 운영은 SFDS-CONN-001/002 연계. **소스 시스템 = hanpass-ph 트랜잭션 마이크로서비스**(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`, REST sync 인입 — DB §5.3a·연동 §3.1/§7 정본). 데이터 레이어 한정이며 규제(CTR/STR) 임계·기한 불변. |
 
 **비즈니스 규칙**
 
@@ -780,6 +782,24 @@ SaaS 제품이지만 AML/FDS는 고객 PII·규제·내부보안 요건상 **고
 | `GET /api/v1/fds/events/{eventId}` | 수신 이벤트 상태·정규화 결과 조회(마스킹) | 동기 조회 |
 
 **③ 인입 신호 상태(확정 3종, 화면 파생값)**: **● 수신중**(임계 내 수신 지속 — 기본 60초 내 마지막 수신) / **⚠ 지연**(lag·폴링 간격 SLA 초과) / **✕ 중단**(수신 두절·커넥터 DISABLED/ERROR). 인증은 API Key+HMAC(`Source-System` 헤더, API §3).
+
+**④ 소스 시스템 카탈로그 (hanpass-ph 실서비스 — 데이터 레이어 재그라운딩, DB §5.3a·연동 §3.1)**
+
+데이터 소스는 hanpass-ph 필리핀 송금/월렛 플랫폼의 실제 트랜잭션 마이크로서비스다(generic placeholder `card-processor`/`core-banking`/`atm-switch` 대체). 업스트림은 **REST sync(`REST_PUSH`)** 로 canonical event를 인입한다.
+
+| 소스 시스템(`source_system`) | 역할 | FDS 채널(`channel_type`) |
+|---|---|---|
+| `member-svc` | 회원/KYC/CDD/제재·PEP 스크리닝 | — (대상·수단 자재화) |
+| `walletchg-svc` | 월렛충전(cash-in/top-up) | `CASH_IN` |
+| `domestic-svc` | 국내송금(PHP) | `DOMESTIC_REMIT` |
+| `remit-svc` | 해외송금(cross-border) | `CROSS_BORDER_REMIT`(화면 '해외송금') |
+| `wallet-svc` | 월렛 원장(double-entry) | — (계좌·정산) |
+| `tx-history-svc` | 회원 통합 이력(read model) | — |
+| `inbound-svc` | 파트너 인바운드 송금 | `INBOUND_REMIT` |
+
+- **채널 21종**(DB §4.4): 기존 19종에 `CASH_IN`(월렛충전)·`INBOUND_REMIT`(파트너 인바운드)을 추가. cross-border(`remit-svc`/`inbound-svc`)는 corridor(출발국/도착국·송금/수취 통화)와 base 통화 **USD**(remit `usd_amount`/`report_amount` 산출)를 정규 이벤트에 명시한다(DB §5.5·연동 §7.2).
+- 모든 원천 식별자는 token/keyed-HMAC(원문 금지). 연동 키 매핑은 연동 §7.2 정본.
+- **규제 불변**: CTR/STR 임계·기한·KoFIU 분류는 그대로 유지하며, 본 카탈로그는 데이터 레이어만 현행화한다. PH 운영 시 Policy Pack `PH_AMLC` 옵션 병기만 가능(규제 숫자 교체 금지).
 
 ### 4.1 SFDS-CONN-001 · 소스 시스템·커넥터 목록
 
@@ -1074,7 +1094,7 @@ SaaS 제품이지만 AML/FDS는 고객 PII·규제·내부보안 요건상 **고
 |------|------|
 | 룰 번호 | 시스템 식별자(예: `[MULE_BANK]`), 변경 불가. 별칭 함께 표시 |
 | 이름 | 사람이 읽는 룰명 |
-| 도메인/채널 | 카드결제 / PG / 국내송금 / 해외송금 / 지갑 / ATM출금 / 계좌이체 / 가상계좌 / 가상자산 / 내부감사 / 무역대금 / 이커머스정산 / 정산 / B2B인보이스 (위 14개 도메인 표시 묶음, 정본 `channel_type` enum은 **19종** DB §4.4 — `CARD_PRESENT/CARD_NOT_PRESENT/ATM/BANK_TRANSFER/DOMESTIC_REMIT/CROSS_BORDER_REMIT/PG_PAYMENT/WALLET_PAYMENT/WALLET_WITHDRAWAL/VIRTUAL_ACCOUNT_DEPOSIT/CRYPTO_DEPOSIT/CRYPTO_WITHDRAWAL/EXCHANGE_TRADE/INTERNAL_OPERATION/BATCH_SETTLEMENT/TRADE_PAYMENT/CROSS_BORDER_ECOMMERCE_SETTLEMENT/MARKETPLACE_SELLER_PAYOUT/B2B_INVOICE_PAYMENT`) (`§9.2` channelType) |
+| 도메인/채널 | 카드결제 / PG / 국내송금 / 해외송금 / 지갑충전 / 파트너인바운드 / ATM출금 / 계좌이체 / 가상계좌 / 가상자산 / 내부감사 / 무역대금 / 이커머스정산 / 정산 / B2B인보이스 (도메인 표시 묶음, 정본 `channel_type` enum은 **21종** DB §4.4 — `CARD_PRESENT/CARD_NOT_PRESENT/ATM/BANK_TRANSFER/DOMESTIC_REMIT/CROSS_BORDER_REMIT/CASH_IN/INBOUND_REMIT/PG_PAYMENT/WALLET_PAYMENT/WALLET_WITHDRAWAL/VIRTUAL_ACCOUNT_DEPOSIT/CRYPTO_DEPOSIT/CRYPTO_WITHDRAWAL/EXCHANGE_TRADE/INTERNAL_OPERATION/BATCH_SETTLEMENT/TRADE_PAYMENT/CROSS_BORDER_ECOMMERCE_SETTLEMENT/MARKETPLACE_SELLER_PAYOUT/B2B_INVOICE_PAYMENT` — `CASH_IN`(월렛충전)·`INBOUND_REMIT`(파트너 인바운드) hanpass-ph 재그라운딩 추가) (`§9.2` channelType) |
 | 동작 | 허용 / 모니터(기록만) / 검토 필요 / 추가 인증 / 차단 / 자금 보류 / 동결 / 규제 보고 후보 (`ALLOW/MONITOR/REVIEW/CHALLENGE/BLOCK/HOLD/FREEZE/REPORT`, `decision` 8종 DB §4.7) |
 | 평가 | 즉시(실시간) / 사후(비동기) (`INLINE_AND_ASYNC / ASYNC_ONLY`) |
 | 상태 | 작성 / 결재대기 / 운영중 / 비활성 / 보관 (`DRAFT/PENDING_APPROVAL/ACTIVE/DISABLED/ARCHIVED`, `rule_status` DB §4.13) |
@@ -1484,7 +1504,7 @@ sequenceDiagram
 |------|------|
 | **기능 ID** | SFDS-DEC-001 |
 | **권한** | `SFDS_DECISION:READ` |
-| **API** | `GET /api/v1/fds/decisions?ruleNo=&subjectRef=&transactionRef=&decision=&from=&to=` (화면 필터 룰 번호·대상·동작·기간 전수 대응 — API §4.2) |
+| **API** | `GET /api/v1/fds/decisions?ruleNo=&subjectRef=&transactionRef=&decision=&channelType=&currency=&amountMin=&amountMax=&sendCountry=&receiveCountry=&from=&to=` (화면 필터 룰 번호·대상·동작·채널·통화·금액·corridor·기간 전수 대응 — API §4.2. 채널/통화/corridor 필드는 hanpass-ph 데이터 레이어 재그라운딩, DB §5.5) |
 
 #### 화면 레이아웃
 
@@ -1492,7 +1512,8 @@ sequenceDiagram
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ 탐지 결정 조회  [고객사: 은행 A ▼]                                         │
 ├──────────────────────────────────────────────────────────────────────────┤
-│ 룰 번호 [______] 대상 [______] 동작 [▼] 기간 [from]~[to]          🔍     │
+│ 룰 번호 [______] 대상 [______] 동작 [▼] 채널 [▼] 통화 [▼]                │
+│ 금액 [min]~[max] corridor [출발국 ▼]→[도착국 ▼] 기간 [from]~[to]   🔍     │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ 처리시각           │ 룰 번호      │ 동작     │ 결과 │ 대상     │ 평가  │ │
 │ ───────────────────┼──────────────┼──────────┼──────┼──────────┼───────┼│
@@ -1514,11 +1535,12 @@ sequenceDiagram
 | 동작 | 룰 동작(허용/검토/추가인증/차단/자금보류/동결/규제보고) |
 | 결과 | 통과 / 차단 / 추가인증 / 보류 |
 | 대상 | 위험 판단 대상(`subject_ref`, 마스킹) |
+| 채널·통화·금액·corridor | 거래 채널(`channel_type` 21종)·표시 통화(`currency`)·금액(`amount`)·corridor(`send_country`→`receive_country`) — hanpass-ph 데이터 레이어 필드(DB §5.5). cross-border는 base 통화 USD(`amount_base`) 병기 |
 | 평가 | 즉시(실시간) / 사후(비동기) |
 
 #### 비즈니스 규칙
 
-- **BR-001**: 필터 `룰 번호 / 대상 / 동작 / 기간`. 기간 기본 최근 24시간.
+- **BR-001**: 필터 `룰 번호 / 대상 / 동작 / 채널 / 통화 / 금액(min~max) / corridor(출발국→도착국) / 기간`. 기간 기본 최근 24시간. 채널·통화·corridor 필터는 hanpass-ph 데이터 레이어 기반(DB §5.5·연동 §7.2) — 규제 임계·기한과 무관(데이터 검색 조건).
 - **BR-002**: 결정은 최근 13개월 즉시 조회, 그 이상은 장기 보관소 링크. 조회 범위가 보관 기간 밖이면 안내.
 - **BR-003**: 행 클릭 → 결정 상세(SFDS-DEC-002, 판정 근거 포함).
 - **BR-004**: 조회 결과 1만 건 초과 시 팝업 노출 — 기간/조건 좁히기 안내 후 재조회.

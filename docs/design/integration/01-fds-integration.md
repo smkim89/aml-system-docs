@@ -87,19 +87,21 @@ flowchart LR
 
 ### 3.1 Inbound — canonical event (`fds-events`)
 
+> **소스 시스템 = hanpass-ph 실서비스(데이터 레이어 재그라운딩, DB §5.3a)**: 아래 `발행자(source_system)` 열은 hanpass-ph 트랜잭션 마이크로서비스로 현행화한다(generic `card-processor`/`core-banking`/`atm-switch` 대체). 거래 인입 소스는 `walletchg-svc`(`CASH_IN`)·`domestic-svc`(`DOMESTIC_REMIT`)·`remit-svc`(`CROSS_BORDER_REMIT`)·`inbound-svc`(`INBOUND_REMIT`), 회원/KYC는 `member-svc`, 월렛 원장/정산은 `wallet-svc`(`settlement.posted`)·통합 이력 read model은 `tx-history-svc`. 업스트림은 **`REST_PUSH`(REST sync)** 로 인입(§7.1). 식별자는 token/keyed-HMAC(원문 금지). **규제(CTR/STR) 임계·기한 불변.**
+
 | eventType (예시) | family | 발행자(source_system) | 구독자 | 트리거 | 핵심 페이로드 키 |
 |---|---|---|---|---|---|
-| `transaction.requested` | transaction | card-processor / domestic-transfer / atm-switch … | FdsEventsConsumer | 거래 요청 발생 | `transaction.transactionRef`,`amount`,`currency`,`channel.channelType` |
-| `authorization.requested` / `.approved` / `.declined` | authorization | card-processor / atm-switch | FdsEventsConsumer | 승인 단계 | `transaction.transactionRef`,`instrument.instrumentRef` |
-| `transaction.completed` / `.refunded` | transaction | 전 도메인 | FdsEventsConsumer | 거래 완료/환불 | `transaction.status` |
-| `settlement.calculated` / `.payout.requested` / `.payout.completed` | settlement | pg / marketplace / ecommerce | FdsEventsConsumer | 정산 단계 | `settlementRef`,`sellerRef`,`reserveAmount` |
+| `transaction.requested` | transaction | walletchg-svc(`CASH_IN`) / domestic-svc(`DOMESTIC_REMIT`) / remit-svc(`CROSS_BORDER_REMIT`) / inbound-svc(`INBOUND_REMIT`) | FdsEventsConsumer | 거래 요청 발생 | `transaction.transactionRef`,`amount`,`currency`,`channel.channelType`,`corridor`(cross-border) |
+| `authorization.requested` / `.approved` / `.declined` | authorization | (카드 도메인 — hanpass-ph 미사용 시 N/A) | FdsEventsConsumer | 승인 단계 | `transaction.transactionRef`,`instrument.instrumentRef` |
+| `transaction.completed` / `.refunded` | transaction | 전 거래 소스(walletchg/domestic/remit/inbound) | FdsEventsConsumer | 거래 완료/환불 | `transaction.status` |
+| `settlement.calculated` / `.payout.requested` / `.payout.completed` / `settlement.posted` | settlement | remit-svc / wallet-svc(원장 double-entry) | FdsEventsConsumer | 정산/원장 posting | `settlementRef`,`reserveAmount`,`amountBase`(USD) |
 | `trade.invoice.issued` / `trade.document.submitted` / `trade.document.matched` | trade | trade-finance | FdsEventsConsumer | 무역금융 증빙(무역대금) | `documentRef`,`documentType`,`amount` |
 | `invoice.approved` / `invoice.paid` | invoice | b2b-payment | FdsEventsConsumer | B2B 인보이스 | `documentRef`,`approverRole` |
 | `order.created` / `.shipped` / `.cancelled` | order | ecommerce / marketplace | FdsEventsConsumer | 주문 단계 | `orderRef`,`sellerRef`,`deliveryStatus` |
 | `seller.onboarded` | seller | marketplace | FdsEventsConsumer | 셀러 등록 | `sellerRef`,`country` |
-| `account.debited` / `.credited` | account | core-banking | FdsEventsConsumer | 계좌 이동 | `accountRef`,`amount` |
-| `instrument.registered` / `.suspended` | instrument | 전 도메인 | FdsEventsConsumer | 수단 등록/정지 | `instrumentRef`,`instrumentType` |
-| `member.kyc.updated` | member | kyc | FdsEventsConsumer | KYC 변경 | `subjectRef`,`kycLevel` |
+| `account.debited` / `.credited` | account | wallet-svc(월렛 원장 double-entry, transfer_links) | FdsEventsConsumer | 계좌/원장 이동 | `accountRef`,`amount` |
+| `instrument.registered` / `.suspended` | instrument | wallet-svc / member-svc | FdsEventsConsumer | 수단 등록/정지 | `instrumentRef`,`instrumentType` |
+| `member.kyc.updated` / `customer.*` / `entity.*` / `beneficial-owner.*` | member | member-svc(회원/KYC/CDD/제재·PEP) | FdsEventsConsumer | KYC/CDD/스크리닝 변경 | `subjectRef`,`kycLevel` |
 | `device.changed` / `session.started` | device/session | app-gateway / atm-switch | FdsEventsConsumer | 기기·세션 신호 | `subjectRef`,`device`,`session` |
 | `market.order.created` / `market.trade.executed` | market | crypto-exchange | FdsEventsConsumer | 거래소 주문·체결(§15.10 `trade.order.created`/`trade.executed` 정본 환원) | `transaction.transactionRef` |
 | `employee.limit.changed` / `employee.approval.override` | employee | internal-audit | FdsEventsConsumer | 내부자 작업 | `actor.actorRef`,`actor.role` |
@@ -174,25 +176,28 @@ flowchart LR
 {
   "tenantId": "tenant_bank_a",
   "workspaceId": "default",
-  "sourceSystem": "atm-switch",
-  "schemaVersion": "atm-switch.v1",
+  "sourceSystem": "remit-svc",
+  "schemaVersion": "remit-svc.v1",
   "messageVersion": "v1",
-  "eventId": "atm-evt-001",
-  "idempotencyKey": "atm-switch:atm-evt-001",
+  "eventId": "remit-evt-001",
+  "idempotencyKey": "remit-svc:remit-evt-001",
   "eventType": "transaction.requested",
   "occurredAt": "2026-06-06T10:00:00+09:00",
   "correlationId": "corr-7f3c",
   "traceparent": "00-8f3c...-...-01",
-  "subject":      { "subjectType": "PERSON", "subjectRef": "subj_hmac_123", "country": "KR" },
+  "subject":      { "subjectType": "PERSON", "subjectRef": "subj_hmac_123", "country": "PH" },
   "actor":        { "actorType": "CUSTOMER", "actorRef": "subj_hmac_123" },
-  "transaction":  { "transactionRef": "atm-tx-001", "transactionType": "WITHDRAWAL",
-                    "direction": "OUTBOUND", "amount": "200000.00", "currency": "KRW",
-                    "amountBase": "200000.00", "baseCurrency": "KRW", "status": "REQUESTED" },
-  "instrument":   { "instrumentType": "CARD", "instrumentRef": "card_token_123",
-                    "accountRef": "acct_hmac_123", "institutionCode": "BANK01" },
-  "counterparty": { "counterpartyType": "ATM", "counterpartyRef": "atm_0001", "country": "KR" },
-  "channel":      { "channelType": "ATM", "paymentRail": "ATM_SWITCH", "entryMode": "CARD_PRESENT" },
-  "location":     { "country": "KR", "city": "Seoul", "ipCountry": null },
+  "transaction":  { "transactionRef": "remit_transfer_no_token", "transactionType": "REMITTANCE",
+                    "direction": "OUTBOUND", "amount": "30000.00", "currency": "PHP",
+                    "amountBase": "530.00", "baseCurrency": "USD",
+                    "corridor": { "sendCountry": "PH", "receiveCountry": "KR",
+                                  "sendCurrency": "PHP", "receiveCurrency": "KRW" },
+                    "status": "REQUESTED" },
+  "instrument":   { "instrumentType": "WALLET", "instrumentRef": "wallet_token_123",
+                    "accountRef": "wallet_id_hmac_123", "institutionCode": "HANPASS" },
+  "counterparty": { "counterpartyType": "BANK_ACCOUNT", "counterpartyRef": "acct_hash_token", "country": "KR" },
+  "channel":      { "channelType": "CROSS_BORDER_REMIT", "paymentRail": "PARTNER_API" },
+  "location":     { "country": "PH", "city": "Manila", "ipCountry": "PH" },
   "payloadHash":  "sha256:..."
 }
 ```
@@ -395,12 +400,36 @@ sequenceDiagram
 | `fds-webhook` | 지수 백오프 | 8회 | 고객 endpoint 장애 허용폭 큼 |
 
 - 재처리는 **부작용 멱등**이 전제: `fds_canonical_events` upsert, `fds_actions` UNIQUE, `fds_cases.aml_case_id` set은 이미 처리됐으면 no-op.
-- DB write 후 큐 발행 실패 대비: action은 **outbox 패턴**(DB `fds_actions` insert가 진실, relay는 별도 스케줄러가 `status=PENDING/APPROVED` row를 polling 발행)으로 at-least-once 보장.
+- DB write 후 큐 발행 실패 대비: action은 **outbox 패턴**(DB `fds_actions` insert가 진실, relay는 별도 스케줄러가 `status=PENDING/APPROVED` row를 발행)으로 at-least-once 보장.
+
+#### 6.2.1 아웃박스 자동 디스패처 (확정 — `adapter/in/scheduled/ActionRelayScheduler`)
+
+`fds_actions` outbox는 **스케줄드 디스패처**로 자동 배수된다(구현 정본 `ActionRelayService`/`ActionRelayScheduler`/`SchedulingConfig`).
+
+- **활성 프로파일**: `@EnableScheduling`·디스패처는 **`aws`(운영) 프로파일 한정**(`@Profile("aws")`). 테스트/로컬은 비활성 — 통합 테스트는 use case 직접 호출로 결정론적 구동.
+- **relay sweep**(`fixedDelay` 기본 `aegis.fds.action.relay-interval-ms=5000`): `tenantsWorkspacesWithDispatchable`로 `(tenant_id, workspace_id)` 팬아웃 → 각 scope에 `relayPending(batch)`.
+- **retry sweep**(기본 `aegis.fds.action.retry-interval-ms=30000`): `retryFailed(batch)` — DLQ 종단 처리 후 백오프 경과 `FAILED` 재발행. `aegis.fds.action.batch-size` 기본 100.
+- **멀티 인스턴스 안전**: 클레임은 `UPDATE fds.fds_actions SET status='SENT' WHERE (tenant_id, workspace_id, action_id) IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING …`. 동시 디스패처 인스턴스가 동일 row를 **중복 클레임하지 않는다**(SKIP LOCKED). 클레임 대상 = `PENDING`/`APPROVED`, 또는 `FAILED`(`retry_count < 5` ∧ `next_attempt_at IS NULL OR next_attempt_at <= now`). `APPROVAL_REQUIRED`는 클레임 제외(4-eyes 미승인).
+- **지수 백오프**: relay 전송 실패 시 `retry_count++` + `next_attempt_at = now + 30s·2^(attempt-1)`(상한 30m). 백오프 시각은 `fds_actions.next_attempt_at`(DB §5.12)에 적재되어 디스패처가 경과분만 재클레임한다.
+
+#### 6.2.2 Webhook 아웃박스 자동 디스패처 (확정 — `adapter/in/scheduled/WebhookRelayScheduler`, T10)
+
+고객사 콜백(`FdsDecisionCreated`/`FdsCaseOpened`/`FdsCaseStatusChanged`/`FdsActionResult`, §4.5)은 **액션 outbox(`fds_actions`)와 별개 채널**인 `fds_webhook_outbox`(DB §5.35, Flyway V15)에 적재되어 전용 스케줄드 디스패처로 **고객사 등록 URL로 서명 HTTP POST** 발행된다(구현 정본 `WebhookOutboxEmitter`(producer)/`WebhookRelayService`(`RelayWebhookUseCase`)/`HttpWebhookSenderAdapter`(전송)/`WebhookRelayScheduler`).
+
+- **transactional outbox producer**: decision 생성 트랜잭션 내에서 `WebhookOutboxEmitter.emitDecisionCreated`가 canonical envelope(§4.5/API §9.2, camelCase·`schemaVersion=fds.webhook.v1`·서버 파생 `eventFamily`·`riskScore` 문자열 "82.0000")를 직렬화해 `PENDING` row를 적재한다(도메인 변경과 원자적). `sandbox` workspace는 **미발행(shadow)**. 멱등 dedup = `(tenant_id, workspace_id, aggregate_type, aggregate_ref, event_name, payload_hash)` UNIQUE — 동일 이벤트 재발행 시 `eventId`·payload 불변(at-least-once). 핵심 1종(`FdsDecisionCreated`) 결선 + 나머지 3종은 동일 `enqueue` 헬퍼 payload 슬롯(후속 결선).
+- **활성 프로파일**: `@Profile("aws")` 한정. 테스트/로컬은 비활성 — 통합 테스트는 use case 직접 호출로 결정론적 구동.
+- **relay sweep**(기본 `aegis.fds.webhook.relay-interval-ms=5000`): `tenantsWorkspacesWithDispatchable` 팬아웃 → scope별 `relayPending(batch)`. 각 row는 endpoint 조회(`fds_api_credentials` `credential_type=WEBHOOK`·`webhook_url`·`secret_ciphertext`) → secret을 **서명 시점에만** 복호 → `WebhookSignature.sign(secret, ts, rawBody)` = `hmac-sha256=<hex>`(HMAC-SHA256(secret, `timestamp + "." + rawBody`)) → `X-Signature`/`X-Webhook-Timestamp`(epoch ms)/`Content-Type: application/json` POST. 2xx → `DISPATCHED`.
+- **retry sweep**(기본 `aegis.fds.webhook.retry-interval-ms=30000`): `retryFailed(batch)`. `aegis.fds.webhook.batch-size` 기본 100. 비2xx/타임아웃 → `FAILED` + `attempt++` + `next_attempt_at = now + 30s·2^(attempt-1)`(상한 24h, §6.2 8회 정합).
+- **멀티 인스턴스 안전**: 클레임 = `UPDATE fds.fds_webhook_outbox SET status='DISPATCHING' WHERE (tenant_id, workspace_id, outbox_id) IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING …`. 동시 인스턴스 중복 클레임 없음. 클레임 대상 = `PENDING`, 또는 `FAILED`(`attempt < 5` ∧ `next_attempt_at IS NULL OR <= now`).
+- **서명 material 분리(정본)**: 아웃바운드 webhook 서명 = HMAC-SHA256(secret, `timestamp + "." + rawBody`)이며 **인바운드 ingest 필터**(`IngestAuthenticationFilter`)의 material(`timestamp + "\n" + apiKey + "\n" + body`)과 **다르다** — 혼용 금지. 양 엔진(fds/aml) 아웃바운드 서명 material·헤더는 동일(API FDS §9.3 / AML §8.3).
+- **서명키 rotate 연계**: 발행측은 현행 `secret_ciphertext`로 서명하고 `/admin/fds/credentials/{id}/rotate`로 회전한다(수신 측 dual-secret 검증 기간 무중단). 회전 자체는 기존 credential rotate 경로 재사용.
 
 ### 6.3 DLQ
 
 - 각 큐는 전용 DLQ(`*-dlq`). `adapter/in/scheduled`의 **DLQ depth poller(PT60S, 참조 구현 `FdsActionsDlqDepthPoller`)**가 `APPROXIMATE_NUMBER_OF_MESSAGES`를 메트릭(`fds.action.failed`, `fds.ingest.rejected`)으로 노출.
-- DLQ 진입 사유 코드: `FDS-PII-REJECTED`, `FDS-SCHEMA-UNKNOWN`, `FDS-VALIDATION-002`(enum 불일치), `ADAPTER_TIMEOUT`, `ADAPTER_REJECTED`. 모두 `fds_audit_logs`(또는 `fds_connector_offsets.last_error_code`)에 기록.
+- **action outbox DLQ 종단(확정)**: `fds_actions` row가 `retry_count`가 `MAX_RETRIES(5)`에 도달하면 디스패처(`retryFailed`)가 **DLQ 종단으로 `CANCELLED` 전이**(상태머신 §8 `FAILED → CANCELLED`)하고, `error_code`를 유지한 채 `fds_audit_logs`에 `audit_action='ACTION_DEAD_LETTER'`(targetKind=`ACTION`, targetRef=`action_id`, raw PII 미포함) 감사 1건을 남긴다. 관측 메트릭: relay 성공 `fds.action.sent`, 전송 실패 `fds.action.failed`, DLQ 종단 `fds.action.dlq`(Micrometer 카운터, 구현 `ActionRelayService`).
+- **webhook outbox DLQ 종단(확정, T10)**: `fds_webhook_outbox` row가 `attempt`이 `MAX_RETRIES(5)`에 도달하면 `retryFailed`가 **`DEAD_LETTERED` 종단 전이**하고, 콜백 endpoint 미설정(`NO_WEBHOOK_ENDPOINT`)도 즉시 DLQ로 종단한다. 각 종단은 `fds_audit_logs`에 `audit_action='WEBHOOK_DEAD_LETTER'`(targetKind=`WEBHOOK`, targetRef=`outbox_id`, raw PII 미포함) 감사 1건 + 메트릭 `fds.webhook.sent`/`fds.webhook.failed`/`fds.webhook.dlq`(구현 `WebhookRelayService`).
+- DLQ 진입 사유 코드: `FDS-PII-REJECTED`, `FDS-SCHEMA-UNKNOWN`, `FDS-VALIDATION-002`(enum 불일치), `ADAPTER_TIMEOUT`, `ADAPTER_REJECTED`, `HTTP_<status>`/`TRANSPORT_ERROR`/`NO_WEBHOOK_ENDPOINT`(webhook). 모두 `fds_audit_logs`(또는 `fds_connector_offsets.last_error_code`)에 기록.
 - DLQ 메시지는 **재제출(replay)** 가능: `POST /api/v1/admin/fds/connectors/{connectorId}/replay`(API §4.8) → DLQ→원큐 재투입. 재투입도 멱등키로 dedup.
 
 ### 6.4 순서보장
@@ -422,6 +451,7 @@ sequenceDiagram
 | `CDC` | `adapter/in/scheduled` | DB change stream → semantic mapping | `fds_connector_offsets` + PII allowlist |
 | `SNAPSHOT` | `adapter/in/scheduled` | 초기 기준데이터 import | offset = batch cursor |
 
+- **hanpass-ph 재그라운딩**: hanpass-ph 트랜잭션 마이크로서비스(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`, DB §5.3a)는 **`REST_PUSH`(REST sync)** 로 canonical event를 인입한다. DLQ·멱등은 기존 그대로 유지(§6). 데이터 레이어 한정이며 규제(CTR/STR) 임계·기한은 불변.
 - POLLING/CDC 필수: cursor·replay window·stable ordering·page checksum·rate limit(설계서 §12.3/§12.5). CDC는 **PII column allowlist**(`fds_schema_mappings.mapping_def.pii_allowlist`)가 필수.
 - connector health/replay는 `GET /api/v1/admin/fds/connectors`·`/replay`(API §4.8)로 운영. `connector_status` enum(`HEALTHY`/`LAGGING`/`ERROR`/`DISABLED`, DB §4.1).
 
@@ -429,16 +459,18 @@ sequenceDiagram
 
 원천 payload → canonical field. 매핑은 4-eyes 결재 대상(`subject_kind=MAPPING`, API §8). PII allowlist 외 식별자는 **tokenize 또는 drop**.
 
-| canonical 경로 | DB 컬럼 | 변환 규칙 |
+| canonical 경로 | DB 컬럼 | 변환 규칙 (hanpass-ph 원천 키, DB §5.3a) |
 |---|---|---|
-| `subject.subjectRef` | `fds_canonical_events.subject_ref` | 원천 고객ID → tenant keyed HMAC |
+| `subject.subjectRef` | `fds_canonical_events.subject_ref` | `member-svc.member_id`(uuid; `domestic-svc`만 varchar(36) → 문자열 정규화 후) → tenant keyed HMAC |
 | `actor.actorRef` | `actor_ref` | 행위자ID(직원/고객) → tenant keyed HMAC(token, 원문 금지) |
-| `transaction.transactionRef` | `transaction_ref` | 원천 거래ID → token(transaction 단위 순서·조회 키, 인덱스 `ix_events_tx` DB §5.5) |
-| `counterparty.counterpartyRef` | `counterparty_ref` | 상대방 식별자 → tenant keyed HMAC/token(마스터 미보유, ref-only DB §9) |
+| `transaction.transactionRef` | `transaction_ref` | `wallet_transaction_id` / remit.`transfer_number` / walletchg.`charge_order_id` / domestic.`transaction_id` → token(transaction 단위 순서·조회 키, 인덱스 `ix_events_tx` DB §5.5) |
+| `counterparty.counterpartyRef` | `counterparty_ref` | remit.`account_hash` / domestic.(`proc_id`+`account_number`+`holder_name`) → tenant keyed HMAC/token(마스터 미보유, ref-only DB §9) |
 | `instrument.instrumentRef` | `instrument_ref` | PAN/계좌/주소 → token(원문 폐기, `FDS-PII-REJECTED` if 원문 잔존) |
-| `transaction.amount`/`currency` | `amount`/`currency` | `decimal(24,8)`, KRW 정수부 |
-| `transaction.amountBase`/`baseCurrency` | `amount_base`/`base_currency` | FX 환산(ingest 단계 materialize, §5.2) |
-| `channel.channelType` | `channel_type` | 원천 채널 → enum `channel_type`(19종) |
+| (instrument 보조키) `account.walletId` | `account_ref` | wallet-svc.`wallet_id`(월렛 원장 키) → keyed HMAC(DB §5.7) |
+| `transaction.amount`/`currency` | `amount`/`currency` | `decimal(24,8)`, 표시 통화(PHP 등) |
+| `transaction.amountBase`/`baseCurrency` | `amount_base`/`base_currency` | **base 통화 USD** — cross-border는 remit `usd_amount`/`report_amount`에서 산출(§5.2 materialize) |
+| `corridor.sendCountry`/`receiveCountry`/`sendCurrency`/`receiveCurrency` | `send_country`/`receive_country`/`send_currency`/`receive_currency` | cross-border(`remit-svc`/`inbound-svc`) corridor → ISO-3166 alpha-2·통화코드(미탑재 시 `canonical_payload.corridor`, DB §5.5) |
+| `channel.channelType` | `channel_type` | 원천 채널 → enum `channel_type`(**21종** — `CASH_IN`·`INBOUND_REMIT` 포함, DB §4.4) |
 | `channel.paymentRail` | `payment_rail` | → enum `payment_rail`(18종) |
 | `eventType` | `event_type` + `event_family` | `<family>.<verb>`, family는 §4.16 enum |
 | `payloadHash` | `payload_hash` | `sha256:` (raw payload 미저장) |
@@ -447,15 +479,20 @@ sequenceDiagram
 
 ```json
 {
-  "schemaVersion": "atm-switch.v1",
+  "schemaVersion": "remit-svc.v1",
   "piiAllowlist": [],
   "fields": {
-    "subject.subjectRef": { "from": "$.member.cif", "transform": "HMAC_TENANT" },
-    "instrument.instrumentRef": { "from": "$.card.pan", "transform": "TOKENIZE_DROP_RAW" },
+    "subject.subjectRef": { "from": "$.member_id", "transform": "NORMALIZE_STR_HMAC_TENANT" },
+    "transaction.transactionRef": { "from": "$.transfer_number", "transform": "TOKENIZE" },
+    "counterparty.counterpartyRef": { "from": "$.account_hash", "transform": "HMAC_TENANT" },
     "transaction.amount": { "from": "$.amount", "transform": "DECIMAL_24_8" },
-    "channel.channelType": { "const": "ATM" },
-    "channel.paymentRail": { "const": "ATM_SWITCH" },
-    "eventType": { "from": "$.eventName", "map": { "WITHDRAW_REQ": "transaction.requested" } }
+    "transaction.amountBase": { "from": "$.usd_amount", "transform": "DECIMAL_24_8" },
+    "transaction.baseCurrency": { "const": "USD" },
+    "corridor.sendCountry": { "from": "$.send_country" },
+    "corridor.receiveCountry": { "from": "$.receive_country" },
+    "channel.channelType": { "const": "CROSS_BORDER_REMIT" },
+    "channel.paymentRail": { "const": "PARTNER_API" },
+    "eventType": { "from": "$.eventName", "map": { "REMIT_REQ": "transaction.requested", "REMIT_SETTLED": "settlement.posted" } }
   }
 }
 ```
@@ -487,6 +524,7 @@ stateDiagram-v2
 ```
 
 - 전이 규칙: `APPROVAL_REQUIRED` row는 승인 전 relay 금지. `sandbox` workspace는 `PENDING/APPROVED`에서 발행하지 않고 shadow 보존.
+- `PENDING/APPROVED → SENT`는 디스패처 클레임(`SELECT … FOR UPDATE SKIP LOCKED`, §6.2.1)이 원자적으로 수행한다. `SENT → FAILED` 시 `retry_count++` + `next_attempt_at`(지수 백오프)를 적재하고, `FAILED → SENT` 재발행은 `next_attempt_at <= now` 경과분만 재클레임한다. `FAILED → CANCELLED`(max retry)는 `fds.action.dlq` 메트릭 + `ACTION_DEAD_LETTER` 감사를 동반한다(§6.3).
 - 상태 전이 위반 → `FDS-STATE-CONFLICT`. 승인 없이 실행 시도 → `FDS-APPROVAL-REQUIRED`. 승인 후 payload 변경 → `FDS-APPROVAL-PAYLOAD-CHANGED`(§5.2).
 - 모든 전이는 `fds_actions.updated_at`·`fds_audit_logs`(action override 등) 기록.
 
@@ -622,7 +660,7 @@ sequenceDiagram
 |---|---|
 | `fds.ingest.received` / `.accepted` / `.rejected` / `.duplicate` | `fds-events` consumer |
 | `fds.connector.lag` | `fds_connector_offsets.lag_seconds` |
-| `fds.action.sent` / `.failed` | `fds_actions` relay / DLQ poller |
+| `fds.action.sent` / `.failed` / `.dlq` | `fds_actions` 디스패처(`ActionRelayService`): relay 성공 / 전송 실패(백오프) / DLQ 종단(max retry → CANCELLED) |
 | `fds.case.opened` | `fds_cases` insert |
 | `fds.aml.handoff` / `.aml.handoff.failed` | `fds-aml-handoff` / DLQ poller |
 
@@ -662,6 +700,7 @@ PRD·PPT·tasks가 그대로 참조할 연동 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-06-18 | v2.2 | **데이터 레이어 hanpass-ph 소스 재그라운딩 — event family·연동 키·corridor·channel**(규제 불변): (1) §3.1 inbound 카탈로그 `발행자(source_system)` 열을 hanpass-ph 트랜잭션 마이크로서비스(`walletchg-svc`/`domestic-svc`/`remit-svc`/`inbound-svc`/`member-svc`/`wallet-svc`/`tx-history-svc`)로 현행화 + event family·channel 매핑 주석. (2) §4.2 IngestEventMessage 예시를 `remit-svc` cross-border(corridor·`amountBase`=USD)로 교체. (3) §7.1에 hanpass-ph 업스트림 `REST_PUSH`(REST sync) 인입 주석. (4) §7.2 필드매핑을 hanpass-ph 원천 키(`member_id`/`transfer_number`/`charge_order_id`/`transaction_id`/`wallet_id`/`account_hash` 등)·corridor 4필드·channel 21종·`amount_base`(USD)로 구체화 + `mapping_def` JSON 예시를 `remit-svc.v1`로 교체. DLQ는 기존 유지. **CTR/STR 임계·기한·KoFIU 분류 미변경(규제 불변)**. | integration-designer |
 | 2026-06-11 | v2.1 | QA HIGH cross(L307) 해소: §4.1에 cross-service envelope 정책 명문화 — FDS envelope=`workspaceId` 최상위 필수 / AML envelope=`dataScope` 최상위(의도된 비대칭), `fds-aml-handoff` 어댑터(aml-svc 소비 측)가 `workspaceId`→`dataScope` 변환(`default` 매핑 포함). 양 설계서(FDS §8.2/§8.3·AML §8.2) 교차 주석과 동기. | integration-designer |
 | 2026-06-11 | v2.0 | **doc-consistency-report-all-latest 연동 담당 HIGH/MEDIUM 이격 정합(fds:design-integration·fds:dbapi-integration)**. **(1) HIGH §8.3·§12 approvalLine 8개 행 전면 교체(API §8 정본)** — 구 `CHECKER`/`SECURITY_OFFICER`/`SFDS_CASE:APPROVE`를 API §8 정본 값으로: `ACTION`=`MAKER_CHECKER`(대규모 `EXECUTIVE_APPROVAL`), `RULE`=`COMPLIANCE_MANAGER`, `MAPPING`=`MAKER_CHECKER`, `SECRET`=`SECURITY_ADMIN`, `GROUP`=`RISK_MANAGER`, `EXPORT`=`COMPLIANCE_MANAGER`, `MERCHANT_NORMALIZE`=`RISK_MANAGER`(대규모 `EXECUTIVE_APPROVAL`), `CASE_CLOSE`=`COMPLIANCE_MANAGER`. **(2) MEDIUM §8.3 `MAPPING.subjectRef` 교체** — 구 `mapping_id`→`source_system`(API §8 line 517 정본: source-system 구성 도메인의 subjectRef=`source_system`). **(3) §12 downstream 4-eyes 요약 동기화** — approvalLine 전수 정본값 반영. 정본 = API §8 lines 513-523·approval_line enum 6종(`SELF_APPROVAL_DISABLED`/`MAKER_CHECKER`/`COMPLIANCE_MANAGER`/`RISK_MANAGER`/`SECURITY_ADMIN`/`EXECUTIVE_APPROVAL`). | integration-designer |
 | 2026-06-10 | v1.9 | **doc-consistency-report-all-latest 연동 담당 이격 정합(#27·#28·#30·#31·#37·#38·#39·#40)**. **(1) #38 HIGH §4.5 `FdsCaseStatusChanged` 예시 enum 정정** — `closeReason: "RESOLVED_FALSE_POSITIVE"`(비정본) → `"FP_NORMAL_PATTERN"`(설계서 §11.6.1a 정본 8종). `toStatus`는 `CLOSED_FALSE_POSITIVE`로 유지(case_status 정본). **(2) #27 HIGH §4.5 `closeReason` 비정본 제거** — 동일 예시 값 정정(상기 동일 처리). **(3) #28·#37 HIGH §8.3 subject_kind 8종→9종** — `POLICY_PACK`(규제 팩 토글, subjectRef=`tenant_id`, approvalLine=`COMPLIANCE_MANAGER`, 설계서 §16.2) 추가·인라인 요약 표 신설(DB §5.23·API §1.1·§5.12·§8·§13 9종 정본). **(4) #30 MED §3.2 `FdsCaseStatusChanged` closeReason 필드 상세화** — nullable + string(64) 타입·close_reason 8종 목록(`FP_THRESHOLD`/`FP_NORMAL_PATTERN`/`FP_DATA_QUALITY`/`CONFIRMED_FRAUD`/`CONFIRMED_MULE`/`CONFIRMED_ATO`/`ESCALATED_AML`/`OTHER`, 설계서 §11.6.1a·DB §4.11) 명시. **(5) #31 LOW §12 approval_line 기본값** — §8.3에 subject_kind-approvalLine 인라인 요약 표 추가(POLICY_PACK 포함). **(6) #40 LOW §3.2·§12 closeReason 타입 제약** — 'string(64, nullable)' 및 VARCHAR(64) 제약 주석 추가. **(7) #39 MED 헤더 API 버전 핀 갱신** — v1.5→v2.0, 설계서 v1.5→v1.9, DB v1.3→v1.5. §12에 입력 버전 핀 행 명시. 정본 = 설계서 §11.6.1a·§11.5·§16.2 / DB §4.11·§5.23 / API v2.0 §1.1·§5.12·§8·§13. | integration-designer |
