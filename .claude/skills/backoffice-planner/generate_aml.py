@@ -14,22 +14,50 @@ import wireframe_lib as wf
 
 TOP = "SaaS AML Platform 백오피스"
 # NAV = 논리 그룹(상세 화면은 NAV 항목 아님 — 드릴다운 진입)
-NAV = ["AML 종합 대시보드", "고객사 관리", "WLF 검토", "명단 소스·임포트", "국가위험 관리",
-       "RA·CDD", "TM 알림·시나리오", "케이스 관리", "규제 보고", "기관 RBA 보고",
-       "Travel Rule", "Policy Pack", "결재 대기함", "통계·내부통제", "감사·증적"]
-# 기능 ID prefix → NAV active 인덱스
-NAVIDX = {
-    "DASH": 0, "TNT": 1, "WLF": 2, "WL": 3, "CTRY": 4, "RA": 5, "CDD": 5,
-    "HRR": 5, "TM": 6, "CASE": 7, "REP": 8, "IRA": 9, "TR": 10, "PP": 11,
-    "APR": 12, "STAT": 13, "EDU": 13, "AUD": 14, "ING": 14,
+# 2영역·3단 NAV (운영/설정). 혼재 메뉴는 화면 ID 단위로 분리.
+NAV = [
+    ("운영", [
+        ("조사·모니터링", [("AML 종합 대시보드", "DASH"), ("WLF 검토", "WLF"),
+                          ("TM 알림", "TM-001"), ("통계", "STAT")]),
+        ("고객위험·심사", [("RA 분포·고객위험", "RA-OPS"), ("고객 프로필", "CDD-002"),
+                          ("고위험 등록부", "HRR")]),
+        ("케이스·처리", [("케이스 관리", "CASE"), ("Travel Rule 예외", "TR")]),
+        ("거버넌스·보고", [("규제 보고 STR/CTR", "REP"), ("기관 RBA 보고", "IRA"),
+                          ("결재 대기함", "APR")]),
+    ]),
+    ("설정", [
+        ("연동·데이터", [("고객사 관리", "TNT"), ("Ingest 카탈로그", "ING"),
+                        ("명단 소스·임포트", "WL")]),
+        ("탐지·심사 정책", [("TM 시나리오 빌더", "TM-002"), ("RA 모델 관리", "RA-002"),
+                          ("CDD 체크리스트 정책", "CDD-001"), ("국가위험 관리", "CTRY"),
+                          ("Policy Pack", "PP")]),
+        ("감사·증적·내부통제", [("내부통제 교육", "EDU"), ("감사·증적", "AUD")]),
+    ]),
+]
+# 화면 ID(PREFIX 또는 PREFIX-NUM) → NAV leaf key
+NAVKEY = {
+    "DASH": "DASH", "TNT": "TNT", "WLF": "WLF", "WL": "WL", "CTRY": "CTRY",
+    "HRR": "HRR", "CASE": "CASE", "REP": "REP", "IRA": "IRA", "TR": "TR",
+    "PP": "PP", "APR": "APR", "STAT": "STAT", "EDU": "EDU", "AUD": "AUD", "ING": "ING",
+    # 혼재 분리(화면 ID 단위)
+    "RA-001": "RA-OPS", "RA-003": "RA-OPS", "RA-002": "RA-002",
+    "CDD-002": "CDD-002", "CDD-001": "CDD-001",
+    "TM-001": "TM-001", "TM-002": "TM-002",
 }
+
+
+def aml_active(sid):
+    """sid 예: 'AML-RA-002' → base 'RA-002' 우선, 없으면 prefix 'RA'."""
+    parts = sid.split("-")
+    base = parts[1] + "-" + parts[2] if len(parts) >= 3 else parts[1]
+    return NAVKEY.get(base) or NAVKEY.get(parts[1])
 
 
 def frame(p, sid, crumb, title, search="검색...", admin="관리자 admin ▼", action=None):
     s = wf.add_slide(p)
     wf.page_title(s, TOP, sid)
     wf.header_bar(s, search_ph=search, admin=admin, action=action, brand="HANPASS AML")
-    wf.nav_panel(s, NAV, active=NAVIDX[sid.split("-")[1]])
+    wf.nav_tree(s, NAV, active_key=aml_active(sid))
     wf.breadcrumb_title(s, crumb, title)
     return s
 
@@ -2178,69 +2206,41 @@ def ing_001(p, tab=0):
 
 
 SCREENS = [
-    dash_001,                          # AML-DASH-001
-    tnt_001,                           # AML-TNT-001 고객사 목록
-    tnt_002_basic, tnt_002_deploy, tnt_002_source, tnt_002_policy,  # AML-TNT-002 4탭
-    tnt_003,                           # AML-TNT-003 고객사 등록
-    wlf_001, wlf_002, wlf_003,         # AML-WLF-001~003 검토필요→상위승인→처리이력
-    lambda p: wlf_004(p, 0),           # AML-WLF-004 ① 단건 시뮬레이션 (v6.0 벤치마크)
-    lambda p: wlf_004(p, 1),           # AML-WLF-004 ② 임의 수행(일괄)
-    lambda p: wl_001(p, 0),            # AML-WL-001 ① 소스 목록
-    lambda p: wl_001(p, 1),            # AML-WL-001 ② 임포트 이력
-    lambda p: wl_001(p, 2),            # AML-WL-001 ③ 명단 엔트리 조회
-    wl_002,                            # AML-WL-002 변경분 상세
-    lambda p: wl_003(p, 0),            # AML-WL-003 ① 내부 요주의 명단 (v7.0 벤치마크 2차)
-    lambda p: wl_003(p, 1),            # AML-WL-003 ② 오탐 면제(White List) 관리
-    lambda p: ctry_001(p, 0),          # AML-CTRY-001 ① 국가위험 등급표
-    lambda p: ctry_001(p, 1),          # AML-CTRY-001 ② 변경 상신·이력
-    lambda p: ra_001(p, 0),            # AML-RA-001 ① 점수 분포
-    lambda p: ra_001(p, 1),            # AML-RA-001 ② 고위험 목록
-    lambda p: ra_003(p, 0),            # AML-RA-003 ① factor breakdown  (드릴다운: RA-001 ②→)
-    lambda p: ra_003(p, 1),            # AML-RA-003 ② 관계·UBO
-    lambda p: ra_003(p, 2),            # AML-RA-003 ③ 재심사 이력
-    lambda p: cdd_002(p, 0),           # AML-CDD-002 ① CDD 프로필 (v7.0 드릴다운: RA-003 ①→)
-    lambda p: cdd_002(p, 1),           # AML-CDD-002 ② 위험·활동 요약
-    lambda p: ra_002(p, 0),            # AML-RA-002 ① 버전 목록  (모델 관리)
-    lambda p: ra_002(p, 1),            # AML-RA-002 ② factor 편집
-    lambda p: ra_002(p, 2),            # AML-RA-002 ③ 시뮬레이션 (모델 초안 검증)
-    lambda p: ra_002(p, 3),            # AML-RA-002 ④ 등급 조정 이력
-    lambda p: hrr_001(p, 0),           # AML-HRR-001 ① 당연고위험 분류 기준 (v7.0 벤치마크 2차)
-    lambda p: hrr_001(p, 1),           # AML-HRR-001 ② 참조 리스트 관리
-    lambda p: cdd_001(p, 0),           # AML-CDD-001 ① 체크리스트 정의
-    lambda p: cdd_001(p, 1),           # AML-CDD-001 ② 재심사 주기
-    lambda p: cdd_001(p, 2),           # AML-CDD-001 ③ 변경 이력
-    lambda p: tm_001(p, 0),            # AML-TM-001 ① 알림 적체
-    lambda p: tm_001(p, 1),            # AML-TM-001 ② 시나리오 관리
-    tm_002,                            # AML-TM-002 시나리오 빌더
-    case_001,                          # AML-CASE-001 케이스 목록(필터탭 유지)
-    lambda p: case_002(p, 0),          # AML-CASE-002 ① 타임라인
-    lambda p: case_002(p, 1),          # AML-CASE-002 ② CDD/EDD 체크
-    lambda p: case_002(p, 2),          # AML-CASE-002 ③ 관계·UBO
-    lambda p: case_002(p, 3),          # AML-CASE-002 ④ 증빙
-    lambda p: rep_001(p, 0),           # AML-REP-001 ① STR 후보
-    lambda p: rep_001(p, 1),           # AML-REP-001 ② CTR 데이터
-    lambda p: rep_001(p, 2),           # AML-REP-001 ③ 제출 이력
-    lambda p: rep_002(p, 0),           # AML-REP-002 ① 보고 본문
-    lambda p: rep_002(p, 1),           # AML-REP-002 ② 첨부 증빙
-    lambda p: rep_002(p, 2),           # AML-REP-002 ③ 제출 이력
-    lambda p: ira_001(p, 0),           # AML-IRA-001 ① 보고 회차·지표 등록 (v6.0 벤치마크)
-    lambda p: ira_001(p, 1),           # AML-IRA-001 ② 결과·제출 결재
-    lambda p: ira_001(p, 2),           # AML-IRA-001 ③ 보고 현황(FIU 회신)
-    lambda p: tr_001(p, 0),            # AML-TR-001 ① 예외 큐
-    lambda p: tr_001(p, 1),            # AML-TR-001 ② 전체 이전
-    lambda p: tr_001(p, 2),            # AML-TR-001 ③ 처리 이력
-    lambda p: pp_001(p, 0),            # AML-PP-001 ① 적용 팩/기준금액
-    lambda p: pp_001(p, 1),            # AML-PP-001 ② 변경 상신·이력
-    apr_001,                           # AML-APR-001 결재 대기함(필터탭 유지)
-    lambda p: stat_001(p, 0),          # AML-STAT-001 ① STR 보고 현황 통계 (v6.0 벤치마크)
-    lambda p: stat_001(p, 1),          # AML-STAT-001 ② 룰 효과성
-    lambda p: edu_001(p, 0),           # AML-EDU-001 ① 교육 과정·이수 현황 (v6.0 벤치마크)
-    lambda p: edu_001(p, 1),           # AML-EDU-001 ② 자격 보유 현황
-    lambda p: aud_001(p, 0),           # AML-AUD-001 ① 감사 로그
-    lambda p: aud_001(p, 1),           # AML-AUD-001 ② 증적 Export
-    lambda p: aud_001(p, 2),           # AML-AUD-001 ③ 소스 시스템
-    lambda p: ing_001(p, 0),           # AML-ING-001 ① 수신 API 카탈로그 (v8.0 인입 가시성)
-    lambda p: ing_001(p, 1),           # AML-ING-001 ② 인입 라이브 모니터링
+    # ── 운영: 조사·모니터링 ──
+    dash_001,
+    wlf_001, wlf_002, wlf_003,
+    lambda p: wlf_004(p, 0), lambda p: wlf_004(p, 1),
+    lambda p: tm_001(p, 0), lambda p: tm_001(p, 1),
+    lambda p: stat_001(p, 0), lambda p: stat_001(p, 1),
+    # ── 운영: 고객위험·심사 ──
+    lambda p: ra_001(p, 0), lambda p: ra_001(p, 1),
+    lambda p: ra_003(p, 0), lambda p: ra_003(p, 1), lambda p: ra_003(p, 2),
+    lambda p: cdd_002(p, 0), lambda p: cdd_002(p, 1),
+    lambda p: hrr_001(p, 0), lambda p: hrr_001(p, 1),
+    # ── 운영: 케이스·처리 ──
+    case_001,
+    lambda p: case_002(p, 0), lambda p: case_002(p, 1),
+    lambda p: case_002(p, 2), lambda p: case_002(p, 3),
+    lambda p: tr_001(p, 0), lambda p: tr_001(p, 1), lambda p: tr_001(p, 2),
+    # ── 운영: 거버넌스·보고 ──
+    lambda p: rep_001(p, 0), lambda p: rep_001(p, 1), lambda p: rep_001(p, 2),
+    lambda p: rep_002(p, 0), lambda p: rep_002(p, 1), lambda p: rep_002(p, 2),
+    lambda p: ira_001(p, 0), lambda p: ira_001(p, 1), lambda p: ira_001(p, 2),
+    apr_001,
+    # ── 설정: 연동·데이터 ──
+    tnt_001, tnt_002_basic, tnt_002_deploy, tnt_002_source, tnt_002_policy, tnt_003,
+    lambda p: ing_001(p, 0), lambda p: ing_001(p, 1),
+    lambda p: wl_001(p, 0), lambda p: wl_001(p, 1), lambda p: wl_001(p, 2),
+    wl_002, lambda p: wl_003(p, 0), lambda p: wl_003(p, 1),
+    # ── 설정: 탐지·심사 정책 ──
+    tm_002,
+    lambda p: ra_002(p, 0), lambda p: ra_002(p, 1), lambda p: ra_002(p, 2), lambda p: ra_002(p, 3),
+    lambda p: cdd_001(p, 0), lambda p: cdd_001(p, 1), lambda p: cdd_001(p, 2),
+    lambda p: ctry_001(p, 0), lambda p: ctry_001(p, 1),
+    lambda p: pp_001(p, 0), lambda p: pp_001(p, 1),
+    # ── 설정: 감사·증적·내부통제 ──
+    lambda p: edu_001(p, 0), lambda p: edu_001(p, 1),
+    lambda p: aud_001(p, 0), lambda p: aud_001(p, 1), lambda p: aud_001(p, 2),
 ]
 
 
@@ -2255,7 +2255,7 @@ def build():
          "좌 75% 와이어프레임(실제 도형) + 우 25% 기능 설명",
          "WLF(+시뮬레이션)·명단(+내부 명단·오탐 면제)·국가위험·RA/CDD(+당연고위험·고객 프로필)·TM·케이스·규제 보고·기관 RBA 보고·Travel Rule·Policy Pack·결재·통계·내부통제·감사·인입 모니터링·고객사 관리",
          "용어 고객사(tenant)·서비스(workspace) · enum 괄호 병기 · 책임 경계 명시",
-         "버전 BO-AML-SAAS-Planning v8.0 (데이터 인입 가시성 보강 — ING-001·인입 유형 확정, 32화면)"],
+         "버전 BO-AML-SAAS-Planning v9.0 (메뉴 IA 운영/설정 2영역·3단 재구성 — 혼재 메뉴 TM/RA/CDD 분리, 32화면 불변)"],
         brand="HANPASS  ·  SaaS AML Platform")
     # 2 변경 이력
     wf.history_slide(p, "변경 이력",
@@ -2282,12 +2282,13 @@ def build():
          ["v5.15", "2026-06-11", "Hanpass Global", "QA 정합화: 화면 범위 표 CTRY·CDD 등재(24화면)"],
          ["v6.0", "2026-06-12", "Hanpass Global", "실계 벤치마크 보강(GTone 80화면): WLF-004·IRA-001·STAT-001·EDU-001 신설(28화면)"],
          ["v7.0", "2026-06-12", "Hanpass Global", "벤치마크 2차 보강: WL-003(내부 명단·오탐 면제)·HRR-001(당연고위험)·CDD-002(고객 프로필) 신설 + TNT-002 ① 보고기관 패널(31화면)"],
-         ["v8.0", "2026-06-12", "Hanpass Global", "데이터 인입 가시성: ING-001(수신 API 카탈로그·인입 라이브) 신설·TNT-002 ③ 인입 신호 컬럼·인입 유형 확정 §1.11(32화면)"]],
+         ["v8.0", "2026-06-12", "Hanpass Global", "데이터 인입 가시성: ING-001(수신 API 카탈로그·인입 라이브) 신설·TNT-002 ③ 인입 신호 컬럼·인입 유형 확정 §1.11(32화면)"],
+         ["v9.0", "2026-06-19", "Hanpass Global Team", "메뉴 IA 재구성 — 운영(조사·모니터링/고객위험·심사/케이스·처리/거버넌스·보고)·설정(연동·데이터/탐지·심사 정책/감사·증적·내부통제) 2영역 3단. 혼재 메뉴 분리: TM 알림(TM-001)↔시나리오 빌더(TM-002), RA 분포·고객위험(RA-001/003)↔RA 모델(RA-002), 고객 프로필(CDD-002)↔CDD 정책(CDD-001). 32화면·콘텐츠 불변, nav_tree 렌더"]],
         col_w=[0.07, 0.11, 0.12, 0.70])
     # 3+ 기능 전수
     for fn in SCREENS:
         fn(p)
-    out = "/Users/smkim/workspace/smkim89/aml-system-docs/docs/plan/BO-AML-SAAS-Planning_v8.0.pptx"
+    out = "/Users/smkim/workspace/smkim89/aml-system-docs/docs/plan/BO-AML-SAAS-Planning_v9.0.pptx"
     p.save(out)
     print(f"saved {out} · slides={len(p.slides._sldIdLst)}")
 
