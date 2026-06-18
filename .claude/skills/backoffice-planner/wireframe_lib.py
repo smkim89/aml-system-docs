@@ -115,6 +115,39 @@ def nav_panel(slide, items, active=0):
              [("● " + it, 9.5, col, i == active)])
 
 
+def nav_tree(slide, areas, active_key=None):
+    """2영역(운영/설정)·3단(영역→기능그룹→메뉴) NAV.
+    areas: [(area_label, [(group_label, [(menu_label, key), ...]), ...]), ...]
+    active_key 와 일치하는 menu key 행을 하이라이트하고 active 색을 입힌다.
+    행 수에 따라 step·폰트를 동적 축소해 6.12in 패널 안에 항상 수용."""
+    rect(slide, NAV_X, 1.18, NAV_W, 6.12, C["panel"], line=C["border"], line_w=0.5)
+    rows = 0
+    for _, groups in areas:
+        rows += 1
+        for _, menus in groups:
+            rows += 1 + len(menus)
+    step = min(0.255, 6.00 / max(rows, 1))
+    fs = 8.0 if rows > 24 else 9.0
+    y = 1.27
+    for area_label, groups in areas:
+        rect(slide, NAV_X, y - 0.02, NAV_W, step - 0.01, C["blue"])
+        text(slide, NAV_X + 0.08, y, NAV_W - 0.12, step - 0.02,
+             [("▼ " + area_label, fs + 1.0, C["white"], True)], wrap=False)
+        y += step
+        for group_label, menus in groups:
+            text(slide, NAV_X + 0.12, y, NAV_W - 0.18, step - 0.02,
+                 [("▸ " + group_label, fs, C["mute"], True)], wrap=False)
+            y += step
+            for menu_label, key in menus:
+                on = (key == active_key)
+                if on:
+                    rect(slide, NAV_X, y - 0.01, NAV_W, step - 0.01, C["active"])
+                col = C["blue"] if on else C["text"]
+                text(slide, NAV_X + 0.28, y, NAV_W - 0.34, step - 0.02,
+                     [(menu_label, fs, col, on)], wrap=False)
+                y += step
+
+
 def breadcrumb_title(slide, crumb, title):
     text(slide, CON_X, 1.24, CON_W, 0.16, [(crumb, 9, C["mute"], False)])
     text(slide, CON_X, 1.42, CON_W, 0.35, [(title, 16, C["text"], True)])
