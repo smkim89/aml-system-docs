@@ -1529,7 +1529,7 @@ def build():
     wf.cover_slide(p,
         "SaaS FDS Platform 백오피스 기획서",
         "멀티고객사·멀티도메인 이상거래 탐지 플랫폼 — Admin Console 화면 설계",
-        ["정본 PRD: docs/plan/01-fds-sass-functional-spec.md (FS-FDS-001 v5.0)",
+        ["정본 PRD: docs/plan/01-fds-sass-functional-spec.md (FS-FDS-001 v6.0)",
          "기능 ID 전수 34화면 (SFDS-DASH ~ SFDS-AUDIT · RULE-001~006·STAT-001·CONN-001~004 포함)",
          "좌 75% 와이어프레임(실제 도형) + 우 25% 기능 설명",
          "표시 용어=PRD 한국어 업무 용어 · enum 괄호 병기 · 책임 경계 명시",

@@ -1,5 +1,5 @@
 """
-BO-AML-SAAS-Planning_v8.0.pptx 생성 (도형 기반 · 데이터 인입 가시성 보강)
+BO-AML-SAAS-Planning_v9.0.pptx 생성 (도형 기반 · 메뉴 IA 운영/설정 2영역·3단 재구성)
 =========================================================================
 정본 PRD: docs/plan/02-aml-sass-functional-spec.md (FS-AML-SAAS-001, 표시 용어=진실)
 시각 정본: docs/plan/sample.pptx (맑은 고딕·Ant Design·순수 rect)
@@ -2250,7 +2250,7 @@ def build():
     wf.cover_slide(p,
         "SaaS AML Platform 백오피스 기획서",
         "멀티 고객사·서비스 자금세탁방지(AML) 운영 콘솔 — 준법감시실 화면 설계",
-        ["정본 PRD: docs/plan/02-aml-sass-functional-spec.md (FS-AML-SAAS-001 v8.0)",
+        ["정본 PRD: docs/plan/02-aml-sass-functional-spec.md (FS-AML-SAAS-001 v9.0)",
          "기능 ID 전수 32화면 (목록→상세→액션→결과 흐름 + 벤치마크 7화면 §12-B + 인입 모니터링 §12.2)",
          "좌 75% 와이어프레임(실제 도형) + 우 25% 기능 설명",
          "WLF(+시뮬레이션)·명단(+내부 명단·오탐 면제)·국가위험·RA/CDD(+당연고위험·고객 프로필)·TM·케이스·규제 보고·기관 RBA 보고·Travel Rule·Policy Pack·결재·통계·내부통제·감사·인입 모니터링·고객사 관리",
