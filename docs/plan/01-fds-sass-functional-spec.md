@@ -5,19 +5,20 @@
 | 항목 | 내용 |
 |------|------|
 | **문서 ID** | FS-FDS-001 |
-| **버전** | 5.0 |
-| **작성일** | 2026-06-12 |
+| **버전** | 6.0 |
+| **작성일** | 2026-06-19 |
 | **작성자** | SM Kim |
-| **상태** | 데이터 인입 가시성 보강: 수신 API 카탈로그·인입 라이브 모니터링(SFDS-CONN-004 신설 §4.4)·데이터 인입 유형 확정(§4.0)·CONN-001/002 인입 신호 보강, 짝 PPT v7.0 재빌드 |
+| **상태** | 메뉴 IA 운영/설정 2영역 재구성: §1.0 정보구조·메뉴 체계 신설, §16.1 인벤토리 영역/기능그룹 열 추가·순서 재정렬, 짝 PPT v8.0 재빌드 |
 | **정본 아키텍처** | `.claude/skills/_shared/target-architecture.md` (4서비스 모노레포·Java25 헥사고날·Next.js·멀티테넌시·PII 마스킹·4-eyes·한국 Policy Pack·§4.1 배포 모델) |
 | **입력 설계서** | `docs/software/01-fdsSvc-sass.md` v1.9 |
 | **파생 정합** | DB `docs/design/db/01-fds-db.md` v1.5 · API `docs/design/api/01-fds-api.md` v1.9 · Integration `docs/design/integration/01-fds-integration.md` v1.1 · Tasks `docs/tasks/fds/00-overview.md` |
-| **짝 문서(PPT)** | `docs/plan/BO-FDS-SASS-Planning_v7.0.pptx` (도형 기반 · 멀티탭 상세 탭 연속 전개: TNT-002 5탭·RULE-002 5탭·CASE-002 4탭 + 드릴다운 진입 트리거 배너 + TNT-002 ④ Policy Pack 6팩 + 룰 빌더 ①~⑦ 정본 순서·DEC-003 진입 배너·알림 채널 경로 정본화 + v6.0 벤치마크 보강(SFDS-STAT-001[2탭]·RULE-001 효과성 컬럼) + **v7.0 데이터 인입 가시성 보강: SFDS-CONN-004 수신 API 카탈로그·인입 라이브 모니터링[2탭]·CONN-001/002 인입 신호(마지막 수신·● 수신중·폴링 시점·큐 적체)**, 49슬라이드·기능 ID **34**(SFDS-DASH ~ SFDS-AUDIT, **RULE-001~006·STAT-001·CONN-001~004** 포함)) |
+| **짝 문서(PPT)** | `docs/plan/BO-FDS-SASS-Planning_v8.0.pptx` (도형 기반 · 멀티탭 상세 탭 연속 전개: TNT-002 5탭·RULE-002 5탭·CASE-002 4탭 + 드릴다운 진입 트리거 배너 + TNT-002 ④ Policy Pack 6팩 + 룰 빌더 ①~⑦ 정본 순서·DEC-003 진입 배너·알림 채널 경로 정본화 + v6.0 벤치마크 보강(SFDS-STAT-001[2탭]·RULE-001 효과성 컬럼) + v7.0 데이터 인입 가시성 보강(SFDS-CONN-004·CONN-001/002 인입 신호) + **v8.0 nav_tree 운영/설정 2영역·3단 NAV 재구성**, 49슬라이드·기능 ID **34**(SFDS-DASH ~ SFDS-AUDIT, **RULE-001~006·STAT-001·CONN-001~004** 포함)) |
 
 ### 변경 이력
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **6.0** | **2026-06-19** | **SM Kim** | **메뉴 IA 운영/설정 2영역 재구성 — §1.0 정보구조·메뉴 체계 신설(운영: 조사·모니터링/케이스·처리/거버넌스·보고, 설정: 연동·데이터/탐지 정책/감사·증적), §16.1 인벤토리에 영역/기능그룹 열 추가·순서 재정렬. 화면 34종·콘텐츠 불변. 짝 PPT `BO-FDS-SASS-Planning_v8.0.pptx` 재빌드(nav_tree 2영역·3단 NAV).** |
 | **5.0** | **2026-06-12** | **SM Kim** | **데이터 인입 가시성 보강 — 33→34화면, 47→49슬라이드.** ① **§4.0 데이터 인입 유형(확정) 신설**: 연동 방식(`ingest_mode` 5종, DB §4.1·API §4.8 정본) × 화면 표시 신호(REST Push=마지막 수신·TPS·● 수신중 / 큐=depth·lag·DLQ·마지막 메시지 / 폴링=마지막·다음 폴링·주기·커서 / CDC=change stream lag / 스냅샷=최근 스냅샷·초기 적재(백필) 진행률)와 **수신 API 카탈로그 5종**(`POST /api/v1/fds/events`(비동기 202)·`:batch`(최대 500·초기 적재 겸용)·`POST .../decisions/evaluate`(동기)·`POST .../external-decisions`(벤더)·`GET .../events/{eventId}`, API §4.1·§5.1 정본), **인입 신호 상태 3종**(● 수신중/⚠ 지연/✕ 중단)을 PRD 확정 표로 고정. ② **§4.4 SFDS-CONN-004 신설(수신 API 카탈로그·인입 라이브 모니터링, 2탭)**: ① 이 고객사가 사용하는 수신 API 전체 리스트(용도·방식·인증·24h 호출량·마지막 호출·신호) ② 커넥터×연동 방식별 라이브 모니터링(마지막 수신 n초 전 ● 신호·TPS·마지막/다음 폴링·큐 depth/lag/DLQ 적체(`fds-events-dlq`·`fds-vendor-ingest-dlq`, depth poller PT60S — integration §2·§6 정본)·초기 적재 진행률). 집계 API **제안** bo-api `GET /api/v1/bo/fds/ingest/catalog`·`GET .../ingest/health`(후속 API 정합). ③ **§4.1 CONN-001 보강**: `마지막 수신`·`신호(●/⚠/✕)` 컬럼 추가 + 상단 `[인입 모니터링 → SFDS-CONN-004]`(BR-005). ④ **§4.2 CONN-002 보강**: 폴링=다음 폴링 예정·주기, 큐=depth·DLQ 적체, 라이브 신호 표시(BR-006). ⑤ 부록 16.1 행·16.2 권한 주석 추가. ⑥ 짝 PPT `BO-FDS-SASS-Planning_v7.0.pptx` 재빌드·렌더 검증. |
 | **4.0** | **2026-06-12** | **SM Kim** | **실계 AML 운영 시스템 벤치마크(GTone AML RBA Xpress 80화면, `docs/samples/gtone/1~80.png` — AML PRD v6.0/v7.0 §12-B·부록 H) FDS 적용 검토 — 32→33화면, 45→47슬라이드.** ① **§6.7 SFDS-STAT-001 신설(룰 효과성 통계, 2탭)**: 룰 라이프사이클(정의→임계값→시뮬레이션→배치→**효과성 평가**) 폐루프 완성(gtone 33 STR 룰평가 모니터링·54~56 룰별 요약 통계 벤치마크, AML-STAT-001 대응) — ① 룰 효과성(룰별 평가→탐지→차단/보류→케이스 전환 퍼널·전환율·전월 대비·튜닝 권고 ⚠, 행 ▶ → RULE-002·[백테스트] → RULE-006) ② 오탐 피드백 분석(케이스 종결 사유 `FP_*` 3종 분포·룰별 오탐율 추이·튜닝 후보 — §11.2 BR-002 오탐 피드백 폐루프의 분석 화면). API **제안** bo-api `GET /api/v1/bo/fds/stats/rules`·`GET .../stats/false-positives`(집계 소유 bo-api — 후속 API 정합 필요). ② **§6.1 RULE-001 보강**: 목록에 효과성 요약 컬럼(최근 30일 탐지·오탐율 — 화면 파생값) + 행 컨텍스트 `[효과성 ▶ → SFDS-STAT-001]` 드릴다운(BR-006). ③ **비적용 판정 기록**: 스크리닝 시뮬레이션(=SFDS-RULE-006 백테스트 기보유)·명단 만료/연장 생명주기(=SFDS-GRP-001/002 기보유)·대상 360°(=SFDS-DEC-003 기보유)·당연고위험 레지스트리(RA 등급 개념 없음 — 그룹·명단으로 수용)·CDD 프로필/기관 위험평가(IRA)/교육·자격(EDU)/보고기관 정보(특금법·KoFIU 소관 — aml-svc 위임, §13 책임 경계). ④ 부록 16.1에 SFDS-STAT-001 행·16.2에 권한 주석 추가. ⑤ 짝 PPT `BO-FDS-SASS-Planning_v6.0.pptx` 재빌드(NAV '룰 관리' 그룹)·렌더 검증. |
 | **3.9** | **2026-06-11** | **SM Kim** | **정합성 QA HIGH #2 해소 — 짝 PPT `BO-FDS-SASS-Planning_v5.3.pptx` 재빌드.** ① §11.2 BR-006(재오픈)에 '재오픈은 `PATCH /api/v1/fds/cases/{caseId}` body `{status: IN_REVIEW, reason}`로 처리(API §5.6, 전용 엔드포인트 없음)' 명시. ② 짝 PPT: TNT-002 ⑤ 소스 시스템 표를 PRD §3.2 정본 5컬럼(소스 시스템/연동 방식/사용/지연/최근 오류)으로 확장(#3)·CONN-002 `…/connectors/{id}`→`{connectorId}` 정정(#5). PPT 변경 이력: "v5.3 \| QA 정합화: TNT-002 ⑤ 소스표 5컬럼·CONN-002 경로 변수 정정". |
@@ -44,24 +45,40 @@
 
 ## 목차
 
-1. [개요](#1-개요)
-2. [플랫폼 대시보드](#2-플랫폼-대시보드)
-3. [고객사 관리](#3-고객사고객사-관리)
-4. [소스 시스템·커넥터 관리](#4-소스-시스템커넥터-관리)
-5. [스키마·필드 매핑 관리](#5-스키마필드-매핑-관리)
-6. [룰 관리](#6-룰-관리)
-7. [그룹·명단 관리](#7-그룹명단-관리)
-8. [결정(Decision) 조회·조사](#8-결정decision-조회조사)
-9. [이벤트 조회](#9-이벤트-조회)
-10. [액션·아웃박스 운영](#10-액션아웃박스-운영)
-11. [케이스 관리](#11-케이스-관리)
-12. [결재함 (maker-checker)](#12-결재함-maker-checker)
-13. [규제 보고 (Policy Pack)](#13-규제-보고-policy-pack)
-14. [Evidence Export (검사대응)](#14-evidence-export-검사대응)
-15. [감사 로그](#15-감사-로그)
-16. [부록](#16-부록)
+1. [1.0 정보구조(IA)·메뉴 체계](#10-정보구조ia메뉴-체계-정본)
+2. [개요](#1-개요)
+3. [플랫폼 대시보드](#2-플랫폼-대시보드)
+4. [고객사 관리](#3-고객사고객사-관리)
+5. [소스 시스템·커넥터 관리](#4-소스-시스템커넥터-관리)
+6. [스키마·필드 매핑 관리](#5-스키마필드-매핑-관리)
+7. [룰 관리](#6-룰-관리)
+8. [그룹·명단 관리](#7-그룹명단-관리)
+9. [결정(Decision) 조회·조사](#8-결정decision-조회조사)
+10. [이벤트 조회](#9-이벤트-조회)
+11. [액션·아웃박스 운영](#10-액션아웃박스-운영)
+12. [케이스 관리](#11-케이스-관리)
+13. [결재함 (maker-checker)](#12-결재함-maker-checker)
+14. [규제 보고 (Policy Pack)](#13-규제-보고-policy-pack)
+15. [Evidence Export (검사대응)](#14-evidence-export-검사대응)
+16. [감사 로그](#15-감사-로그)
+17. [부록](#16-부록)
 
 ---
+
+## 1.0 정보구조(IA)·메뉴 체계 (정본)
+
+좌측 NAV는 **운영(OPERATIONS) / 설정(CONFIGURATION)** 2영역으로 분리하며, 각 영역은 기능그룹 → 메뉴 3단으로 구성한다. 운영 영역이 위, 설정 영역이 아래. 운영자가 매일 쓰는 탐지·조사·케이스가 상단에 오고, 셋업·정책 화면은 설정 영역으로 내린다. 상세 화면은 NAV 항목이 아니라 목록 행/버튼 드릴다운으로 진입한다.
+
+| 영역 | 기능그룹 | 메뉴(화면 ID) |
+|---|---|---|
+| **운영** | 조사·모니터링 | 플랫폼 대시보드(SFDS-DASH-001/002) · 탐지 결정(SFDS-DEC-001/002/003) · 이벤트 조회(SFDS-EVT-001) · 룰 효과 통계(SFDS-STAT-001) |
+| **운영** | 케이스·처리 | 케이스 관리(SFDS-CASE-001/002) · 액션 운영(SFDS-ACT-001/002) |
+| **운영** | 거버넌스·보고 | 결재함(SFDS-APPR-001) · 규제 보고(SFDS-REG-001/002) |
+| **설정** | 연동·데이터 | 고객사 관리(SFDS-TNT-001/002/003) · 커넥터 관리(SFDS-CONN-001~004) · 스키마·매핑(SFDS-MAP-001/002) |
+| **설정** | 탐지 정책 | 룰 관리(SFDS-RULE-001~006) · 그룹·명단(SFDS-GRP-001/002/003) |
+| **설정** | 감사·증적 | 감사 로그(SFDS-AUDIT-001) · Evidence(SFDS-EXP-001) |
+
+> 본문 §2~§15 섹션 번호는 역사적 호환을 위해 유지된다. 메뉴 순서·소속 영역의 정본은 본 표(§1.0) · §16.1 인벤토리 · 짝 PPT(NAV)다.
 
 ## 1. 개요
 
@@ -2116,43 +2133,43 @@ sequenceDiagram
 
 > **운영자 집계 API 소유 경계**: 대시보드(SFDS-DASH-001/002)·고객사 관리(SFDS-TNT-001/002/003)·감사 조회(SFDS-AUDIT-001)는 **bo-api가 소유·집약·인증**하는 운영자 집계 엔드포인트다. fds-svc는 저수준 데이터 API만 제공하며, 엔진 API 명세(`docs/design/api`)에는 이들 집계 엔드포인트를 두지 않는다. 아래 표에서 `(bo-api)` 표기 행이 이에 해당하며, 나머지 행은 bo-api가 fds-svc 엔진 엔드포인트를 위임 호출한다.
 
-| 화면 ID | 화면명 | 주요 API | 소유 | 태스크 |
-|---------|--------|----------|---|---|
-| SFDS-DASH-001 | 플랫폼 운영 대시보드 | `GET /api/v1/bo/fds/dashboard` (bo-api 소유) | bo-api | T-20 |
-| SFDS-DASH-002 | 고객사별 대시보드 | `GET /api/v1/bo/fds/tenants/{id}/dashboard` (bo-api 소유) | bo-api | T-20 |
-| SFDS-TNT-001 | 고객사 목록 | `GET /api/v1/bo/fds/tenants` (bo-api 소유) | bo-api | T-03 |
-| SFDS-TNT-002 (탭①) | 고객사 상세 — 기본 정보 | `GET /api/v1/bo/fds/tenants/{id}` · `PUT /api/v1/bo/fds/tenants/{id}` (bo-api 소유) | bo-api | T-03 |
-| SFDS-TNT-002 (탭②) | 고객사 상세 — 배포·온보딩 | `GET /api/v1/bo/fds/tenants/{id}/onboarding` (bo-api 소유) | bo-api | T-03·P8 |
-| SFDS-TNT-002 (탭③) | 고객사 상세 — 마스킹·보안 | `GET /api/v1/bo/fds/tenants/{id}` (bo-api 소유) · Capability 조회(SFDS-ACT-002 연동) | bo-api | T-03 |
-| SFDS-TNT-002 (탭④) | 고객사 상세 — Policy Pack | `GET/PUT /api/v1/bo/fds/tenants/{id}` (bo-api 소유) | bo-api | T-03 |
-| SFDS-TNT-002 (탭⑤) | 고객사 상세 — 알림·소스 | `GET /api/v1/bo/fds/tenants/{id}` (bo-api 소유) · `GET /api/v1/admin/fds/source-systems` · `GET/PUT /api/v1/admin/fds/notify-channels` (API §4.8 정본, §3.2 본문과 일치) | fds-svc(알림·소스 정본, bo-api 집약 경유) | T-03·T-20 |
-| SFDS-TNT-003 | 고객사 등록(별도 생성 화면, 상세 5탭과 분리) | `POST /api/v1/bo/fds/tenants` (bo-api 소유) | bo-api | T-03·P8 |
-| SFDS-CONN-001/002 | 소스시스템·커넥터 목록·운영 | `GET /api/v1/admin/fds/source-systems`, `/connectors`, `POST .../connectors/{connectorId}/replay` (API §4.8 정본) | fds-svc | T-03·T-20·T-21 |
-| SFDS-CONN-003 | 커넥터 등록·자격증명 | `POST /api/v1/admin/fds/source-systems`, `POST /api/v1/admin/fds/credentials` 🔒, `/rotate` 🔒 | fds-svc | T-03·T-04 |
-| **SFDS-CONN-004** | **수신 API 카탈로그·인입 라이브 모니터링(§4.4, v5.0)** | **(제안)** `GET /api/v1/bo/fds/ingest/catalog` · `GET /api/v1/bo/fds/ingest/health` — **집계 소유 bo-api, 후속 API 정합 필요** | **bo-api** | T-03·T-20 |
-| SFDS-MAP-001 | 소스/스키마 레지스트리 | `GET /api/v1/admin/fds/source-systems` | fds-svc | T-04 |
-| SFDS-MAP-002 | 필드 매핑/PII 정책 | `PUT /api/v1/admin/fds/source-systems/{ss}/mappings` 🔒 | fds-svc | T-04 |
-| SFDS-RULE-001 | 룰 목록 | `GET /api/v1/admin/fds/rule-sets`, `/rules` | fds-svc | T-09·T-11 |
-| SFDS-RULE-002 | 룰 상세/버전 | `GET /api/v1/admin/fds/rules/{id}`, `/versions` | fds-svc | T-11 |
-| SFDS-RULE-003 | 룰 빌더(문장형) | `GET /api/v1/admin/fds/feature-catalog`, `POST /api/v1/admin/fds/rules`, `PUT .../{id}` | fds-svc | T-09·T-11 |
-| SFDS-RULE-004 | 임계 파라미터 변경 | `PUT /api/v1/admin/fds/rules/{id}` (임계만) | fds-svc | T-11 |
-| SFDS-RULE-005 | 활성화·롤백·비활성 | `POST /api/v1/admin/fds/rules/{id}/activate` 🔒, `/rollback` 🔒, `/disable` | fds-svc | T-11 |
-| SFDS-RULE-006 | 룰 시뮬레이션(백테스트, 과거 데이터) | `POST /api/v1/admin/fds/rules/simulations`, `GET /api/v1/admin/fds/rules/simulations/{simulationId}` | fds-svc | T-11 |
-| **SFDS-STAT-001** | **룰 효과성 통계(§6.7, v4.0 벤치마크 보강)** | **(제안)** `GET /api/v1/bo/fds/stats/rules` · `GET /api/v1/bo/fds/stats/false-positives` — **집계 소유 bo-api, 후속 API 정합 필요** | **bo-api** | T-11·T-16 |
-| SFDS-GRP-001 | 그룹 목록/멤버 | `GET /api/v1/admin/fds/risk-groups`, `/{id}/members` | fds-svc | T-10 |
-| SFDS-GRP-002 | 멤버 추가/해제 | `POST` 🔒 / `DELETE` 🔒 `/api/v1/admin/fds/risk-groups/{id}/members` | fds-svc | T-10 |
-| SFDS-GRP-003 | 그룹 등록/수정 | `POST/PUT /api/v1/admin/fds/risk-groups` | fds-svc | T-10 |
-| SFDS-DEC-001/002 | 결정 목록/상세 | `GET /api/v1/fds/decisions`, `/{decisionId}` | fds-svc | T-12 |
-| SFDS-DEC-003 | Subject 타임라인 | `GET /api/v1/evidence/fds/cases/{caseId}/timeline` (§8.3 정본, API §4.5) | fds-svc | T-12·T-16 |
-| SFDS-EVT-001 | 이벤트 조회 | `GET /api/v1/fds/events/{eventId}` | fds-svc | T-05 |
-| SFDS-ACT-001 | 액션 아웃박스 | `GET /api/v1/fds/actions/{actionId}` (relay=BE T-14) | fds-svc | T-14 |
-| SFDS-ACT-002 | Capability 매트릭스 | `GET /api/v1/admin/fds/source-systems`, `PUT .../{ss}` 🔒 | fds-svc | T-14 |
-| SFDS-CASE-001/002 | 케이스 목록/상세 | `GET /api/v1/fds/cases`, `/{id}`, `/events`, `PATCH`, `/assign`, `/close` 🔒, `/feedback` | fds-svc | T-16 |
-| SFDS-CASE 액션 | 케이스 기반 조치 상신 | `POST /api/v1/fds/cases/{id}/actions` 🔒(자금/규제) | fds-svc | T-13·T-16·T-18 |
-| SFDS-REG-001/002 | 규제 보고 후보 큐/추적 | `GET /api/v1/fds/cases?caseType=REGULATORY_REPORT,…` → 본 처리 **aml-svc** | fds-svc | T-17 |
-| SFDS-APPR-001 | 결재함(maker-checker) | `GET /api/v1/admin/fds/approvals`, `/{id}/approve`, `/reject` | fds-svc | T-15 |
-| SFDS-EXP-001 | evidence export | `POST /api/v1/evidence/fds/exports` 🔒(최종본), `/download` | fds-svc | T-19 |
-| SFDS-AUDIT-001 | 감사 로그 | `GET /api/v1/bo/fds/audit` (bo-api 소유) | bo-api | T-16·T-19 |
+| 영역 › 기능그룹 | 화면 ID | 화면명 | 주요 API | 소유 | 태스크 |
+|---|---------|--------|----------|---|---|
+| 운영 › 조사·모니터링 | SFDS-DASH-001 | 플랫폼 운영 대시보드 | `GET /api/v1/bo/fds/dashboard` (bo-api 소유) | bo-api | T-20 |
+| 운영 › 조사·모니터링 | SFDS-DASH-002 | 고객사별 대시보드 | `GET /api/v1/bo/fds/tenants/{id}/dashboard` (bo-api 소유) | bo-api | T-20 |
+| 운영 › 조사·모니터링 | SFDS-DEC-001/002 | 결정 목록/상세 | `GET /api/v1/fds/decisions`, `/{decisionId}` | fds-svc | T-12 |
+| 운영 › 조사·모니터링 | SFDS-DEC-003 | Subject 타임라인 | `GET /api/v1/evidence/fds/cases/{caseId}/timeline` (§8.3 정본, API §4.5) | fds-svc | T-12·T-16 |
+| 운영 › 조사·모니터링 | SFDS-EVT-001 | 이벤트 조회 | `GET /api/v1/fds/events/{eventId}` | fds-svc | T-05 |
+| 운영 › 조사·모니터링 | **SFDS-STAT-001** | **룰 효과성 통계(§6.7, v4.0 벤치마크 보강)** | **(제안)** `GET /api/v1/bo/fds/stats/rules` · `GET /api/v1/bo/fds/stats/false-positives` — **집계 소유 bo-api, 후속 API 정합 필요** | **bo-api** | T-11·T-16 |
+| 운영 › 케이스·처리 | SFDS-CASE-001/002 | 케이스 목록/상세 | `GET /api/v1/fds/cases`, `/{id}`, `/events`, `PATCH`, `/assign`, `/close` 🔒, `/feedback` | fds-svc | T-16 |
+| 운영 › 케이스·처리 | SFDS-CASE 액션 | 케이스 기반 조치 상신 | `POST /api/v1/fds/cases/{id}/actions` 🔒(자금/규제) | fds-svc | T-13·T-16·T-18 |
+| 운영 › 케이스·처리 | SFDS-ACT-001 | 액션 아웃박스 | `GET /api/v1/fds/actions/{actionId}` (relay=BE T-14) | fds-svc | T-14 |
+| 운영 › 케이스·처리 | SFDS-ACT-002 | Capability 매트릭스 | `GET /api/v1/admin/fds/source-systems`, `PUT .../{ss}` 🔒 | fds-svc | T-14 |
+| 운영 › 거버넌스·보고 | SFDS-APPR-001 | 결재함(maker-checker) | `GET /api/v1/admin/fds/approvals`, `/{id}/approve`, `/reject` | fds-svc | T-15 |
+| 운영 › 거버넌스·보고 | SFDS-REG-001/002 | 규제 보고 후보 큐/추적 | `GET /api/v1/fds/cases?caseType=REGULATORY_REPORT,…` → 본 처리 **aml-svc** | fds-svc | T-17 |
+| 설정 › 연동·데이터 | SFDS-TNT-001 | 고객사 목록 | `GET /api/v1/bo/fds/tenants` (bo-api 소유) | bo-api | T-03 |
+| 설정 › 연동·데이터 | SFDS-TNT-002 (탭①) | 고객사 상세 — 기본 정보 | `GET /api/v1/bo/fds/tenants/{id}` · `PUT /api/v1/bo/fds/tenants/{id}` (bo-api 소유) | bo-api | T-03 |
+| 설정 › 연동·데이터 | SFDS-TNT-002 (탭②) | 고객사 상세 — 배포·온보딩 | `GET /api/v1/bo/fds/tenants/{id}/onboarding` (bo-api 소유) | bo-api | T-03·P8 |
+| 설정 › 연동·데이터 | SFDS-TNT-002 (탭③) | 고객사 상세 — 마스킹·보안 | `GET /api/v1/bo/fds/tenants/{id}` (bo-api 소유) · Capability 조회(SFDS-ACT-002 연동) | bo-api | T-03 |
+| 설정 › 연동·데이터 | SFDS-TNT-002 (탭④) | 고객사 상세 — Policy Pack | `GET/PUT /api/v1/bo/fds/tenants/{id}` (bo-api 소유) | bo-api | T-03 |
+| 설정 › 연동·데이터 | SFDS-TNT-002 (탭⑤) | 고객사 상세 — 알림·소스 | `GET /api/v1/bo/fds/tenants/{id}` (bo-api 소유) · `GET /api/v1/admin/fds/source-systems` · `GET/PUT /api/v1/admin/fds/notify-channels` (API §4.8 정본, §3.2 본문과 일치) | fds-svc(알림·소스 정본, bo-api 집약 경유) | T-03·T-20 |
+| 설정 › 연동·데이터 | SFDS-TNT-003 | 고객사 등록(별도 생성 화면, 상세 5탭과 분리) | `POST /api/v1/bo/fds/tenants` (bo-api 소유) | bo-api | T-03·P8 |
+| 설정 › 연동·데이터 | SFDS-CONN-001/002 | 소스시스템·커넥터 목록·운영 | `GET /api/v1/admin/fds/source-systems`, `/connectors`, `POST .../connectors/{connectorId}/replay` (API §4.8 정본) | fds-svc | T-03·T-20·T-21 |
+| 설정 › 연동·데이터 | SFDS-CONN-003 | 커넥터 등록·자격증명 | `POST /api/v1/admin/fds/source-systems`, `POST /api/v1/admin/fds/credentials` 🔒, `/rotate` 🔒 | fds-svc | T-03·T-04 |
+| 설정 › 연동·데이터 | **SFDS-CONN-004** | **수신 API 카탈로그·인입 라이브 모니터링(§4.4, v5.0)** | **(제안)** `GET /api/v1/bo/fds/ingest/catalog` · `GET /api/v1/bo/fds/ingest/health` — **집계 소유 bo-api, 후속 API 정합 필요** | **bo-api** | T-03·T-20 |
+| 설정 › 연동·데이터 | SFDS-MAP-001 | 소스/스키마 레지스트리 | `GET /api/v1/admin/fds/source-systems` | fds-svc | T-04 |
+| 설정 › 연동·데이터 | SFDS-MAP-002 | 필드 매핑/PII 정책 | `PUT /api/v1/admin/fds/source-systems/{ss}/mappings` 🔒 | fds-svc | T-04 |
+| 설정 › 탐지 정책 | SFDS-RULE-001 | 룰 목록 | `GET /api/v1/admin/fds/rule-sets`, `/rules` | fds-svc | T-09·T-11 |
+| 설정 › 탐지 정책 | SFDS-RULE-002 | 룰 상세/버전 | `GET /api/v1/admin/fds/rules/{id}`, `/versions` | fds-svc | T-11 |
+| 설정 › 탐지 정책 | SFDS-RULE-003 | 룰 빌더(문장형) | `GET /api/v1/admin/fds/feature-catalog`, `POST /api/v1/admin/fds/rules`, `PUT .../{id}` | fds-svc | T-09·T-11 |
+| 설정 › 탐지 정책 | SFDS-RULE-004 | 임계 파라미터 변경 | `PUT /api/v1/admin/fds/rules/{id}` (임계만) | fds-svc | T-11 |
+| 설정 › 탐지 정책 | SFDS-RULE-005 | 활성화·롤백·비활성 | `POST /api/v1/admin/fds/rules/{id}/activate` 🔒, `/rollback` 🔒, `/disable` | fds-svc | T-11 |
+| 설정 › 탐지 정책 | SFDS-RULE-006 | 룰 시뮬레이션(백테스트, 과거 데이터) | `POST /api/v1/admin/fds/rules/simulations`, `GET /api/v1/admin/fds/rules/simulations/{simulationId}` | fds-svc | T-11 |
+| 설정 › 탐지 정책 | SFDS-GRP-001 | 그룹 목록/멤버 | `GET /api/v1/admin/fds/risk-groups`, `/{id}/members` | fds-svc | T-10 |
+| 설정 › 탐지 정책 | SFDS-GRP-002 | 멤버 추가/해제 | `POST` 🔒 / `DELETE` 🔒 `/api/v1/admin/fds/risk-groups/{id}/members` | fds-svc | T-10 |
+| 설정 › 탐지 정책 | SFDS-GRP-003 | 그룹 등록/수정 | `POST/PUT /api/v1/admin/fds/risk-groups` | fds-svc | T-10 |
+| 설정 › 감사·증적 | SFDS-AUDIT-001 | 감사 로그 | `GET /api/v1/bo/fds/audit` (bo-api 소유) | bo-api | T-16·T-19 |
+| 설정 › 감사·증적 | SFDS-EXP-001 | evidence export | `POST /api/v1/evidence/fds/exports` 🔒(최종본), `/download` | fds-svc | T-19 |
 
 ### 16.2 백오피스 Role ↔ 화면 권한 매트릭스
 
