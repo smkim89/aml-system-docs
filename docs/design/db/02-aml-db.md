@@ -114,19 +114,19 @@ erDiagram
 
 | 격리 키 | 컬럼 | 타입 | 역할 |
 |---|---|---|---|
-| tenant | `tenant_id` | `VARCHAR(64) NOT NULL` | **배포의 고객사**. 전용 배포(`MANAGED_DEDICATED`/`SELF_HOSTED`)에선 사실상 단일 값. 모든 `aml_*` PK 선두 컬럼. `SHARED` 배포에서만 고객사 간 행 격리 키 |
+| tenant | `tenant_id` | `VARCHAR(64) NOT NULL` | **배포의 서비스(테넌트=서비스)**. 상위 기관(institution)이 운영하는 서비스 1종 = tenant 1개(1 기관 : N 서비스, §3.1 `institution_ref`). 전용 배포(`MANAGED_DEDICATED`/`SELF_HOSTED`)에선 사실상 단일 값. 모든 `aml_*` PK 선두 컬럼. `SHARED` 배포에서만 서비스 간 행 격리 키 |
 | data-scope | `data_scope` | `VARCHAR(64)` (nullable) | 운영자 row-level **권한 필터** — 저장 격리 아님. bo-api가 운영자 토큰 scope로 강제 필터 |
 
 > **`workspace_id` 미사용 결정(정본 §4 × 설계서 §16.2.1 합의)**: 정본 target-architecture §4는 `tenant_id`/`workspace_id`/`data_scope` 3-key를 언급하나, 본 aml-svc는 **`workspace_id`를 물리 컬럼으로 도입하지 않는다**. 근거: 설계서 §16.2.1 배포 내부 분리 키 표에서 `workspace_id` 행을 명시적으로 제외하고 `tenant_id` + `data_scope` 2-key 모델로 확정했다. `workspace`(retail/corporate, prod/sandbox 등 논리 환경 분리) 필요 시 `data_scope` 하위 규약 또는 future additive column으로 수용하며, 현 정본에서는 미도입이다. 미사용 결정 근거를 설계서 §16.2.1에서 참조·관리한다.
 
 규칙:
 - 모든 운영 테이블 PK 선두는 `tenant_id`. UNIQUE·조회 인덱스도 `tenant_id` 선두.
-- 격리의 **1차 경계는 배포 모델**(§3.1 `aml_tenants.deployment_model`). 전용 배포는 배포 자체가 고객사 경계이며, 본 DDL은 단일 배포 내부 모델을 기술한다(`SHARED` 배포일 때만 `tenant_id` 행 격리가 고객사 간 경계로 동작).
+- 격리의 **1차 경계는 배포 모델**(§3.1 `aml_tenants.deployment_model`). 전용 배포는 배포 자체가 서비스(테넌트) 경계이며, 본 DDL은 단일 배포 내부 모델을 기술한다(`SHARED` 배포일 때만 `tenant_id` 행 격리가 서비스 간 경계로 동작). 테넌트=서비스이며 그 상위에 기관(institution)이 있다(1 기관 : N 서비스).
 - `SHARED` 배포에서 행 단위 격리는 PostgreSQL **RLS 정책**(`app.current_tenant` 세션 변수)으로 보강한다.
-- "고객사 등록"은 격리 라디오가 아니라 **배포 유형 선택 + 온보딩 신청·상태**(`onboarding_status`) 관리다. 온보딩 상태머신은 §5.28 참조.
+- "서비스 등록"은 격리 라디오가 아니라 **배포 유형 선택 + 온보딩 신청·상태**(`onboarding_status`) 관리다. 온보딩 상태머신은 §5.28 참조.
 - `data_scope`(영업점·법인그룹 등 하위 격리)는 `data_scope` 컬럼으로 표현하고 bo-api 권한과 매핑한다(정본 §4).
 - 온보딩·배포 메타(`deployment_model`/`onboarding_status`/`default_region`/`infra_ref`)는 `aml_tenants`(§3.1)에 보존한다. 매니지드 전용 IaC 파이프라인·self-hosted 라이선스 발급/검증 방식은 P8 인프라 설계에서 확정(오픈결정).
-- **고객사 관리(배포/온보딩) 소유 경계**: bo-api가 `deployment_model`/`onboarding_status` 기준으로 소유·집약하며, 온보딩 프로비저닝/상태조회/self-hosted 등록 콜백 엔드포인트는 **bo-api 전용**이다. aml-svc 엔진 API에는 온보딩 엔드포인트를 두지 않는다.
+- **서비스 관리(배포/온보딩) 소유 경계**: bo-api가 `deployment_model`/`onboarding_status` 기준으로 소유·집약하며, 온보딩 프로비저닝/상태조회/self-hosted 등록 콜백 엔드포인트는 **bo-api 전용**이다. aml-svc 엔진 API에는 온보딩 엔드포인트를 두지 않는다.
 
 ---
 
@@ -136,8 +136,8 @@ erDiagram
 
 | 컬럼 | 타입 | NULL | 기본값 | 설명 |
 |---|---|---|---|---|
-| `tenant_id` | VARCHAR(64) | N | — | 고객사 격리 키. 모든 PK·인덱스 선두 |
-| `data_scope` | VARCHAR(64) | Y | NULL | 고객사 하위 격리(영업점·법인그룹). NULL=tenant 전역 |
+| `tenant_id` | VARCHAR(64) | N | — | 서비스(테넌트=서비스) 격리 키. 모든 PK·인덱스 선두 |
+| `data_scope` | VARCHAR(64) | Y | NULL | 서비스 하위 격리(영업점·법인그룹). NULL=tenant 전역 |
 | `created_at` | TIMESTAMPTZ | N | now() | 생성 시각 |
 | `created_by` | VARCHAR(128) | N | 'system' | 생성 주체(운영자 ID·system·source-system) |
 | `updated_at` | TIMESTAMPTZ | N | now() | 수정 시각(트리거/애플리케이션 갱신) |
@@ -163,11 +163,13 @@ enum은 컬럼에 **코드값(대문자 스네이크)** 저장, 표시값(라벨
 
 ## 3. 테이블 명세
 
-### 3.1 `aml_tenants` — SaaS 고객사 (설계서 §17.1, §16)
+### 3.1 `aml_tenants` — 서비스 마스터(테넌트=서비스) (설계서 §17.1, §16)
+> **계층**: 기관(institution) → 서비스(테넌트, `tenant_id`) → (논리)워크스페이스. `aml_tenants`의 1행 = 한 서비스(테넌트). 상위 기관 1개가 여러 서비스를 운영한다(**1 기관 : N 서비스**). 기관 식별은 `institution_ref`로 참조한다.
 
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
 |---|---|---|---|---|---|
-| `tenant_id` | VARCHAR(64) | N | — | PK | 고객사 ID |
+| `tenant_id` | VARCHAR(64) | N | — | PK | 서비스 ID(테넌트=서비스, 격리 경계·PK 선두) |
+| `institution_ref` | VARCHAR(64) | Y | NULL | | **상위 기관(institution) 참조**. 납품받은 회사/금융기관 식별자. 1 기관 : N 서비스 관계의 외부 키(FK 아님·논리 참조). nullable·additive 신규 컬럼(후속 마이그레이션 §7에서 추가, 기존 row는 NULL 백필 후 매핑) |
 | `display_name` | VARCHAR(160) | N | — | | 표시명 |
 | `deployment_model` | VARCHAR(32) | N | `'MANAGED_DEDICATED'` | enum §5.28 (3종) | 배포 유형(구 `isolation_mode` 대체). `MANAGED_DEDICATED`/`SELF_HOSTED`/`SHARED`. 온보딩 프로비저닝의 산출 — 화면 라디오 즉석 변경 아님 |
 | `onboarding_status` | VARCHAR(32) | N | `'REQUESTED'` | enum §5.28a (8종) | 온보딩 진행 상태. 상태머신: 매니지드=`REQUESTED→PROVISIONING→DEPLOYED→VERIFIED→ACTIVE`, self-hosted=`REQUESTED→PACKAGE_ISSUED→CUSTOMER_DEPLOYED→REGISTERED`, SHARED=`REQUESTED→ACTIVE` |
@@ -175,12 +177,13 @@ enum은 컬럼에 **코드값(대문자 스네이크)** 저장, 표시값(라벨
 | `infra_ref` | VARCHAR(160) | Y | NULL | | 배포 메타 참조. 매니지드=Terraform stack/workspace ID, self-hosted=라이선스·설치 인스턴스 ID. 발급·검증 방식은 P8 인프라 설계 확정(오픈결정) |
 | `status` | VARCHAR(32) | N | `'ONBOARDING'` | enum §5.28b (**4종**, FDS §11.6.7 동기화) | **운영 생명주기** — `onboarding_status`와 직교. `ONBOARDING`/`ACTIVE`/`SUSPENDED`/`OFFBOARDED` (QA cross #119 high·#127 medium 정합 — FDS `fds_tenants.tenant_status` 4종과 코드값·DEFAULT 동기화. 신규 등록 시 DEFAULT `'ONBOARDING'`, 온보딩 완료 시 `ACTIVE` 전환) |
 | `policy_pack_code` | VARCHAR(64) | N | `'KR_DEFAULT'` | | 적용 Policy Pack(STR/CTR/Travel Rule) |
-| `retention_policy` | JSONB | N | `'{}'` | | 고객사별 보존·파기 override |
+| `retention_policy` | JSONB | N | `'{}'` | | 서비스별 보존·파기 override |
 | `created_at/created_by/updated_at/updated_by` | (공통 §2.1) | | | | 감사 컬럼 |
 
 PK: `(tenant_id)`
 
 > **마이그레이션 V17·V20**: 구 `isolation_mode` 컬럼은 V17a/V17b에서 `deployment_model`/`onboarding_status`/`infra_ref` 교체 후 DROP한다. **V20**: `status` enum 3종→4종 갱신(`ONBOARDING` 추가, `OFFBOARDING`→`OFFBOARDED`), DEFAULT `'ACTIVE'`→`'ONBOARDING'` 변경. 자세한 내용은 §7 V17/V20 참조.
+> **마이그레이션(institution_ref·후속)**: 상위 기관 참조 컬럼 `institution_ref VARCHAR(64) NULL`은 **다음 마이그레이션에서 additive(nullable)로 추가**한다(1 기관 : N 서비스). 기존 row는 NULL로 시작 후 기관-서비스 매핑이 확정되면 백필한다. 기관 마스터 테이블 정식화는 후속 설계에서 확정.
 
 ### 3.2 `aml_source_systems` — 데이터 원천 (설계서 §17.1, §15)
 
@@ -195,7 +198,7 @@ PK: `(tenant_id)`
 | `failure_policy` | VARCHAR(32) | N | 'MANUAL_REVIEW' | enum | `MANUAL_REVIEW`/`FAIL_CLOSED`/`DELAY_ALLOWED` (§15.7, D-14) |
 | `enabled` | BOOLEAN | N | TRUE | | 활성 여부 |
 | `status` | VARCHAR(32) | N | `'ACTIVE'` | enum | 운영 상태. `ACTIVE`/`DISABLED`(설계서 §17.1 DDL·§16.2.1 정본 — QA issue #4 HIGH 정합) |
-| `data_scope` | VARCHAR(64) | Y | NULL | | 고객사 하위 격리(§2.1 공통 규약 — §2.1에서 전 운영 테이블 적용 원칙이 적용되는 테이블임을 명시. QA issue #5 MEDIUM 정합) |
+| `data_scope` | VARCHAR(64) | Y | NULL | | 서비스 하위 격리(§2.1 공통 규약 — §2.1에서 전 운영 테이블 적용 원칙이 적용되는 테이블임을 명시. QA issue #5 MEDIUM 정합) |
 | `created_at/created_by/updated_at/updated_by/trace_id` | (공통) | | | | |
 
 PK: `(tenant_id, source_system)`
@@ -446,7 +449,7 @@ PK: `(tenant_id, transfer_ref)`
 
 ### 3.17 `aml_ira_reports` — 기관위험평가(IRA, ML/TF) 회차 (T1 AML-ENG-01, 부록 E v6.0-2 확정)
 
-KoFIU 기관위험평가 지표 보고 회차. KR 확장 plugin 활성 고객사 한정(부록 E). 멀티테넌시 키 `(tenant_id, report_id)` — tenant 단위 규제보고(workspace 차원 없음).
+KoFIU 기관위험평가 지표 보고 회차. KR 확장 plugin 활성 서비스 한정(부록 E). 멀티테넌시 키 `(tenant_id, report_id)` — tenant 단위 규제보고(workspace 차원 없음).
 
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
 |---|---|---|---|---|---|
@@ -615,7 +618,7 @@ PK: `(tenant_id, export_id)`
 
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
 |---|---|---|---|---|---|
-| `tenant_id` | VARCHAR(64) | N | — | PK | 고객사 격리 키 |
+| `tenant_id` | VARCHAR(64) | N | — | PK | 서비스(테넌트=서비스) 격리 키 |
 | `outbox_id` | UUID | N | — | PK | 아웃박스 항목 ID |
 | `data_scope` | VARCHAR(64) | Y | NULL | | 하위 격리(§1.1) |
 | `aggregate_type` | VARCHAR(64) | N | — | enum | `REGULATORY_REPORT`/`CASE`/`SCREENING`/`FDS_FEEDBACK`/`WEBHOOK` (발행 집합체) |
@@ -695,7 +698,7 @@ PK: `(tenant_id, outbox_id)` · UNIQUE: `(tenant_id, aggregate_type, aggregate_r
 
 | 코드값 | 표시값 | 의미 | 프로비저닝 |
 |---|---|---|---|
-| `MANAGED_DEDICATED` | 매니지드 전용 | 플랫폼 클라우드에 **고객사별 전용 DB·스택** | 온보딩 IaC(Terraform) 자동 파이프라인 — 승인→프로비저닝→배포→검증→운영전환 |
+| `MANAGED_DEDICATED` | 매니지드 전용 | 플랫폼 클라우드에 **서비스별 전용 DB·스택** | 온보딩 IaC(Terraform) 자동 파이프라인 — 승인→프로비저닝→배포→검증→운영전환 |
 | `SELF_HOSTED` | 자체 인프라 설치형 | **고객 자체 인프라**에 설치형 패키지(Helm/Docker) | 플랫폼은 설치 패키지·가이드·라이선스 제공, 고객 측이 배포·등록 콜백 |
 | `SHARED` | 소규모 공유 | 공유 DB + `tenant_id` 행 격리 | 즉시(프로비저닝 없음) |
 
@@ -996,7 +999,7 @@ stateDiagram-v2
 | V17b | `V17b__aml_tenant_drop_isolation_mode.sql` | `aml_tenants.isolation_mode` 컬럼 DROP(V17a 백필 검증 후 적용). | V17a |
 | V18 | `V18__aml_evidence_export_status.sql` | `aml_evidence_exports`에 `status VARCHAR(32) NOT NULL DEFAULT 'PENDING'` 컬럼 추가(QA #19); `reason VARCHAR(512)` nullable→`NOT NULL DEFAULT ''` 강화(QA #20): ① `UPDATE aml.aml_evidence_exports SET reason='' WHERE reason IS NULL`, ② `ALTER TABLE aml.aml_evidence_exports ALTER COLUMN reason SET NOT NULL`. | V14 |
 | V19 | `V19__aml_report_submission_loop.sql` | `aml_regulatory_reports`에 FIU 회신 폐루프 컬럼 추가(설계서 §14.1a/§14.3): `fiu_ack_ref VARCHAR(256)`, `submission_error_code VARCHAR(64)`, `resubmit_count INT NOT NULL DEFAULT 0`, `ctr_exemption_code VARCHAR(64)`. `status` CHECK를 8종(`ACKNOWLEDGED`/`SUBMISSION_FAILED` 추가, §5.11)으로 확장. | V10 |
-| V20 | `V20__aml_source_systems_status_and_tenant_status.sql` | (1) `aml_source_systems`에 `status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE'` 컬럼 추가 + `data_scope VARCHAR(64)` 컬럼 추가(§3.2 QA #4 HIGH·#5 MEDIUM 정합). (2) `aml_tenants.status` CHECK 제약을 **4종**(`ONBOARDING`/`ACTIVE`/`SUSPENDED`/`OFFBOARDED`)으로 갱신 + DEFAULT `'ACTIVE'` → `'ONBOARDING'` 변경(QA cross #119 HIGH·#127 MEDIUM): ① `ALTER TABLE aml.aml_tenants ALTER COLUMN status SET DEFAULT 'ONBOARDING'`; ② 기존 row 중 `onboarding_status NOT IN ('ACTIVE','REGISTERED')` → `status='ONBOARDING'` 백필(신규 등록 미완 고객사); ③ `OFFBOARDING` → `OFFBOARDED` 데이터 마이그레이션. CHECK 제약 DROP→재생성(4종 포함). | V01,V17a |
+| V20 | `V20__aml_source_systems_status_and_tenant_status.sql` | (1) `aml_source_systems`에 `status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE'` 컬럼 추가 + `data_scope VARCHAR(64)` 컬럼 추가(§3.2 QA #4 HIGH·#5 MEDIUM 정합). (2) `aml_tenants.status` CHECK 제약을 **4종**(`ONBOARDING`/`ACTIVE`/`SUSPENDED`/`OFFBOARDED`)으로 갱신 + DEFAULT `'ACTIVE'` → `'ONBOARDING'` 변경(QA cross #119 HIGH·#127 MEDIUM): ① `ALTER TABLE aml.aml_tenants ALTER COLUMN status SET DEFAULT 'ONBOARDING'`; ② 기존 row 중 `onboarding_status NOT IN ('ACTIVE','REGISTERED')` → `status='ONBOARDING'` 백필(신규 등록 미완 서비스); ③ `OFFBOARDING` → `OFFBOARDED` 데이터 마이그레이션. CHECK 제약 DROP→재생성(4종 포함). | V01,V17a |
 | IRA(구현 `V13__phase_ira_surface.sql`) | `V13__phase_ira_surface.sql` | **T1 AML-ENG-01**: (1) `aml_ira_reports` 생성(§3.17, status CHECK 6종, FK→aml_tenants/aml_approvals, `ix_ira_status`·`ux_ira_submitted`). (2) `aml_ira_indicators` 생성(§3.18, source CHECK 2종, FK→aml_ira_reports ON DELETE CASCADE). (3) `aml_approvals.subject_type` CHECK **16→17종**(`IRA_SUBMIT` 추가, §5.16). (4) `aml_outbox.aggregate_type` CHECK에 `IRA_REPORT` 추가(§3.15 제출 폐루프 enqueue). additive only. | 구현 V1~V12 |
 | HRR(구현 `V14__phase_high_risk_registry.sql`) | `V14__phase_high_risk_registry.sql` | **T2 AML-ENG-02**: (1) `aml_high_risk_registry` 생성(§3.19, tenant 1행 헤더, FK→aml_tenants). (2) `aml_high_risk_registry_items` 생성(§3.20, list_type CHECK 3종·tier CHECK 2종, FK→aml_high_risk_registry ON DELETE CASCADE, `ix_hrr_items_subject`). (3) `aml_approvals.subject_type` CHECK **17→18종**(`HIGH_RISK_REGISTRY` 추가, §5.16) — V3 인라인 `aml_approvals_subject_type_check` + V13 명명 `ck_aml_approvals_subject_type` 양쪽 DROP 후 18종 단일 제약 통합. additive only. | 구현 V1~V13 |
 | PII vault(구현 `V15__phase_pii_vault.sql`) | `V15__phase_pii_vault.sql` | **T3 AML-ENG-03**: `aml_pii_vault` 생성(§3.21, PK `(tenant_id, target_ref, field)`, field CHECK 4종 §5.35, `ciphertext` 평문 미저장, FK→aml_tenants, `ix_aml_pii_vault_target`). reveal(`/internal/v1/aml/pii/reveal`) cleartext 산출 원천(가역암호). additive only. | 구현 V1~V14 |
@@ -1012,7 +1015,7 @@ stateDiagram-v2
 |---|---|
 | 별도 스키마(4서비스) | `aml` 스키마 전용 (§0, V01) |
 | 배포 모델(deployment topology) | `aml_tenants.deployment_model`(3종)·`onboarding_status`(8종)·`infra_ref`·`default_region`='KR'. 구 `isolation_mode` 폐기(V17a/b). 격리 1차 경계=배포, 온보딩 상태머신 §5.28a. 정본 §4.1·설계서 §16 동기화 |
-| 멀티테넌시(tenant/data-scope) | 전 테이블 `tenant_id` PK 선두(배포 내부 분리) + `data_scope`(권한 필터) + RLS — `SHARED`에서만 `tenant_id` 행 격리가 고객사 간 경계로 동작 (§1.1, §2.1) |
+| 멀티테넌시(tenant/data-scope) | 전 테이블 `tenant_id` PK 선두(배포 내부 분리, 테넌트=서비스·상위 기관 참조 `institution_ref`) + `data_scope`(권한 필터) + RLS — `SHARED`에서만 `tenant_id` 행 격리가 서비스 간 경계로 동작 (§1.1, §2.1) |
 | raw PII 미저장·토큰/해시 | `*_hash`/`*_token`/`*_ref`, payload_hash, 원문 컬럼 없음 (§2.2) |
 | 감사 컬럼·append-only 감사 | 공통 감사 컬럼 + aml_audit_events hash chain (§2.1, §3.15) |
 | 4-eyes(작성자≠승인자) | aml_approvals + CHECK `maker_id<>checker_id` (§3.15) |
@@ -1036,6 +1039,7 @@ stateDiagram-v2
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-06-19 | **테넌트=서비스 재정의 + 기관 참조(institution_ref) 컬럼 신설(1 기관 : N 서비스).** §1.1/§2.1/§8 설명 텍스트의 '고객사'를 '서비스(테넌트=서비스)'로 정정(계층 기관→서비스(테넌트)→워크스페이스). §3.1 `aml_tenants`를 '서비스 마스터(테넌트=서비스)'로 라벨링하고 상위 기관 참조 컬럼 `institution_ref VARCHAR(64) NULL`(additive·후속 마이그레이션) 추가. §3.17 IRA·§3.15 outbox·§5.28 deployment_model 설명의 '고객사' 정정. `tenant_id`/`data_scope`/RLS `app.current_tenant`·scope 코드·PK 선두 규칙 불변(의미만 '서비스'). | data-modeler. 컬럼명·enum·경로 불변(라벨/설명만). |
 | 2026-06-19 | **데이터 레이어 hanpass-ph 재그라운딩 + TM 알림 evidence·거래·대상360° 재설계.** §3.2 `aml_source_systems.source_system` 카탈로그를 hanpass-ph 7실서비스(member/walletchg/domestic/remit/wallet/tx-history/inbound-svc)로 현행화(REST sync). §3.6/§3.7 watchlist provider 를 `member-svc zoloz_aml_screening` 신호로 정합·48h 신선도 fail-closed 명시. §3.8 screening score_breakdown/reason_codes 를 zoloz decision/risk_level/total_hits/hit_results 로 매핑. §3.10 `aml_alerts.transaction_ref`·`evidence` 를 **TM 알림 상세 데이터모델**(트리거·집계 패턴·관련 거래 목록·자금그래프 funnel)로 보강. §3.15 canonical_events `event_type`/`payload` 에 hanpass-ph 소스별 emit·corridor(send/receive country·currency·USD amount_base) 주석. **§3.16 대상 360° 통합 뷰 신설**(tx-history + member CDD/screening + wallet transfer_links read model). **규제 레이어(CTR/STR 임계·기한·KoFIU 의심유형) 불변** — 데이터 신호(`StrIndicator`·`sanction_screening_event`)만 매핑하고 규제 STR 분류는 KR 정본 유지. | data-modeler. 식별자 원문 금지(token/keyed-HMAC). domestic-svc `member_id` varchar(36) join 정규화 주의. PRD §1.5/§7·API §2~§3·integration §3/§7 동기화. |
 | 2026-06-15 | **T4 (AML-ENG-04) STR 통계 원천 — 보고 종결 사유 컬럼 역삽입 (확정).** **§3.12 `aml_regulatory_reports`에 `closure_reason_code VARCHAR(64)` 컬럼 추가** — nullable(기존 행 무영향). `REJECTED`/`CANCELLED` 종결 시 사유 코드 영속(설계서 §14.1a), STR 미보고 사유 분포(API §2.7 `GET /admin/aml/reports/stats/unreported-reasons`, PRD §12-B.3 ①) 집계 원천. `ctr_exemption_code`(CTR 면제 사유)와 별개 의미·공존. legacy 미영속 행은 통계에서 `UNSPECIFIED`(소급 seed 없음). 코드값(raw PII 아님). **§7 V16(구현 `V16__report_closure_reason.sql`) 마이그레이션 등재**(구현 V1~V15 의존, `ADD COLUMN IF NOT EXISTS` additive only). 지연일수 분포(`str-delay`)는 신규 컬럼 없이 기존 `created_at`/`submitted_at`에서 파생. 정본=태스크 `20260615-exposed-gap-development-tasks.md` §T4·plan `docs/ai/plans/2026-06-15-t4-aml-stat-source-surface.md`·API §2.7/§3.6·PRD §12-B.3. | aegis-java-implementer. API §2.7 stats 행·§3.6 DelayBucket/UnreportedReason DTO와 동기화. |
 | 2026-06-15 | **T3 (AML-ENG-03) PII reveal vault 역삽입 (확정).** (1) **§3.21 `aml_pii_vault` 신설** — PK `(tenant_id, target_ref, field)`, `ciphertext`(평문 미저장, AES-256-GCM `SecretCipherPort`), FK→aml_tenants, `ix_aml_pii_vault_target`. reveal(`POST /internal/v1/aml/pii/reveal`, API §2.6) cleartext 산출 원천(가역암호 vault — §2.2 "원문 컬럼 금지" 유지). (2) **§2.2 보강** — "PII reveal 원천 = 가역암호 vault" 명문화(단방향 hash 로는 역참조 불가, vault 는 암호문만 저장하므로 평문 컬럼 금지 유지). (3) **§5.35 pii_field enum 신설** — 4종(NAME/DOC/ACCOUNT/WALLET, CHECK, 도메인 `PiiField` 1:1). (4) **§7 V15(구현 `V15__phase_pii_vault.sql`) 마이그레이션 등재**(구현 V1~V14 의존, additive only). 정본=태스크 `20260615-exposed-gap-development-tasks.md` §T3·ADR `docs/ai/decisions/2026-06-15-aml-eng-03-pii-reveal.md`. vault 적재 시점·전 필드 확장은 후속(가정 A2). | aegis-java-implementer. API §2.6 reveal 행과 동기화. |
