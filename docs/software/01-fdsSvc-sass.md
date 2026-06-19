@@ -382,6 +382,8 @@ com.hanpass.fds
 │   │                   #   예) POST /api/v1/fds/events, POST /api/v1/fds/decisions/evaluate
 │   ├── in/sqs/         # Queue Connector consumer
 │   ├── in/scheduled/   # Polling/CDC/reconciliation jobs
+│   │                   #   ActionRelayScheduler: fds_actions outbox 자동 디스패처
+│   │                   #   (relay/retry sweep, @Profile("aws"), 연동 §6.2.1)
 │   ├── out/persistence/# fds_* 테이블 (PostgreSQL)
 │   └── out/external/   # action adapter, aml-svc client, ML score client
 └── global/        # tenant context, traceId 전파, 보안/마스킹 필터, 설정
@@ -786,6 +788,25 @@ THEN OPEN_INTERNAL_AUDIT_CASE
 | `HOLD` | 자금 hold |
 | `FREEZE` | 규정 기반 동결 |
 | `REPORT` | 규제 보고 후보 |
+
+#### 11.1.1 riskScore 산출 정책 (D-05 1차 룰 파생, 확정)
+
+`riskScore`(API §5.4 `decimal(8,4)`, 0~100, DB `fds_decisions.risk_score NUMERIC(8,4)`)는 decision 산출 시 항상 비-null로 결선한다. 산출은 **outcome severity → score 결정론적·단조 매핑**(룰 파생 1차 정책)으로 한다. severity 순서(위 Decision 표 = DB §4.7 enum 선언 순서 `ALLOW<MONITOR<REVIEW<CHALLENGE<BLOCK<HOLD<FREEZE<REPORT`)를 [0,100]에 단조 사상한다:
+
+| outcome | riskScore |
+|---|---|
+| `ALLOW` | `0.0000` |
+| `MONITOR` | `15.0000` |
+| `REVIEW` | `40.0000` |
+| `CHALLENGE` | `55.0000` |
+| `BLOCK` | `70.0000` |
+| `HOLD` | `80.0000` |
+| `FREEZE` | `90.0000` |
+| `REPORT` | `100.0000` |
+
+산출값은 `decimal(8,4)`(scale 4, HALF_UP)로 정규화한다(`RiskScoringPolicy`). 멱등 재요청(idempotent replay)은 영속 decision의 score를 그대로 반환하며 **재산출하지 않는다**. fail-policy(D-14) 분기·event-missing 분기도 동일 정책으로 산출한다(예: 기본 `REVIEW`→`40.0000`).
+
+> **D-05 후속 확장**: 외부 ML score 수신 시 그 값을 우선하고, 미수신(룰 only 워크스페이스)에서는 본 룰 파생 정책을 fallback으로 사용한다. matched rule 가산 severity(weight) 모델은 룰 스키마에 score 필드가 없어 본 라운드 비채택이며, 룰 스키마 확장 시 재논의한다. (PRD BR-002: 화면은 수신 점수만 표시, 산출 로직 미노출.)
 
 ### 11.2 Action
 
@@ -1267,6 +1288,8 @@ evidence export(§12.7·§16.4)의 3개 보조 enum이다.
 | `PDF` | PDF |
 | `JSON_API` | JSON API |
 
+> 산출 방식(네이티브 렌더·content-type·manifest hash 입력)은 §16.4 참조.
+
 **export_status (6종, DB §4.17) + 상태 전이** — `fds_evidence_exports.status` (기본값 `REQUESTED`)
 
 | 코드값 | 표시값(권고) |
@@ -1520,7 +1543,7 @@ X-Signature: hmac-sha256=...
 }
 ```
 
-> `riskScore`는 정본 `decimal(8,4)`(0~100, DB `fds_decisions.risk_score NUMERIC(8,4)` / API §5.4 `number,double`)다. Decision API 응답은 JSON `number`로 직렬화하고, Webhook(outbound) 페이로드는 정밀도 보존을 위해 `"82.0000"` 문자열로 직렬화한다(integration §4.5). `recommendedActions`는 §11.2 `action_type` 23종 코드값만 반환한다.
+> `riskScore`는 정본 `decimal(8,4)`(0~100, DB `fds_decisions.risk_score NUMERIC(8,4)` / API §5.4 `number,double`)이며 산출 정책은 §11.1.1(outcome severity 단조 매핑)이다. Decision API 응답은 JSON `number`(예 `82.0000`)로 직렬화하고, Webhook(outbound) 페이로드는 정밀도 보존을 위해 `"82.0000"` **문자열**로 직렬화한다(integration §4.5, `RiskScoreSerialization`). `recommendedActions`는 §11.2 `action_type` 23종 코드값만 반환하며, **해당 decision으로 실제 emit된 `fds_actions` outbox row의 `action_type` 집합을 투영한 파생 배열**이다(integration §142 — capability/4-eyes 게이트·downgrade 반영; sandbox shadow-only는 빈 배열). 순수 룰 권고값이 아니다.
 
 API 인증·권한:
 
@@ -2374,6 +2397,8 @@ FDS SaaS는 탐지 이벤트를 저장하는 수준을 넘어, 금융감독원·
 
 - evidence export는 생성 시점의 query 결과만이 아니라 export manifest와 hash를 보존한다.
 - 제출용 파일은 CSV/Excel/PDF를 지원하되, 원천 row와 audit row를 다시 추적할 수 있는 evidence id를 포함한다.
+- 제출 파일은 `export_format`(§11.6.15, 4종)별로 **네이티브 산출**한다: `CSV`=텍스트(`text/csv`/`.csv`), `JSON_API`=텍스트(`application/json`/`.json`), `EXCEL`=Apache POI 실 `.xlsx`(`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`/`.xlsx`), `PDF`=OpenPDF 실 `.pdf`(`application/pdf`/`.pdf`). content-type·확장자는 실 payload와 정합하며, EXCEL/PDF도 CSV와 **동일한 masking된 논리 콘텐츠**만 소비한다(raw PII 미도입, DB §7.1).
+- manifest hash는 POI/OpenPDF 바이너리의 비결정 메타데이터(zip 엔트리 timestamp 등)를 배제하기 위해 바이너리가 아닌 **canonical 논리 콘텐츠 + `export_format` enum** 위에서 SHA-256으로 계산한다 — 같은 논리 export ⇒ 같은 hash(재현성 보장), 포맷 변경 시 hash 변동.
 - export 생성·다운로드·삭제 요청도 감사 대상이다.
 - 고객사가 기존 벤더를 병행 사용하는 경우 vendor decision id와 SaaS evidence id를 cross-reference로 보존한다.
 
@@ -2577,6 +2602,7 @@ SaaS FDS는 한국 policy pack을 기본으로 하되, 국가별 규정을 plugi
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-06-15 | v2.4 | T9(FDS-ENG-05) evidence export 산출 포맷 명문화 — 설계서-코드 갭 마감: §16.4 생성 원칙에 `export_format` 4종 **네이티브 산출** 항목 추가(`CSV`/`JSON_API`=텍스트, `EXCEL`=Apache POI 실 `.xlsx`, `PDF`=OpenPDF 실 `.pdf`, content-type·확장자 정합, EXCEL/PDF도 CSV와 동일 masking 논리 콘텐츠만 소비—raw PII 미도입 DB §7.1) + manifest hash는 바이너리 비결정 메타데이터 배제 위해 **canonical 논리 콘텐츠 + format enum** 위 SHA-256으로 계산(재현성 보장) 명문화. §11.6.15 export_format 표에 §16.4 cross-ref 추가. 코드 정본(`LocalExportArtifactAdapter`) 정합 — enum 4종↔코드↔content-type 1:1. | aegis-java-implementer |
 | 2026-06-11 | v2.3 | QA HIGH cross(L303) 해소: §11.6.7 교차 주석 'AML 3종 OFFBOARDING'(구버전) → 'AML 4종 OFFBOARDED(§16.0c V20 교정 후 동기화)'로 갱신 — 모델 차이 서술을 동기화 완료 서술로 교체, bo-web 표시 라벨 매핑 단순화. | system-architect |
 | 2026-06-11 | v2.2 | QA HIGH cross 2건(L307·L308) 해소: §8.3 말미에 FDS `workspaceId` 최상위 ↔ AML `dataScope` 최상위 **의도된 비대칭** 교차 주석 추가(연동 §4.1 cross-service 정책 정본 — `fds-aml-handoff` 어댑터가 `workspaceId`→`dataScope` 변환, `default` 매핑 포함), §11.6.10에 'FDS `fail_policy` ↔ AML `failure_policy` 별도 enum — 혼동 금지, bo-web 표시명 매핑=bo-api' 대칭 주석 추가. | system-architect |
 | 2026-06-11 | v2.1 | doc-consistency-report-all-latest **FDS HIGH 이격 설계서 담당분 해소**: (1) §14.6 `fds_commerce_orders`/`fds_settlements` DDL에 `created_at TIMESTAMPTZ NOT NULL DEFAULT now()` 추가(DB §5.26·§5.27 v1.6 정본 동기화). (2) §8.3 `transaction.transactionType`을 DB §4.19 `transaction_type` 폐쇄 enum(12종) 참조로 격상. (3) §11.4 4-eyes 목록에 'source system 속성·capability 매트릭스 수정' 추가 + §11.5 `MAPPING` 행에 `PUT /admin/fds/source-systems/{id}`(subjectRef=`source_system`) 확장(API §8 정본). (4) §8.3 표에 W3C `traceparent`(선택) 행 추가 + §8.2 예시 JSON 반영(integration §4.1 정본). | system-architect |
