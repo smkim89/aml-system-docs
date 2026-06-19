@@ -3,13 +3,16 @@
 > 문서 ID FS-BO-IAM-001 · 작성일 2026-06-19 · 소관 `bo-api`(+`bo-web` 화면)
 > 본 문서는 FDS PRD §16.2·AML PRD §1.6·부록 B/C/G가 "**IAM 화면은 bo-api PRD 소관**"·"**결재선 정의는 bo-api IAM 소관**"으로 deferral 한 미작성 영역을 정본화한다.
 > 정본 경계: 인증·세션·RBAC·사용자/역할/결재선 관리는 **bo-api 소유**. 도메인 결재 실행(전이·실행)은 엔진(fds-svc/aml-svc) 소유.
+> 멀티테넌시 모델: **기관 → 서비스(테넌트=`tenant_id`) → 워크스페이스(`workspace_id`)** (1 기관 : N 서비스, 테넌트 격리 경계=서비스). 사용자는 상위 기관/서비스 스코프로 바인딩한다.
+>
+> 변경 이력: 2026-06-19 — 테넌트=서비스 재정의(기관 → 서비스 → 워크스페이스). §0·§2.2 멀티테넌시·`bo_user_tenants`를 사용자↔서비스 바인딩으로 재기술, "고객사"→"서비스"; `tenant_id`/`workspace_id`·data_scope·role/scope 코드명 불변(의미만 서비스).
 
 ## 0. 개요
 
 | 항목 | 내용 |
 |---|---|
 | 목적 | 백오피스 **사용자 관리(계정 생성·권한)** · **권한 관리(역할·scope·RBAC)** · **결재선(결재 라인) 관리**의 필요 기능을 전체 정의 |
-| 대상 사용자 | 플랫폼 운영자(platformOperator)·고객사(tenant) 관리자·준법감시/보안 관리자 |
+| 대상 사용자 | 플랫폼 운영자(platformOperator)·서비스(테넌트, `tenant_id`) 관리자·준법감시/보안 관리자 |
 | 현재 상태 | 인증·역할 enum·결재 4-eyes는 **존재**하나, 역할 배정·커스텀 scope·테넌트 바인딩·4계층 RBAC·**결재선 라우팅 관리**는 **미구현** (§1 현행 분석) |
 | 비범위 | 도메인별 결재 대상의 비즈니스 로직(룰/시나리오/명단 등 — 01·02 PRD), 엔진 내부 결재 전이 |
 
@@ -33,9 +36,9 @@
 | BO-USR-004 | 사용자 수정 | 정보·역할·스코프 변경, 비밀번호 리셋, 잠금 해제, 비활성/재활성 |
 
 ### 2.2 기능 요구
-1. **계정 생성**(BO-USR-003): email(고유)·name·department·admin_type + **역할 다중 선택(roleIds)** + 테넌트 바인딩(플랫폼 운영자=tenant-agnostic / 고객사 운영자=tenant_id·workspace 지정) + 초기 비밀번호(또는 초대 토큰) → `bo_admin_users` + `bo_user_roles` + `bo_user_tenants`(신규). 생성 시 `ADMIN_USER_CREATED`·`ROLE_ASSIGNED` 감사.
+1. **계정 생성**(BO-USR-003): email(고유)·name·department·admin_type + **역할 다중 선택(roleIds)** + 서비스(테넌트) 바인딩(플랫폼 운영자=tenant-agnostic / 서비스(기관) 운영자=tenant_id·workspace 지정) + 초기 비밀번호(또는 초대 토큰) → `bo_admin_users` + `bo_user_roles` + `bo_user_tenants`(신규). 생성 시 `ADMIN_USER_CREATED`·`ROLE_ASSIGNED` 감사.
 2. **수정/상태**(BO-USR-004): 정보 수정, 역할 추가/회수(`ROLE_ASSIGNED`/`ROLE_REVOKED`), 비밀번호 리셋(`PASSWORD_CHANGED`), `status` ACTIVE/INACTIVE/LOCKED 전이(잠금 해제), 비활성(soft `deactivate`). 자기 자신 비활성/권한축소 방지(BR).
-3. **멀티테넌시 바인딩**(핵심 갭): user↔tenant/workspace/data-scope를 **영속**(`bo_user_tenants`)으로 두고, 세션 토큰·`TenantContextFilter`가 헤더 대신/우선 사용자 바인딩으로 스코프를 강제(헤더 위조 방지). 플랫폼 운영자는 전체, 고객사 운영자는 바인딩된 테넌트만.
+3. **멀티테넌시 바인딩**(핵심 갭) — *테넌트=서비스* 모델(계층: **기관 → 서비스(테넌트=`tenant_id`) → 워크스페이스**, 1 기관 : N 서비스). user↔service(=tenant)/workspace/data-scope를 **영속**(`bo_user_tenants` — 사용자↔서비스 바인딩, 컬럼명 `tenant_id`=서비스 식별자)으로 두고, 세션 토큰·`TenantContextFilter`가 헤더 대신/우선 사용자 바인딩으로 스코프를 강제(헤더 위조 방지). 사용자는 상위 기관/서비스 스코프로 바인딩되며, 플랫폼 운영자는 전체, 서비스(기관) 운영자는 바인딩된 서비스(테넌트)만.
 4. **데모/초기 시드**: 운영 부트스트랩 계정(최초 BO_SUPER_ADMIN)을 **Flyway 시드 또는 부트스트랩 절차**로 정본화(현 스크립트 ad-hoc 해소).
 
 ### 2.3 검색조건 (BO-USR-001)
@@ -85,7 +88,7 @@
 - **subject_type 정합**: `aml_approvals` CHECK(16) → **18**로 확장(IRA_SUBMIT·HIGH_RISK_REGISTRY 추가, Flyway).
 
 ### 4.3 기능 요구
-1. **결재선 정의 관리**(BO-APRL-001): subject_type × 결재선 × 승인자 역할 매핑을 운영자가 조회·변경(4-eyes `APPROVAL_LINE_CHANGE`). 테넌트별 override 허용(플랫폼 기본 + 고객사 커스터마이즈).
+1. **결재선 정의 관리**(BO-APRL-001): subject_type × 결재선 × 승인자 역할 매핑을 운영자가 조회·변경(4-eyes `APPROVAL_LINE_CHANGE`). 테넌트(=서비스)별 override 허용(플랫폼 기본 + 서비스별 커스터마이즈).
 2. **다단계(순차) 라인**: 1차→2차→최종 등 N단계 승인 체인 정의(현 단일 maker-checker 확장). 각 단계 승인 역할·필수 여부.
 3. **임계값 기반 라우팅**: 금액/위험등급/건수 임계로 라인 상향(예 고액 STR → EXECUTIVE_APPROVAL 추가 단계). PH/KR 등 Policy Pack 임계와 연계(임계 정본은 규제 레이어).
 4. **위임·대결(Delegation)**: 승인자 부재 시 대결자·기간 지정, 위임 감사.
