@@ -21,7 +21,7 @@ NAV = [
         ("거버넌스·보고", [("결재함", "APPR"), ("규제 보고", "REG")]),
     ]),
     ("설정", [
-        ("연동·데이터", [("고객사 관리", "TNT"), ("커넥터 관리", "CONN"),
+        ("연동·데이터", [("서비스 관리", "TNT"), ("커넥터 관리", "CONN"),
                         ("스키마·매핑", "MAP")]),
         ("탐지 정책", [("룰 관리", "RULE"), ("그룹·명단", "GRP")]),
         ("감사·증적", [("감사 로그", "AUDIT"), ("Evidence", "EXP")]),
@@ -41,7 +41,7 @@ def frame(p, sid, crumb, title, search="검색...", admin="관리자 admin ▼",
 # ── 2. 플랫폼 대시보드 ───────────────────────────────────────────
 def dash_001(p):
     s = frame(p, "SFDS-DASH-001", "FDS Console > 플랫폼 대시보드",
-              "플랫폼 운영 대시보드 (전체 고객사)", search="고객사·룰·이벤트 검색...")
+              "플랫폼 운영 대시보드 (전체 서비스)", search="서비스·룰·이벤트 검색...")
     y = wf.CON_TOP
     y = wf.filters(s, y, ["기간 최근 24시간"])
     y = wf.kpi_cards(s, y, [
@@ -52,9 +52,9 @@ def dash_001(p):
         "[PG B / card-processor] 커넥터 지연 312초 — 임계 초과 [클릭 → SFDS-CONN-001 커넥터 목록]",
         "[은행 A] 스키마 검증 실패 4,201건 — 매핑 점검 필요 [클릭 → SFDS-MAP-001 스키마 레지스트리]",
         "[거래소 C] 액션 발행 실패 큐 적체 58건 [클릭 → SFDS-ACT-001 액션 아웃박스]",
-        "규제 보고 제출 기한 임박(전 고객사) 6건 [클릭 → SFDS-REG-001 규제 보고 큐]"])
+        "규제 보고 제출 기한 임박(전 서비스) 6건 [클릭 → SFDS-REG-001 규제 보고 큐]"])
     wf.two_panels(s, y, 1.75,
-        ("고객사별 건전성", ["고객사", "수신", "검증실패", "커넥터lag", "액션실패", "케이스SLA"],
+        ("서비스별 건전성", ["서비스", "수신", "검증실패", "커넥터lag", "액션실패", "케이스SLA"],
          [["은행 A", "2.1M", "4,201 ⚠", "12초", "0", "정상"],
           ["PG B", "1.4M", "0", "312초 ⚠", "2", "정상"],
           ["거래소 C", "0.6M", "0", "8초", "58 ⚠", "임박 3"]],
@@ -65,20 +65,20 @@ def dash_001(p):
     wf.info_panel(s, "SFDS-DASH-001", [
         "• 권한 플랫폼 운영자 전용 (SFDS_PLATFORM:READ)",
         "• 기간 최근 1h/24h/7d/30d 필터 (BR-001 기간 단일축 정본 §2.1)",
-        "• 계층 고객사(tenant) 1 : 서비스(workspace) N — 서비스별 룰셋·커넥터·결재 분리",
+        "• 계층 기관(institution) 1 : 서비스(=tenant) N : 워크스페이스(workspace) N — 워크스페이스별 룰셋·커넥터·결재 분리",
         "• 요약 카드 수신·결정·조치/케이스 건수·비율",
         "• 플랫폼 알림 커넥터 지연·검증 실패·액션 적체·보고 기한 (각 상세로 딥링크)",
-        "• 고객사별 건전성 수신·검증실패·커넥터lag·액션실패·케이스SLA",
-        "• 행 클릭 고객사별 대시보드(DASH-002) 이동",
+        "• 서비스별 건전성 수신·검증실패·커넥터lag·액션실패·케이스SLA",
+        "• 행 클릭 서비스별 대시보드(DASH-002) 이동",
         "• 갱신 30~60초 캐시 · read-only",
         "▸ API GET /api/v1/bo/fds/dashboard (bo-api 소유·집약)"])
 
 
 def dash_002(p):
-    s = frame(p, "SFDS-DASH-002", "FDS Console > 플랫폼 대시보드 > 고객사",
-              "고객사별 상세 대시보드", search="고객사: 은행 A")
+    s = frame(p, "SFDS-DASH-002", "FDS Console > 플랫폼 대시보드 > 서비스",
+              "서비스별 상세 대시보드", search="서비스: 은행 A")
     y = wf.CON_TOP
-    y = wf.filters(s, y, ["고객사: 은행 A", "서비스: retail (workspace)", "기간 최근 24시간"])
+    y = wf.filters(s, y, ["서비스: 은행 A", "워크스페이스: retail", "기간 최근 24시간"])
     y = wf.kpi_cards(s, y, [
         ("수신 상태", "2.1M 수신", "정상 2.09M · 검증실패 4,201 ⚠", "blue"),
         ("결정 추이", "차단 142", "검토 88 · 추가인증 31", "green"),
@@ -98,9 +98,9 @@ def dash_002(p):
          ["ATM_GEO", "추가인증", "12,004", "31", "0.26%", "5"]],
         [0.20, 0.16, 0.16, 0.12, 0.14, 0.22])
     wf.info_panel(s, "SFDS-DASH-002", [
-        "• 권한 자기 고객사 스코프 조회 (SFDS:READ)",
-        "• 필터 고객사 · 서비스(workspace retail/corporate) · 기간 3축",
-        "• 상단 [고객사] 드롭다운 (고객사 관리자는 고정·스코프 배지) · sandbox shadow-only 배지",
+        "• 권한 자기 서비스 스코프 조회 (SFDS:READ)",
+        "• 필터 서비스 · 워크스페이스(workspace retail/corporate) · 기간 3축",
+        "• 상단 [서비스] 드롭다운 (서비스 관리자는 고정·스코프 배지) · sandbox shadow-only 배지",
         "• 수신 상태 수신·정상·검증실패(스키마/서명)",
         "• 결정 추이 차단·검토·추가인증",
         "• 커넥터 상태 소스시스템별 정상/지연 + lag",
@@ -110,49 +110,49 @@ def dash_002(p):
         "▸ API GET /api/v1/bo/fds/tenants/{id}/dashboard"])
 
 
-# ── 3. 고객사 관리 ───────────────────────────────────────────────
+# ── 3. 서비스 관리 ───────────────────────────────────────────────
 def tnt_001(p):
-    s = frame(p, "SFDS-TNT-001", "FDS Console > 고객사 관리", "고객사 목록",
-              action="+ 새 고객사")
+    s = frame(p, "SFDS-TNT-001", "FDS Console > 서비스 관리", "서비스 목록",
+              action="+ 새 서비스")
     y = wf.CON_TOP
-    y = wf.filters(s, y, ["상태 전체", "리전 전체", "배포 유형 전체", "고객사명 검색"])
-    y = wf.table_block(s, y, 2.6, "고객사 목록 (총 18건 · 운영중 14) · 행 ▶ → SFDS-TNT-002 (고객사 상세)",
-        ["고객사 ID", "표시명", "배포 유형", "온보딩 상태", "리전", "상태"],
+    y = wf.filters(s, y, ["상태 전체", "리전 전체", "배포 유형 전체", "서비스명 검색"])
+    y = wf.table_block(s, y, 2.6, "서비스 목록 (총 18건 · 운영중 14) · 행 ▶ → SFDS-TNT-002 (서비스 상세)",
+        ["서비스 ID", "표시명", "배포 유형", "온보딩 상태", "리전", "상태"],
         [["tenant_bank_a", "은행 A", "매니지드 전용", "활성", "한국", "운영중 ▶"],
          ["tenant_pg_b", "PG B", "자체 인프라 설치형", "등록 완료", "한국", "운영중 ▶"],
          ["tenant_cx_c", "거래소 C", "매니지드 전용", "활성", "한국", "운영중 ▶"],
          ["tenant_mp_d", "마켓플레이스 D", "소규모 공유", "프로비저닝중", "한국", "온보딩 ▶"]],
         [0.22, 0.20, 0.20, 0.16, 0.10, 0.12])
-    wf.callout(s, y, "흐름 · 고객사 운영", [
-        "행 클릭 → SFDS-TNT-002 (고객사 상세 5탭: 기본정보·배포·온보딩·마스킹·보안·Policy Pack·알림·소스)",
-        "[+ 새 고객사] → SFDS-TNT-003 (배포 유형 선택 + 온보딩 신청) → 신청 직후 온보딩, 프로비저닝·검증 통과 후 운영중",
+    wf.callout(s, y, "흐름 · 서비스 운영", [
+        "행 클릭 → SFDS-TNT-002 (서비스 상세 5탭: 기본정보·배포·온보딩·마스킹·보안·Policy Pack·알림·소스)",
+        "[+ 새 서비스] → SFDS-TNT-003 (배포 유형 선택 + 온보딩 신청) → 신청 직후 온보딩, 프로비저닝·검증 통과 후 운영중",
         "상세에서 [설정 변경] → 변경 이력 감사 로그(SFDS-AUDIT-001) 기록 · 배포 유형·온보딩·인프라 참조·리전은 읽기 전용"])
     wf.info_panel(s, "SFDS-TNT-001", [
         "• 권한 조회 SFDS_TENANT:READ / 신규 SFDS_TENANT:ADMIN",
-        "• 필터 상태·리전·배포 유형 3축 + 고객사명 검색",
-        "• 컬럼 고객사 ID·표시명·배포 유형·온보딩 상태·리전·상태",
+        "• 필터 상태·리전·배포 유형 3축 + 서비스명 검색",
+        "• 컬럼 서비스 ID·표시명·배포 유형·온보딩 상태·리전·상태",
         "• 배포 유형 매니지드 전용/자체 인프라 설치형/소규모 공유",
         "• 온보딩 상태 신청/프로비저닝중/배포됨/검증됨/활성·패키지발급/고객배포/등록완료(8종 읽기)",
         "• 상태 온보딩/운영중/정지/해지(tenant_status)",
-        "• 플랫폼 운영자 전용 · 흐름 행 클릭 → SFDS-TNT-002 (고객사 상세)",
-        "• [+ 새 고객사] ADMIN 권한만 노출 → SFDS-TNT-003 (배포 유형 선택+온보딩)",
+        "• 플랫폼 운영자 전용 · 흐름 행 클릭 → SFDS-TNT-002 (서비스 상세)",
+        "• [+ 새 서비스] ADMIN 권한만 노출 → SFDS-TNT-003 (배포 유형 선택+온보딩)",
         "▸ API GET /api/v1/bo/fds/tenants?status=&region=&deploymentModel= (bo-api 소유)"])
 
 
-# 고객사 상세(SFDS-TNT-002) 5탭 — 같은 부모 탭 바로 연속 전개(SKILL §1.6)
+# 서비스 상세(SFDS-TNT-002) 5탭 — 같은 부모 탭 바로 연속 전개(SKILL §1.6)
 FDS_DETAIL_TABS = ["기본 정보", "배포·온보딩", "마스킹·보안", "Policy Pack", "알림·소스"]
 
 
 def tnt_002_basic(p):
-    """SFDS-TNT-002 고객사 상세 — ① 기본 정보"""
-    s = frame(p, "SFDS-TNT-002", "FDS Console > 고객사 관리 > 은행 A > 기본 정보",
-              "고객사 상세 — ① 기본 정보 (은행 A)", action="설정 변경")
+    """SFDS-TNT-002 서비스 상세 — ① 기본 정보"""
+    s = frame(p, "SFDS-TNT-002", "FDS Console > 서비스 관리 > 은행 A > 기본 정보",
+              "서비스 상세 — ① 기본 정보 (은행 A)", action="설정 변경")
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, FDS_DETAIL_TABS, active=0)
-    y = wf.entry_banner(s, y, "SFDS-TNT-001 고객사 목록에서 [고객사 행 ▶] 클릭 → 고객사 상세")
+    y = wf.entry_banner(s, y, "SFDS-TNT-001 서비스 목록에서 [서비스 행 ▶] 클릭 → 서비스 상세")
     y = wf.two_panels(s, y, 1.70,
         ("[기본 정보]", ["항목", "값"],
-         [["고객사 ID", "tenant_bank_a  (불변)"],
+         [["서비스 ID", "tenant_bank_a  (불변)"],
           ["표시명", "은행 A  [편집]"],
           ["운영 상태", "운영중 ACTIVE  [변경]"],
           ["배포 리전", "한국 리전"],
@@ -174,9 +174,9 @@ def tnt_002_basic(p):
 
 
 def tnt_002_deploy(p):
-    """SFDS-TNT-002 고객사 상세 — ② 배포·온보딩"""
-    s = frame(p, "SFDS-TNT-002", "FDS Console > 고객사 관리 > 은행 A > 배포·온보딩",
-              "고객사 상세 — ② 배포·온보딩 (은행 A)", action="설정 변경")
+    """SFDS-TNT-002 서비스 상세 — ② 배포·온보딩"""
+    s = frame(p, "SFDS-TNT-002", "FDS Console > 서비스 관리 > 은행 A > 배포·온보딩",
+              "서비스 상세 — ② 배포·온보딩 (은행 A)", action="설정 변경")
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, FDS_DETAIL_TABS, active=1)
     y = wf.kpi_cards(s, y, [
@@ -203,9 +203,9 @@ def tnt_002_deploy(p):
 
 
 def tnt_002_security(p):
-    """SFDS-TNT-002 고객사 상세 — ③ 마스킹·보안"""
-    s = frame(p, "SFDS-TNT-002", "FDS Console > 고객사 관리 > 은행 A > 마스킹·보안",
-              "고객사 상세 — ③ 마스킹·보안 (은행 A)", action="설정 변경")
+    """SFDS-TNT-002 서비스 상세 — ③ 마스킹·보안"""
+    s = frame(p, "SFDS-TNT-002", "FDS Console > 서비스 관리 > 은행 A > 마스킹·보안",
+              "서비스 상세 — ③ 마스킹·보안 (은행 A)", action="설정 변경")
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, FDS_DETAIL_TABS, active=2)
     y = wf.two_panels(s, y, 1.70,
@@ -224,18 +224,18 @@ def tnt_002_security(p):
     wf.info_panel(s, "SFDS-TNT-002", [
         "• 마스킹 앞3+뒤4 · 복호화 UI 없음 · 원문 미저장",
         "• 민감 식별자는 토큰/keyed hash로만 저장 (PII 원문 금지)",
-        "• 조치 권한 = 이 고객사가 수행 가능한 액션 집합",
+        "• 조치 권한 = 이 서비스가 수행 가능한 액션 집합",
         "• 이전 ← ② 배포·온보딩  /  다음 → ④ Policy Pack",
         "▸ API GET·PUT /api/v1/bo/fds/tenants/{id}"])
 
 
 def tnt_002_policy(p):
-    """SFDS-TNT-002 고객사 상세 — ④ Policy Pack"""
-    s = frame(p, "SFDS-TNT-002", "FDS Console > 고객사 관리 > 은행 A > Policy Pack",
-              "고객사 상세 — ④ Policy Pack (은행 A)", action="설정 변경")
+    """SFDS-TNT-002 서비스 상세 — ④ Policy Pack"""
+    s = frame(p, "SFDS-TNT-002", "FDS Console > 서비스 관리 > 은행 A > Policy Pack",
+              "서비스 상세 — ④ Policy Pack (은행 A)", action="설정 변경")
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, FDS_DETAIL_TABS, active=3)
-    y = wf.table_block(s, y, 2.05, "적용 규제 팩 [고객사: 은행 A] — 미리 정의된 팩을 토글로 활성/비활성 (한국 기본팩 잠금)",
+    y = wf.table_block(s, y, 2.05, "적용 규제 팩 [서비스: 은행 A] — 미리 정의된 팩을 토글로 활성/비활성 (한국 기본팩 잠금)",
         ["팩 이름", "토글 상태", "트리거·보고 양식"],
         [["한국 기본팩", "● ON (잠금·필수)", "STR/CTR 기본 양식, KoFIU 포맷"],
          ["전자금융거래법", "● ON  [▸끄기]", "전자금융거래 이상행위 보고"],
@@ -251,7 +251,7 @@ def tnt_002_policy(p):
         "이전 ← ③ 마스킹·보안  /  다음 → ⑤ 알림·소스"])
     wf.info_panel(s, "SFDS-TNT-002", [
         "• 권한 조회 SFDS_TENANT:READ / 변경 SFDS_TENANT:ADMIN (4-eyes)",
-        "• 규제 팩 = 미리 정의된 카탈로그 → 고객사별 토글로 활성(ON)/비활성(OFF)",
+        "• 규제 팩 = 미리 정의된 카탈로그 → 서비스별 토글로 활성(ON)/비활성(OFF)",
         "• 팩별 트리거·보고 양식 표기(어떤 룰 기반인가 전수)",
         "• 한국 기본팩 ON 잠금(최소 규제 요건·끄기 불가) · Travel Rule/PCI는 도메인 계약 후만 ON 가능",
         "• 토글은 즉시 반영 X — 스테이징 → 영향 미리보기(STR/CTR 건수) → 일괄 [변경 상신]",
@@ -265,9 +265,9 @@ def tnt_002_policy(p):
 
 
 def tnt_002_notify(p):
-    """SFDS-TNT-002 고객사 상세 — ⑤ 알림·소스"""
-    s = frame(p, "SFDS-TNT-002", "FDS Console > 고객사 관리 > 은행 A > 알림·소스",
-              "고객사 상세 — ⑤ 알림·소스 (은행 A)", action="설정 변경")
+    """SFDS-TNT-002 서비스 상세 — ⑤ 알림·소스"""
+    s = frame(p, "SFDS-TNT-002", "FDS Console > 서비스 관리 > 은행 A > 알림·소스",
+              "서비스 상세 — ⑤ 알림·소스 (은행 A)", action="설정 변경")
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, FDS_DETAIL_TABS, active=4)
     y = wf.two_panels(s, y, 1.70,
@@ -290,11 +290,11 @@ def tnt_002_notify(p):
 
 
 def tnt_003(p):
-    s = frame(p, "SFDS-TNT-003", "FDS Console > 고객사 관리 > 등록",
-              "고객사 등록 / 수정 (마스터 생성)")
+    s = frame(p, "SFDS-TNT-003", "FDS Console > 서비스 관리 > 등록",
+              "서비스 등록 / 수정 (마스터 생성)")
     y = wf.CON_TOP
-    wf.form_block(s, y, 4.6, "고객사 마스터 등록 (배포 유형 선택 + 온보딩 신청)",
-        [("고객사 ID *", "tenant_bank_a  (영문 소문자·숫자·_ · 변경 불가)", "input"),
+    wf.form_block(s, y, 4.6, "서비스 마스터 등록 (배포 유형 선택 + 온보딩 신청)",
+        [("서비스 ID *", "tenant_bank_a  (영문 소문자·숫자·_ · 변경 불가)", "input"),
          ("표시명 *", "은행 A", "input"),
          ("배포 유형 *", "매니지드 전용 ▼  (매니지드 전용 / 자체 인프라 설치형 / 소규모 공유)", "input"),
          ("온보딩 상태", "신청 (REQUESTED) · 프로비저닝 진행에 따라 자동 갱신 (읽기)", "input"),
@@ -307,8 +307,8 @@ def tnt_003(p):
         btns=["취소", "등록·온보딩 신청"])
     wf.info_panel(s, "SFDS-TNT-003", [
         "• 권한 SFDS_TENANT:ADMIN (플랫폼 운영자)",
-        "• 입력 고객사 ID·표시명·배포 유형·리전·보존·마스킹·Policy Pack·알림",
-        "• 고객사 ID immutable·unique · 중복 시 FDS-VALIDATION-001",
+        "• 입력 서비스 ID·표시명·배포 유형·리전·보존·마스킹·Policy Pack·알림",
+        "• 서비스 ID immutable·unique · 중복 시 FDS-VALIDATION-001",
         "• 배포 유형 등록 시 선택 · 실제 격리는 온보딩 프로비저닝의 산출(화면 즉석 선택 아님)",
         "• 온보딩 상태·인프라 참조·리전 읽기 전용 · 변경 시 재배포·마이그레이션",
         "• 신청 직후 온보딩(신청 REQUESTED) → 프로비저닝·검증·활성/등록완료 후 운영중 전환",
@@ -393,7 +393,7 @@ def conn_003(p):
     s = frame(p, "SFDS-CONN-003", "FDS Console > 커넥터 관리 > 등록",
               "커넥터 등록 / 수정")
     y = wf.CON_TOP
-    wf.form_block(s, y, 4.6, "커넥터 등록 [고객사: 은행 A]",
+    wf.form_block(s, y, 4.6, "커넥터 등록 [서비스: 은행 A]",
         [("소스 시스템 *", "core-banking  (생성 후 변경 불가)", "input"),
          ("연동 방식 *", "(●) 큐  ( ) REST Push  ( ) 폴링  ( ) CDC  ( ) 스냅샷", "radio"),
          ("스키마 버전 *", "core-banking.v2 ▼  (스키마 레지스트리 MAP-001)", "input"),
@@ -425,7 +425,7 @@ def conn_004(p, tab=0):
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, CONN_004_TABS, active=tab)
     if tab == 0:
-        y = wf.table_block(s, y, 2.15, "수신 API 카탈로그 [고객사: 은행 A] (정본 = PRD §4.0 ② · API §4.1/§5.1)",
+        y = wf.table_block(s, y, 2.15, "수신 API 카탈로그 [서비스: 은행 A] (정본 = PRD §4.0 ② · API §4.1/§5.1)",
             ["API", "용도", "방식", "24h 호출", "마지막 호출", "신호"],
             [["POST /fds/events", "canonical event 수신(단건)", "비동기 202", "2.4M", "1초 전", "●"],
              ["POST /fds/events:batch", "다건(≤500) · 초기 적재(백필)", "비동기 202", "18회", "06-11 02:00", "●"],
@@ -493,7 +493,7 @@ def map_001(p):
               "스키마 레지스트리")
     y = wf.CON_TOP
     y = wf.filters(s, y, ["소스 시스템 전체", "상태 전체", "스키마 버전 검색"])
-    y = wf.table_block(s, y, 2.5, "스키마 레지스트리 [고객사: 은행 A] · 행 ▶ → SFDS-MAP-002 (필드 매핑)",
+    y = wf.table_block(s, y, 2.5, "스키마 레지스트리 [서비스: 은행 A] · 행 ▶ → SFDS-MAP-002 (필드 매핑)",
         ["스키마 버전", "소스 시스템", "상태", "검증 실패(24h)", "적용 시작"],
         [["core-banking.v2", "core-banking", "운영중", "0", "2026-05-01 ▶"],
          ["core-banking.v1", "core-banking", "폐지", "—", "2026-01-01 ▶"],
@@ -520,7 +520,7 @@ def map_002(p):
               "필드 매핑 / PII 정책 — core-banking.v2", action="변경 결재(2인)")
     y = wf.CON_TOP
     y = wf.entry_banner(s, y, "SFDS-MAP-001 스키마 레지스트리에서 [스키마 버전 행 ▶] 클릭 → 필드 매핑")
-    y = wf.table_block(s, y, 2.4, "필드 매핑 [고객사: 은행 A]",
+    y = wf.table_block(s, y, 2.4, "필드 매핑 [서비스: 은행 A]",
         ["외부 필드(payload)", "정규화 항목", "PII 처리", "필수"],
         [["customer.ssn", "(저장 안 함)", "수신 즉시 폐기", "—"],
          ["account.number", "수단 식별자", "keyed hash", "○"],
@@ -551,7 +551,7 @@ def rule_001(p):
               action="+ 새 룰")
     y = wf.CON_TOP
     y = wf.filters(s, y, ["도메인 전체", "채널 전체", "상태 전체", "동작 전체", "평가 전체"])
-    y = wf.table_block(s, y, 2.6, "룰 목록 (총 142건 · 운영중 118) [고객사: 은행 A] · 행 ▶ → SFDS-RULE-002 · [효과성 ▶ → SFDS-STAT-001]",
+    y = wf.table_block(s, y, 2.6, "룰 목록 (총 142건 · 운영중 118) [서비스: 은행 A] · 행 ▶ → SFDS-RULE-002 · [효과성 ▶ → SFDS-STAT-001]",
         ["룰 번호", "이름", "도메인/채널", "동작", "평가", "30일 탐지/오탐", "상태"],
         [["MULE_BANK", "대포통장 수취 즉시 차단", "국내송금", "거래차단", "즉시", "412 / 4.1%", "운영중 ▶"],
          ["ATM_GEO", "해외 IP ATM 출금 추가인증", "ATM출금", "추가인증", "즉시", "186 / 8.8%", "운영중 ▶"],
@@ -735,7 +735,7 @@ def rule_003(p):
     s = frame(p, "SFDS-RULE-003", "FDS Console > 룰 관리 > 룰 빌더",
               "룰 빌더 (멀티도메인, 문장형)", action="DSL 토글")
     y = wf.CON_TOP
-    y = wf.form_block(s, y, 2.00, "기본 조건 (문장형) [고객사: 은행 A]",
+    y = wf.form_block(s, y, 2.00, "기본 조건 (문장형) [서비스: 은행 A]",
         [("① 도메인/채널 *", "해외송금(CROSS_BORDER_REMIT) ▼   ·   평가 방식 [사후 ▼]", "input"),
          ("② 탐지 대상 기준 *", "회원별 ▼ (회원/계좌/수단/상대방/단말기/가맹점/셀러/직원)", "input"),
          ("③ 측정 항목 *", "지갑주소 위험점수 ▼ (금액합계/건수/상대방수/주소위험/믹서…)", "input"),
@@ -771,7 +771,7 @@ def rule_004(p):
     s = frame(p, "SFDS-RULE-004", "FDS Console > 룰 관리 > 기준값 빠른 변경",
               "기준값(임계치) 빠른 변경 (Hot-reload)")
     y = wf.CON_TOP
-    wf.form_block(s, y, 2.7, "기준값 빠른 변경 — [CRYPTO_RISK] [고객사: 은행 A]",
+    wf.form_block(s, y, 2.7, "기준값 빠른 변경 — [CRYPTO_RISK] [서비스: 은행 A]",
         [("현재 기준값", "80 점", "text"),
          ("새 기준값", "85 점", "input"),
          ("변경 사유 *", "오탐 비율 상승 반영", "input"),
@@ -822,7 +822,7 @@ def grp_001(p):
     s = frame(p, "SFDS-GRP-001", "FDS Console > 그룹·명단", "그룹 목록 / 멤버 조회",
               action="+ 새 그룹")
     y = wf.CON_TOP
-    y = wf.table_block(s, y, 1.85, "그룹 목록 [고객사: 은행 A]",
+    y = wf.table_block(s, y, 1.85, "그룹 목록 [서비스: 은행 A]",
         ["그룹 코드", "종류", "용도", "등록 방식", "활성 멤버"],
         [["MULE_ACCOUNTS", "계좌", "차단", "수동", "1,204"],
          ["WATCHLIST_PEP_REF", "회원", "감시", "자동", "342"],
@@ -882,7 +882,7 @@ def grp_003(p):
     s = frame(p, "SFDS-GRP-003", "FDS Console > 그룹·명단 > 그룹 등록",
               "그룹 등록 / 수정 (마스터 생성)")
     y = wf.CON_TOP
-    wf.form_block(s, y, 3.6, "그룹 마스터 등록 [고객사: 은행 A]",
+    wf.form_block(s, y, 3.6, "그룹 마스터 등록 [서비스: 은행 A]",
         [("그룹 코드 *", "MULE_ACCOUNTS (영문 대문자·숫자·_ · 변경 불가)", "input"),
          ("그룹 종류 *", "계좌 ▼ (회원/계좌/수단/단말기/가맹점/셀러/IP/이메일/상대방)", "input"),
          ("용도(=groupType) *", "(●) 차단  ( ) 허용  ( ) 감시  ( ) 뮬 네트워크", "radio"),
@@ -910,7 +910,7 @@ def dec_001(p):
     y = wf.CON_TOP
     y = wf.filters(s, y, ["룰 번호", "대상", "동작", "채널", "통화"])
     y = wf.filters(s, y, ["금액 min~max", "corridor 출발→도착", "기간 from~to"])
-    y = wf.table_block(s, y, 2.55, "탐지 결정 조회 [고객사: 은행 A] (거래 1건 ≠ 결정 1건) · 행 ▶ → SFDS-DEC-002",
+    y = wf.table_block(s, y, 2.55, "탐지 결정 조회 [서비스: 은행 A] (거래 1건 ≠ 결정 1건) · 행 ▶ → SFDS-DEC-002",
         ["처리시각", "룰 번호", "동작", "결과", "대상", "채널", "금액·통화", "corridor", "평가"],
         [["06-06 11:02:17", "MULE_BANK", "거래차단", "차단", "subj_8f..", "국내송금", "₱180,000", "PH→PH", "즉시 ▶"],
          ["06-06 11:01:55", "ATM_GEO", "추가인증", "추가인증", "subj_3a..", "월렛충전", "₱60,000", "PH→PH", "즉시 ▶"],
@@ -992,7 +992,7 @@ def dec_003(p):
         "• 정렬 시간 desc · 기간 필터(기본 최근 30일)",
         "• 각 항목 상세 화면 딥링크",
         "• 조사 목적 조회는 감사 로그에 기록(누가 무엇을 조회)",
-        "• 대상 식별자 토큰/해시 기반 · 원문 회원정보는 고객사 소스 소관",
+        "• 대상 식별자 토큰/해시 기반 · 원문 회원정보는 서비스 소스 소관",
         "▸ API GET /api/v1/evidence/fds/cases/{caseId}/timeline (+필터 머지)"])
 
 
@@ -1002,7 +1002,7 @@ def evt_001(p):
               "Canonical 이벤트 조회")
     y = wf.CON_TOP
     y = wf.filters(s, y, ["소스 시스템 전체", "이벤트 종류 전체", "대상", "거래", "수단"])
-    y = wf.table_block(s, y, 2.0, "Canonical 이벤트 조회 [고객사: 은행 A]",
+    y = wf.table_block(s, y, 2.0, "Canonical 이벤트 조회 [서비스: 은행 A]",
         ["발생시각", "소스시스템", "이벤트 종류", "금액/통화"],
         [["06-06 11:02:01", "core-banking", "거래 요청", "18.2M / 원"],
          ["06-06 10:58:30", "atm-switch", "출금 요청", "200K / 원"],
@@ -1030,7 +1030,7 @@ def act_001(p):
               "액션 큐 / 아웃박스")
     y = wf.CON_TOP
     y = wf.filters(s, y, ["조치 종류 전체", "상태 전체", "대상 시스템 전체", "추적 번호 검색"])
-    y = wf.table_block(s, y, 2.7, "액션 아웃박스 [고객사: 은행 A] (BE outbox 자동 재시도·DLQ BE 운영)",
+    y = wf.table_block(s, y, 2.7, "액션 아웃박스 [서비스: 은행 A] (BE outbox 자동 재시도·DLQ BE 운영)",
         ["발행시각", "조치 종류", "대상 시스템", "상태", "오류"],
         [["06-06 11:02:18", "거래 차단", "core-banking", "발행", "—"],
          ["06-06 11:00:05", "자금 보류", "crypto-wallet", "승인됨🔒", "—"],
@@ -1061,8 +1061,8 @@ def act_002(p):
     s = frame(p, "SFDS-ACT-002", "FDS Console > 액션 운영 > Capability",
               "Capability 매트릭스", action="변경 결재(2인)")
     y = wf.CON_TOP
-    y = wf.entry_banner(s, y, "SFDS-TNT-002 고객사 상세 ③ 마스킹·보안 탭 [조치 권한 매트릭스 ▶] 클릭 → Capability 매트릭스")
-    wf.table_block(s, y, 3.6, "Capability 매트릭스 [고객사: 은행 A] (룰 동작이 벗어나면 케이스만)",
+    y = wf.entry_banner(s, y, "SFDS-TNT-002 서비스 상세 ③ 마스킹·보안 탭 [조치 권한 매트릭스 ▶] 클릭 → Capability 매트릭스")
+    wf.table_block(s, y, 3.6, "Capability 매트릭스 [서비스: 은행 A] (룰 동작이 벗어나면 케이스만)",
         ["소스 시스템", "차단전", "승인거부", "자금보류", "보류해제", "취소", "정지", "케이스만"],
         [["core-banking", "○", "—", "○", "○", "○", "○", "—"],
          ["atm-switch", "○", "○", "—", "—", "—", "○", "—"],
@@ -1086,7 +1086,7 @@ def case_001(p):
               action="+ 케이스")
     y = wf.CON_TOP
     y = wf.filters(s, y, ["케이스 유형 전체", "상태 전체", "우선순위 전체", "담당자 전체", "대상 검색"])
-    y = wf.table_block(s, y, 2.6, "케이스 목록 [고객사: 은행 A] · 행 ▶ → SFDS-CASE-002 (케이스 상세)",
+    y = wf.table_block(s, y, 2.6, "케이스 목록 [서비스: 은행 A] · 행 ▶ → SFDS-CASE-002 (케이스 상세)",
         ["케이스 번호", "유형", "대상", "우선", "담당자", "상태", "SLA"],
         [["case_77f0", "대포통장 조사", "subj_8f..", "높음", "analyst.a", "조사중", "14h ▶"],
          ["case_77f1", "AML 조사", "subj_3a..", "높음", "—", "신규", "미배정 ▶"],
@@ -1250,7 +1250,7 @@ def appr_001(p):
               "결재함 (maker-checker)", admin="관리자 admin ▼")
     y = wf.CON_TOP
     y = wf.filters(s, y, ["유형 전체", "상태 전체", "상신자 전체", "대상 검색"])
-    y = wf.table_block(s, y, 2.9, "결재 대기 목록 [고객사: 은행 A]",
+    y = wf.table_block(s, y, 2.9, "결재 대기 목록 [서비스: 은행 A]",
         ["결재 종류", "대상", "상신자", "결재 라인", "상태"],
         [["RULE 활성화", "CRYPTO_RISK v3", "rule.eng", "COMPLIANCE_MANAGER", "상신"],
          ["ACTION 자금보류", "case_77f0", "analyst.a", "MAKER_CHECKER", "상신"],
@@ -1287,7 +1287,7 @@ def reg_001(p):
               "규제 보고 큐 (FDS origin)")
     y = wf.CON_TOP
     y = wf.filters(s, y, ["보고 유형 전체", "상태 전체", "기한 이전", "대상 검색"])
-    y = wf.table_block(s, y, 2.4, "규제 보고 큐 [고객사: 은행 A] · 행 ▶ → SFDS-REG-002 (본 처리·제출=aml-svc 위임)",
+    y = wf.table_block(s, y, 2.4, "규제 보고 큐 [서비스: 은행 A] · 행 ▶ → SFDS-REG-002 (본 처리·제출=aml-svc 위임)",
         ["보고 번호", "유형", "대상", "금액", "트리거 룰", "상태", "제출기한"],
         [["reg_rep_01..", "CTR", "subj_x..", "520,000", "CTR_DAILY", "검토중", "07-10 17시"],
          ["reg_rep_02..", "STR", "subj_y..", "—", "STR_KYC", "검토중", "07-08 17시"],
@@ -1348,7 +1348,7 @@ def exp_001(p):
     s = frame(p, "SFDS-EXP-001", "FDS Console > Evidence",
               "Evidence Export (검사대응 self-service)", admin="관리자 admin ▼")
     y = wf.CON_TOP
-    y = wf.form_block(s, y, 2.85, "Evidence Export self-service [고객사: 은행 A]",
+    y = wf.form_block(s, y, 2.85, "Evidence Export self-service [서비스: 은행 A]",
         [("export 종류 *", "결정 리포트 ▼ (결정/케이스 타임라인·결정 리포트·커넥터 보정·오탐·개인정보 접근)", "input"),
          ("형식 *", "PDF ▼  (CSV / EXCEL / PDF / JSON_API)", "input"),
          ("기간 *", "2026-01-01 ~ 2026-01-31", "input"),
@@ -1377,7 +1377,7 @@ def audit_001(p):
               "운영 변경 감사 로그")
     y = wf.CON_TOP
     y = wf.filters(s, y, ["대상 전체", "작업자 전체", "기간 from~to", "대상 ID", "검색"])
-    y = wf.table_block(s, y, 2.6, "운영 변경 감사 로그 [고객사: 은행 A] (append-only · 7년)",
+    y = wf.table_block(s, y, 2.6, "운영 변경 감사 로그 [서비스: 은행 A] (append-only · 7년)",
         ["시각", "대상", "작업자", "작업", "대상 항목"],
         [["06-06 11:10", "룰", "rule.eng", "새 버전 활성", "MULE_BANK"],
          ["06-06 10:55", "커넥터", "ops.a", "시크릿 변경", "core-banking"],
@@ -1396,7 +1396,7 @@ def audit_001(p):
         "• 2인 결재 위반·우회 시도 탐지 리포트(주기)",
         "• 개인정보 삭제 요청 시 식별자 마스킹 치환(7년 보존 충돌 회피)",
         "• append-only(수정·삭제 불가) · diff 표시",
-        "• 데이터스코프 적용(고객사 관리자는 자기 고객사만)",
+        "• 데이터스코프 적용(서비스 관리자는 자기 서비스만)",
         "• 1만 건 초과 시 조건 좁히기 안내",
         "▸ API GET /api/v1/bo/fds/audit (bo-api 소유·집약)"])
 
@@ -1406,7 +1406,7 @@ def rule_006(p):
     s = frame(p, "SFDS-RULE-006", "FDS Console > 룰 관리 > 시뮬레이션",
               "룰 시뮬레이션 (백테스트 · 과거 데이터)", action="DSL 토글")
     y = wf.CON_TOP
-    y = wf.form_block(s, y, 2.25, "시뮬레이션 설정 [고객사: 은행 A]",
+    y = wf.form_block(s, y, 2.25, "시뮬레이션 설정 [서비스: 은행 A]",
         [("대상 룰 *", "신규 빌더 룰(미저장 ruleJson) ▼    |    기존 룰 [MULE_BANK] ▼", "input"),
          ("과거 데이터 기간 *", "[2026-05-01 00:00]  ~  [2026-05-31 23:59]    빠른선택: 최근 7일/30일/90일 ▼", "input"),
          ("평가 범위", "도메인 가상자산 출금 ▼   ·   채널 전체 ▼   ☑ 현재 운영 룰과 비교", "input")],
@@ -1537,13 +1537,13 @@ def build():
     # 1 커버
     wf.cover_slide(p,
         "SaaS FDS Platform 백오피스 기획서",
-        "멀티고객사·멀티도메인 이상거래 탐지 플랫폼 — Admin Console 화면 설계",
+        "멀티서비스·멀티도메인 이상거래 탐지 플랫폼 — Admin Console 화면 설계",
         ["정본 PRD: docs/plan/01-fds-sass-functional-spec.md (FS-FDS-001 v6.0)",
          "기능 ID 전수 34화면 (SFDS-DASH ~ SFDS-AUDIT · RULE-001~006·STAT-001·CONN-001~004 포함)",
          "좌 75% 와이어프레임(실제 도형) + 우 25% 기능 설명",
          "표시 용어=PRD 한국어 업무 용어 · enum 괄호 병기 · 책임 경계 명시",
          "목록→상세→액션→케이스→결재→규제 보고 시나리오 흐름 연결(딥링크 전수)",
-         "버전 BO-FDS-SASS-Planning v8.1 (데이터 레이어 hanpass-ph 소스 재그라운딩 — 소스 카탈로그·channel 21종·corridor)"])
+         "버전 BO-FDS-SASS-Planning v8.2 (테넌트=서비스 재정의 — 고객사→서비스·상위 기관·기관→서비스→워크스페이스)"])
     # 2 변경 이력
     wf.history_slide(p, "변경 이력",
         ["버전", "일자", "작성자", "변경 내역"],
@@ -1567,12 +1567,13 @@ def build():
          ["v6.0", "2026-06-12", "SM Kim", "실계 벤치마크 보강(GTone 80화면·AML §12-B 대응): STAT-001 룰 효과성 통계 신설·RULE-001 효과성 컬럼(33화면)"],
          ["v7.0", "2026-06-12", "SM Kim", "데이터 인입 가시성: CONN-004(수신 API 카탈로그·인입 라이브) 신설·CONN-001/002 인입 신호·인입 유형 확정 §4.0(34화면)"],
          ["v8.0", "2026-06-19", "SM Kim", "메뉴 IA 재구성 — 운영(조사·모니터링/케이스·처리/거버넌스·보고)·설정(연동·데이터/탐지 정책/감사·증적) 2영역 3단 분리, NAV·슬라이드 순서 재정렬(34화면·콘텐츠 불변), nav_tree 렌더"],
-         ["v8.1", "2026-06-19", "SM Kim", "데이터 레이어 hanpass-ph 소스 재그라운딩(소스 카탈로그·CASH_IN/INBOUND_REMIT·corridor·연동 키) — 규제 불변"]],
+         ["v8.1", "2026-06-19", "SM Kim", "데이터 레이어 hanpass-ph 소스 재그라운딩(소스 카탈로그·CASH_IN/INBOUND_REMIT·corridor·연동 키) — 규제 불변"],
+         ["v8.2", "2026-06-19", "SM Kim", "테넌트=서비스 재정의 — 고객사→서비스·상위 기관·기관→서비스→워크스페이스 (고객사 관리→서비스 관리·라벨 정합, 콘텐츠 불변)"]],
         col_w=[0.08, 0.12, 0.10, 0.70])
     # 3+ 기능 전수
     for fn in SCREENS:
         fn(p)
-    out = "/Users/smkim/workspace/smkim89/aml-system-docs/docs/plan/BO-FDS-SASS-Planning_v8.1.pptx"
+    out = "/Users/smkim/workspace/smkim89/aml-system-docs/docs/plan/BO-FDS-SASS-Planning_v8.2.pptx"
     p.save(out)
     print(f"saved {out} · slides={len(p.slides._sldIdLst)}")
 

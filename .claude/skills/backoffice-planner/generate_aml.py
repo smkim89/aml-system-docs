@@ -5,7 +5,7 @@ BO-AML-SAAS-Planning_v9.0.pptx 생성 (도형 기반 · 메뉴 IA 운영/설정 
 시각 정본: docs/plan/sample.pptx (맑은 고딕·Ant Design·순수 rect)
 컴포넌트: wireframe_lib.py (ASCII 금지, 실제 rect 도형) — FDS v4.0과 동일 품질
 
-용어: 고객사(tenant_id) / 서비스(workspace_id). 1 고객사 : N 서비스.
+용어: 기관(institution) / 서비스(=tenant_id) / 워크스페이스(workspace_id). 1 기관 : N 서비스.
 슬라이드: 1=커버 / 2=변경 이력 / 3~ 기능 ID 전수(AML-*, ID 순 · 목록→상세→액션 흐름 연결)
 좌 75% 와이어프레임(실제 도형) + 우 25% info_panel(권한·필터·컬럼·동작·흐름·API)
 실행: cd .claude/skills/backoffice-planner && python3 generate_aml.py
@@ -26,7 +26,7 @@ NAV = [
                           ("결재 대기함", "APR")]),
     ]),
     ("설정", [
-        ("연동·데이터", [("고객사 관리", "TNT"), ("Ingest 카탈로그", "ING"),
+        ("연동·데이터", [("서비스 관리", "TNT"), ("Ingest 카탈로그", "ING"),
                         ("명단 소스·임포트", "WL")]),
         ("탐지·심사 정책", [("TM 시나리오 빌더", "TM-002"), ("RA 모델 관리", "RA-002"),
                           ("CDD 체크리스트 정책", "CDD-001"), ("국가위험 관리", "CTRY"),
@@ -65,9 +65,9 @@ def frame(p, sid, crumb, title, search="검색...", admin="관리자 admin ▼",
 # ═══ 1. AML 종합 현황 대시보드 ═══════════════════════════════════
 def dash_001(p):
     s = frame(p, "AML-DASH-001", "AML Console > 종합 현황 대시보드",
-              "고객사별·서비스별 AML 종합 현황", search="대상·케이스·보고 검색...")
+              "서비스별·워크스페이스별 AML 종합 현황", search="대상·케이스·보고 검색...")
     y = wf.CON_TOP
-    y = wf.filters(s, y, ["고객사 은행 A", "서비스 전체", "기간 최근 7일"])
+    y = wf.filters(s, y, ["서비스 은행 A", "워크스페이스 전체", "기간 최근 7일"])
     y = wf.kpi_cards(s, y, [
         ("WLF 검토 필요", "18 건", "상위승인 2", "blue"),
         ("RA 높음(명)", "1,204", "3% · 중간 12,880", "orange"),
@@ -92,8 +92,8 @@ def dash_001(p):
           ["TR 정보 누락", "4"], ["TR 위험 지갑", "2"], ["TR 예외 검토 대기", "1"]],
          [0.66, 0.34]))
     wf.info_panel(s, "AML-DASH-001", [
-        "• 권한 자기 고객사 조회 (aml:case:read) · SaaS 운영자는 크로스 고객사",
-        "• 상단 고객사 선택 ▼ · 서비스 선택 ▼ + 기간 필터",
+        "• 권한 자기 서비스 조회 (aml:case:read) · SaaS 운영자는 크로스 서비스",
+        "• 상단 서비스 선택 ▼ · 워크스페이스 선택 ▼ + 기간 필터",
         "• 카드 WLF·RA·TM·케이스 SLA·기한 임박 보고·결재 대기 (클릭 드릴다운)",
         "• 기한 임박 보고 — 법정 기한 SLA(STR 3영업일·CTR 30일) D-3 ⚠ → AML-REP-001",
         "• 결재 대기 카드 — 만료 임박 ⚠ · 클릭 → AML-APR-001",
@@ -104,46 +104,46 @@ def dash_001(p):
         "▸ API GET /api/v1/bo/aml/dashboard · /tenants/{id}/dashboard (bo-api)"])
 
 
-# ═══ 2. 고객사 관리 (AML-TNT-001~004) ════════════════════════════
+# ═══ 2. 서비스 관리 (AML-TNT-001~004) ════════════════════════════
 def tnt_001(p):
-    """AML-TNT-001 고객사 목록"""
-    s = frame(p, "AML-TNT-001", "AML Console > 고객사 관리",
-              "고객사 관리 — 목록", search="고객사명 검색...", action="+ 새 고객사")
+    """AML-TNT-001 서비스 목록"""
+    s = frame(p, "AML-TNT-001", "AML Console > 서비스 관리",
+              "서비스 관리 — 목록", search="서비스명 검색...", action="+ 새 서비스")
     y = wf.CON_TOP
     y = wf.filters(s, y, ["배포 유형 전체", "온보딩 상태 전체", "운영 상태 전체", "리전 전체"])
-    y = wf.table_block(s, y, 1.85, "고객사 목록 [플랫폼 운영자] (SaaS 운영자 전용)",
-        ["고객사 ID", "표시명", "배포 유형", "온보딩 상태", "리전", "상태"],
+    y = wf.table_block(s, y, 1.85, "서비스 목록 [플랫폼 운영자] (SaaS 운영자 전용)",
+        ["서비스 ID", "표시명", "배포 유형", "온보딩 상태", "리전", "상태"],
         [["tnnt-001", "은행 A", "매니지드 전용", "활성", "KR", "운영중 ▶"],
          ["tnnt-002", "핀테크 B", "자체 인프라 설치형", "고객배포완료", "KR", "운영중 ▶"],
          ["tnnt-003", "소규모 C", "소규모 공유", "활성", "KR", "운영중 ▶"]],
         [0.16, 0.18, 0.22, 0.20, 0.08, 0.16])
     wf.callout(s, y, "하단 배포 유형별 집계", [
-        "총 3 고객사  /  매니지드 전용 2  ·  자체 인프라 설치형 1  ·  소규모 공유 1"])
+        "총 3 서비스  /  매니지드 전용 2  ·  자체 인프라 설치형 1  ·  소규모 공유 1"])
     wf.info_panel(s, "AML-TNT-001", [
         "• 권한 SaaS 운영자 전용 (aml:admin:policy · bo-api 소유 엔드포인트)",
-        "• 필터 배포 유형 / 온보딩 상태 / 운영 상태 / 리전 4축 + 고객사명 텍스트 (region= API §5 optional)",
+        "• 필터 배포 유형 / 온보딩 상태 / 운영 상태 / 리전 4축 + 서비스명 텍스트 (region= API §5 optional)",
         "• 배포 유형 매니지드 전용(MANAGED_DEDICATED) / 자체 인프라 설치형(SELF_HOSTED) / 소규모 공유(SHARED)",
         "• 온보딩 상태 신청/프로비저닝중/배포됨/검증됨/활성 · 패키지 발급/고객배포완료/등록 완료 (8종)",
         "• 상태 온보딩중(ONBOARDING)/운영중(ACTIVE)/정지(SUSPENDED)/해지완료(OFFBOARDED) — 운영 생명주기 4종(DB §5.28b)",
         "• 온보딩 진행 단계 상세 배지는 onboardingStatus 조건으로 렌더링 (status enum 별도)",
-        "• 행 클릭 → AML-TNT-002 상세(4탭: 기본정보·배포온보딩·소스시스템·정책팩)  /  [+ 새 고객사] → AML-TNT-003 등록",
+        "• 행 클릭 → AML-TNT-002 상세(4탭: 기본정보·배포온보딩·소스시스템·정책팩)  /  [+ 새 서비스] → AML-TNT-003 등록",
         "• 집계 footer 배포 유형별 건수 표시",
         "▸ API GET /api/v1/bo/aml/tenants?deploymentModel=&onboardingStatus=&status=&region= (bo-api · region optional)"])
 
 
-# 고객사 상세(AML-TNT-002) 4탭 — 같은 부모 탭 바로 연속 전개(SKILL §1.6)
+# 서비스 상세(AML-TNT-002) 4탭 — 같은 부모 탭 바로 연속 전개(SKILL §1.6)
 TNT_DETAIL_TABS = ["기본 정보", "배포·온보딩", "소스 시스템", "정책팩"]
 
 
 def tnt_002_basic(p):
-    """AML-TNT-002 고객사 상세 — ① 기본 정보"""
-    s = frame(p, "AML-TNT-002", "AML Console > 고객사 관리 > 은행 A > 기본 정보",
-              "고객사 상세 — ① 기본 정보 (은행 A)", search="고객사 내부 검색...")
+    """AML-TNT-002 서비스 상세 — ① 기본 정보"""
+    s = frame(p, "AML-TNT-002", "AML Console > 서비스 관리 > 은행 A > 기본 정보",
+              "서비스 상세 — ① 기본 정보 (은행 A)", search="서비스 내부 검색...")
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, TNT_DETAIL_TABS, active=0)
     y = wf.two_panels(s, y, 1.70,
         ("[기본 정보]", ["항목", "값"],
-         [["고객사 ID", "tnnt-001  (불변)"],
+         [["서비스 ID", "tnnt-001  (불변)"],
           ["표시명", "은행 A  [편집]"],
           ["리전", "KR"],
           ["운영 상태", "운영중 ACTIVE  [변경]"],
@@ -174,9 +174,9 @@ def tnt_002_basic(p):
 
 
 def tnt_002_deploy(p):
-    """AML-TNT-002 고객사 상세 — ② 배포·온보딩 (온보딩 상태·프로비저닝·이력 통합)"""
-    s = frame(p, "AML-TNT-002", "AML Console > 고객사 관리 > 은행 A > 배포·온보딩",
-              "고객사 상세 — ② 배포·온보딩 (은행 A)", search="고객사 내부 검색...")
+    """AML-TNT-002 서비스 상세 — ② 배포·온보딩 (온보딩 상태·프로비저닝·이력 통합)"""
+    s = frame(p, "AML-TNT-002", "AML Console > 서비스 관리 > 은행 A > 배포·온보딩",
+              "서비스 상세 — ② 배포·온보딩 (은행 A)", search="서비스 내부 검색...")
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, TNT_DETAIL_TABS, active=1)
     y = wf.kpi_cards(s, y, [
@@ -208,19 +208,19 @@ def tnt_002_deploy(p):
 
 
 def tnt_002_source(p):
-    """AML-TNT-002 고객사 상세 — ③ 소스 시스템"""
-    s = frame(p, "AML-TNT-002", "AML Console > 고객사 관리 > 은행 A > 소스 시스템",
-              "고객사 상세 — ③ 소스 시스템 (은행 A)", search="소스 시스템 검색...",
+    """AML-TNT-002 서비스 상세 — ③ 소스 시스템"""
+    s = frame(p, "AML-TNT-002", "AML Console > 서비스 관리 > 은행 A > 소스 시스템",
+              "서비스 상세 — ③ 소스 시스템 (은행 A)", search="소스 시스템 검색...",
               action="인입 모니터링")
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, TNT_DETAIL_TABS, active=2)
-    y = wf.table_block(s, y, 1.75, "연결된 소스 시스템 [이 고객사] · [인입 모니터링 ▶ → AML-ING-001]",
+    y = wf.table_block(s, y, 1.75, "연결된 소스 시스템 [이 서비스] · [인입 모니터링 ▶ → AML-ING-001]",
         ["소스 ID", "종류", "연동 방식", "연결 상태", "마지막 수신", "신호", ""],
         [["src-core", "회원·계좌 (CORE)", "REST 전송", "정상", "8초 전", "●", "▶"],
          ["src-txn", "거래 (TRANSACTION)", "큐", "정상", "2초 전", "●", "▶"],
          ["src-kyc", "KYC 데이터 (KYC)", "폴링", "오류", "38분 전", "✕", "▶"]],
         [0.14, 0.24, 0.13, 0.13, 0.15, 0.09, 0.12])
-    wf.callout(s, y, "소스 시스템 = 이 고객사의 데이터 인입 경로 (신호 표준 = PRD §1.11 확정)", [
+    wf.callout(s, y, "소스 시스템 = 이 서비스의 데이터 인입 경로 (신호 표준 = PRD §1.11 확정)", [
         "회원·거래·KYC 피드를 정규 이벤트로 수집 → 스크리닝·RA·TM 입력",
         "신호 ● 수신중 / ⚠ 지연 / ✕ 중단 · 폴링 시점·큐 적체 상세 → [인입 모니터링 ▶ → AML-ING-001]",
         "명단 소스·임포트 이력은 AML-WL-001(명단 소스·임포트) 메뉴에서 관리"])
@@ -236,9 +236,9 @@ def tnt_002_source(p):
 
 
 def tnt_002_policy(p):
-    """AML-TNT-002 고객사 상세 — ④ 정책팩"""
-    s = frame(p, "AML-TNT-002", "AML Console > 고객사 관리 > 은행 A > 정책팩",
-              "고객사 상세 — ④ 정책팩 (은행 A)", search="고객사 내부 검색...")
+    """AML-TNT-002 서비스 상세 — ④ 정책팩"""
+    s = frame(p, "AML-TNT-002", "AML Console > 서비스 관리 > 은행 A > 정책팩",
+              "서비스 상세 — ④ 정책팩 (은행 A)", search="서비스 내부 검색...")
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, TNT_DETAIL_TABS, active=3)
     y = wf.two_panels(s, y, 1.80,
@@ -279,17 +279,17 @@ def tnt_002_policy(p):
 
 
 def tnt_003(p):
-    """AML-TNT-003 고객사 등록 (별도 생성 화면 — 상세 4탭과 분리)"""
-    s = frame(p, "AML-TNT-003", "AML Console > 고객사 관리 > 새 고객사",
-              "고객사 등록 (배포 유형 선택 + 온보딩 신청)", search="검색...")
+    """AML-TNT-003 서비스 등록 (별도 생성 화면 — 상세 4탭과 분리)"""
+    s = frame(p, "AML-TNT-003", "AML Console > 서비스 관리 > 새 서비스",
+              "서비스 등록 (배포 유형 선택 + 온보딩 신청)", search="검색...")
     y = wf.CON_TOP
-    y = wf.callout(s, y, "별도 생성 화면 — 목록 [+ 새 고객사]에서 진입 (상세 4탭 바와 분리)", [
+    y = wf.callout(s, y, "별도 생성 화면 — 목록 [+ 새 서비스]에서 진입 (상세 4탭 바와 분리)", [
         "배포 유형은 온보딩 신청 시점에 선택하며 등록 후 불변(격리는 프로비저닝 산출)",
         "매니지드 전용 → 등록 후 상세 ② 배포·온보딩에서 IaC 파이프라인 트리거",
         "자체 인프라 설치형 → 패키지 발급 후 고객이 직접 설치·등록"])
     y = wf.two_panels(s, y, 1.75,
         ("등록 기본 정보", ["필드", "입력"],
-         [["고객사 ID *", "[__________] (불변)"],
+         [["서비스 ID *", "[__________] (불변)"],
           ["표시명 *", "[__________]"],
           ["기본 리전", "[KR ▼]  (선택, 기본값 KR)"],
           ["정책팩", "[한국 기본팩 ▼]"],
@@ -318,7 +318,7 @@ def wlf_001(p):
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, ["검토 필요", "상위승인", "처리 이력"], active=0)
     y = wf.filters(s, y, ["명단군 전체", "대상 유형 전체", "점수 전체", "기간 전체"])
-    y = wf.table_block(s, y, 1.30, "검토 필요 큐 [고객사: 은행 A] · 행 ▶ → 하단 근거·점수 패널",
+    y = wf.table_block(s, y, 1.30, "검토 필요 큐 [서비스: 은행 A] · 행 ▶ → 하단 근거·점수 패널",
         ["스크리닝ID", "대상(식별자)", "대상유형", "명단군", "점수", "상태", ""],
         [["scr-9f3a", "cust_…123", "개인", "제재", "0.92", "검토필요", "▶"],
          ["scr-4a18", "cust_…340", "개인", "PEP관련자", "0.66", "검토필요", "▶"]],
@@ -500,7 +500,7 @@ def wl_001(p, tab=0):
     y = wf.tab_chips(s, y, WL_001_TABS, active=tab)
     if tab == 0:
         y = wf.filters(s, y, ["명단 종류 전체", "상태 전체"])
-        y = wf.table_block(s, y, 2.30, "명단 소스 [고객사: 은행 A] · [시뮬레이션 → AML-WLF-004]",
+        y = wf.table_block(s, y, 2.30, "명단 소스 [서비스: 은행 A] · [시뮬레이션 → AML-WLF-004]",
             ["소스 코드", "제공자", "명단 종류", "활성 버전", "마지막 갱신", "상태"],
             [["OFAC_SDN", "美 재무부", "제재", "v141", "06-05 03:00", "지연 ⚠"],
              ["UN_CONSOL", "UN", "제재", "v88", "06-06 02:30", "운영"],
@@ -741,7 +741,7 @@ def ra_001(p, tab=0):
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, RA_001_TABS, active=tab)
     if tab == 0:
-        y = wf.filters(s, y, ["고객사 은행 A", "서비스 전체", "모델 RA-KR v4"])
+        y = wf.filters(s, y, ["서비스 은행 A", "워크스페이스 전체", "모델 RA-KR v4"])
         y = wf.kpi_cards(s, y, [
             ("낮음", "28,900 명", "68% · 재심사 36개월", "green"),
             ("중간", "12,880 명", "30% · 재심사 24개월", "blue"),
@@ -761,7 +761,7 @@ def ra_001(p, tab=0):
         wf.info_panel(s, "AML-RA-001", [
             "• 권한 조회 aml:case:read",
             "• 탭 ① 점수 분포 / ② 고위험 목록 (순수 모니터링)",
-            "• 필터 고객사 / 서비스 / 모델 버전 선택",
+            "• 필터 서비스 / 워크스페이스 / 모델 버전 선택",
             "• KPI 카드 낮음/중간/높음/거래금지 인원·비율",
             "• 재심사 예정 30일 내 · 기한 임박 ⚠ · 초과",
             "• 다음 → ② 고위험 목록",
@@ -1039,7 +1039,7 @@ def cdd_002(p, tab=0):
               ["추가정보 수집 대상", "예 (EDD L2)"],
               ["변경 이력", "ingest 이벤트 기준 표시"]],
              [0.42, 0.58]))
-        wf.callout(s, y, "① CDD 프로필 — read-only 원장 (편집 불가 · 수집/수정은 고객사 소스 시스템 소관)", [
+        wf.callout(s, y, "① CDD 프로필 — read-only 원장 (편집 불가 · 수집/수정은 서비스 소스 시스템 소관)", [
             "법인 고객은 법인 유형·상장 여부·비영리 설립목적 검증·실소유자(UBO) 확인 면제 여부·대표자 요약으로 분기",
             "원문 열람 aml:pii:reveal + 사유 + RAW_DATA_ACCESS 감사 · 다음 → ② 위험·활동 요약 탭"])
         wf.info_panel(s, "AML-CDD-002", [
@@ -1049,7 +1049,7 @@ def cdd_002(p, tab=0):
             "• 공통 식별자·국적·신원확인 증표·검증 방법·고객 상태",
             "• 개인 직업·업종·자금 원천·거래 목적·소득 구간",
             "• 법인 법인유형·상장·비영리 설립목적·UBO 확인 면제·대표자",
-            "• 편집 불가 — CDD 수집·수정은 고객사 소스 시스템(ingest) 소관",
+            "• 편집 불가 — CDD 수집·수정은 서비스 소스 시스템(ingest) 소관",
             "• 다음 → ② 위험·활동 요약",
             "▸ API GET /aml/customers/{ref}/profile (제안 · 후속 API 정합)"])
     else:
@@ -1248,7 +1248,7 @@ def tm_001(p, tab=0):
     if tab == 0:
         y = wf.filters(s, y, ["시나리오", "출처", "심각도", "상태", "기간"])
         y = wf.filters(s, y, ["채널", "corridor", "대상 식별자(customerRef)"])
-        y = wf.table_block(s, y, 1.05, "TM 알림 적체 [고객사: 은행 A] · 행 클릭 → 하단 알림 상세 · [케이스] → AML-CASE-002",
+        y = wf.table_block(s, y, 1.05, "TM 알림 적체 [서비스: 은행 A] · 행 클릭 → 하단 알림 상세 · [케이스] → AML-CASE-002",
             ["알림ID", "시나리오(StrIndicator)", "대상", "발생 출처", "심각도", "상태", "동작"],
             [["alt-3301", "구조화거래·STR_003", "cust_…12", "AML 모니터링", "높음", "탐지", "[케이스]"],
              ["alt-3290", "뮬 네트워크·STR_007", "ent_…77", "AML 모니터링", "매우높음", "1차분류", "[케이스]"],
@@ -1288,7 +1288,7 @@ def tm_001(p, tab=0):
             "▸ API GET /aml/alerts/{alertId}(evidence·relatedTransactions·subject360Ref) · /subjects/{ref}/360"])
     else:  # tab == 1
         y = wf.filters(s, y, ["시나리오 상태 전체", "시나리오 유형 전체"])
-        y = wf.table_block(s, y, 2.50, "TM 시나리오 목록 [고객사: 은행 A] · 행 ▶ → AML-TM-002 (빌더) · 효과성 ▶ → AML-STAT-001",
+        y = wf.table_block(s, y, 2.50, "TM 시나리오 목록 [서비스: 은행 A] · 행 ▶ → AML-TM-002 (빌더) · 효과성 ▶ → AML-STAT-001",
             ["시나리오 코드", "시나리오명", "활성 버전", "상태", "알림(30일)", "전환율", ""],
             [["STRUCTURING", "구조화거래", "v3", "활성", "48", "31%", "[편집 ▶]"],
              ["RAPID_MOVE", "급속이동", "v2", "활성", "21", "24%", "[편집 ▶]"],
@@ -1355,7 +1355,7 @@ def case_001(p):
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, ["내 케이스", "전체", "기한 임박", "종결"], active=0)
     y = wf.filters(s, y, ["케이스 타입 전체", "상태 전체", "우선순위 전체", "담당자 전체"])
-    y = wf.table_block(s, y, 2.35, "케이스 목록 [고객사: 은행 A] · 행 ▶ → AML-CASE-002 (케이스 상세)",
+    y = wf.table_block(s, y, 2.35, "케이스 목록 [서비스: 은행 A] · 행 ▶ → AML-CASE-002 (케이스 상세)",
         ["케이스ID", "타입", "대상(식별자)", "상태", "우선", "담당", "기한"],
         [["case-771", "강화된 고객확인", "cust_…501", "조사중", "높음", "김분석", "06-20 ▶"],
          ["case-760", "제재 검토", "cust_…123", "승인대기", "긴급", "이감리", "06-08 ⚠ ▶"],
@@ -1513,7 +1513,7 @@ def rep_001(p, tab=0):
         y = wf.callout(s, y, "정보누설금지 (tipping-off)", [
             "본 화면 정보의 외부 누설은 특정금융정보법 제4조의2 위반 — 준법감시 전담 조회·열람 감사"], h=0.50)
         y = wf.filters(s, y, ["상태 전체", "기간 전체"])
-        y = wf.table_block(s, y, 1.85, "STR 후보 목록 [고객사: 은행 A] · 행 ▶ → AML-REP-002 (보고 상세)",
+        y = wf.table_block(s, y, 1.85, "STR 후보 목록 [서비스: 은행 A] · 행 ▶ → AML-REP-002 (보고 상세)",
             ["보고ID", "종류", "대상(식별자)", "케이스", "상태", "보고 기한", "발단", "제출 참조"],
             [["rep-220", "STR", "cust_…501", "case-771", "검토중", "D-2 ⚠", "구조화거래 의심", "▶"],
              ["rep-215", "STR", "ent_…77", "case-760", "승인", "D-3 ⚠", "WLF 확정·PEP", "(제출 대기) ▶"],
@@ -1541,7 +1541,7 @@ def rep_001(p, tab=0):
             ("접수 완료", "18 건", "FIU 접수번호 수신", "green"),
             ("제출 대기", "3 건", "기한 임박 1 ⚠ (D+30)", "orange"),
             ("CTR 기준", "1천만원", "1거래 현금 · 정책팩 정본", "red")])
-        y = wf.table_block(s, y, 1.85, "CTR 데이터 [고객사: 은행 A] · [제외 처리(2인)] — 법정 제외대상",
+        y = wf.table_block(s, y, 1.85, "CTR 데이터 [서비스: 은행 A] · [제외 처리(2인)] — 법정 제외대상",
             ["보고ID", "대상(식별자)", "거래금액", "거래일", "보고 기한", "상태", "제출 참조 / 제외 사유"],
             [["rep-218", "cust_…12", "2,500만원", "06-05", "07-05", "접수", "FIU-2026-000218"],
              ["rep-217", "cust_…45", "1,200만원", "06-06", "07-06", "제출 대기", "▶"],
@@ -1612,7 +1612,7 @@ def rep_002(p, tab=0):
              [0.38, 0.62]),
             ("증빙 manifest", ["항목", "값"],
              [["첨부 증빙", "3건(거래내역·WLF·EDD)"], ["manifest hash", "0xab…(고정)"],
-              ["본문 PII", "hash/token 보존"], ["제출 어댑터", "고객사별(D-04)"]],
+              ["본문 PII", "hash/token 보존"], ["제출 어댑터", "서비스별(D-04)"]],
              [0.42, 0.58]))
         y = wf.table_block(s, y, 1.10, "보고 본문 (요약 · PII는 hash/token)",
             ["항목", "내용"],
@@ -1656,7 +1656,7 @@ def rep_002(p, tab=0):
               ["FIU 접수번호", "— (접수 시 저장)"],
               ["오류코드", "ERR-FORMAT-12 (FIU 반려)"],
               ["재제출 횟수", "1 회 (이력 보존)"],
-              ["제출 어댑터", "고객사별(D-04)"]],
+              ["제출 어댑터", "서비스별(D-04)"]],
              [0.40, 0.60]),
             ("제출 시나리오", ["동작", "결과"],
              [["[제출 상신(2인)]", "승인 → 외부 전송(회신 대기)"],
@@ -1700,7 +1700,7 @@ def ira_001(p, tab=0):
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, IRA_001_TABS, active=tab)
     if tab == 0:
-        y = wf.callout(s, y, "보고 회차 — KR 확장 plugin 전용 (정책팩 KR_DEFAULT 위 활성화 고객사만 노출)", [
+        y = wf.callout(s, y, "보고 회차 — KR 확장 plugin 전용 (정책팩 KR_DEFAULT 위 활성화 서비스만 노출)", [
             "회차: 보고 기준일 2027-03-01 · 데이터 기준월 2026-12 (자동지표 산출 배치 수행 후 잠금)",
             "진행: 확정 87 / 전체 152 지표  ·  입력 원천 = 자동 수집 / 직전 보고값 복사 / 수기(증빙 필수)"])
         y = wf.filters(s, y, ["위험구분 전체", "카테고리 전체", "입력방식 전체", "항목상태 전체"])
@@ -1782,8 +1782,8 @@ def tr_001(p, tab=0):
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, TR_001_TABS, active=tab)
     if tab == 0:
-        y = wf.filters(s, y, ["완전성 전체", "위험 전체", "기간 전체", "고객사 거래소 C"])
-        y = wf.table_block(s, y, 2.00, "예외 큐 (정보 누락·위험 지갑) [고객사: 거래소 C]",
+        y = wf.filters(s, y, ["완전성 전체", "위험 전체", "기간 전체", "서비스 거래소 C"])
+        y = wf.table_block(s, y, 2.00, "예외 큐 (정보 누락·위험 지갑) [서비스: 거래소 C]",
             ["이전ID", "송신VASP", "수취VASP", "자산", "완전성", "위험", "동작"],
             [["tr-9001", "VASP_A", "VASP_B", "BTC", "정보누락", "—", "[예외처리]"],
              ["tr-8990", "VASP_A", "(미확인)", "ETH", "정보누락", "위험지갑", "[예외처리]"]],
@@ -1803,7 +1803,7 @@ def tr_001(p, tab=0):
             "▸ API GET .../travel-rule/transfers?status=EXCEPTION"])
     elif tab == 1:
         y = wf.filters(s, y, ["완전성 전체", "기간 전체", "자산 전체"])
-        y = wf.table_block(s, y, 2.55, "전체 이전 [고객사: 거래소 C] · 대상=마스킹",
+        y = wf.table_block(s, y, 2.55, "전체 이전 [서비스: 거래소 C] · 대상=마스킹",
             ["이전ID", "송신VASP", "수취VASP", "자산", "금액", "완전성", "처리"],
             [["tr-9005", "VASP_A", "VASP_D", "BTC", "0.5 BTC", "완전", "완료"],
              ["tr-9003", "VASP_B", "VASP_A", "USDT", "10,000", "완전", "완료"],
@@ -1858,7 +1858,7 @@ def pp_001(p, tab=0):
     y = wf.tab_chips(s, y, PP_001_TABS, active=tab)
     if tab == 0:
         y = wf.two_panels(s, y, 1.55,
-            ("적용 Policy Pack [고객사: 은행 A]", ["항목", "값"],
+            ("적용 Policy Pack [서비스: 은행 A]", ["항목", "값"],
              [["기본 팩(필수·잠금)", "한국 기본팩(KR_DEFAULT) ●"],
               ["effective 버전", "v12 (2026-05-01)"],
               ["국가·업권 확장 plugin", "○ 없음 (토글 추가)"],
@@ -1914,7 +1914,7 @@ def apr_001(p):
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, ["대기", "내가 상신", "처리 완료"], active=0)
     y = wf.filters(s, y, ["결재 종류 전체", "결재 라인 전체", "기간 전체"])
-    y = wf.table_block(s, y, 2.35, "결재 대기 [고객사: 은행 A]",
+    y = wf.table_block(s, y, 2.35, "결재 대기 [서비스: 은행 A]",
         ["결재ID", "결재 종류", "대상", "결재 라인", "상신자", "만료"],
         [["apr-551", "WLF 판정 확정", "scr-9f3a", "Maker-Checker", "김분석", "2h ⚠ ▶"],
          ["apr-549", "STR 제출", "rep-215", "보고 책임자", "박심사", "1d ▶"],
@@ -2082,7 +2082,7 @@ def aud_001(p, tab=0):
     y = wf.tab_chips(s, y, AUD_001_TABS, active=tab)
     if tab == 0:
         y = wf.filters(s, y, ["감사 카테고리 전체", "기간 전체"])
-        y = wf.table_block(s, y, 2.30, "감사 로그 [고객사: 은행 A] (append-only · hash chain) · 대상=마스킹",
+        y = wf.table_block(s, y, 2.30, "감사 로그 [서비스: 은행 A] (append-only · hash chain) · 대상=마스킹",
             ["시각", "카테고리", "작업자", "대상", "내용", "체인"],
             [["06-06 10:21", "결재 승인", "이감리", "apr-551", "WLF 확정 승인", "✓"],
              ["06-06 10:05", "원문 접근", "박심사", "cust_…501", "EDD 증빙 열람", "✓"],
@@ -2129,7 +2129,7 @@ def aud_001(p, tab=0):
             "• 이전 ← ① 감사 로그  /  다음 → ③ 소스 시스템",
             "▸ API POST /evidence/aml/exports · GET (이력·다운로드 URL)"])
     else:  # tab == 2
-        y = wf.table_block(s, y, 2.10, "소스 시스템 관리 [고객사: 은행 A]",
+        y = wf.table_block(s, y, 2.10, "소스 시스템 관리 [서비스: 은행 A]",
             ["소스 ID", "종류", "연동 방식", "인증", "장애 정책", "상태"],
             [["core-banking", "회원·계좌", "큐(MQ)", "API Key+HMAC", "수동검토", "활성 ✓"],
              ["onboarding", "온보딩", "REST 전송", "mTLS", "차단(fail-closed)", "활성 ✓"],
@@ -2166,7 +2166,7 @@ def ing_001(p, tab=0):
     y = wf.CON_TOP
     y = wf.tab_chips(s, y, ING_001_TABS, active=tab)
     if tab == 0:
-        y = wf.table_block(s, y, 1.80, "수신 API 카탈로그 [고객사: 은행 A] (정본 = PRD §1.11 ② · API §3.1~3.4)",
+        y = wf.table_block(s, y, 1.80, "수신 API 카탈로그 [서비스: 은행 A] (정본 = PRD §1.11 ② · API §3.1~3.4)",
             ["API", "용도", "방식", "인증", "24h 호출", "마지막 호출", "신호"],
             [["POST /aml/events", "이벤트 수신·백필", "비동기(큐)", "HMAC", "1.2M", "2초 전", "●"],
              ["POST /aml/screen", "명단 스크리닝(WLF)", "동기", "HMAC", "48K", "1초 전", "●"],
@@ -2274,13 +2274,13 @@ def build():
     # 1 커버
     wf.cover_slide(p,
         "SaaS AML Platform 백오피스 기획서",
-        "멀티 고객사·서비스 자금세탁방지(AML) 운영 콘솔 — 준법감시실 화면 설계",
+        "멀티 서비스·워크스페이스 자금세탁방지(AML) 운영 콘솔 — 준법감시실 화면 설계",
         ["정본 PRD: docs/plan/02-aml-sass-functional-spec.md (FS-AML-SAAS-001 v9.0)",
          "기능 ID 전수 32화면 (목록→상세→액션→결과 흐름 + 벤치마크 7화면 §12-B + 인입 모니터링 §12.2)",
          "좌 75% 와이어프레임(실제 도형) + 우 25% 기능 설명",
-         "WLF(+시뮬레이션)·명단(+내부 명단·오탐 면제)·국가위험·RA/CDD(+당연고위험·고객 프로필)·TM·케이스·규제 보고·기관 RBA 보고·Travel Rule·Policy Pack·결재·통계·내부통제·감사·인입 모니터링·고객사 관리",
-         "용어 고객사(tenant)·서비스(workspace) · enum 괄호 병기 · 책임 경계 명시",
-         "버전 BO-AML-SAAS-Planning v9.1 (데이터 레이어 hanpass-ph 재그라운딩 + TM 알림 evidence·거래·대상360° 재설계)"],
+         "WLF(+시뮬레이션)·명단(+내부 명단·오탐 면제)·국가위험·RA/CDD(+당연고위험·고객 프로필)·TM·케이스·규제 보고·기관 RBA 보고·Travel Rule·Policy Pack·결재·통계·내부통제·감사·인입 모니터링·서비스 관리",
+         "용어 기관(institution)·서비스(=tenant)·워크스페이스(workspace) · enum 괄호 병기 · 책임 경계 명시",
+         "버전 BO-AML-SAAS-Planning v9.2 (테넌트=서비스 재정의 — 고객사→서비스·상위 기관·기관→서비스→워크스페이스)"],
         brand="HANPASS  ·  SaaS AML Platform")
     # 2 변경 이력
     wf.history_slide(p, "변경 이력",
@@ -2309,12 +2309,13 @@ def build():
          ["v7.0", "2026-06-12", "Hanpass Global", "벤치마크 2차 보강: WL-003(내부 명단·오탐 면제)·HRR-001(당연고위험)·CDD-002(고객 프로필) 신설 + TNT-002 ① 보고기관 패널(31화면)"],
          ["v8.0", "2026-06-12", "Hanpass Global", "데이터 인입 가시성: ING-001(수신 API 카탈로그·인입 라이브) 신설·TNT-002 ③ 인입 신호 컬럼·인입 유형 확정 §1.11(32화면)"],
          ["v9.0", "2026-06-19", "Hanpass Global Team", "메뉴 IA 재구성 — 운영(조사·모니터링/고객위험·심사/케이스·처리/거버넌스·보고)·설정(연동·데이터/탐지·심사 정책/감사·증적·내부통제) 2영역 3단. 혼재 메뉴 분리: TM 알림(TM-001)↔시나리오 빌더(TM-002), RA 분포·고객위험(RA-001/003)↔RA 모델(RA-002), 고객 프로필(CDD-002)↔CDD 정책(CDD-001). 32화면·콘텐츠 불변, nav_tree 렌더"],
-         ["v9.1", "2026-06-19", "Hanpass Global Team", "데이터 레이어 hanpass-ph 재그라운딩 + TM 알림 evidence/관련거래/대상360°/자금그래프 재설계 — 규제 불변"]],
+         ["v9.1", "2026-06-19", "Hanpass Global Team", "데이터 레이어 hanpass-ph 재그라운딩 + TM 알림 evidence/관련거래/대상360°/자금그래프 재설계 — 규제 불변"],
+         ["v9.2", "2026-06-19", "Hanpass Global Team", "테넌트=서비스 재정의 — 고객사→서비스·상위 기관·기관→서비스→워크스페이스 (고객사 관리→서비스 관리·라벨 정합, 콘텐츠 불변)"]],
         col_w=[0.07, 0.11, 0.12, 0.70])
     # 3+ 기능 전수
     for fn in SCREENS:
         fn(p)
-    out = "/Users/smkim/workspace/smkim89/aml-system-docs/docs/plan/BO-AML-SAAS-Planning_v9.1.pptx"
+    out = "/Users/smkim/workspace/smkim89/aml-system-docs/docs/plan/BO-AML-SAAS-Planning_v9.2.pptx"
     p.save(out)
     print(f"saved {out} · slides={len(p.slides._sldIdLst)}")
 
