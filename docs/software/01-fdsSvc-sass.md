@@ -2497,6 +2497,7 @@ SaaS FDS는 한국 policy pack을 기본으로 하되, 국가별 규정을 plugi
 
 - 준법감시실용 no-code rule builder
 - rule simulation과 예상 hit rate 분석
+- rule recommendation(threshold sweep) — 목표 적중률 입력 시 표본(거래) 내 단일 피처 분포 percentile로 임계값을 역산하고, 그 단일조건 룰을 엔진 재평가해 실제 예상 적중률을 검증(인접 대안 ±1·2%p 제시). 표본 최대 500건 근사·read-only, 빌더 인라인 추천 패널이 소비(API §4.6 `POST /admin/fds/rules/recommendations`)
 - rule/model version approval workflow
 - threshold, group, watchlist self-service 관리
 - case SLA와 담당자 배정
@@ -2602,6 +2603,7 @@ SaaS FDS는 한국 policy pack을 기본으로 하되, 국가별 규정을 plugi
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-06-21 | v2.5 | **룰 추천 엔드포인트·빌더 인라인 시뮬 반영(코드 정합).** §18 Phase 5(Compliance Operations Console)의 rule simulation 인접에 **rule recommendation(threshold sweep)** 1줄 추가 — 목표 적중률 → 표본(거래) 내 단일 피처 분포 percentile 임계값 역산 + 단일조건 룰 엔진 재평가 검증(인접 대안 ±1·2%p), 표본 500 근사·read-only, 빌더 인라인 추천 패널 소비(API §4.6 `POST /admin/fds/rules/recommendations`). 도메인 모델·enum 불변. | aegis-java-implementer |
 | 2026-06-15 | v2.4 | T9(FDS-ENG-05) evidence export 산출 포맷 명문화 — 설계서-코드 갭 마감: §16.4 생성 원칙에 `export_format` 4종 **네이티브 산출** 항목 추가(`CSV`/`JSON_API`=텍스트, `EXCEL`=Apache POI 실 `.xlsx`, `PDF`=OpenPDF 실 `.pdf`, content-type·확장자 정합, EXCEL/PDF도 CSV와 동일 masking 논리 콘텐츠만 소비—raw PII 미도입 DB §7.1) + manifest hash는 바이너리 비결정 메타데이터 배제 위해 **canonical 논리 콘텐츠 + format enum** 위 SHA-256으로 계산(재현성 보장) 명문화. §11.6.15 export_format 표에 §16.4 cross-ref 추가. 코드 정본(`LocalExportArtifactAdapter`) 정합 — enum 4종↔코드↔content-type 1:1. | aegis-java-implementer |
 | 2026-06-11 | v2.3 | QA HIGH cross(L303) 해소: §11.6.7 교차 주석 'AML 3종 OFFBOARDING'(구버전) → 'AML 4종 OFFBOARDED(§16.0c V20 교정 후 동기화)'로 갱신 — 모델 차이 서술을 동기화 완료 서술로 교체, bo-web 표시 라벨 매핑 단순화. | system-architect |
 | 2026-06-11 | v2.2 | QA HIGH cross 2건(L307·L308) 해소: §8.3 말미에 FDS `workspaceId` 최상위 ↔ AML `dataScope` 최상위 **의도된 비대칭** 교차 주석 추가(연동 §4.1 cross-service 정책 정본 — `fds-aml-handoff` 어댑터가 `workspaceId`→`dataScope` 변환, `default` 매핑 포함), §11.6.10에 'FDS `fail_policy` ↔ AML `failure_policy` 별도 enum — 혼동 금지, bo-web 표시명 매핑=bo-api' 대칭 주석 추가. | system-architect |

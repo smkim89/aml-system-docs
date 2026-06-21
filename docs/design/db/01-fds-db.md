@@ -124,7 +124,7 @@ erDiagram
 | ingest_mode | `REST_PUSH` / `QUEUE` / `POLLING` / `CDC` / `SNAPSHOT` (**5종**, FDS 정본) | REST 푸시/큐/폴링/CDC/스냅샷 (설계서 §2.3, §12). **`VENDOR_BRIDGE` 미추가** — vendor bridge 연동은 FDS 도메인 밖이라 AML(6종, §5.14)과 코드 집합을 달리함(의도적 cross-service 차이, 설계서 §11.6.8 근거) |
 | connector_status | `HEALTHY` / `LAGGING` / `ERROR` / `DISABLED` | 정상/지연/오류/비활성 |
 
-> **마이그레이션**: 구 `isolation_mode` enum(`SHARED`/`SCHEMA`/`DB`)은 폐기한다. 데이터 매핑은 `SHARED→SHARED`, `SCHEMA`/`DB → MANAGED_DEDICATED`(§8 V17). `deployment_model`/`onboarding_status` 정본은 설계서 §11.6.11/§11.6.11a, API `DeploymentModel`/`OnboardingStatus` enum과 1:1 동기화한다.
+> **마이그레이션**: 구 `isolation_mode` enum(`SHARED`/`SCHEMA`/`DB`)은 폐기한다. 데이터 매핑은 `SHARED→SHARED`, `SCHEMA`/`DB → MANAGED_DEDICATED`(저장소 `V2__phase1_foundation.sql`, §8 매핑 주석). `deployment_model`/`onboarding_status` 정본은 설계서 §11.6.11/§11.6.11a, API `DeploymentModel`/`OnboardingStatus` enum과 1:1 동기화한다.
 
 ### 4.1a onboarding_status 상태머신 (§2.1, 설계서 §11.6.11a)
 
@@ -168,7 +168,7 @@ stateDiagram-v2
 ### 4.4 channel_type (§9.2)
 `CARD_PRESENT` / `CARD_NOT_PRESENT` / `ATM` / `BANK_TRANSFER` / `DOMESTIC_REMIT` / `CROSS_BORDER_REMIT` / `CASH_IN` / `INBOUND_REMIT` / `PG_PAYMENT` / `WALLET_PAYMENT` / `WALLET_WITHDRAWAL` / `VIRTUAL_ACCOUNT_DEPOSIT` / `CRYPTO_DEPOSIT` / `CRYPTO_WITHDRAWAL` / `EXCHANGE_TRADE` / `INTERNAL_OPERATION` / `BATCH_SETTLEMENT` / `TRADE_PAYMENT` / `CROSS_BORDER_ECOMMERCE_SETTLEMENT` / `MARKETPLACE_SELLER_PAYOUT` / `B2B_INVOICE_PAYMENT` (**21종**)
 
-> **데이터 레이어 hanpass-ph 재그라운딩(§5.3)**: `CASH_IN`(월렛충전 cash-in/top-up — `walletchg-svc`), `INBOUND_REMIT`(파트너 인바운드 송금 — `inbound-svc`) 2종을 추가(19→21종). `CROSS_BORDER_REMIT`은 화면 라벨 '해외송금'(OVERSEAS_REMIT 의미, `remit-svc`)·`DOMESTIC_REMIT`은 국내송금(`domestic-svc`)에 대응한다. **채널 enum 변경은 데이터 레이어 한정이며 규제 임계(CTR/STR)·기한은 불변**이다.
+> **데이터 레이어 hanpass-ph 재그라운딩(§5.3, Flyway V16 `V16__ph_data_grounding.sql`)**: `CASH_IN`(월렛충전 cash-in/top-up — `walletchg-svc`), `INBOUND_REMIT`(파트너 인바운드 송금 — `inbound-svc`) 2종을 추가(19→21종). 저장소 `V16`이 `ck_fds_events_channel_type` CHECK를 21종으로 재정의하고 §5.5 corridor 4컬럼·§5.3a 소스 시드를 함께 적재한다. `CROSS_BORDER_REMIT`은 화면 라벨 '해외송금'(OVERSEAS_REMIT 의미, `remit-svc`)·`DOMESTIC_REMIT`은 국내송금(`domestic-svc`)에 대응한다. **채널 enum 변경은 데이터 레이어 한정이며 규제 임계(CTR/STR)·기한은 불변**이다.
 
 ### 4.5 payment_rail (§9.3)
 `INTERNAL_LEDGER` / `CARD_NETWORK` / `ATM_SWITCH` / `BANK_ACH` / `OPEN_BANKING` / `FIRM_BANKING` / `CMS` / `BANK_CD_NETWORK` / `EASY_PAY` / `VAN_PG` / `SWIFT` / `LOCAL_RTP` / `PARTNER_API` / `BLOCKCHAIN` / `MANUAL_BACKOFFICE` / `ESCROW` / `MARKETPLACE_SETTLEMENT` / `TRADE_FINANCE`
@@ -203,6 +203,8 @@ stateDiagram-v2
 
 ### 4.9 action_status (§14.5 outbox)
 `PENDING` / `APPROVAL_REQUIRED` / `APPROVED` / `SENT` / `ACKED` / `FAILED` / `CANCELLED`
+
+> **`ACKED` 전이 트리거**: `SENT → ACKED`는 외부 시스템 어댑터가 조치 수신확인(ack)을 보고할 때 전이된다 — `fds-actions` relay 후 결과 콜백(`FdsActionResult.status='ACKED'`)을 `ActionResultConsumer`(`aws` 프로파일)가 수신해 해당 outbox row를 멱등 전이(`Action.markAcked()`). ack 실패 보고는 `SENT → FAILED`(백오프 재시도, §5.12). `aws` 프로파일이 아닌 로컬/stub 환경에서는 ack 콜백 경로가 비활성이라 `SENT`에 머문다.
 
 ### 4.10 case_type (§11.3)
 `FRAUD_REVIEW` / `AML_REVIEW` / `CHARGEBACK_REVIEW` / `MULE_ACCOUNT_REVIEW` / `CRYPTO_TRAVEL_RULE` / `INTERNAL_AUDIT` / `MERCHANT_RISK` / `REGULATORY_REPORT` / `TRADE_FINANCE_REVIEW` / `ECOMMERCE_SETTLEMENT_REVIEW` / `B2B_INVOICE_REVIEW`
@@ -288,7 +290,7 @@ stateDiagram-v2
 | created_at | TIMESTAMPTZ | N | now() | | |
 | updated_at | TIMESTAMPTZ | N | now() | | |
 
-> **마이그레이션(§8 V17)**: 구 `isolation_mode` 컬럼은 `deployment_model`/`onboarding_status`/`infra_ref` 추가 후 데이터 매핑(`SHARED→SHARED` & `onboarding_status='ACTIVE'`, `SCHEMA`/`DB → MANAGED_DEDICATED` & `onboarding_status='ACTIVE'`)을 거쳐 DROP한다. `default_region`은 기존 유지. 신규 서비스(테넌트) 등록은 `deployment_model` 선택 + `onboarding_status='REQUESTED'`로 시작한다.
+> **마이그레이션(저장소 `V2__phase1_foundation.sql`)**: 구 `isolation_mode` 컬럼(`V1__baseline.sql` 생성)은 `deployment_model`/`onboarding_status`/`infra_ref`/`compliance_policy` 추가 후 데이터 매핑(`SHARED→SHARED` & `onboarding_status='ACTIVE'`, `SCHEMA`/`DB → MANAGED_DEDICATED` & `onboarding_status='ACTIVE'`)·`ck_fds_tenants_deployment_model` CHECK를 거쳐 DROP한다(§8 매핑 주석). `default_region`은 기존 유지. 신규 서비스(테넌트) 등록은 `deployment_model` 선택 + `onboarding_status='REQUESTED'`로 시작한다.
 
 > **마이그레이션(institution_ref·후속)**: 상위 기관 참조 컬럼 `institution_ref VARCHAR(64) NULL`은 **다음 마이그레이션에서 additive(nullable)로 추가**한다(1 기관 : N 서비스). 기존 row는 NULL로 시작 후 기관-서비스 매핑이 확정되면 백필한다. 기관 마스터 테이블 정식화는 후속 설계에서 확정.
 
@@ -458,6 +460,8 @@ stateDiagram-v2
 | expires_at | TIMESTAMPTZ | Y | | 실시간 decision 만료 |
 | data_scope | VARCHAR(128) | Y | | |
 | created_at | TIMESTAMPTZ | N | now() | 불변(append-only) |
+
+> **채널/금액/corridor 파생(현재 구현)**: 결정 목록·필터의 `channelType`/`currency`/`amount(min~max)`/corridor(`sendCountry`/`receiveCountry`) 축은 `fds_decisions`에 비정규화 저장되지 않고, **`fds_canonical_events`와 복합키 `(tenant_id, workspace_id, event_id)` LEFT JOIN으로 파생**한다(저장소 `DecisionJpaRepository`, 이벤트 부재 시 결정 행 보존). 향후 조회 성능·이벤트 보존정책 파기 대비를 위해 비정규화 컬럼화 가능(후속). 본 표는 현재 컬럼 집합 정본이다.
 
 ### 5.11 fds_decision_reasons
 decision API의 reason code 정규화(§12.8 reasonCodes).
@@ -630,6 +634,7 @@ no-code rule builder가 노출하는 feature 정의(§10.1).
 | reason | TEXT | Y | | 상신 사유 |
 | expires_at | TIMESTAMPTZ | Y | | 승인 만료 |
 | max_executions | INT | Y | | 실행 가능 횟수 |
+| payload_json | JSONB | Y | | 결재 대상 변경 명세(승인 relay 실행 입력). 예: `RULE` 활성화 결재는 `{"action":"ACTIVATE"}`. `ACTION`/`CASE_CLOSE`는 `subject_ref`로 대상을 재유도하므로 NULL 가능. 저장소 `V11__pr2_approval_exec.sql`에서 additive(nullable)로 추가 |
 | created_at / updated_at | TIMESTAMPTZ | N | | |
 
 > 제약: `CHECK(maker_subject <> checker_subject)`는 fds_approval_steps에서 보장. `SELF_APPROVAL_DISABLED`. AI agent는 maker만 가능(checker 불가)는 bo-api IAM에서 강제.
@@ -892,13 +897,25 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | V14 | `V14__external_bridge.sql` | fds_external_decisions |
 | V15 | `V15__evidence_audit.sql` | fds_evidence_exports, fds_audit_logs |
 | V16 | `V16__indexes.sql` | §6 인덱스 일괄 생성 (CONCURRENTLY 옵션 별도 migration) |
-| V17 | `V17__deployment_model.sql` | `fds_tenants`에 `deployment_model`/`onboarding_status`/`infra_ref` 컬럼 추가(default `MANAGED_DEDICATED`/`REQUESTED`) → 데이터 매핑(`isolation_mode='SHARED'`→`deployment_model='SHARED'`, `SCHEMA`/`DB`→`MANAGED_DEDICATED`; 매핑 row는 `onboarding_status='ACTIVE'`) → `isolation_mode` 컬럼 DROP. additive-then-drop 2단(`V17a` 추가/백필, `V17b` DROP) 권장 |
-| V18 | `V18__compliance_policy.sql` | `fds_tenants`에 `compliance_policy JSONB NOT NULL DEFAULT '{"base":"KR_BASE","packs":["EFIN","SPECIAL_AML","PIPA","INTERNAL_CONTROL"],"optional":[]}'` 추가(규제 팩 토글 상태, 설계서 §16.2). 기존 row는 default로 백필. `subject_kind` enum 사용처에 `POLICY_PACK` 허용(CHECK 제약 사용 시 갱신) |
-| V19 | `V19__notify_channels.sql` | `fds_notify_channels`(§5.34) + `ix_fds_notify_channels_scope`. 알림 채널 설정(엔진 T8 FDS-ENG-04). 의존 없음(독립 신규 테이블) |
+| 논리 | (배포 모델/규제 팩) | `fds_tenants` `deployment_model`/`onboarding_status`/`infra_ref` 컬럼 추가(default `MANAGED_DEDICATED`/`REQUESTED`) → 데이터 매핑(`isolation_mode='SHARED'`→`deployment_model='SHARED'`, `SCHEMA`/`DB`→`MANAGED_DEDICATED`; 매핑 row는 `onboarding_status='ACTIVE'`) → `isolation_mode` DROP + `compliance_policy JSONB NOT NULL DEFAULT '{"base":"KR_BASE","packs":["EFIN","SPECIAL_AML","PIPA","INTERNAL_CONTROL"],"optional":[]}'` 추가(설계서 §16.2)·`subject_kind`에 `POLICY_PACK` 허용. **저장소 실제 파일은 `V2__phase1_foundation.sql`이 이 전환을 일괄 수행**한다(아래 매핑 주석) |
 
-> **저장소 ↔ 설계 버전 매핑**: 위 §8 표는 논리(설계) Flyway 순서다. `services/fds-svc` 저장소는 누적 phase 마이그레이션을 사용하므로 `fds_notify_channels`는 저장소 실제 파일 `V14__notify_channels.sql`에서 생성된다(설계 V19 ↔ 파일 V14). §5.6~§5.15 materialized state가 저장소 `V12`에서 생성된 것과 동일한 매핑 규칙.
+> **저장소 ↔ 설계 버전 매핑(실제 저장소 1:1)**: 위 V1~V16 행은 논리(설계) Flyway 순서이며, `services/fds-svc` 저장소는 누적 phase 마이그레이션(`V1~V9` baseline·phase1~8)과 후속 보강(`V10~V18`)을 사용한다. **배포 모델·규제 팩 전환(논리 'V17/V18'에 해당)은 별도 파일이 아니라 저장소 `V2__phase1_foundation.sql`이 일괄 수행**한다(`isolation_mode`는 `V1__baseline.sql`에서 생성 후 `V2`에서 `deployment_model`/`onboarding_status`/`infra_ref`/`compliance_policy` 추가·백필·`ck_fds_tenants_deployment_model` CHECK·`isolation_mode` DROP). §5.6~§5.15 materialized state(subject/account/instrument/transaction)는 저장소 `V12__materialized_state.sql`에서 생성된다.
+>
+> **저장소 후속 마이그레이션 표(V10~V18, 실제 파일명·내용 1:1)**: 위 논리 표와 별개로, 저장소에 실재하는 보강 마이그레이션은 다음과 같다.
+>
+> | 파일 | 내용 |
+> |---|---|
+> | `V10__pr1_query_admin.sql` | 조회·admin 보강(PR1) |
+> | `V11__pr2_approval_exec.sql` | 결재 실행(PR2). `fds_approval_requests`에 `payload_json JSONB NULL` 컬럼 추가(결재 대상 변경 명세, §5.23) |
+> | `V12__materialized_state.sql` | `fds_subjects`/`fds_accounts`/`fds_instruments`/`fds_transactions`/`fds_case_scopes` materialized state(§5.6~§5.9·§5.15). 설계 논리 V5/V6/V8 ↔ 저장소 V12 |
+> | `V13__action_outbox_backoff.sql` | `fds_actions`에 `next_attempt_at TIMESTAMPTZ` 추가 + 클레임 인덱스 `ix_fds_actions_claim`(디스패처 SKIP LOCKED 백오프, §5.12·§6) |
+> | `V14__notify_channels.sql` | `fds_notify_channels`(§5.34) + `ix_fds_notify_channels_scope`. 알림 채널 설정(엔진 T8 FDS-ENG-04). 의존 없음 |
+> | `V15__webhook_outbox.sql` | `fds_webhook_outbox`(§5.35) + 멱등·클레임 인덱스(엔진 T10 ENG-WEBHOOK). 서명 webhook 콜백 transactional outbox |
+> | `V16__ph_data_grounding.sql` | §4.4 `channel_type` 21종 closed CHECK 재정의(`ck_fds_events_channel_type`에 `CASH_IN`·`INBOUND_REMIT` 추가) + §5.5 corridor 4컬럼(`send_country`/`receive_country`/`send_currency`/`receive_currency`) 추가 + §5.3a hanpass-ph 소스 시스템 7종(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`)·schema_mappings 시드(`tenant_demo` scope). 규제 임계/분류 불변 |
+> | `V17__demo_ph_rules.sql` | **데모 전용 시드** — hanpass-ph 데모 룰 3종(CROSS_BORDER_REMIT·DOMESTIC_REMIT·CASH_IN ACTIVE 룰). `tenant_demo` scope·고정 UUID·`ON CONFLICT DO NOTHING`·운영(tenant_demo 부재) 시 0건. **DDL 아님** |
+> | `V18__demo_approval_seed.sql` | **데모 전용 시드** — 승인 가능한 결재 2건(subject_kind=RULE, payload `{"action":"ACTIVATE"}`) + PENDING_APPROVAL 데모 룰 2종. `tenant_demo` scope·멱등·운영 시 0건. **DDL 아님** |
 
-FK 의존: V7은 V4·V6, V8은 V7, V12는 V6, V14는 V7에 의존하므로 위 순서 고정. V17은 V2(fds_tenants) 이후 임의 시점에 적용하는 배포 모델 전환 마이그레이션이다. V19(`fds_notify_channels`)는 FK 의존 없음.
+FK 의존: V7은 V4·V6, V8은 V7, V12는 V6, V14는 V7에 의존하므로 위 논리 순서 고정. 배포 모델·규제 팩 전환은 V2(`fds_tenants`) 이후 수행한다(저장소는 `V2__phase1_foundation.sql`이 담당).
 
 ---
 
@@ -944,6 +961,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-06-21 | v2.0 | **코드 정합(저장소 fds-svc Flyway 실제 파일 1:1) — §8 마이그레이션 표 전면 교정·증적 컬럼 back-fill.** (1) §8 표의 논리 `V17__deployment_model.sql`/`V18__compliance_policy.sql`/`V19__notify_channels.sql` 행을 폐기하고, 저장소 실제 파일과 1:1 매핑 표(V10~V18) 신설: 배포 모델·규제 팩 전환(`deployment_model`/`onboarding_status`/`infra_ref`/`compliance_policy`·`isolation_mode` DROP)은 별도 파일이 아니라 **`V2__phase1_foundation.sql`** 이 수행함을 명시(`isolation_mode`는 `V1__baseline.sql` 생성). V11 `payload_json`·V12 materialized_state·V13 action_outbox_backoff(`next_attempt_at`)·V14 notify_channels·V15 webhook_outbox·V16 ph_data_grounding(channel 21종 CHECK·corridor 4컬럼·hanpass 소스 7종 시드)·V17 demo_ph_rules(데모 시드)·V18 demo_approval_seed(데모 시드) 실내용 기재. (2) §5.23 `fds_approval_requests`에 `payload_json JSONB NULL` 행 추가(V11). (3) §5.10 `fds_decisions` 채널/금액/corridor가 `fds_canonical_events` LEFT JOIN 파생(현재 구현)임을 주석화·향후 비정규화 예정. (4) §4.9 `ACKED` 전이 트리거(`SENT→ACKED`, `ActionResultConsumer`/`aws` 프로파일) 명시. (5) §4.4 hanpass 채널 재그라운딩 주석에 `(Flyway V16)` 병기. §5.1/§4.1 `(§8 V17)` 인라인 참조를 `V2__phase1_foundation.sql`로 정정. enum·컬럼 정본 코드 집합 불변. | data-modeler |
 | 2026-06-19 | v1.9 | **테넌트=서비스 재정의 + 기관 참조(institution_ref) 컬럼 신설(1 기관 : N 서비스)**: §2.1/§2.2/§10 설명 텍스트의 '고객사'를 '서비스(테넌트=서비스)'로 정정(계층 기관→서비스(테넌트)→워크스페이스). §5.1 `fds_tenants`를 '서비스 마스터(테넌트=서비스)'로 라벨링하고 상위 기관 참조 컬럼 `institution_ref VARCHAR(64) NULL`(additive·후속 마이그레이션) 추가. `tenant_id`/`workspace_id`/RLS·scope 코드·PK 선두 규칙 불변(의미만 '서비스'). | data-modeler |
 | 2026-06-18 | v1.8 | **데이터 레이어 hanpass-ph 소스 재그라운딩 — 소스 카탈로그·channel CASH_IN/INBOUND_REMIT·corridor·연동 키**(규제 레이어 불변): (1) §4.4 `channel_type`에 `CASH_IN`(월렛충전 top-up)·`INBOUND_REMIT`(파트너 인바운드) 2종 추가(19→21종) + hanpass-ph 매핑 주석. (2) §5.3 `fds_source_systems`를 hanpass-ph 트랜잭션 마이크로서비스로 예시화 + §5.3a 소스 카탈로그 표(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`) 신설(REST sync 인입·연동 키 매핑·token/HMAC). (3) §5.5 `fds_canonical_events`에 corridor 컬럼(`send_country`/`receive_country`/`send_currency`/`receive_currency`) + `amount_base`(USD) 출처(remit `usd_amount`/`report_amount`) 주석. (4) §5.6/§5.7 subject_ref=member_id HMAC·account=wallet 매핑 주석. (5) §10 downstream enum channel 19→21종. **CTR/STR 임계·기한·KoFIU 분류 미변경(규제 불변)** — PH 운영은 Policy Pack `PH_AMLC` 옵션 병기만. | data-modeler |
 | 2026-06-11 | v1.7 | QA HIGH #9(fds:db-wbs L269) 해소: §10 downstream enum 노트에 `transaction_type` 12종(§4.19, `fds_transactions.transaction_type` 폐쇄 CHECK) 추가 — 파생 문서(태스크 T-02 등) 참조 기준 명문화. | data-modeler |
