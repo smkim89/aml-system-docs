@@ -126,10 +126,10 @@ flowchart LR
 
 | eventType | 트리거 | 핵심 키 | 후속 | 산출 |
 |---|---|---|---|---|
-| `fds.case.escalated` | FDS fraud case → STR 후보 위임 | `fraudCaseRef`·`targetRef`·`transactionRef`·`severity`·`suggestedCaseType` | ManageCase(`STR_REVIEW`) | `aml_alerts`(alert_type=`FDS_ESCALATION`, source_origin=`FDS`) → `aml_cases` |
+| `fds.case.escalated` | FDS fraud case → AML 후보 위임 | `eventId`·`fraudCaseRef/fdsCaseRef`·`targetRef`·`transactionRef`·`action`·`severity`·`suggestedCaseType`·`dataScope` | ManageCase(`REGULATORY_REPORT`→`STR_REVIEW`, `REQUEST_TRAVEL_RULE_INFO`→`VASP_TRAVEL_RULE_REVIEW`, `OPEN_AML_CASE`→`EDD_REVIEW`) | `aml_alerts`(alert_type=`FDS_ESCALATION`, source_origin=`FDS`) → `aml_cases` |
 | `fds.decision.applied` | FDS hold/block 결정 → AML EDD 트리거 | `transactionRef`·`decision`·`targetRef` | EvaluateRisk·ManageCase(`EDD_REVIEW`) | `aml_alerts`, `aml_cases` |
 
-> `fds.case.escalated`의 동기 fallback 경로는 `POST /internal/v1/aml/fds-escalations`(`FdsEscalationRequest`, 02-aml-api §3.10)이며 큐 경로는 동일 payload를 비동기로 수신한다(둘 다 `idempotencyKey=fraudCaseRef`로 멱등). `fds.decision.applied`는 **비동기 큐(`aml-fds-decision`) 전용**으로 대응 동기 REST 계약이 없다(`fds-escalations`는 escalated 전용). 동기 fallback이 필요해지면 API §2.6/§3.10에 `decision` 수신 DTO를 신설한 뒤 본 표를 갱신한다.
+> `fds.case.escalated`의 동기 fallback 경로는 `POST /internal/v1/aml/fds-escalations`(`FdsEscalationRequest`, 02-aml-api §3.10)이며 큐 경로는 동일 payload를 비동기로 수신한다(둘 다 `eventId`=`fdsEventId`로 멱등, 미제공 시 `fraudCaseRef` fallback). `fds.decision.applied`는 **비동기 큐(`aml-fds-decision`) 전용**으로 대응 동기 REST 계약이 없다(`fds-escalations`는 escalated 전용). 동기 fallback이 필요해지면 API §2.6/§3.10에 `decision` 수신 DTO를 신설한 뒤 본 표를 갱신한다.
 
 ### 3.3 아웃바운드 — aml-svc → fds-svc (`aml-fds-feedback`)
 
@@ -239,9 +239,10 @@ API `IngestEventRequest`(02-aml-api §3.1)·`aml_canonical_events` 컬럼과 1:1
 
 ```json
 {
-  "fraudCaseRef": "fds_case_777", "targetRef": "cust_hmac_123",
+  "eventId": "action:uuid", "fraudCaseRef": "fds_case_777", "fdsCaseRef": "fds_case_777", "targetRef": "cust_hmac_123",
   "transactionRef": "tx_123", "severity": "HIGH",
-  "suggestedCaseType": "STR_REVIEW", "evidence": { "ruleHits": ["RAPID_MOVEMENT"] }
+  "action": "OPEN_AML_CASE", "suggestedCaseType": "EDD_REVIEW", "dataScope": "default",
+  "evidence": { "ruleHits": ["RAPID_MOVEMENT"] }
 }
 ```
 

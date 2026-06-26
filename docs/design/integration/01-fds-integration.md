@@ -253,7 +253,7 @@ flowchart LR
 ```
 
 - 봉투 키(AML §3.2 정본 1:1): `tenantId`·`eventType`(=`fds.case.escalated`|`fds.decision.applied`)·`eventId`(=멱등키 `fdsEventId`)·`fdsCaseRef`·`fraudCaseRef`·`targetRef`·`transactionRef`·`action`·`severity`·`suggestedCaseType`(`STR_REVIEW`/`EDD_REVIEW` 등)·`dataScope`. aml-svc `FdsDecisionConsumer`가 소비하는 키 8종(`tenantId`·`eventType`·`eventId`·`fdsCaseRef`·`targetRef`·`transactionRef`·`action`·`dataScope`)과 1:1 정합한다.
-- **멱등**: SQS `messageDeduplicationId = eventId`(=`fdsEventId`) + 소비측 DB partial UNIQUE `(tenant_id, origin_fds_case_ref, fds_event_id) WHERE source_origin='FDS'`. `fds.case.escalated` 동기 fallback은 `POST /internal/v1/aml/fds-escalations`(둘 다 멱등, AML §3.2); `fds.decision.applied`는 `aml-fds-decision` 큐 전용.
+- **멱등**: SQS `messageDeduplicationId = eventId`(=`fdsEventId`) + 소비측 DB partial UNIQUE `(tenant_id, origin_fds_case_ref, fds_event_id) WHERE source_origin='FDS'`. `fds.case.escalated` 동기 fallback은 `POST /internal/v1/aml/fds-escalations`(둘 다 멱등, AML §3.2)이며 non-AWS/local에서 `aegis.fds.aml-handoff.base-url`이 설정되면 fds-svc REST handoff adapter가 같은 `eventId`·`fraudCaseRef/fdsCaseRef`·`targetRef`·`transactionRef`·`action`·`severity`·`suggestedCaseType`·`dataScope` 의미를 전달한다. `fds.decision.applied`는 `aml-fds-decision` 큐 전용.
 - **멀티테넌시**: fds-svc envelope `workspaceId`를 핸드오프 어댑터가 `dataScope`로 변환해 봉투 최상위 키로 전파(§4.1, 소비측 변환).
 - **식별자는 모두 token/hash, 금액은 base 통화만, 원문 payload·문서번호 원문 미전파**. aml-svc는 본 케이스 생성 후 `amlCaseRef`를 ack로 회신 → fds-svc가 `fds_cases.aml_case_id`에 기록(§9).
 
