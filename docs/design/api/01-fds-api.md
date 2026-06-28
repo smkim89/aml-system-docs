@@ -898,6 +898,11 @@ components:
       properties:
         ruleId: { type: string, format: uuid }
         versionNo: { type: integer }
+        ruleNo: { type: string }
+        displayName: { type: string }
+        # 룰 종류별 참조 데이터(드릴인) — type: BLOCKLIST_MATCH(대포통장 명단 계좌)/VELOCITY_WINDOW(기여 거래 리스트)/
+        # GEO_ANOMALY/WALLET_RISK/MISSING_FIELD. 마스킹 토큰만, raw PII 미포함. nullable.
+        reference: { type: object, nullable: true, additionalProperties: true }
     DecisionResponse:
       type: object
       properties:
@@ -1366,6 +1371,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-06-28 | v2.8 | **`RuleRef`에 룰별 참조 데이터(`reference`) 추가 + 누적 드리프트(`ruleNo`/`displayName`) 정정(코드=truth).** OpenAPI `RuleRef` 스키마에 `reference`(object, nullable — 룰 종류별 드릴인 근거: `BLOCKLIST_MATCH` 대포통장 명단 계좌 / `VELOCITY_WINDOW` 기여 거래 리스트 / `GEO_ANOMALY`·`WALLET_RISK`·`MISSING_FIELD`, **마스킹 토큰만·raw PII 미포함**)와 기존 구현 필드 `ruleNo`·`displayName`을 명시(스키마-코드 누적 이격 해소). §5.4 `DecisionResponse.matchedRules` 가 본 RuleRef 사용. 가산 필드(비파괴). | aegis-spec. 코드=truth. 근거=bo-api `FdsDecisionCaseDtos.RuleRef`·`ruleReferenceFor`. |
 | 2026-06-21 | v2.7 | **룰 추천 엔드포인트·빌더 인라인 시뮬 반영(코드 정합).** §4.6 Rule/Simulation Admin 표에 `POST /api/v1/admin/fds/rules/recommendations`(scope `fds:rule:simulate`, 4-eyes —) 추가 — 목표 적중률 → 단일 피처 임계값 percentile 역산 + 엔진 재평가 검증, read-only(결재 불필요), 집계·임계값만 반환(raw PII/피처값 미반환). §5.9a `RuleRecommendationRequest`/`RuleRecommendationResponse` DTO 신설(요청 `featureKey`●·`targetHitRate`●(0<x≤1)·`direction`(GTE/LTE)·`channelScope`·`sampleWindow` / 응답 `recommendedThreshold`·`expectedHitRate`(scale4)·`sampleSize`·`alternatives`[]). 모집단=거래(이벤트) 기준·표본 500 근사·비수치/빈 표본 graceful(`sampleSize=0`). bo-api 제네릭 패스스루 위임(신규 코드 없음), 기존 enum·인증 불변. | api-designer |
 | 2026-06-21 | v2.6 | **코드 정합(저장소 fds-svc 컨트롤러 1:1) — 이벤트·결정 조회 API 표면화.** (1) §4.1에 **`GET /api/v1/fds/events` 목록 엔드포인트 신설**(필터 `sourceSystem`/`eventType`/`eventFamily`/`channelType`/`subjectRef`/`transactionRef`/`from`/`to` · 페이지네이션, scope `fds:case:read`) — 거래 인입 내역(원본 이벤트) 브라우즈. 기존 단건 `GET /events/{eventId}` 유지(`EventQueryController`). (2) §4.2 `GET /api/v1/fds/decisions` 필터를 **11종**(`transactionRef`·`subjectRef`·`ruleNo`·`decision`·`channelType`·`currency`·`amountMin`·`amountMax`·`sendCountry`·`receiveCountry`·`from`·`to`)으로 확장(`DecisionQueryController`) — 채널/금액/corridor 축은 연결 canonical event LEFT JOIN 파생(DB §5.10·§5.5). 인증·멱등·기존 enum 불변. | api-designer |
 | 2026-06-19 | v2.5 | **테넌트=서비스 재정의 + 기관 참조(institution_ref) 컬럼 신설(1 기관 : N 서비스)**: §1.1/§2.2/§9/§11.1/§11.2/§13 설명 텍스트의 '고객사'를 '서비스(테넌트=서비스)'로 정정(계층 기관→서비스(테넌트)→워크스페이스). `TenantDto`에 상위 기관 참조 `institutionRef`(=`fds_tenants.institution_ref`, nullable·additive) 필드 추가 + 설명에 1 기관 : N 서비스 노출. `tenant_id`/`Tenant-Id` 헤더·scope 코드·엔드포인트 경로·enum 불변(라벨/설명만). | api-designer |
