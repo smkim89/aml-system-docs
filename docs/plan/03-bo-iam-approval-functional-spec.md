@@ -1,11 +1,13 @@
 # BO IAM·결재선 기능정의서 — 사용자·권한·결재라인 관리 (FS-BO-IAM-001)
 
 > 문서 ID FS-BO-IAM-001 · 작성일 2026-06-19 · 소관 `bo-api`(+`bo-web` 화면)
+> 대상 시스템: **hanpass-ph(한패스 PH 해외송금) AML/FDS 백오피스의 IAM·승인(4-eyes)**. 본 정의서는 hanpass-ph 운영 백오피스의 사용자·권한·결재선을 다룬다.
 > 본 문서는 FDS PRD §16.2·AML PRD §1.6·부록 B/C/G가 "**IAM 화면은 bo-api PRD 소관**"·"**결재선 정의는 bo-api IAM 소관**"으로 deferral 한 미작성 영역을 정본화한다.
 > 정본 경계: 인증·세션·RBAC·사용자/역할/결재선 관리는 **bo-api 소유**. 도메인 결재 실행(전이·실행)은 엔진(fds-svc/aml-svc) 소유.
-> 멀티테넌시 모델: **기관 → 서비스(테넌트=`tenant_id`) → 워크스페이스(`workspace_id`)** (1 기관 : N 서비스, 테넌트 격리 경계=서비스). 사용자는 상위 기관/서비스 스코프로 바인딩한다.
+> 멀티테넌시 모델(코드 truth, 유지): **테넌트(`tenant_id`) → 워크스페이스(`workspace_id`)** 의 2계층 격리. 사용자는 테넌트/워크스페이스 스코프로 바인딩하며, 플랫폼 운영자(platformOperator)는 테넌트 비종속(tenant-agnostic). 멀티테넌트 격리·플랫폼 운영자·테넌트 바인딩은 코드 truth로 유지하되, **운영 배포는 hanpass-ph 단일 테넌트(`tenant_demo`, 표시명 "hanpass PH")** 기준이다(가상 다(多)테넌트 예시는 비범위). `tenant_demo`는 SELF_HOSTED 온프레미스·정책팩 `KR_DEFAULT`·보고기관 `HANPASS`(한패스, V26 시드). V28에서 가상 데모 테넌트(은행 A·핀테크 B·소규모 C)는 제거되어 운영 레지스트리는 hanpass-ph 단일.
 >
 > 변경 이력:
+> - 2026-06-30 — **hanpass-ph 기준 정합**: 시스템을 hanpass-ph(한패스 PH) AML/FDS 백오피스 IAM/승인으로 한정. 가상 다(多)서비스 일반화("1 기관 : N 서비스")·가상 데모 테넌트(은행 A/핀테크 B/소규모 C, V28 제거) 예시 삭제, 운영 테넌트=`tenant_demo`(hanpass PH)로 서술. 멀티테넌트 격리·플랫폼 운영자(platformOperator)·테넌트 바인딩은 코드 truth(`BackofficeRole.isPlatformOperator`·`bo_user_tenants`)로 유지하되 운영 배포는 단일 테넌트로 좁힘. 권한·결재유형(4-eyes)·화면·액션은 코드 enum/컨트롤러/`nav.ts`와 1:1 유지.
 > - 2026-06-21 — **구현 정합화(코드 truth)**: P1~P4·사용자 지정 결재선이 Flyway V18~V27로 **구현 완료**됨을 §1~§8 전반에 반영. `bo_user_tenants`(PK `admin_user_id`)·`bo_role_scopes`(V20)·data_scope `tenant|workspace`(V21)·`bo_approval_lines`/`bo_approval_routes`(V22)·`bo_menu`/`bo_menu_permissions`(V23)·`bo_approval_delegations`(V24)·데모 테넌트/라벨 정합(V26)·`bo_approval_route_members`(V27) 정본화. 화면(BO-APRL-003 신설·BO-APRL-002 명칭 정정)·NAV 6종·API 경로(DELETE 사용자 비활성·위임 회수·effective-approver·route-members) 코드 기준 정정. 감사 emit(ROLE_ASSIGNED/REVOKED/PASSWORD_CHANGED·ROLE_SCOPE_CHANGED·APPROVAL_LINE_CHANGE·APPROVAL_DELEGATION_CHANGED) 실재 확인. ROLE_CHANGE 4-eyes 워크플로는 **후속 과제**(현재 RBAC 게이트 + 감사만).
 > - 2026-06-19 — 테넌트=서비스 재정의(기관 → 서비스 → 워크스페이스). §0·§2.2 멀티테넌시·`bo_user_tenants`를 사용자↔서비스 바인딩으로 재기술, "고객사"→"서비스"; `tenant_id`/`workspace_id`·data_scope·role/scope 코드명 불변(의미만 서비스).
 
@@ -13,8 +15,8 @@
 
 | 항목 | 내용 |
 |---|---|
-| 목적 | 백오피스 **사용자 관리(계정 생성·권한)** · **권한 관리(역할·scope·RBAC)** · **결재선(결재 라인) 관리**의 필요 기능을 전체 정의 |
-| 대상 사용자 | 플랫폼 운영자(platformOperator)·서비스(테넌트, `tenant_id`) 관리자·준법감시/보안 관리자 |
+| 목적 | hanpass-ph 백오피스 **사용자 관리(계정 생성·권한)** · **권한 관리(역할·scope·RBAC)** · **결재선(결재 라인) 관리**의 필요 기능을 전체 정의 |
+| 대상 사용자 | 플랫폼 운영자(platformOperator, 테넌트 비종속)·hanpass-ph 테넌트(`tenant_demo`) 관리자·준법감시/보안 관리자 |
 | 현재 상태 | 본 정의서의 P1~P4 + 사용자 지정 결재선이 **구현 완료**(Flyway V18~V27, bo-api 컨트롤러·bo-web 화면). 역할 배정·커스텀 scope·테넌트 바인딩(헤더 위조 방지)·4계층 RBAC·동적 메뉴·결재선 라우팅 정의·다단계/위임/지정 승인자까지 **정의 측(definition plane) 완비**. 잔여: 엔진 런타임이 bo-api 라우팅을 강제 소비(§4.3 비고)·ROLE_CHANGE 4-eyes 워크플로는 **후속**(§1 현행 분석) |
 | 비범위 | 도메인별 결재 대상의 비즈니스 로직(룰/시나리오/명단 등 — 01·02 PRD), 엔진 내부 결재 전이 |
 
@@ -38,9 +40,9 @@
 | BO-USR-004 | 사용자 수정 | 정보·역할·스코프 변경, 비밀번호 리셋, 잠금 해제, 비활성/재활성 |
 
 ### 2.2 기능 요구
-1. **계정 생성**(BO-USR-003): email(고유)·name·department·admin_type + **역할 다중 선택(roleIds)** + 서비스(테넌트) 바인딩(플랫폼 운영자=tenant-agnostic / 서비스(기관) 운영자=tenant_id·workspace 지정) + 초기 비밀번호(또는 초대 토큰) → `bo_admin_users` + `bo_user_roles` + `bo_user_tenants`(신규). 생성 시 `ADMIN_USER_CREATED`·`ROLE_ASSIGNED` 감사.
+1. **계정 생성**(BO-USR-003): email(고유)·name·department·admin_type + **역할 다중 선택(roleIds)** + 테넌트 바인딩(플랫폼 운영자=tenant-agnostic / hanpass-ph 테넌트 운영자=`tenant_demo`·workspace 지정) + 초기 비밀번호(또는 초대 토큰) → `bo_admin_users` + `bo_user_roles` + `bo_user_tenants`(신규). 생성 시 `ADMIN_USER_CREATED`·`ROLE_ASSIGNED` 감사.
 2. **수정/상태**(BO-USR-004): 정보 수정, 역할 추가/회수(`ROLE_ASSIGNED`/`ROLE_REVOKED`), 비밀번호 리셋(`PASSWORD_CHANGED`), `status` ACTIVE/INACTIVE/LOCKED 전이(잠금 해제), 비활성(soft `deactivate`). 자기 자신 비활성/권한축소 방지(BR).
-3. **멀티테넌시 바인딩**(구현 완료, V20) — *테넌트=서비스* 모델(계층: **기관 → 서비스(테넌트=`tenant_id`) → 워크스페이스**, 1 기관 : N 서비스). user↔service(=tenant)/workspace/data-scope를 **영속**(`bo_user_tenants` — 사용자↔서비스 바인딩, 컬럼명 `tenant_id`=서비스 식별자)으로 두고, `TenantContextFilter`가 요청 헤더(Tenant-Id/Workspace-Id)값을 `bo_user_tenants` 바인딩으로 **검증**하여 스코프를 강제한다(플랫폼 운영자는 바인딩 없이 tenant-agnostic으로 제외, 그 외 운영자의 헤더 위조 방지). 사용자는 상위 기관/서비스 스코프로 바인딩되며, 플랫폼 운영자는 전체, 서비스(기관) 운영자는 바인딩된 서비스(테넌트)만.
+3. **멀티테넌시 바인딩**(구현 완료, V20) — 테넌트(`tenant_id`) → 워크스페이스(`workspace_id`) 2계층 격리(코드 truth, 유지). user↔tenant/workspace/data-scope를 **영속**(`bo_user_tenants`)으로 두고, `TenantContextFilter`가 요청 헤더(Tenant-Id/Workspace-Id)값을 `bo_user_tenants` 바인딩으로 **검증**하여 스코프를 강제한다(플랫폼 운영자는 바인딩 없이 tenant-agnostic으로 제외, 그 외 운영자의 헤더 위조 방지). 플랫폼 운영자 판정은 `BackofficeRole.isPlatformOperator`(플랫폼 역할 보유 OR `adminType=PLATFORM_OPS`) 단일 정본. 운영 배포는 hanpass-ph 단일 테넌트(`tenant_demo`)이므로 테넌트 운영자는 `tenant_demo`에 바인딩되고, 플랫폼 운영자는 테넌트 비종속으로 전체를 본다(멀티테넌트 강제 메커니즘은 코드 truth로 유지).
 4. **데모/초기 시드**: 운영 부트스트랩 계정(최초 BO_SUPER_ADMIN)을 **Flyway 시드 또는 부트스트랩 절차**로 정본화(현 스크립트 ad-hoc 해소).
 
 ### 2.3 검색조건 (BO-USR-001)
@@ -92,9 +94,9 @@
 - **subject_type 정합**: `aml_approvals` CHECK(16) → **18**로 확장(IRA_SUBMIT·HIGH_RISK_REGISTRY 추가, Flyway).
 
 ### 4.3 기능 요구
-1. **결재선 정의 관리**(BO-APRL-001): subject_type × 결재선 × 승인자 역할 매핑을 운영자가 조회·변경. 변경 시 **감사 이벤트 `APPROVAL_LINE_CHANGE` emit**(V22, ApprovalRouteService) — *4-eyes 실행 결재는 후속*, 현재는 RBAC 게이트(`BO_SUPER_ADMIN`/`bo:admin:iam`) + 감사. `PUT .../approval-routes`는 즉시 적용. 테넌트(=서비스)별 override 허용(플랫폼 기본 + 서비스별 커스터마이즈).
+1. **결재선 정의 관리**(BO-APRL-001): subject_type × 결재선 × 승인자 역할 매핑을 운영자가 조회·변경. 변경 시 **감사 이벤트 `APPROVAL_LINE_CHANGE` emit**(V22, ApprovalRouteService) — *4-eyes 실행 결재는 후속*, 현재는 RBAC 게이트(`BO_SUPER_ADMIN`/`bo:admin:iam`) + 감사. `PUT .../approval-routes`는 즉시 적용. 라우팅은 `platform` 기본 시드 + 테넌트별 override 구조(코드 truth, `tenant_id` 선두 PK)이며, 운영에서는 hanpass-ph(`tenant_demo`)가 `platform` 기본을 그대로 쓰거나 필요 시 override 한다.
 2. **다단계(순차) 라인**: 1차→2차→최종 등 N단계 승인 체인 정의(현 단일 maker-checker 확장). 각 단계 승인 역할·필수 여부.
-3. **임계값 기반 라우팅**: 금액/위험등급/건수 임계로 라인 상향(예 고액 STR → EXECUTIVE_APPROVAL 추가 단계). PH/KR 등 Policy Pack 임계와 연계(임계 정본은 규제 레이어).
+3. **임계값 기반 라우팅**: 금액/위험등급/건수 임계로 라인 상향(예 고액 STR → EXECUTIVE_APPROVAL 추가 단계). hanpass-ph 정책팩 `KR_DEFAULT` 임계와 연계(임계 정본은 규제 레이어, 01/02 PRD).
 4. **위임·대결(Delegation)**(구현 완료, V24): 승인자 부재 시 대결자·기간([from_at, to_at)) 지정. 생성·회수 공통으로 **감사 이벤트 `APPROVAL_DELEGATION_CHANGED` emit**(ApprovalDelegationService). self-delegation·역전 기간은 CHECK로 거부. 유효 승인자 결의는 활성 위임의 대결자를 라인 기본 scope보다 우선.
 5. **불변 정책 유지·확장**: self-approval 금지(maker≠checker)·payload_hash drift guard·staged_payload(기존 유지) + 다단계에서 각 단계 maker/checker 분리.
 

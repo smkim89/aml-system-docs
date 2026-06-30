@@ -1,9 +1,11 @@
-# AML Platform API 명세서 (aml-svc)
+# AML Platform API 명세서 (aml-svc · hanpass-ph)
 
+> **시스템 그라운딩**: 본 명세는 **hanpass-ph AML RegOps** 단일 운영 도메인을 대상으로 한다. 결제 거래는 hanpass-ph 5유형(`remit`(해외송금)·`domestic`(국내이체)·`wallet`(지갑: charge(충전)/pay(결제)/withdraw(출금)))이며, crypto·trade-finance·PG·ecommerce·marketplace·B2B 등 가상 advanced domain은 본 명세에서 다루지 않는다(EventFamily enum의 폐쇄 allow-list 잔존 family는 내부 리플레이 fail-safe 용이며 외부 ingest 표면에는 노출하지 않는다, §3.1).
 > 정본: `.claude/skills/_shared/target-architecture.md` (4서비스 모노레포 · 멀티테넌시 tenant/workspace/data-scope · raw PII 미저장 마스킹 · 4-eyes · 규제 Policy Pack STR/CTR/Travel Rule · bo-web→bo-api만, 엔진 직접호출 금지).
 > 입력 진실: `docs/software/02-amlSvc-sass.md` v1.x(유스케이스·port·API group §15.7·§16 배포 모델·온보딩 프로비저닝 상태머신) + `docs/design/db/02-aml-db.md` v1.x(테이블·컬럼·enum 정본 — `aml_tenants.deployment_model`/`onboarding_status`/`infra_ref` §3.1·§5.28/§5.28a/§5.28b 포함, 구 `isolation_mode` V17a/V17b 폐기).
-> 책임 서비스: `services/aml-svc` (Java 25, Spring Boot 3.5.x, 헥사고날, `com.hanpass.aml`). 참조 컨트롤러 패턴: `hanpass-ph/services/fds-svc/adapter/in/rest`. 참조: `docs/design/api/01-fds-api.md` v1.5(배포 모델·온보딩 FDS 패턴 정본).
-> 본 명세의 식별자·필드·enum은 DB 설계서 §3(테이블)·§5(enum)와 **1:1 동기화**한다(추측 금지). bo-api 소유 서비스·온보딩 엔드포인트(§3.16·§5·§9)는 aml-svc 엔진 API(§2)에 미노출.
+> 책임 서비스: `services/aml-svc` (Java 25, Spring Boot 3.5.x, 헥사고날, `com.aegis.aml`). 컨트롤러 정본: `services/aml-svc/src/main/java/com/aegis/aml/adapter/in/rest`(AmlEventController·ScreeningController·AlertController·RiskController·WatchlistAdminController·TmScenarioAdminController·ApprovalController 등). 참조: `docs/design/api/01-fds-api.md`(배포 모델·온보딩 FDS 패턴 정본).
+> 본 명세의 식별자·필드·enum은 실제 컨트롤러·DTO 및 DB 설계서 §3(테이블)·§5(enum)와 **1:1 동기화**한다(추측 금지). bo-api 소유 서비스·온보딩 엔드포인트(§3.16·§5·§9)는 aml-svc 엔진 API(§2)에 미노출.
+> **운영 테넌트**: 데모·운영 단일 테넌트는 `tenant_demo`(= hanpass-ph). 멀티테넌트 라우팅(`Tenant-Id` 헤더)은 코드 truth로 유지하되, 본 명세의 예시는 단일 운영 테넌트 `tenant_demo`(hanpass-ph)를 기준으로 한다(가상 다서비스 예시 금지).
 
 ## 0. API 표면 구분 (3-plane)
 
@@ -11,7 +13,7 @@
 
 | Plane | base path | 호출자 | 인증 | 비고 |
 |---|---|---|---|---|
-| **Public API** (서비스 연동) | `/api/v1/aml/...`, `/api/v1/evidence/aml/...` | 서비스 core-banking·onboarding·PG·VASP 시스템 | API Key+HMAC / OAuth2 / mTLS (§15.7, D-13) | event ingest·screening·RA·TM·evidence |
+| **Public API** (서비스 연동) | `/api/v1/aml/...`, `/api/v1/evidence/aml/...` | hanpass-ph 트랜잭션 마이크로서비스(`member-svc`(회원/CDD)·`walletchg-svc`(충전)·`domestic-svc`(국내이체)·`remit-svc`(해외송금)·`wallet-svc`(지갑)·`inbound-svc`(인바운드)) | API Key+HMAC / OAuth2 / mTLS (§15.7, D-13) | event ingest·screening·RA·TM·evidence |
 | **Internal API** (엔진 간) | `/internal/v1/aml/...` | `fds-svc`(fraud escalation), 내부 스케줄러 | API Key + HMAC(`AmlIngestAuthenticationFilter`; `X-Internal-Service` 선택; mesh mTLS 는 P8 보강, T11/AML-ENG-05·T3) | fds↔aml event 연계(D-07 event 우선) |
 | **Admin API** (운영 콘솔) | `/api/v1/admin/aml/...` | `bo-api`만 (bo-web은 bo-api 경유) | bo-api 세션/JWT + RBAC + data-scope | 명단·정책·case·결재·감사·evidence 관리 |
 
@@ -86,7 +88,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 
 | 메서드 | 경로 | scope | 멱등 | 설명 | DB |
 |---|---|---|---|---|---|
-| POST | `/api/v1/aml/events` | `aml:event:write` | Y | canonical AML event 수신(customer/entity/transaction/screening/...) | `aml_canonical_events` |
+| POST | `/api/v1/aml/events` | `aml:event:write` | Y | canonical AML event 수신(hanpass-ph: `customer.*`/`entity.*`/`beneficial-owner.*`/`transaction.*`/`remit.*`/`domestic.*`/`wallet.*`) | `aml_canonical_events` |
 | POST | `/api/v1/aml/events:batch` | `aml:event:write` | Y | 대량 event 배치 수신(queue 대체 동기 경로) | `aml_canonical_events` |
 | GET | `/api/v1/aml/events/{eventId}` | `aml:event:write` | — | 수신 event 상태 조회(idempotency 확인) | `aml_canonical_events` |
 
@@ -94,14 +96,16 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 
 | 메서드 | 경로 | scope | 멱등 | 설명 | DB |
 |---|---|---|---|---|---|
-| POST | `/api/v1/aml/screen` | `aml:screen:evaluate` | Y | 실시간 WLF/제재/PEP screening(온보딩·수취인·출금주소) | `aml_screening_results` |
+| POST | `/api/v1/aml/screen` | `aml:screen:evaluate` | Y | 실시간 WLF/제재/PEP screening. **hanpass-ph 해외송금은 거래당 sender(송금 회원)·receiver(수취인) 2회 호출**(§3.2 `transactionRef`로 연결) | `aml_screening_results` |
 | GET | `/api/v1/aml/screenings/{screeningId}` | `aml:screen:evaluate` | — | screening 결과 조회 | `aml_screening_results` |
+
+> **hanpass-ph WLF 호출 패턴(§3.2 정본·`ScreeningController.screen`)**: 해외송금(`remit`) 거래는 **sender = 송금 회원**(`targetType=CUSTOMER`, `targetRef`=member UUID keyed token)과 **receiver = 수취인**(`targetType=COUNTERPARTY`, `targetRef`=수취인 키 = 이름+국가+전화 토큰)을 **각각 1회씩 screen**한다. 두 결과는 동일 `transactionRef`(해외송금 거래번호 keyed token)로 묶여 케이스/증빙에서 거래 단위로 묶인다. FP 화이트리스트(§2.7·§3.2)는 `(targetRef::matchedEntryId)` fingerprint를 키로 하므로 **특정 거래가 아니라 동일 대상의 재screening 전반에 거래간(across-transaction) 유효**하다(동일 FP 매칭은 `AUTO_DISCOUNTED`로 자동 감점).
 
 ### 2.3 Risk Assessment API (Public) — 설계서 §11
 
 | 메서드 | 경로 | scope | 멱등 | 설명 | DB |
 |---|---|---|---|---|---|
-| POST | `/api/v1/aml/risk-assessments/evaluate` | `aml:ra:evaluate` | Y | 고객/법인/셀러 위험평가 실행 | `aml_risk_scores` |
+| POST | `/api/v1/aml/risk-assessments/evaluate` | `aml:ra:evaluate` | Y | 고객(회원)/법인 위험평가 실행(회원가입 RA·재평가) | `aml_risk_scores` |
 | GET | `/api/v1/aml/risk-assessments/{scoreId}` | `aml:ra:evaluate` | — | RA 결과 조회 | `aml_risk_scores` |
 | GET | `/api/v1/aml/customers/{customerRef}/risk` | `aml:case:read` | — | 대상 최신 등급 조회 | `aml_risk_scores` |
 
@@ -269,49 +273,51 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | `idempotencyKey` | string | R | 헤더와 일치. UNIQUE |
 | `sourceSystem` | string | R | 등록 source(헤더 동일). **hanpass-ph 실서비스 카탈로그(REST sync, DB §3.2 정본)**: `member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`inbound-svc`(`tx-history-svc`는 대상 360° read 소스로 ingest 미발행) |
 | `schemaVersion` | string | R | schema registry 버전 |
-| `eventType` | enum | R | §8.1 family: `customer.*`/`entity.*`/`transaction.*`/`screening.*`/`crypto.*`/`case.*`/... (hanpass-ph: member-svc→customer/entity/beneficial-owner, walletchg/domestic/remit/inbound→transaction.requested, remit/wallet→settlement.posted, wallet→account.*) |
+| `eventType` | enum | R | `<family>.<verb>` 형식. **hanpass-ph eventType taxonomy(`EventFamily` enum 정본)**: 신원 = `customer.*`/`entity.*`/`beneficial-owner.*`(member-svc), 거래(transaction-bearing) = `transaction.*` + hanpass-ph 결제 5유형 `remit.transfer.requested`(해외송금)·`domestic.transfer.requested`(국내이체)·`wallet.charge.requested`(충전)·`wallet.pay.requested`(결제)·`wallet.withdraw.requested`(출금). 내부 생성/위임 = `case.*`/`aml.*`(외부 ingest 불가, `isExternallyIngestable()=false`). **참고**: `EventFamily` enum에는 폐쇄 strict-gate allow-list로 `crypto`/`trade`/`invoice`/`settlement`/`order`/`seller`/`market`/`vendor` family가 잔존하나, 이는 내부 리플레이가 strict 게이트에서 거부되지 않도록 하는 fail-safe이며 **hanpass-ph 외부 ingest 표면에서는 사용하지 않는다**(거래는 `remit`/`domestic`/`wallet`/`transaction` family로만 인입). |
 | `occurredAt` | string(date-time) | R | ISO-8601 |
 | `payload` | object | R | 정규화 payload. PII는 `*Ref`/`*Hash`만. raw 금지. **연동 키(원문 금지·keyed HMAC)**: `customer.customerRef`←`member.member_id`, `transaction.transactionRef`←`walletchg.charge_order_id`/`domestic.transaction_id`/`remit.transfer_number`/`*.wallet_transaction_id`, cross-border 거래는 `transaction.corridor`(send/receive country·currency←remit) + `transaction.amountBase`(USD←remit usd_amount/report_amount). **주의**: domestic-svc `member_id` varchar(36) join 정규화 |
 | `payloadHash` | string | — | raw payload sha256(`stored=false`). DB `payload_hash` NOT NULL. **미제공 시 aml-svc ingest 어댑터가 수신 payload의 sha256을 자동 계산하여 INSERT**(서버 자동계산 방식 확정, DB §3.15 결정 주석 2026-06-08). 호출자가 직접 계산해 제공해도 무방(서버 값 우선). |
 
 응답 `IngestEventResponse`: `{ eventId, accepted: boolean, idempotent: boolean, traceId }`.
 
-### 3.2 ScreenRequest → `POST /api/v1/aml/screen` (DB `aml_screening_results`)
+### 3.2 ScreenRequest → `POST /api/v1/aml/screen` (DB `aml_screening_results`, `ScreeningController.ScreenRequest`)
+
+**code truth: 평면(flat) 구조** — 중첩 `subject` 객체·`sourceTypes` 필드 없음. `Idempotency-Key` 헤더 필수. 매칭 입력 원문은 일시 처리 후 미저장(§19.2), 저장은 hash/token만.
 
 | 필드 | 타입 | R | 검증/설명 |
 |---|---|---|---|
-| `targetRef` | string | R | 대상 customer/entity/counterparty/wallet ref(토큰) |
-| `targetType` | enum | R | `CUSTOMER`/`ENTITY`/`COUNTERPARTY`/`CRYPTO_ADDRESS` |
-| `subject` | object | R | 매칭 입력. 원문은 일시 처리 후 미저장(§19.2) |
-| `subject.nameTokens` | array<string> | — | 정규화 토큰(원문 대신 권장) |
-| `subject.dob` | string(date) | — | 매칭용. 저장은 hash |
-| `subject.country` | string | — | ISO 국가 |
-| `subject.documentHash` | string | — | 문서번호 HMAC |
-| `subject.walletAddressHash` | string | — | 지갑주소 HMAC(CRYPTO_ADDRESS) |
-| `sourceTypes` | array<enum> | — | 대상 명단군(§5.4) 한정. 기본 전체 |
+| `targetRef` | string | R | 대상 ref(토큰). **hanpass-ph**: sender=송금 회원 member UUID keyed token(`CUSTOMER`), receiver=수취인 키(이름+국가+전화)의 keyed token(`COUNTERPARTY`) |
+| `targetType` | enum | R | DB §5.23 target_type: `CUSTOMER`/`ENTITY`/`COUNTERPARTY`/`CRYPTO_ADDRESS`. hanpass-ph 송금은 sender=`CUSTOMER`, receiver=`COUNTERPARTY` |
+| `nameHash` | string | — | 정규화 이름 HMAC |
+| `nameTokens` | array<string> | — | 정규화 이름 토큰(원문 대신 권장) |
+| `dob` | string(date) | — | 매칭용. 저장은 hash |
+| `country` | string | — | ISO 국가(수취인 receiver 키 구성요소) |
+| `documentHash` | string | — | 문서번호 HMAC |
+| `walletAddressHash` | string | — | 지갑주소 HMAC(`CRYPTO_ADDRESS` — hanpass-ph 외부 ingest 미사용, enum 보존) |
+| `addressTokens` | array<string> | — | 주소 정규화 토큰 |
+| `relationshipRefs` | array<string> | — | 관계 ref(공유 계좌·반복 수취인 등) |
+| `transactionRef` | string | — | **해외송금 거래번호 keyed token**. 동일 거래의 sender·receiver screening을 묶는 키(§13). receiver 키 자체가 (이름+국가+전화)이므로 동일 수취인은 거래간 누적·FP 화이트리스트 재사용된다 |
 
-응답 `ScreenResponse` (DB `aml_screening_results`):
+응답 `ScreeningResponse` (DB `aml_screening_results`, `ScreeningController.ScreeningResponse` 정본 — code truth 12필드):
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `screeningId` | string(uuid) | `screening_id` |
-| `targetRef` | string | 대상 ref(DB `target_ref`, 마스킹 토큰) |
+| `tenantId` | string | 테넌트(= `tenant_demo` hanpass-ph) |
+| `targetRef` | string | 대상 ref(DB `target_ref`, 마스킹 토큰). sender=member token / receiver=이름+국가+전화 token |
+| `transactionRef` | string | 동일 거래의 sender·receiver를 묶는 해외송금 거래번호 token(nullable, §13) |
 | `targetType` | enum | DB §5.23 target_type(`CUSTOMER`/`ENTITY`/`COUNTERPARTY`/`CRYPTO_ADDRESS`) |
-| `status` | enum | §5.5 screening_status. **API 별칭 `POTENTIAL_MATCH`는 `POSSIBLE_MATCH`로 정규화**(DB §5.5 주석) |
+| `status` | enum | §5.5 screening_status(`NO_MATCH`/`POSSIBLE_MATCH`/`TRUE_MATCH`/`FALSE_POSITIVE`/`AUTO_DISCOUNTED`/`ESCALATED`). **API 별칭 `POTENTIAL_MATCH`는 `POSSIBLE_MATCH`로 정규화** |
 | `score` | number | 유사도 |
-| `scoreBreakdown` | object | name/dob/country/document/address/relationship(§10.3). **hanpass-ph 정합**: `member-svc zoloz_aml_screening`(`hit_results`→후보·항목별 점수, `risk_level`→`riskGrade`, `total_hits`→matched 카운트, `decision`→`status`)를 본 분해로 정규화 |
-| `riskGrade` | enum | §5.2(평가 가능 시) |
+| `scoreBreakdown` | object | name/dob/country/document/address/relationship 항목별 점수 분해(§10.3). **hanpass-ph 정합**: `member-svc zoloz_aml_screening`(`hit_results`→후보·항목별 점수, `risk_level`→위험도, `total_hits`→matched 카운트, `decision`→`status`)를 본 분해로 정규화 |
 | `reasonCodes` | array<string> | `reason_codes` (예: `SANCTIONS_NAME_SIMILARITY`,`DOB_MATCH`) |
-| `requiredActions` | array<string> | `MANUAL_REVIEW`/`EDD_REVIEW`/... |
-| `matchedEntries` | array<string> | 후보 entry_id(masked). **하위호환 유지** — `matchedCandidates`와 병존(기존 소비자 보존) |
-| `matchedCandidates` | array<object> | **가산(additive) 필드.** 매칭 후보 출처계보. 각 원소 `MatchedCandidate`(아래 표) — `matchedEntries`의 각 entry_id를 `aml_watchlist_entries`+`aml_watchlist_sources` 조인으로 enrich한 best-effort 파생값. **raw PII 미포함**(masked entryId·출처·버전·점수·토큰개수만) |
-| `matchedRules` | array<object> | 적용된 WLF 룰 참조 `{ ruleCode, threshold }`(파생값, DB `rule_version` 기준 투영). 단수 `ruleVersion`과 구분 |
+| `matchedEntries` | array<string> | 후보 entry_id(masked) |
 | `ruleVersion` | string | 적용 WLF 룰/threshold 버전(DB `rule_version`) |
 | `decidedBy` | string | 판정자(분석가, DB `decided_by`, nullable) |
-| `decidedAt` | string(date-time) | 판정 시각(DB `decided_at`, nullable) |
-| `expiresAt` | string(date-time) | 실시간 결과 만료(§15.7) |
 
-> **`screeningHistory`(이전 판정 이력 배열)는 `ScreenResponse` 미포함.** 동일 `screeningId`의 이전 판정 이력은 `GET /api/v1/aml/screenings/{screeningId}` 상세 조회(§2.2) 응답에서 파생한다. PRD 화면파생 방향 채택 — bo-web/bo-api가 이력 상세가 필요할 경우 단건 조회 엔드포인트를 호출하며, 실시간 screening POST 응답(`ScreenResponse`)에는 이력 배열을 포함하지 않는다.
+> **bo-api enrichment(가산, 엔진 `ScreeningResponse` 미포함).** 아래 필드는 코어 `ScreeningResponse` 레코드에 없고 bo-api가 `matchedEntries`를 `aml_watchlist_entries`·`aml_watchlist_sources`로 조인해 파생하거나 화면이 로컬 합성하는 best-effort 값이다(raw PII 미포함): `matchedCandidates[]`(매칭 후보 출처계보, 아래 `MatchedCandidate` 표)·`matchedRules[]`(`{ruleCode, threshold}`)·`riskGrade`·`requiredActions[]`·`decidedAt`·`expiresAt`. 코어 엔진 응답만 소비하는 호출자는 이 필드를 가정하지 않는다.
+
+> **`screeningHistory`(이전 판정 이력 배열)는 `ScreeningResponse` 미포함.** 동일 `screeningId`의 이전 판정 이력은 `GET /api/v1/aml/screenings/{screeningId}` 상세 조회(§2.2) 응답에서 파생한다. PRD 화면파생 방향 채택 — bo-web/bo-api가 이력 상세가 필요할 경우 단건 조회 엔드포인트를 호출하며, 실시간 screening POST 응답(`ScreeningResponse`)에는 이력 배열을 포함하지 않는다.
 
 `MatchedCandidate`(매칭 후보 출처계보 — `matchedCandidates[]` 원소). **전 필드 nullable(best-effort).** bo-api가 `matchedEntries`의 각 entry_id로 `aml_watchlist_entries`·`aml_watchlist_sources`를 일괄 조인해 enrich하며, raw PII 필드는 일절 포함하지 않는다(masked entryId·출처·버전·점수·토큰개수만):
 
@@ -384,24 +390,45 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | `reviewDueSoon` | long | 30일 내 재심사 예정 건수 |
 | `calculatedAt` | string(date-time) | 집계 시각 |
 
-### 3.4 TransactionEvaluateRequest → `POST /api/v1/aml/transactions/evaluate` (DB `aml_alerts`)
+### 3.4 TransactionEvaluateRequest → `POST /api/v1/aml/transactions/evaluate` (DB `aml_alerts`, `AlertController.TransactionEvaluateRequest`)
+
+**code truth 8필드**(record): `transactionRef`·`targetRef`·`direction`·`amount`·`amountMinor`·`currency`·`counterpartyRef`·`channelType`. corridor·phpEquivalent 등 부가 신호는 거래 정규화 payload(`aml_canonical_events.payload`)에서 velocity/cmp 노드가 읽으며 본 evaluate 요청 바디에는 포함하지 않는다(아래 주석).
 
 | 필드 | 타입 | R | 설명 |
 |---|---|---|---|
-| `transactionRef` | string | R | 거래 ref |
-| `targetRef` | string | R | 고객/법인 ref |
-| `direction` | enum | — | `INBOUND`/`OUTBOUND` |
-| `amount` | string(decimal) | — | NUMERIC(24,8) 호환 문자열 |
-| `amountMinor` | integer | — | 통화 최소단위(병행, DB `amount_minor`) |
+| `transactionRef` | string | R | 거래 ref(keyed token). hanpass-ph: `remit.transfer_number`/`domestic.transaction_id`/`wallet.*_transaction_id` |
+| `targetRef` | string | R | 고객(회원)/법인 ref |
+| `direction` | string | — | `INBOUND`/`OUTBOUND`(미지정 가능) |
+| `amount` | string(decimal) | — | NUMERIC(24,8) 호환 문자열. 존재 시 velocity/cmp base amount로 우선 |
+| `amountMinor` | integer | — | 통화 최소단위(병행, `amount` 부재 시 base, DB `amount_minor`) |
 | `currency` | string | — | ISO |
-| `counterpartyRef` | string | — | 상대방 |
-| `channelType` | string | — | 충전(walletchg)/국내(domestic)/해외(remit)/인바운드(inbound) 등 (hanpass-ph 채널) |
-| `corridor` | object | — | cross-border corridor `{ sendCountry, receiveCountry, sendCurrency, receiveCurrency }`(remit-svc 파생). 국내 거래는 생략 |
-| `amountBase` | string(decimal) | — | USD 정규화 금액(remit `usd_amount/report_amount` 파생). corridor 시나리오 집계용. **임계 교체 아님 — 데이터 신호** |
+| `counterpartyRef` | string | — | 상대방(수취인 등) |
+| `channelType` | string | — | 충전(`CASH_IN`/walletchg)·국내(`DOMESTIC_REMIT`/domestic)·해외(`CROSS_BORDER_REMIT`/remit)·인바운드(`INBOUND_REMIT`/inbound) 등 hanpass-ph 채널 |
+
+> **TM feature 신호(요청 바디 외).** `HIGH_RISK_CORRIDOR`·`RAPID_MOVEMENT`·`REFUND_LAUNDERING`·`ROUND_TRIPPING` 등 금액 시나리오는 `transaction.phpEquivalent`(PHP 환산액)와 `transaction.channelType`을 feature로 사용한다. `phpEquivalent`는 거래 정규화 payload(`payload->>'phpEquivalent'`)에서 노출되며(`TmEvaluationService.buildSnapshot`), 부재 시 미노출 fail-safe(발화 안 함). corridor(`{sendCountry, receiveCountry, sendCurrency, receiveCurrency}`)도 payload 파생이다. **데이터 신호이며 규제(CTR/STR) 임계 교체가 아니다**(§3.4a evidence). |
 
 응답 `TransactionEvaluateResponse`: `{ evaluated: true, alerts: [ { alertId, alertType(enum TM_SCENARIO/SCREENING/RA/FDS_ESCALATION/VENDOR_ALERT — 본 API가 정본, DB §5.18 `alert_type` 1:1), scenarioCode(§5.6), severity(LOW/MEDIUM/HIGH/CRITICAL), status(§5.7), evidence } ] }`.
 
-### 3.4a AlertDto → `GET /api/v1/aml/alerts/{alertId}` (DB `aml_alerts` §3.10 10컬럼+감사)
+#### TM 시나리오 카탈로그 (`TmScenario` enum 10종 — code truth, hanpass-ph 데모 phpEquivalent)
+
+`scenarioCode`는 `TmScenario` enum 10종(DB §5.6 `tm_scenario`)이며, 발화 여부는 tenant별 `aml_tm_scenarios`의 ACTIVE 버전(임계·윈도우·DSL)에 따른다. hanpass-ph 데모(`tenant_demo`) ACTIVE 시나리오의 금액 임계는 **phpEquivalent(PHP 환산)** 기준으로 적재된다(Flyway V28, 환산식 = 기존 USD 임계 ×56). 목록·매칭 정합: ACTIVE 시나리오만 발화하며 DRAFT(`REFUND_LAUNDERING`은 데모 ACTIVE, `TRADE_MISPRICING`은 DRAFT 유지)는 발화하지 않는다.
+
+| scenarioCode | 데모 상태 | feature·임계(phpEquivalent) | 비고 |
+|---|---|---|---|
+| `STRUCTURING` | ACTIVE | count 기반 분할(velocity count) — 금액 무관 | 분할 충전/송금 |
+| `RAPID_MOVEMENT` | ACTIVE | velocity count 2h ≥ 3 **AND** phpEquivalent ≥ 56,000 (PHP) | 단기 급증 |
+| `HIGH_RISK_CORRIDOR` | ACTIVE(v3) | phpEquivalent ≥ 280,000 (PHP) **AND** channelType=`CROSS_BORDER_REMIT` | 고위험 corridor |
+| `REFUND_LAUNDERING` | ACTIVE | velocity count 7d ≥ 6 **AND** phpEquivalent ≥ 28,000 (PHP) | 환불·역송 |
+| `ROUND_TRIPPING` | ACTIVE | velocity count 14d ≥ 4 **AND** phpEquivalent ≥ 112,000 (PHP) | 순환 거래 |
+| `MULE_NETWORK` | (시드) | count/네트워크 기반 — 금액 무관 | 머니뮬 네트워크 |
+| `SHELL_MERCHANT` | DRAFT | — | enum 보존(hanpass-ph 데모 미활성) |
+| `TRADE_MISPRICING` | DRAFT | — | enum 보존(hanpass-ph 데모 미활성) |
+| `CRYPTO_OFF_RAMP` | (미활성) | — | enum 보존(hanpass-ph 외부 ingest 미사용) |
+| `INTERNAL_OVERRIDE_ABUSE` | (미활성) | 내부 override 남용 | 운영 통제 |
+
+> count/네트워크/채널 cmp 노드는 금액과 무관하므로 PHP 환산 대상이 아니다(V28는 ACTIVE amount leaf만 phpEquivalent로 전환). `phpEquivalent`가 적재되지 않은 거래는 금액 노드가 미발화(fail-safe)된다.
+
+### 3.4a AlertDto → `GET /api/v1/aml/alerts/{alertId}` (DB `aml_alerts` §3.10 10컬럼+감사, `AlertController.AlertDto`)
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
@@ -843,44 +870,37 @@ components:
         totalElements: { type: integer, format: int64 }
         totalPages: { type: integer }
         sort: { type: string }
-    ScreenRequest:
+    ScreenRequest:  # code truth: ScreeningController.ScreenRequest (flat, no nested subject / no sourceTypes)
       type: object
-      required: [targetRef, targetType, subject]
+      required: [targetRef, targetType]   # + Idempotency-Key 헤더
       properties:
-        targetRef: { type: string }
+        targetRef: { type: string, description: 'sender=member token(CUSTOMER) / receiver=이름+국가+전화 token(COUNTERPARTY)' }
         targetType: { type: string, enum: [CUSTOMER, ENTITY, COUNTERPARTY, CRYPTO_ADDRESS] }
-        sourceTypes:
-          type: array
-          items: { type: string, enum: [SANCTIONS, PEP, RCA, ADVERSE_MEDIA, INTERNAL, LAW_ENFORCEMENT, VASP_RISK] }
-        subject:
-          type: object
-          properties:
-            nameTokens: { type: array, items: { type: string } }
-            dob: { type: string, format: date }
-            country: { type: string }
-            documentHash: { type: string }
-            walletAddressHash: { type: string }
-    ScreenResponse:
+        nameHash: { type: string }
+        nameTokens: { type: array, items: { type: string } }
+        dob: { type: string, format: date }
+        country: { type: string }
+        documentHash: { type: string }
+        walletAddressHash: { type: string }
+        addressTokens: { type: array, items: { type: string } }
+        relationshipRefs: { type: array, items: { type: string } }
+        transactionRef: { type: string, description: '해외송금 거래번호 token — 동일 거래 sender·receiver screening 연결(§13)' }
+    ScreeningResponse:  # code truth: ScreeningController.ScreeningResponse (12 fields)
       type: object
       properties:
         screeningId: { type: string, format: uuid }
+        tenantId: { type: string }
+        targetRef: { type: string }
+        transactionRef: { type: string, nullable: true }
+        targetType: { type: string, enum: [CUSTOMER, ENTITY, COUNTERPARTY, CRYPTO_ADDRESS] }
         status: { type: string, enum: [NO_MATCH, POSSIBLE_MATCH, TRUE_MATCH, FALSE_POSITIVE, AUTO_DISCOUNTED, ESCALATED] }
         score: { type: number }
         scoreBreakdown: { type: object }
-        riskGrade: { type: string, enum: [LOW, MEDIUM, HIGH, PROHIBITED] }
         reasonCodes: { type: array, items: { type: string } }
-        requiredActions: { type: array, items: { type: string } }
         matchedEntries: { type: array, items: { type: string } }
-        matchedRules:
-          type: array
-          items: { $ref: '#/components/schemas/RuleRef' }
         ruleVersion: { type: string }
-        expiresAt: { type: string, format: date-time }
-    RuleRef:
-      type: object
-      properties:
-        ruleCode: { type: string }
-        threshold: { type: number }
+        decidedBy: { type: string, nullable: true }
+        # riskGrade·requiredActions·matchedCandidates·matchedRules·decidedAt·expiresAt 는 bo-api enrichment(엔진 응답 외, §3.2)
     IngestEventResponse:
       type: object
       properties:
@@ -1087,7 +1107,7 @@ components:
         aml:pii:reveal scope + RAW_DATA_ACCESS 감사 필요(§1.6).
       properties:
         customerRef: { type: string }
-        customerType: { type: string, enum: [PERSON, SOLE_PROPRIETOR, LEGAL_ENTITY, MERCHANT, SELLER, VASP_CUSTOMER, EMPLOYEE, VENDOR] }
+        customerType: { type: string, enum: [PERSON, SOLE_PROPRIETOR, EMPLOYEE] }  # code truth: CustomerType 3종(DB §3.3). 법인은 별도 Entity 모델
         kycStatus: { type: string, enum: [PENDING, VERIFIED, INCOMPLETE, EXPIRED, REJECTED] }
         riskGrade: { type: string, enum: [LOW, MEDIUM, HIGH, PROHIBITED] }
         nameHash: { type: string, nullable: true, description: '이름 HMAC(마스킹)' }
@@ -1162,7 +1182,7 @@ paths:
               schema:
                 type: object
                 properties:
-                  data: { $ref: '#/components/schemas/ScreenResponse' }
+                  data: { $ref: '#/components/schemas/ScreeningResponse' }
         '409': { description: 멱등 충돌, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: manual-review/fail-closed, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '503': { description: WLF 엔진 장애(fail-closed), content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
@@ -1646,6 +1666,7 @@ paths:
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-06-30 | **hanpass-ph AML 정본 재그라운딩 + 코드 truth 정합화(추측 제거).** (1) **헤더** — 책임 패키지 `com.hanpass.aml`→실제 `com.aegis.aml`, 컨트롤러 정본 경로 명시, 시스템 그라운딩(hanpass-ph 결제 5유형 `remit`/`domestic`/`wallet`·crypto/trade/PG/ecommerce/marketplace/B2B advanced domain 제외)·운영 테넌트 `tenant_demo`=hanpass-ph 박스 추가. (2) **§0 Public caller** 일반 `PG·VASP 시스템`→hanpass-ph 트랜잭션 마이크로서비스(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`inbound-svc`). (3) **§2.2 WLF 호출 패턴 주석 신설** — 해외송금 거래당 sender(member UUID=`CUSTOMER`)·receiver(이름+국가+전화 token=`COUNTERPARTY`) 2회 screen, `transactionRef`로 연결, FP 화이트리스트는 `(targetRef::matchedEntryId)` fingerprint 키로 거래간(across-transaction) 유효. (4) **§3.1 eventType taxonomy** 를 `EventFamily` enum 정본(hanpass `customer`/`entity`/`beneficial-owner`/`transaction`/`remit`/`domestic`/`wallet` family + 5유형 verb)으로 교체, `crypto.*` 등 잔존 family는 strict-gate fail-safe·외부 ingest 미사용 명문화. (5) **§3.2 ScreenRequest** 코드 truth 평면화(중첩 `subject`·`sourceTypes` 제거, `nameHash`/`addressTokens`/`relationshipRefs`/`transactionRef` 등 실제 `ScreenRequest` 11필드) + **응답을 실제 `ScreeningResponse` 12필드**로 환원(`tenantId`·`transactionRef` 추가, `riskGrade`/`requiredActions`/`matchedCandidates`/`matchedRules`/`decidedAt`/`expiresAt`는 bo-api enrichment로 분리). (6) **§3.4 TransactionEvaluateRequest** 코드 truth 8필드로 환원(`corridor`·`amountBase`는 요청 바디 외 payload feature로 이동), TM feature(`phpEquivalent`·channelType) 주석. (7) **§3.4a TM 시나리오 카탈로그 신설** — `TmScenario` enum 10종·데모 ACTIVE phpEquivalent 임계(Flyway V28: HIGH_RISK_CORRIDOR 280,000·RAPID_MOVEMENT 56,000·REFUND_LAUNDERING 28,000·ROUND_TRIPPING 112,000 PHP). (8) **CustomerType enum 정정** — 8종(MERCHANT/SELLER/VASP_CUSTOMER 등)→코드 truth **3종**(`PERSON`/`SOLE_PROPRIETOR`/`EMPLOYEE`). (9) **§5 OpenAPI** `ScreenRequest`/`ScreeningResponse` schema 코드 정합·`$ref` 갱신. | aegis-java-implementer. 코드=truth. 근거=`aml-svc` adapter/in/rest(AmlEventController·ScreeningController·AlertController·RiskController·WatchlistAdminController·TmScenarioAdminController·ApprovalController)·domain/enums(EventFamily·TmScenario·TargetType·CustomerType·WatchlistSourceType·ScreeningStatus·SourceOrigin)·Flyway V28. |
 | 2026-06-21 | **RA inputDataAsOf·policyPackVersion + TM AlertSummary aggregationSummary(가산) 코드 정합.** (1) **§3.3 `RiskScoreResponse`** 에 `inputDataAsOf`(date-time, nullable, 입력 데이터 기준시점)·`policyPackVersion`(string, nullable, 정책팩 버전) 2 필드 추가 — 엔진 응답 passthrough, 없으면 best-effort(`inputDataAsOf`=`evaluatedAt`, `policyPackVersion`=null/stub 상수), RA 상세·점수 목록(§2.7) 응답 포함. (2) **§3.4a** 에 `aggregationSummary`(object\|null) 추가 + `AggregationSummary` 표 신설(`strIndicator`·`windowLabel`·`measure`·`threshold`·`thresholdMet`·`relatedCount`·`relatedAmount`·`currency`·`dominantChannel` 9종 전부 nullable) — TM 알림 **목록**(`GET /api/v1/bo/aml/alerts`, bo-api `AlertSummary`) triage 프리뷰 전용, `evidence`에서 목록 시점 파생(N+1 없음), raw PII 미포함(집계만). (3) **§3.4a** `measure`·`relatedAmount` 타입 `number` 정정(기존 string→threshold·measure 동일 수치축 일관, bo-api·bo-web Double·formatAmount 정합). | aegis-spec. 코드=truth. 근거=`bo-api` `RiskScore`·`AlertSummary` DTO. |
 | 2026-06-21 | **WLF matchedCandidates 출처계보(가산) 반영.** §3.2 `ScreenResponse`에 가산 필드 `matchedCandidates[]`(원소 `MatchedCandidate`) 추가 + `MatchedCandidate` 출처계보 표 신설(entryId·sourceCode·provider·sourceType·listType·subjectKind·entryVersion·sourceLastImportedAt·matchField·score·threshold·reasonCodes·matchedTokenCount, 전 필드 nullable best-effort, raw PII 미포함). 기존 `matchedEntries`는 하위호환 유지(병존). bo-api가 `aml_watchlist_entries`+`aml_watchlist_sources` 조인으로 enrich. | aegis-spec. 코드=truth. DB §3.8 파생 주석 동기화. |
 | 2026-06-21 | **코드 기준 RA·Subject360·override·alerts 정합화(이격 리포트 AML, 코드=truth).** (1) **§3.3 RiskAssessmentRequest** 에 `highRiskCountry`·`wlfTrueMatch`·`uboMismatch`(boolean, optional) 3 필드 추가(당연고위험 트리거, `EvaluateCommand`). (2) **§3.3 RiskScoreResponse** 에 `mandatoryHighRisk`(boolean)·`mandatoryHighRiskReasons`(array&lt;string&gt;) 추가(§2.7 점수 목록 응답). (3) **§3.3 `RiskOverrideRequest` DTO 신설**(`targetGrade` 하향만·`reason` 필수·`makerId` 필수) + override 경로는 **`POST /api/v1/admin/aml/risk-scores/{scoreId}/override`**(`RiskModelAdminController`, 코드 재확인 — 구 doc 경로 이미 정확) 명시. **§3.3b RiskDistributionResponse 신설**. (4) **§2.7 `GET .../risk-scores`(목록·`riskGrade` 멀티/`modelVersion`/page/size)·`GET .../risk-scores/distribution` 2행 추가**(구현됨, `RiskScoreAdminController`) + §5.1·§5 "미신설" 단언 폐기. (5) **§3.4b Subject360Dto** — `identity`에 `subjectType`·`displayNameMasked`, `riskSummary`에 `mandatoryHighRisk`·`highRiskRegistryReason`(단수→**array&lt;string&gt;**)·null(거래전용), `transactionFeed[].status`(DECIDED/MONITORED/null), 루트 `assembledAt` 추가 + **insight/assessment는 bo-web 클라 로컬 파생(`lib/aml-subject-insight.ts`)·API 비포함** 주석. (6) **§2.5a `GET /api/v1/bo/aml/alerts` 브라우즈 목록 행 추가**(필터 status·severity·sourceOrigin·`scenario`·from·to·targetRef·channel·corridor) + §2.4 엔진 public 알림은 status 단일 필터임 명시. | aegis-spec. 근거=`aml-svc` RiskController·RiskScoreAdminController·RiskModelAdminController, `bo-web/lib/aml-subject.ts`·`aml-subject-insight.ts`, `bo-api` AmlTmController. 이격8~16·19·20·24·25 반영. DB §3.9/§3.15·integration §3.4 동기화. |

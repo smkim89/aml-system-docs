@@ -1,15 +1,16 @@
-# FDS API 명세서 (fds-svc REST)
+# FDS API 명세서 (fds-svc REST · hanpass-ph)
 
-> 정본: `.claude/skills/_shared/target-architecture.md` (4서비스 모노레포 · Java 25 · Spring Boot 3.5.x · 헥사고날 · 멀티테넌시 · PII 마스킹 · 4-eyes · 한국 Policy Pack).
-> 입력 설계서: `docs/software/01-fdsSvc-sass.md` v1.1 (§6.2 헥사고날 `adapter/in/rest`, §11 action/case/결재, §12.8 Public API, §13 멀티테넌시, §16 PII/규제).
-> 입력 DB: `docs/design/db/01-fds-db.md` **v1.7** (스키마 `fds`, 멀티테넌시 `tenant_id/workspace_id/data_scope`, enum 코드값 §4, 컬럼/타입 §5, `subject_kind` 9종 `CASE_CLOSE`·`POLICY_PACK` 포함 §5.23, `fds_cases.aml_case_id` §5.13, **배포 모델 `fds_tenants.deployment_model`(3종)·`onboarding_status`(8종)·`default_region`·`infra_ref` §4.1·§5.1, 구 `isolation_mode` 폐기**, `close_reason` 8종 §4.11, `compliance_policy` JSONB §5.1, **`transaction_type` 폐쇄 enum 12종 §4.19**).
-> 입력 설계서 핀: `docs/software/01-fdsSvc-sass.md` **v1.9** (§13 배포 모델·온보딩 프로비저닝·키 의미 재정의, §11.6.11 `deployment_model`, §11.6.11a `onboarding_status` 상태머신, §12.8 서비스 관리=배포 유형+온보딩, §11.6.1a `close_reason` 8종, §11.6.1 REOPEN 전이, §11.5 `subject_kind` 9종, §16.2 규제 팩 토글).
-> 책임 서비스: **`services/fds-svc`** (`com.hanpass.fds.adapter.in.rest`). AML/STR/CTR/Travel Rule 본 케이스는 `aml-svc`, 운영자 IAM·결재 집약·감사는 `bo-api`. **bo-web은 bo-api만 호출(엔진 직접호출 금지)**.
+> **운영 도메인**: 본 명세는 **hanpass-ph**(필리핀 송금·월렛 사업자) AML/FDS RegOps 플랫폼의 fds-svc REST API 정본이다. 거래는 hanpass-ph **5채널**(`CROSS_BORDER_REMIT`(해외송금)·`DOMESTIC_REMIT`(국내송금)·`CASH_IN`(월렛충전)·`WALLET_PAYMENT`(월렛결제)·`WALLET_WITHDRAWAL`(월렛출금))만 다룬다(§3.5). 카드결제·가상자산(crypto)·무역금융(trade)·PG·이커머스·마켓플레이스·B2B 등 비-hanpass 채널/도메인은 운영 대상이 아니다(닫힌 enum에는 잔존하나 hanpass-ph는 미사용).
+> 정본: `.claude/skills/_shared/aegis-stack.md` (4서비스 모노레포 · Java 25 · Spring Boot 3.5.x · 헥사고날 · 멀티테넌시 · PII 마스킹 · 4-eyes · 한국 Policy Pack).
+> 입력 설계서: `docs/software/01-fdsSvc-sass.md` (§6.2 헥사고날 `adapter/in/rest`, §11 action/case/결재, §12.8 Public API, §13 멀티테넌시, §16 PII/규제).
+> 입력 DB: `docs/design/db/01-fds-db.md` (스키마 `fds`, 멀티테넌시 `tenant_id/workspace_id/data_scope`, enum 코드값 §4, 컬럼/타입 §5, `subject_kind` 9종 `CASE_CLOSE`·`POLICY_PACK` 포함 §5.23, `fds_cases.aml_case_id` §5.13, **배포 모델 `fds_tenants.deployment_model`(3종)·`onboarding_status`(8종)·`default_region`·`infra_ref` §4.1·§5.1, 구 `isolation_mode` 폐기**, `close_reason` 8종 §4.11, `compliance_policy` JSONB §5.1, **`transaction_type` 폐쇄 enum 12종 §4.19**, `channel_type` §4.4, corridor 컬럼 §5.5).
+> 코드 정본: **`services/fds-svc`** (`com.aegis.fds.adapter.in.rest` 전 컨트롤러·DTO, `com.aegis.fds.domain.enums.ChannelType`·`EventFamily`, Flyway `V17`/`V20`/`V22` 데모 룰). 본 문서의 엔드포인트·요청/응답 DTO·enum은 이 저장소와 1:1 일치한다(추측 금지).
+> 책임 서비스: **`services/fds-svc`**. AML/STR/CTR/Travel Rule 본 케이스는 `aml-svc`, 운영자 IAM·결재 집약·감사는 `bo-api`. **bo-web은 bo-api만 호출(엔진 직접호출 금지)**.
 
 ## 목차
 1. [범위·원칙](#1-범위원칙)
 2. [인증·인가·격리](#2-인증인가격리)
-3. [횡단 규약 (버저닝·페이지네이션·멱등성·에러)](#3-횡단-규약)
+3. [횡단 규약 (버저닝·페이지네이션·멱등성·에러·hanpass taxonomy)](#3-횡단-규약)
 4. [엔드포인트 표 (그룹별)](#4-엔드포인트-표)
 5. [DTO 스키마](#5-dto-스키마)
 6. [에러 코드](#6-에러-코드)
@@ -61,8 +62,8 @@
 ### 2.2 격리 컨텍스트 (필수 헤더)
 | 헤더 | 매핑 컬럼 | 필수 | 설명 |
 |---|---|---|---|
-| `Tenant-Id` | `tenant_id` | 필수(외부) | SaaS 서비스 경계(테넌트=서비스, 상위 기관 institution이 운영하는 서비스 1종). Admin API는 위임 토큰 claim에서 주입 |
-| `Workspace-Id` | `workspace_id` | 선택(미지정 시 `default`) | `retail`/`corporate`/`prod`/`sandbox`. `sandbox`는 shadow-only(action 미발행) |
+| `Tenant-Id` | `tenant_id` | 필수(외부) | SaaS 서비스 경계. **hanpass-ph는 단일 운영 테넌트 `tenant_demo`로 서비스한다**(테넌트=서비스 모델은 코드/스키마 truth로 유지하되 운영 테넌트는 1종). Admin API는 위임 토큰 claim에서 주입 |
+| `Workspace-Id` | `workspace_id` | 선택(미지정 시 `default`) | hanpass-ph 운영 workspace는 `default`. `sandbox`는 shadow-only(action 미발행) |
 | `Source-System` | `source_system` | Ingest/Decision 필수 | connector·schema 식별 |
 | `Idempotency-Key` | `idempotency_key` | 멱등 엔드포인트 필수 | 중복 방지(§3.3) |
 | `X-Signature` | — | HMAC 인증 시 필수 | `hmac-sha256=...` |
@@ -115,6 +116,50 @@
 ```
 - 전체 에러 본문은 PII 미노출(마스킹된 field path만).
 
+### 3.5 hanpass-ph 채널·eventType taxonomy·phpEquivalent (코드 정본)
+
+본 절은 `IngestEventRequest`/`EvaluateRequest`가 운반하는 hanpass-ph 거래 분류를 확정한다. 정본 = `com.aegis.fds.domain.enums.ChannelType`·`EventFamily` + Flyway `V17`/`V20`/`V22` 데모 룰.
+
+#### 3.5.1 채널 5유형 (`ChannelType`, `channel.channelType`)
+hanpass-ph가 운영하는 거래 채널은 다음 5종이다(`ChannelDto.channelType`·`fds_rules.channel_scope`·decision 필터 `channelType`에 공통 적용).
+
+| `channelType` | 거래유형 | 위험 도메인(`TransactionDomain`) | 소스 시스템(§4.8) |
+|---|---|---|---|
+| `CROSS_BORDER_REMIT` | 해외송금 | `OTHER` | `remit-svc` |
+| `DOMESTIC_REMIT` | 국내송금 | `DOMESTIC_TRANSFER` | `domestic-svc` |
+| `CASH_IN` | 월렛충전(top-up) | `WALLET` | `walletchg-svc` |
+| `WALLET_PAYMENT` | 월렛결제 | `WALLET` | `wallet-svc` |
+| `WALLET_WITHDRAWAL` | 월렛출금 | `WALLET` | `wallet-svc` |
+
+> `ChannelType`은 코드상 닫힌 enum(`fromCode`로 해석)으로 비-hanpass 채널 코드(`CARD_PRESENT`/`CARD_NOT_PRESENT`/`ATM`/`PG_PAYMENT`/`CRYPTO_*`/`EXCHANGE_TRADE`/`TRADE_PAYMENT`/`*_ECOMMERCE_*`/`MARKETPLACE_*`/`B2B_*` 등)를 enum 멤버로 보존하나 **hanpass-ph 운영 대상은 위 5종뿐**이다. 데모 룰 `V22`는 hanpass에 없는 카드결제 룰(`CARD_NOT_PRESENT`)을 `DISABLED`로 비활성한다(행 보존, 발화 중지).
+
+#### 3.5.2 eventType taxonomy (`eventType` = `<family>.<verb>`)
+`eventType`은 `<family>.<verb>` 형식이며 family(접두)는 ingest 파이프라인이 `event_type`에서 파생해 `fds_canonical_events.event_family`(`EventFamily`)에 저장한다(인바운드 필드 아님). hanpass-ph 결제 taxonomy family는 **`remit`/`domestic`/`wallet`** 3종이다.
+
+| `eventType` 예시 | `EventFamily` | 채널 매핑 |
+|---|---|---|
+| `remit.transfer.requested` | `REMIT` | `CROSS_BORDER_REMIT` |
+| `domestic.transfer.requested` | `DOMESTIC` | `DOMESTIC_REMIT` |
+| `wallet.charge.requested` | `WALLET` | `CASH_IN` |
+| `wallet.pay.requested` | `WALLET` | `WALLET_PAYMENT` |
+| `wallet.withdraw.requested` | `WALLET` | `WALLET_WITHDRAWAL` |
+
+> `EventFamily`의 `AML`/`CASE` family는 내부 생성/aml-svc 위임 분류로 **외부 connector ingest 불가**(`isExternallyIngestable()=false`). 비-hanpass family(`authorization`/`settlement`/`trade`/`invoice`/`order`/`seller`/`market` 등)는 enum에 잔존하나 hanpass-ph는 미수신.
+
+#### 3.5.3 phpEquivalent 룰 feature (PHP 환산 임계)
+hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `transaction.phpEquivalent`로 평가한다. 이 feature는 `canonical_payload.transaction.phpEquivalent`(시뮬/소스 적재)에서 독해되며 부재/파싱불가 시 미노출(fail-safe). 데모 룰(`tenant_demo`, `default` 스코프, Flyway `V22`) 임계는 다음과 같다(USD×56 환산, hanpass PH CTR ₱500,000 참고).
+
+| 채널(`channel.type`) | feature | 임계(`transaction.phpEquivalent`) | `decisionOutcome` |
+|---|---|---|---|
+| `CROSS_BORDER_REMIT` | `transaction.phpEquivalent` | `≥ 280000` | `REVIEW` |
+| `CASH_IN` | `transaction.phpEquivalent` | `≥ 560000` | `BLOCK` |
+| `DOMESTIC_REMIT` | `transaction.phpEquivalent` | `≥ 112000` | `REVIEW` |
+| `WALLET_PAYMENT` | `transaction.phpEquivalent` | `≥ 168000` | `REVIEW` |
+| `WALLET_WITHDRAWAL` | `transaction.phpEquivalent` | `≥ 84000` | `CHALLENGE` |
+| `DOMESTIC_REMIT` (분할입금) | `velocity(count, counterparty, 24h)` | `≥ 5` | `REVIEW` |
+
+> 룰 DSL/`rule_json`은 `{"type":"cmp","feature":"channel.type","op":"=","value":"<channel>"}` + `{"type":"cmp","feature":"transaction.phpEquivalent","op":">=","value":<임계>}`의 AND 결합이다(velocity 룰은 `{"type":"velocity","agg":"count","dimension":"counterparty","window":"24h"}`). `amountBase`(USD)는 통화 무관 비교 축으로 응답/필터에 병행 노출되나, hanpass 데모 임계 룰은 `phpEquivalent`로 발화한다. 데모 룰은 `tenant_demo`가 없으면(=운영) 매칭 0건(gated).
+
 ---
 
 ## 4. 엔드포인트 표
@@ -156,7 +201,7 @@
 | POST | `/api/v1/fds/cases/{caseId}/close` | case 종결(`closeReason` **필수** — enum 8종 §5.5 + 상세 메모 선택) | `fds:case:update` | 내부감사·규제 case 필수 |
 | POST | `/api/v1/fds/cases/{caseId}/feedback` | false positive feedback 등록 | `fds:case:update` | — |
 
-> `caseType IN (AML_REVIEW, CRYPTO_TRAVEL_RULE, REGULATORY_REPORT)`는 fds-svc가 origin만 보유. 본 조사·STR/CTR/Travel Rule 처리·종결은 aml-svc API(별도 명세). 응답에 `amlCaseRef`(cross-ref) 노출.
+> hanpass-ph AML 위임 case(`caseType IN (AML_REVIEW, REGULATORY_REPORT)`)는 fds-svc가 origin만 보유. 본 조사·STR/CTR 처리·종결은 aml-svc API(별도 명세). 응답에 `amlCaseRef`(cross-ref) 노출.
 
 ### 4.5 Evidence API (외부) — `fds:evidence:export`
 | 메서드 | 경로 | 설명 | scope | 4-eyes |
@@ -197,7 +242,7 @@
 
 ### 4.8 Source/Connector/Credential Admin API (위임) — `fds:admin:source-system` / `fds:admin:credential`
 
-> **소스 시스템 카탈로그(hanpass-ph 재그라운딩, DB §5.3a)**: `source_system` 식별자는 hanpass-ph 트랜잭션 마이크로서비스(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`)로 등록·예시화한다(generic `card-processor`/`core-banking`/`atm-switch` 대체). 업스트림은 `REST_PUSH`(REST sync 인입, 연동 §7.1) 기준이며, 거래 소스는 `transaction.requested`를 emit하고 `channel_type`은 소스별로 `CASH_IN`(walletchg)/`DOMESTIC_REMIT`(domestic)/`CROSS_BORDER_REMIT`(remit)/`INBOUND_REMIT`(inbound)에 대응한다. 연동 키 매핑은 연동 §7.2 정본(원문 금지·token/HMAC). **데이터 레이어 한정 — 규제(CTR/STR) 임계·기한 불변.**
+> **소스 시스템 카탈로그(hanpass-ph, DB §5.3a)**: `source_system` 식별자는 hanpass-ph 트랜잭션 마이크로서비스(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`)로 등록·예시화한다. 업스트림은 `REST_PUSH`(REST sync 인입, 연동 §7.1) 기준이며, 거래 소스는 hanpass eventType taxonomy(§3.5.2)를 emit하고 `channel_type`은 소스별로 `CASH_IN`(walletchg)/`DOMESTIC_REMIT`(domestic)/`CROSS_BORDER_REMIT`(remit)/`WALLET_PAYMENT`·`WALLET_WITHDRAWAL`(wallet)에 대응한다. 연동 키 매핑은 연동 §7.2 정본(원문 금지·token/HMAC). **규제(CTR/STR) 임계·기한 불변.**
 
 | 메서드 | 경로 | 설명 | scope | 4-eyes |
 |---|---|---|---|---|
@@ -241,26 +286,35 @@
 ### 5.1 IngestEventRequest (POST /fds/events) — `fds_canonical_events`
 | 필드 | 타입 | 필수 | 검증 | 매핑 |
 |---|---|---|---|---|
-| eventId | string(160) | ● | 원천 unique | `event_id` |
-| eventType | string(100) | ● | `<family>.<verb>` | `event_type` |
-| occurredAt | datetime | ● | ≤ now+5m | `occurred_at` |
-| schemaVersion | string(80) | ● | 등록된 mapping 존재 | `schema_version` |
+| eventId | string(160) | ● | 원천 unique(`@NotBlank`) | `event_id` |
+| eventType | string(100) | ● | `<family>.<verb>`(`@NotBlank`, §3.5.2) | `event_type` |
+| occurredAt | datetime | ● | ≤ now+5m(`@NotNull`) | `occurred_at` |
+| schemaVersion | string(80) | ● | 등록된 mapping 존재(`@NotBlank`) | `schema_version` |
+| messageVersion | string | △(기본 `v1`) | 큐 직렬화 버전(integration §4.1) | (큐 envelope) |
 | subject | SubjectDto | 조건부 | 고객 거래 필수 | `subject_ref`… |
 | actor | ActorDto | 조건부 | 내부감사·직원작업 필수 | `actor_ref` |
 | transaction | TransactionDto | 조건부 | 거래 이벤트 필수 | `transaction_ref`… |
 | instrument | InstrumentDto | 권장 | 수단 룰 필요 | `instrument_ref`… |
 | counterparty | CounterpartyDto | △ | | `counterparty_ref` |
-| channel | ChannelDto | ● | `channelType` 필수 | `channel_type`,`payment_rail` |
-| location | LocationDto | △ | | (canonical_payload) |
+| merchant | MerchantDto | △ | | `canonical_payload.merchant` |
+| device | DeviceDto | △ | | `canonical_payload.device` |
+| channel | ChannelDto | ● | `channelType` 필수(§3.5.1) | `channel_type`,`payment_rail` |
+| corridor | CorridorDto | △ | remit 계열 corridor | `send_country`·`receive_country`… |
+| geoCountry | string | △ | ISO 국가코드(PII 아님) | `geo_country` |
 | payloadHash | string(128) | △ | `sha256:...` | `payload_hash` |
+| canonicalPayload | string(JSON) | △ | 정규화 payload(마스킹·`transaction.phpEquivalent` 운반) | `canonical_payload` |
 
-> `Tenant-Id`/`Workspace-Id`/`Source-System`/`Idempotency-Key`는 헤더로 전달(body 미포함). **rawPayload·PAN·주민번호 포함 시 ingest reject 또는 tokenization 후 폐기**(§16.1).
+> `Tenant-Id`/`Workspace-Id`/`Source-System`/`Idempotency-Key`/`X-Correlation-Id`/`traceparent`는 헤더로 전달(body 미포함, `IngestController` 시그니처 정합). **rawPayload·PAN·주민번호 포함 시 ingest reject 또는 tokenization 후 폐기**(§16.1).
 
-SubjectDto: `subjectType`(enum subject_type ●), `subjectRef`(string token ●), `country`(string(8)), `kycLevel`, `riskRating`.
-TransactionDto: `transactionRef`(string ●), `transactionType`(enum `TransactionType` ●, **DB §4.19 폐쇄 12종 정본** — `WITHDRAWAL`/`DEPOSIT`/`TRANSFER`/`REMITTANCE`/`PAYMENT`/`REFUND`/`REVERSAL`/`CHARGE`/`SETTLEMENT`/`PAYOUT`/`EXCHANGE`/`ADJUSTMENT`, 자유 문자열 금지, §10 `TransactionType` schema), `direction`(enum `INBOUND`/`OUTBOUND`), `amount`(decimal(24,8), ≥0), `currency`(string(12)), `amountBase`(decimal(24,8) — **base 통화 USD**; cross-border는 remit `usd_amount`/`report_amount`에서 산출, DB §5.5), `baseCurrency`(cross-border 기본 `USD`), `corridor`(CorridorDto △, cross-border 송금 시), `status`.
-CorridorDto(△, cross-border `CROSS_BORDER_REMIT`/`INBOUND_REMIT` 시): `sendCountry`(string(2), `send_country`), `receiveCountry`(string(2), `receive_country`), `sendCurrency`(string(12), `send_currency`), `receiveCurrency`(string(12), `receive_currency`) — hanpass-ph `remit-svc`/`inbound-svc` corridor 매핑, DB §5.5. 미탑재 시 `canonical_payload.corridor`로 표기.
-InstrumentDto: `instrumentType`(enum instrument_type ●), `instrumentRef`(string token ●), `accountRef`, `institutionCode`, `country`.
-ChannelDto: `channelType`(enum channel_type ● **21종** — `CASH_IN`(월렛충전)·`INBOUND_REMIT`(파트너 인바운드) 포함, DB §4.4), `paymentRail`(enum payment_rail), `entryMode`.
+SubjectDto: `subjectType`(string), `subjectRef`(string token), `country`(string).
+ActorDto: `actorType`(string), `actorRef`(string).
+TransactionDto: `transactionRef`(string), `transactionType`(enum `TransactionType`, **DB §4.19 폐쇄 12종 정본** — `WITHDRAWAL`/`DEPOSIT`/`TRANSFER`/`REMITTANCE`/`PAYMENT`/`REFUND`/`REVERSAL`/`CHARGE`/`SETTLEMENT`/`PAYOUT`/`EXCHANGE`/`ADJUSTMENT`, 자유 문자열 금지, §10 `TransactionType` schema), `direction`(enum `INBOUND`/`OUTBOUND`), `amount`(decimal(24,8), ≥0), `currency`(string), `amountBase`(decimal(24,8) — **base 통화 USD**; hanpass-ph remit은 `usd_amount`/`report_amount`에서 산출, DB §5.5), `baseCurrency`(기본 `USD`), `status`. **PHP 환산 임계 feature `transaction.phpEquivalent`는 `canonicalPayload.transaction.phpEquivalent`로 운반**된다(§3.5.3).
+CorridorDto(△, `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT` 등 remit 계열): `sendCountry`(`send_country`), `receiveCountry`(`receive_country`), `sendCurrency`(`send_currency`), `receiveCurrency`(`receive_currency`) — hanpass-ph `remit-svc`/`domestic-svc` corridor 매핑, DB §5.5. 모든 필드 선택(ISO 코드, PII 아님). 미탑재 시 `canonical_payload.corridor`로 표기.
+InstrumentDto: `instrumentType`(string), `instrumentRef`(string token), `accountRef`, `institutionCode`, `country`.
+CounterpartyDto: `counterpartyType`(string), `counterpartyRef`(string token), `country`.
+MerchantDto: `merchantRef`(string token), `mcc`(string), `country`.
+DeviceDto: `deviceRef`(string token), `fingerprint`(string token — §10.1 device velocity).
+ChannelDto: `channelType`(enum channel_type, **hanpass-ph 운영 5종** `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`, §3.5.1·DB §4.4), `paymentRail`(string), `entryMode`(string).
 
 ### 5.2 IngestEventResponse (202 신규 수신 / 200·201 멱등 재반환)
 `POST /fds/events`는 **비동기 큐 적재**다(§4.1). 신규 수신 성공 = **202 Accepted**(`status=ACCEPTED`, 큐 적재 완료·정규화/평가는 후속). 멱등 재요청(동일 `Idempotency-Key`+동일 payload)은 저장된 결과를 **200/201**로 재반환(`Idempotency-Replayed: true`, §3.3). 중복 event(`event_id` 충돌)는 `status=DUPLICATE`, reject는 `status=REJECTED`(422 계열, §6).
@@ -270,23 +324,41 @@ ChannelDto: `channelType`(enum channel_type ● **21종** — `CASH_IN`(월렛�
 | status | enum | `ACCEPTED`(202 신규 큐 적재)/`DUPLICATE`/`REJECTED` |
 | idempotencyReplayed | boolean | 멱등 재반환 여부(true 시 200/201) |
 
-### 5.3 EvaluateDecisionRequest (POST /fds/decisions/evaluate)
-- body는 `IngestEventRequest`와 동일 구조(동기 평가). 차이: 응답에 즉시 decision 포함, `fds_decisions`+`fds_decision_reasons` 동기 생성.
+### 5.3 EvaluateRequest (POST /fds/decisions/evaluate) — `DecisionQueryController.EvaluateRequest`
+동기 평가 요청. 코드 정본 DTO는 **참조 기반 경량 body**다(이미 수신된 canonical event를 참조하거나 `canonicalPayloadJson`을 직접 동봉).
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| eventId | string | △ | 평가 대상 canonical event 참조 |
+| transactionRef | string | △ | 거래 참조 token |
+| subjectRef | string | △ | 대상 token |
+| sourceSystem | string | △ | 소스 시스템 식별(§4.8) |
+| canonicalPayloadJson | string(JSON) | △ | 정규화 payload(직접 평가 시, `transaction.phpEquivalent` 포함) |
+
+> `Tenant-Id`/`Workspace-Id`/`Idempotency-Key`(필수)는 헤더 전달. 응답에 즉시 decision 포함, `fds_decisions`+`fds_decision_reasons` 동기 생성. (과거 "IngestEventRequest와 동일 구조" 표기는 코드 정합으로 정정.)
 
 ### 5.4 DecisionResponse — `fds_decisions` (설계서 §12.8 응답 예시 정합)
 | 필드 | 타입 | 매핑 |
 |---|---|---|
 | decisionId | uuid | `decision_id` |
+| eventId | string | 연결 canonical event 참조 |
+| transactionRef | string(token) | decision 자체 거래 참조 |
+| subjectRef | string(token) | decision 자체 대상 참조 |
 | decision | enum decision (8종) | `decision` |
 | reasonCodes | string[] | `fds_decision_reasons.reason_code` |
 | riskScore | decimal(8,4) (0~100) | `risk_score` (산출 정책 = 소프트웨어 §11.1.1: outcome severity 단조 매핑; 응답은 JSON `number`, webhook은 `"82.0000"` 문자열 — §9·integration §4.5) |
 | recommendedActions | enum action_type[] | emit된 `fds_actions.action_type` 투영(capability/4-eyes 게이트·downgrade 반영, integration §142) — 단일 컬럼 1:1 매핑 아님 |
-| matchedRules | RuleRef[] (`ruleId`,`versionNo`) | `matched_rules` |
+| matchedRules | RuleRef[] (`ruleId`,`versionNo`,`ruleName`,`outcome`) | `matched_rules` (발화 룰 이름·outcome 동봉) |
 | ruleSetVersion | string(80) | `rule_set_version` |
+| caseId | uuid (nullable) | decision이 연 case(`fds_cases.origin_decision_id`); 미연결 시 null(graceful) |
+| amount / currency | decimal(24,8) / string (nullable) | 연결 canonical event LEFT JOIN 파생(거래 컨텍스트) |
+| amountBase / baseCurrency | decimal(24,8) / string (nullable) | USD 환산 비교 축(통화 혼재 비교) |
+| channelType | string (nullable) | 연결 event 채널(§3.5.1 5종) |
+| sendCountry / receiveCountry | string (nullable) | corridor(remit 계열, DB §5.5) |
 | expiresAt | datetime | `expires_at` |
 | createdAt | datetime | `created_at` |
 
-> `feature_snapshot`/`input_event_hash`는 증적용이며 기본 응답에서 요약/마스킹. Evidence API에서 전체 제공.
+> `RuleRef`(코드 정합) = `ruleId`(uuid)·`versionNo`(int)·`ruleName`(string)·`outcome`(string) — UI가 판정을 이끈 발화 룰을 가독 렌더할 수 있도록 이름·outcome 동봉(§10 OpenAPI 보강). `amount`/`currency`/`channelType`/`sendCountry`/`receiveCountry`는 `eventId`로 연결한 canonical event의 마스킹 read projection이며 event 미해석 시 `null`(raw PII 아님). `feature_snapshot`/`input_event_hash`는 증적용이며 기본 응답 미노출(Evidence API 전용 경계).
 
 ### 5.5 CaseDto — `fds_cases`
 | 필드 | 타입 | 매핑 |
@@ -543,8 +615,8 @@ tenant 알림 채널 1건(설계서 §13.2 alert channel, PRD TNT-002 ⑤). GET�
 ### 7.1 decision code (응답 `decision`, DB enum decision §4.7)
 `ALLOW` · `MONITOR` · `REVIEW` · `CHALLENGE` · `BLOCK` · `HOLD` · `FREEZE` · `REPORT`
 
-### 7.2 reasonCodes 예시 (`fds_decision_reasons.reason_code`)
-`NEW_BENEFICIARY` · `TRANSFER_VELOCITY` · `MULE_ACCOUNT_GROUP` · `GEO_MISMATCH` · `NEW_INSTRUMENT` · `HIGH_RISK_MERCHANT` · `CRYPTO_ADDRESS_RISK` · `TRAVEL_RULE_MISSING` · `SANCTION_HIT` · `STRUCTURING` · `INVOICE_PRICE_DEVIATION` · `DOCUMENT_MISMATCH` · `SELLER_PAYOUT_ANOMALY` · `APPROVER_ROLE_MISMATCH` · `EMPLOYEE_OVERRIDE_VELOCITY` (tenant별 확장 가능, free-form 허용하되 catalog 권장).
+### 7.2 reasonCodes 예시 (`fds_decision_reasons.reason_code`) — hanpass-ph
+송금·월렛 도메인 reasonCode 예시: `HIGH_AMOUNT_PHP_EQUIVALENT`(PHP 환산 고액, §3.5.3) · `NEW_BENEFICIARY`(신규 수취인) · `TRANSFER_VELOCITY`(송금 속도) · `STRUCTURING`(분할입금, DOMESTIC velocity) · `MULE_ACCOUNT_GROUP`(머니뮬 그룹) · `GEO_MISMATCH`(corridor 불일치) · `SANCTION_HIT`(제재 적중) · `WALLET_WITHDRAWAL_ANOMALY`(월렛출금 이상) · `WATCHLIST_HIT`(워치리스트). reason_code는 free-form 허용하되 catalog 권장. (카드/crypto/무역/seller 등 비-hanpass reasonCode는 운영 미사용.)
 
 > recommendedActions는 enum action_type(23종) 코드값으로만 반환.
 
@@ -671,7 +743,23 @@ components:
   schemas:
     Decision:
       type: string
+      description: 판정 결과(fds_decisions.decision, DB §4.7 8종).
       enum: [ALLOW, MONITOR, REVIEW, CHALLENGE, BLOCK, HOLD, FREEZE, REPORT]
+    ChannelType:
+      type: string
+      description: >
+        hanpass-ph 운영 채널(com.aegis.fds.domain.enums.ChannelType, §3.5.1).
+        운영 5종만 사용. ChannelType enum은 닫힌 집합으로 비-hanpass 코드를 멤버 보존하나 hanpass-ph는 아래 5종만 emit.
+      enum: [CROSS_BORDER_REMIT, DOMESTIC_REMIT, CASH_IN, WALLET_PAYMENT, WALLET_WITHDRAWAL]
+    EvaluateDecisionRequest:
+      type: object
+      description: 동기 평가 요청(DecisionQueryController.EvaluateRequest, §5.3). 참조 기반 경량 body — 모든 필드 선택.
+      properties:
+        eventId: { type: string, description: 평가 대상 canonical event 참조 }
+        transactionRef: { type: string, description: 거래 참조 token }
+        subjectRef: { type: string, description: 대상 token }
+        sourceSystem: { type: string, maxLength: 64, description: 소스 시스템 식별(§4.8) }
+        canonicalPayloadJson: { type: string, description: 정규화 payload(JSON, transaction.phpEquivalent 포함) }
     TransactionType:
       type: string
       description: 거래 유형(fds_transactions.transaction_type, DB §4.19 폐쇄 12종 — 자유 문자열 금지).
@@ -687,6 +775,11 @@ components:
         SUSPEND_EMPLOYEE_SESSION, REQUEST_TRAVEL_RULE_INFO, OPEN_AML_CASE, REGULATORY_REPORT]
     CaseType:
       type: string
+      description: >
+        case 유형(fds_cases.case_type, 도메인 CaseType enum 11종 — 코드 정본).
+        hanpass-ph 운영 대상은 FRAUD_REVIEW/AML_REVIEW/MULE_ACCOUNT_REVIEW/INTERNAL_AUDIT/REGULATORY_REPORT.
+        CRYPTO_TRAVEL_RULE/TRADE_FINANCE_REVIEW/ECOMMERCE_SETTLEMENT_REVIEW/B2B_INVOICE_REVIEW/CHARGEBACK_REVIEW/MERCHANT_RISK는
+        닫힌 enum 멤버로 보존하나 hanpass-ph는 미사용(비-hanpass 도메인).
       enum: [FRAUD_REVIEW, AML_REVIEW, CHARGEBACK_REVIEW, MULE_ACCOUNT_REVIEW,
         CRYPTO_TRAVEL_RULE, INTERNAL_AUDIT, MERCHANT_RISK, REGULATORY_REPORT,
         TRADE_FINANCE_REVIEW, ECOMMERCE_SETTLEMENT_REVIEW, B2B_INVOICE_REVIEW]
@@ -897,13 +990,19 @@ components:
     RuleRef:
       type: object
       required: [ruleId, versionNo]
+      description: 발화 룰 참조(DecisionResponse.RuleRef 코드 정합). ruleName·outcome 동봉(가독 렌더용).
       properties:
         ruleId: { type: string, format: uuid }
         versionNo: { type: integer }
+        ruleName: { type: string, description: 발화 룰 이름 }
+        outcome: { type: string, description: 발화 룰 outcome(enum decision) }
     DecisionResponse:
       type: object
       properties:
         decisionId: { type: string, format: uuid }
+        eventId: { type: string, description: 연결 canonical event 참조 }
+        transactionRef: { type: string }
+        subjectRef: { type: string }
         decision: { $ref: '#/components/schemas/Decision' }
         reasonCodes: { type: array, items: { type: string } }
         riskScore: { type: number, format: double, minimum: 0, maximum: 100 }
@@ -914,6 +1013,14 @@ components:
           type: array
           items: { $ref: '#/components/schemas/RuleRef' }
         ruleSetVersion: { type: string }
+        caseId: { type: string, format: uuid, nullable: true, description: decision이 연 case(fds_cases.origin_decision_id) }
+        amount: { type: number, nullable: true, description: 연결 event 거래 금액(LEFT JOIN 파생) }
+        currency: { type: string, nullable: true }
+        amountBase: { type: number, nullable: true, description: USD 환산 비교 축 }
+        baseCurrency: { type: string, nullable: true }
+        channelType: { $ref: '#/components/schemas/ChannelType' }
+        sendCountry: { type: string, nullable: true, description: corridor 송금국(remit 계열) }
+        receiveCountry: { type: string, nullable: true, description: corridor 수취국 }
         expiresAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
 paths:
@@ -1020,8 +1127,8 @@ paths:
         - name: channelScope
           in: query
           required: false
-          description: enum channel_type(DB §4.4 21종 — `CASH_IN`·`INBOUND_REMIT` 포함, hanpass-ph 재그라운딩)
-          schema: { type: string, maxLength: 64 }
+          description: hanpass-ph 채널(§3.5.1 5종 — CROSS_BORDER_REMIT/DOMESTIC_REMIT/CASH_IN/WALLET_PAYMENT/WALLET_WITHDRAWAL). channel_type enum은 닫힌 집합이나 운영은 5종.
+          schema: { $ref: '#/components/schemas/ChannelType' }
         - name: decisionOutcome
           in: query
           required: false
@@ -1368,6 +1475,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-06-30 | v2.8 | **hanpass-ph 재그라운딩(코드 정본 `com.aegis.fds` 1:1 정합).** (1) 헤더 — 운영 도메인=hanpass-ph 5채널 명시, 책임 패키지 `com.hanpass.fds`→`com.aegis.fds` 정정, 코드 정본 핀(컨트롤러·DTO·`ChannelType`/`EventFamily`/Flyway V17·V20·V22) 추가. (2) §2.2 `Tenant-Id`=hanpass-ph 단일 운영 테넌트 `tenant_demo`(테넌트=서비스 모델은 스키마 truth 유지). (3) **§3.5 신설 — hanpass 채널 5유형(`CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`)·eventType taxonomy(`remit`/`domestic`/`wallet` family, `*.requested`)·phpEquivalent 룰 feature(`transaction.phpEquivalent` PHP 환산 임계 표, V22 정합)**. (4) §5.1 `IngestEventRequest` DTO를 코드 record와 1:1 정합(`messageVersion`/`merchant`/`device`/`corridor`/`geoCountry`/`canonicalPayload` 반영, 가공의 `location`/`LocationDto` 제거, sub-DTO 필드 코드 정합), ChannelDto=운영 5종. (5) §5.3 `EvaluateRequest`를 코드 DTO(`eventId`/`transactionRef`/`subjectRef`/`sourceSystem`/`canonicalPayloadJson` 경량 body)로 정정(과거 "IngestEventRequest 동일 구조" 폐기). (6) §5.4 `DecisionResponse`에 코드 필드(`eventId`/`transactionRef`/`subjectRef`/`caseId`/`amount`/`currency`/`amountBase`/`baseCurrency`/`channelType`/`sendCountry`/`receiveCountry`) + `RuleRef`(`ruleName`/`outcome`) 반영. (7) §7.2 reasonCode 예시를 송금·월렛 도메인으로 교체(비-hanpass crypto/trade/seller/invoice 제거). (8) §10 OpenAPI — `ChannelType`(5종)·`EvaluateDecisionRequest` schema 신설, `RuleRef`/`DecisionResponse` 코드 필드 보강, `channelScope`/`CaseType` 주석에 hanpass 운영 범위·닫힌 enum 보존 명시. (9) §4.8 소스 카탈로그에서 `inbound-svc`/`INBOUND_REMIT` 제거(5채널 범위). enum/엔드포인트/scope/인증/HTTP·4-eyes 정본 불변(코드 닫힌 enum은 보존하되 hanpass 미사용 도메인 주석). | java-implementer |
 | 2026-06-21 | v2.7 | **룰 추천 엔드포인트·빌더 인라인 시뮬 반영(코드 정합).** §4.6 Rule/Simulation Admin 표에 `POST /api/v1/admin/fds/rules/recommendations`(scope `fds:rule:simulate`, 4-eyes —) 추가 — 목표 적중률 → 단일 피처 임계값 percentile 역산 + 엔진 재평가 검증, read-only(결재 불필요), 집계·임계값만 반환(raw PII/피처값 미반환). §5.9a `RuleRecommendationRequest`/`RuleRecommendationResponse` DTO 신설(요청 `featureKey`●·`targetHitRate`●(0<x≤1)·`direction`(GTE/LTE)·`channelScope`·`sampleWindow` / 응답 `recommendedThreshold`·`expectedHitRate`(scale4)·`sampleSize`·`alternatives`[]). 모집단=거래(이벤트) 기준·표본 500 근사·비수치/빈 표본 graceful(`sampleSize=0`). bo-api 제네릭 패스스루 위임(신규 코드 없음), 기존 enum·인증 불변. | api-designer |
 | 2026-06-21 | v2.6 | **코드 정합(저장소 fds-svc 컨트롤러 1:1) — 이벤트·결정 조회 API 표면화.** (1) §4.1에 **`GET /api/v1/fds/events` 목록 엔드포인트 신설**(필터 `sourceSystem`/`eventType`/`eventFamily`/`channelType`/`subjectRef`/`transactionRef`/`from`/`to` · 페이지네이션, scope `fds:case:read`) — 거래 인입 내역(원본 이벤트) 브라우즈. 기존 단건 `GET /events/{eventId}` 유지(`EventQueryController`). (2) §4.2 `GET /api/v1/fds/decisions` 필터를 **11종**(`transactionRef`·`subjectRef`·`ruleNo`·`decision`·`channelType`·`currency`·`amountMin`·`amountMax`·`sendCountry`·`receiveCountry`·`from`·`to`)으로 확장(`DecisionQueryController`) — 채널/금액/corridor 축은 연결 canonical event LEFT JOIN 파생(DB §5.10·§5.5). 인증·멱등·기존 enum 불변. | api-designer |
 | 2026-06-19 | v2.5 | **테넌트=서비스 재정의 + 기관 참조(institution_ref) 컬럼 신설(1 기관 : N 서비스)**: §1.1/§2.2/§9/§11.1/§11.2/§13 설명 텍스트의 '고객사'를 '서비스(테넌트=서비스)'로 정정(계층 기관→서비스(테넌트)→워크스페이스). `TenantDto`에 상위 기관 참조 `institutionRef`(=`fds_tenants.institution_ref`, nullable·additive) 필드 추가 + 설명에 1 기관 : N 서비스 노출. `tenant_id`/`Tenant-Id` 헤더·scope 코드·엔드포인트 경로·enum 불변(라벨/설명만). | api-designer |
