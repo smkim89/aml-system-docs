@@ -56,6 +56,7 @@ flowchart LR
 - **직렬화 규약**: 모든 큐·webhook 메시지 키는 **camelCase**로 직렬화하고 DB 컬럼(snake_case)과 1:1 매핑한다(예 `errorCode`↔`error_code`, `payloadHash`↔`payload_hash`, `sourceSchemaVersion`↔`schema_version`). enum 코드값은 DB §5·API §3와 동일하며 도메인 verb·별칭은 정본 enum으로 환원해 전파한다(예 WLF `POTENTIAL_MATCH`→`POSSIBLE_MATCH`, Travel Rule `REVIEW`→`HIGH_RISK`).
 - **`eventFamily`는 입력 필드가 아니다(서버 파생)**: consumer가 `eventType` 접두(`<family>`)에서 도출하는 **읽기전용 파생값**이며 발신측·ingest 본문(API §3.1 `IngestEventRequest`)에 싣지 않는다. aml-svc는 별도 `event_family` 컬럼을 두지 않고 `aml_canonical_events.event_type`(VARCHAR(80))에 `<family>.<verb>` 전체를 저장하므로, `eventFamily`는 라우팅·관측성·webhook envelope(API §8.2)용 투영(projection)으로만 쓴다.
 - **운영자 집계 API 경계**: 대시보드(플랫폼·서비스별)·서비스 관리·운영자 감사 조회는 **bo-api**가 소유·집약·인증한다(API §9 정본 결정). aml-svc(엔진)는 저수준 데이터 API·비동기 큐만 제공하며, 본 연동 명세는 운영자 집계 엔드포인트를 정의하지 않는다. PRD/PPT의 해당 화면은 호출 대상을 bo-api(`/api/v1/bo/aml/**`)로 명시한다.
+- **hanpass-ph REST 업무 분류(2026-07-01 코드 정합)**: FDS 탐지 결정과 AML TM은 같은 실시간 거래 payload(`memberRef`,`transactionRef`,`channel`,`amount`,`currency`,`corridor`)를 기준으로 한다. FDS는 룰 기반 실시간 차단/보류/허용 결정, AML TM은 동일 거래 feed를 CTR/STR 사후 모니터링 evidence로 사용한다. AML REST 수신 카탈로그는 거래 TM 1종(`/transactions/evaluate`) + 고객 라이프사이클 4종(CDD 승인·정보수정·KYC/CDD 재이행·EDD) + RA 1종 + WLF 1종으로 운영 화면에 분류한다(API §2.1 주석).
 
 ### 1.2 어댑터 매핑 (헥사고날, 설계서 §6.2)
 
@@ -143,7 +144,7 @@ flowchart LR
 
 | eventType | 트리거 | 키 | 외부 대상 |
 |---|---|---|---|
-| `report.submission.requested` | STR/CTR/Travel Rule 결재 EXECUTED | `reportId`·`reportType`·`approvalId` | ReportSubmissionPort → tenant adapter(D-04). dispatch 시 status=`SUBMITTED`(전송 완료·회신 대기) |
+| `report.submission.requested` | STR/CTR/Travel Rule 결재 EXECUTED | `reportId`·`reportType`·`submittedRef`·`evidenceHash`·`amlcSubmissionRef`(eAMLA 포털 접수번호) | 실제 포털(eAMLA/AMLC) 제출은 **`AmlcSubmissionPort` → ProviderSvc AMLC adapter 위임**(FDS/aml-svc 직접 포털 제출 안 함, 설계서 §14.1a·§5.4). ProviderSvc가 반환한 `amlcSubmissionRef`(lodgement 영수)는 dispatch payload·감사(`APPROVE_SUBMIT_REPORT`)에 provenance 로 기록. FIU 접수/실패 결과는 `ReportSubmissionPort`(acked/failed)로 폐루프. dispatch 시 status=`SUBMITTED`(전송 완료·회신 대기) |
 | `report.submission.acked` | FIU/보고기관 접수 회신 | `reportId`·`fiuAckRef`(FIU 접수번호) | → `aml_regulatory_reports.fiu_ack_ref` 저장, status=`ACKNOWLEDGED`(종단 — 폐루프 완성, 설계서 §14.1a) |
 | `report.submission.failed` | 전송 실패·FIU 오류 반려 | `reportId`·`submissionErrorCode`(API §3.6·§8.1 정본) | → `submission_error_code` 저장, status=`SUBMISSION_FAILED` → 운영자 정정 후 재제출(§6.2) |
 | `webhook.callback.requested` | screening/case/report 상태 변경 | `subjectRef`·`eventName`(API §8.1) | 고객 webhook URL(서명) — **콜백 URL 원천 = `aml_api_credentials`(`credential_type=WEBHOOK` `enabled=true`).`webhook_url`(DB §3.15, 구현 V17)**. 공유 secret = 동일 행 `secret_ciphertext`(서명 시점만 복호). **`aml_source_systems` 에는 webhook URL 컬럼 없음**(fds-svc `fds_api_credentials.webhook_url` 미러) |

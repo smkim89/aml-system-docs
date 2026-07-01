@@ -6,6 +6,8 @@
 > 멀티테넌시 모델: **기관 → 서비스(테넌트=`tenant_id`) → 워크스페이스(`workspace_id`)** (1 기관 : N 서비스, 테넌트 격리 경계=서비스). 사용자는 상위 기관/서비스 스코프로 바인딩한다.
 >
 > 변경 이력:
+> - 2026-07-01 — **CTR/STR 모니터링 통합 결재 정합(코드=truth, feature/aml-ctr-str-monitoring)**: §4.2 subject_type 라우팅에 **`CTR_THRESHOLD → REPORTING_OFFICER`**(CTR 규제 임계 변경)·**`REPORT_RULE → COMPLIANCE`**(CTR/STR 룰 활성화) 추가. 두 값은 **bo-api 애플리케이션 계층 subjectType**(`AmlApprovalDtos.SubjectType` 19→**21**종, 코드 승인선=`POLICY_ADMIN`)이며 **엔진 `aml_approvals.subject_type` CHECK 는 19종 유지**(엔진 결재 대상 아님). §4.3 BR-6 신설 — **CTR 규제 임계 hot-reload 제외**(결재 EXECUTED 시점에만 `aml_ctr_thresholds` 반영, 규제값 무단 변경 방지). §5 데이터 모델 표에 bo-api enum(21종)·`bo_audit_logs` 감사 3종(V6)·`aml_ctr_thresholds`/`aml_ph_banking_calendar`(V5/V7) 행 추가. DB §3.22a/§3.22b/§5.16·API §2.7/§11·기능정의서 §9.1 동기화.
+> - 2026-06-29 — **PEP 경영진 승인 결재선 정합(코드 truth)**: §4.2 subject_type별 라우팅에 **`PEP_APPROVAL → EXECUTIVE_APPROVAL`** 추가(PEP=정치적 주요인물 경영진 결재선, aml-svc `ApprovalLineResolver` 미러). `aml_approvals.subject_type` CHECK **18→19**(PEP_APPROVAL, 엔진 Flyway **V24** — WLF pii_vault V23과 별개)로 §4.2·§5 표·§8 P3 정정. 통합 approval_line 7종(EXECUTIVE_APPROVAL 기보유)·라우팅 데이터 구조 불변.
 > - 2026-06-21 — **구현 정합화(코드 truth)**: P1~P4·사용자 지정 결재선이 Flyway V18~V27로 **구현 완료**됨을 §1~§8 전반에 반영. `bo_user_tenants`(PK `admin_user_id`)·`bo_role_scopes`(V20)·data_scope `tenant|workspace`(V21)·`bo_approval_lines`/`bo_approval_routes`(V22)·`bo_menu`/`bo_menu_permissions`(V23)·`bo_approval_delegations`(V24)·데모 테넌트/라벨 정합(V26)·`bo_approval_route_members`(V27) 정본화. 화면(BO-APRL-003 신설·BO-APRL-002 명칭 정정)·NAV 6종·API 경로(DELETE 사용자 비활성·위임 회수·effective-approver·route-members) 코드 기준 정정. 감사 emit(ROLE_ASSIGNED/REVOKED/PASSWORD_CHANGED·ROLE_SCOPE_CHANGED·APPROVAL_LINE_CHANGE·APPROVAL_DELEGATION_CHANGED) 실재 확인. ROLE_CHANGE 4-eyes 워크플로는 **후속 과제**(현재 RBAC 게이트 + 감사만).
 > - 2026-06-19 — 테넌트=서비스 재정의(기관 → 서비스 → 워크스페이스). §0·§2.2 멀티테넌시·`bo_user_tenants`를 사용자↔서비스 바인딩으로 재기술, "고객사"→"서비스"; `tenant_id`/`workspace_id`·data_scope·role/scope 코드명 불변(의미만 서비스).
 
@@ -88,8 +90,9 @@
 
 ### 4.2 결재선 정의 (subject_type별 라우팅 — 부록 C 구현)
 - 현행: 모든 결재가 `MAKER_CHECKER` 하드코딩 → **subject_type별 라인 라우팅**을 데이터로 정의(부록 C 정본 구현):
-  - 예) RA_MODEL·TM_SCENARIO·COUNTRY_RISK·POLICY_PACK → COMPLIANCE_MANAGER · EDD_CLOSE → AML_OFFICER · STR/CTR → REPORTING_OFFICER · SECRET_CHANGE → SECURITY_ADMIN.
-- **subject_type 정합**: `aml_approvals` CHECK(16) → **18**로 확장(IRA_SUBMIT·HIGH_RISK_REGISTRY 추가, Flyway).
+  - 예) RA_MODEL·TM_SCENARIO·COUNTRY_RISK·POLICY_PACK → COMPLIANCE_MANAGER · EDD_CLOSE → AML_OFFICER · STR/CTR → REPORTING_OFFICER · SECRET_CHANGE → SECURITY_ADMIN · **PEP_APPROVAL → EXECUTIVE_APPROVAL**(PEP 경영진 승인 — 정치적 주요인물 등재는 경영진 결재선, aml-svc `ApprovalLineResolver` 미러) · **CTR_THRESHOLD → REPORTING_OFFICER**(CTR 규제 임계 변경은 보고 책임자 결재선) · **REPORT_RULE → COMPLIANCE**(CTR/STR 룰 활성화 파이프라인은 준법감시 결재선).
+- **CTR/STR 모니터링 통합 subject_type(코드=truth)**: `CTR_THRESHOLD`·`REPORT_RULE`은 **bo-api 애플리케이션 계층 결재 대상**(`AmlApprovalDtos.SubjectType`, 19→**21**종; bo-api `AmlApprovalService` 코드 승인선은 두 값 모두 `POLICY_ADMIN`으로 라우팅). 본 IAM 라우팅 정본은 위처럼 REPORTING_OFFICER(CTR 임계)·COMPLIANCE(룰 활성화)로 배정하며, bo-api 코드의 `POLICY_ADMIN` 라우팅은 정의 측 라우팅 정본 소비 시 동기화 대상. **엔진 `aml_approvals.subject_type` CHECK 는 19종 유지** — 두 값은 엔진 결재 대상이 아니므로 DB CHECK 확장 없음(bo-api 감사 이벤트 3종만 bo-api V6 추가: `CTR_THRESHOLD_CHANGE_SUBMITTED`·`REPORT_RULE_ACTIVATE_SUBMITTED`·`AMLC_SUBMISSION_DELEGATED`).
+- **subject_type 정합(엔진)**: `aml_approvals` CHECK(16) → **19**로 확장(IRA_SUBMIT·HIGH_RISK_REGISTRY·**PEP_APPROVAL** 추가, Flyway — IRA/HRR=엔진 V13/V14, PEP=엔진 V24; 단 2026-06-30 consolidate 후 통합 baseline `V1__baseline.sql`에 19종 흡수, DB §7·§5.16 참조). CTR_THRESHOLD/REPORT_RULE 은 bo-api enum(21종)에만 존재.
 
 ### 4.3 기능 요구
 1. **결재선 정의 관리**(BO-APRL-001): subject_type × 결재선 × 승인자 역할 매핑을 운영자가 조회·변경. 변경 시 **감사 이벤트 `APPROVAL_LINE_CHANGE` emit**(V22, ApprovalRouteService) — *4-eyes 실행 결재는 후속*, 현재는 RBAC 게이트(`BO_SUPER_ADMIN`/`bo:admin:iam`) + 감사. `PUT .../approval-routes`는 즉시 적용. 테넌트(=서비스)별 override 허용(플랫폼 기본 + 서비스별 커스터마이즈).
@@ -97,6 +100,7 @@
 3. **임계값 기반 라우팅**: 금액/위험등급/건수 임계로 라인 상향(예 고액 STR → EXECUTIVE_APPROVAL 추가 단계). PH/KR 등 Policy Pack 임계와 연계(임계 정본은 규제 레이어).
 4. **위임·대결(Delegation)**(구현 완료, V24): 승인자 부재 시 대결자·기간([from_at, to_at)) 지정. 생성·회수 공통으로 **감사 이벤트 `APPROVAL_DELEGATION_CHANGED` emit**(ApprovalDelegationService). self-delegation·역전 기간은 CHECK로 거부. 유효 승인자 결의는 활성 위임의 대결자를 라인 기본 scope보다 우선.
 5. **불변 정책 유지·확장**: self-approval 금지(maker≠checker)·payload_hash drift guard·staged_payload(기존 유지) + 다단계에서 각 단계 maker/checker 분리.
+6. **CTR 규제 임계 hot-reload 제외(BR, CTR/STR 모니터링 통합 — 코드=truth)**: `CTR_THRESHOLD`(CTR 통화별 규제 임계 변경, §4.2)은 **hot-reload 우회 불가** — 다른 정책 변경과 달리 즉시 적용 경로가 없고 **4-eyes 결재 EXECUTED 시점에만** `aml_ctr_thresholds`(DB §3.22a)에 반영된다(규제값 무단 변경 방지). CTR 임계는 규제 레이어 값이므로 임계값 자체는 Policy Pack(PH_AMLC/KR_DEFAULT) 정본을 따르고 본 결재는 그 반영 통제만 담당한다. `REPORT_RULE`(룰 활성화 DRAFT→ACTIVE)도 결재 EXECUTED 시에만 상태 전이(시뮬레이션 요약 동반, STR_MANUAL 수동 전용 거부).
 
 ### 4.4 화면 (신규)
 | 화면 ID | 명칭 | 역할 |
@@ -129,8 +133,11 @@
 | `bo_approval_lines`·`bo_approval_routes` | **V22** — 결재선 카탈로그(7종)·subject별 라우팅(다단계 step_no·임계 threshold_json) |
 | `bo_approval_delegations` | **V24** — 승인자 위임(대결) |
 | `bo_approval_route_members` | **V27** — (tenant_id, subject_type, step_no, user_id) 지정 승인자(복수 허용, user_id→`bo_admin_users` FK) |
-| `aml_approvals.subject_type` CHECK | **16→18** 확장(IRA_SUBMIT·HIGH_RISK_REGISTRY) |
-> Flyway: bo-api·aml-svc 각 신규 마이그레이션(적용분 수정 금지). 모든 변경 additive. 위 bo-api 테이블은 V18~V27로 적용 완료.
+| `aml_approvals.subject_type` CHECK | **16→19** 확장(IRA_SUBMIT·HIGH_RISK_REGISTRY·PEP_APPROVAL — PEP는 엔진 V24). CTR_THRESHOLD·REPORT_RULE 은 **엔진 CHECK 미포함**(19 유지) — bo-api 애플리케이션 enum(21종)에만 존재 |
+| bo-api `AmlApprovalDtos.SubjectType` | **19→21** — `CTR_THRESHOLD`(CTR 규제 임계 변경)·`REPORT_RULE`(CTR/STR 룰 활성화) 추가(코드=truth, CTR/STR 모니터링 통합). 승인선 코드=`POLICY_ADMIN`(본 IAM 라우팅 정본=REPORTING_OFFICER/COMPLIANCE, §4.2) |
+| bo-api `bo_audit_logs` CHECK | **V6** — CTR/STR 모니터링 감사 이벤트 3종 추가(`CTR_THRESHOLD_CHANGE_SUBMITTED`·`REPORT_RULE_ACTIVATE_SUBMITTED`·`AMLC_SUBMISSION_DELEGATED`) |
+| bo-api `backoffice.aml_ctr_thresholds`·`aml_ph_banking_calendar` | **V5** — CTR 통화 임계·PH 영업일 캘린더(V7 이동공휴일). aml-svc 대칭(엔진 V3/V6, DB §3.22a/§3.22b) |
+> Flyway: bo-api·aml-svc 각 신규 마이그레이션(적용분 수정 금지). 모든 변경 additive. 위 bo-api IAM 테이블은 V18~V27로, CTR/STR 모니터링 bo-api 테이블·감사는 V5~V7로 적용 완료. aml-svc 는 2026-06-30 consolidate 후 통합 baseline(V1__baseline·V2__seed) + CTR/STR V3~V6(DB §7).
 
 ## 6. 화면 인벤토리 (신규)
 BO-USR-001~004 · BO-ROLE-001/002 · BO-PERM-001 · BO-MENU-001 · BO-APRL-001/002/003 (+ 기존 결재함 AML-APR-001·SFDS-APPR-001 라인 소비).
@@ -155,7 +162,7 @@ BO-USR-001~004 · BO-ROLE-001/002 · BO-PERM-001 · BO-MENU-001 · BO-APRL-001/0
 ## 8. 우선순위 로드맵
 - **P1 (사용자·역할 기본 결선) — 완료(V18·V19)**: 계정 생성 시 역할 지정(roleIds)·수정/비번리셋/잠금해제·재활성/DELETE 비활성, `bo_user_roles` write + 배정 화면, 생애주기 감사 emit. 부트스트랩 시드 정본화(V18 `iam_bootstrap_seed`).
 - **P2 (테넌트 바인딩·권한 매트릭스) — 완료(V20·V21)**: `bo_user_tenants` + 헤더-위조 방지 스코프 강제(TenantContextFilter), 권한 매트릭스 화면, 커스텀 역할 scope(`bo_role_scopes`). data_scope 어휘 정합(V21).
-- **P3 (결재선 관리) — 완료(V22)**: 통합 approval_line 7종·subject별 라우팅(부록 C 시드)·subject_type 18 정합. 결재선 정의 화면 bo-web `ApprovalLineRoutes`. 엔진이 bo-api 라우팅을 강제 소비하는 런타임 동기화는 후속(§4.3 비고).
+- **P3 (결재선 관리) — 완료(V22)**: 통합 approval_line 7종·subject별 라우팅(부록 C 시드)·subject_type 19 정합(PEP_APPROVAL→EXECUTIVE_APPROVAL 포함, PEP는 엔진 V24). 결재선 정의 화면 bo-web `ApprovalLineRoutes`. 엔진이 bo-api 라우팅을 강제 소비하는 런타임 동기화는 후속(§4.3 비고).
 - **P4a (4계층 RBAC·동적 메뉴) — 완료(V23, V26 라벨 정합)**: `bo_menu`/`bo_menu_permissions` 모델·동적 메뉴(MenuController DB 조회), bo-web `MenuPermissions`.
 - **P4b (다단계/위임/임계) — 완료(V24)**: 위임(대결) `bo_approval_delegations`·유효 승인자 결의, 다단계(step_no)/임계(threshold_json)는 V22 라우팅에 내장. bo-web `ApprovalDelegations`.
 - **사용자 지정 결재선 — 완료(V27)**: (tenant, subject_type, step)별 지정 승인자 `bo_approval_route_members`, bo-web `ApprovalLineMembers`. + 헤더 결재함 배지 `ApprovalInboxMenu`.

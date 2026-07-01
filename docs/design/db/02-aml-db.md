@@ -153,7 +153,7 @@ erDiagram
 - 매칭 보조 필드는 **이름→hash / 문서번호→hash / 계좌→hash / 지갑주소→hash 의미 패턴**(tenant-keyed HMAC-SHA256)으로, 실제 컬럼명은 테이블별 prefix를 따른다: customer는 `name_hash`/`doc_hash`(§3.3), entity는 `legal_name_hash`/`biz_no_hash`(§3.4), watchlist는 `primary_name_hash`(§3.7), travel-rule은 `wallet_address_hash`(§3.14). (account_hash는 canonical event payload·`USES_ACCOUNT` edge 속성으로 보존, §1 Account/Instrument 미보유 결정.)
 - 원문이 필요한 WLF matching은 메모리 일시 처리 후 폐기, 저장은 hash/token만(설계서 §19.2).
 - `raw_payload`는 기본 미저장. `payload_hash`(sha256: `sha256:<hex>` 형식) 참조만 보존한다. **`stored` 플래그는 설계서 §8.2(2026-06-07 변경이력) 기준 폐기됨 — DB에 `stored` 컬럼을 두지 않는다**(QA issue #7 low 정합).
-- **PII reveal 원천 = 가역암호 vault (T3 AML-ENG-03, ADR 2026-06-15 D1).** 위 hash 컬럼은 단방향이라 마스킹 토큰→원문 역참조가 불가능하다. reveal(`POST /internal/v1/aml/pii/reveal`, API §2.6)의 cleartext 산출 원천으로 **`aml_pii_vault`(§3.21)** 를 둔다. vault 는 원문의 **암호문(`ciphertext`)** 만 저장하므로 위 "원문(=평문) 컬럼 금지" 규약은 그대로 유지된다(평문 컬럼 0개). 암복호는 `SecretCipherPort`(AES-256-GCM, `aws`=KMS 스왑). reveal cleartext 는 이 요청 한정 transient — 영속·로그 금지(§19.2). vault 적재 시점·전 필드 확장은 후속(가정 A2).
+- **PII reveal 원천 = 가역암호 vault (T3 AML-ENG-03, ADR 2026-06-15 D1).** 위 hash 컬럼은 단방향이라 마스킹 토큰→원문 역참조가 불가능하다. reveal(`POST /internal/v1/aml/pii/reveal`, API §2.6)의 cleartext 산출 원천으로 **`aml_pii_vault`(§3.21)** 를 둔다. vault 는 원문의 **암호문(`ciphertext`)** 만 저장하므로 위 "원문(=평문) 컬럼 금지" 규약은 그대로 유지된다(평문 컬럼 0개). 암복호는 `SecretCipherPort`(AES-256-GCM, `aws`=KMS 스왑). reveal cleartext 는 이 요청 한정 transient — 영속·로그 금지(§19.2). **vault 적재 결선 완료(2026-06-29, 가정 A2 해소)** — 회원 등록·워치리스트 업로드 import 경로가 raw 식별정보를 동일 트랜잭션에서 암호화 upsert 하며, field 도메인은 4종 → 7종(NATIONALITY/GENDER/DOB 추가, V23)으로 확장됐다. 외부 feed fetch 는 원문 미가용 → hash-only 유지(§3.21).
 
 ### 2.3 enum 코드·표시값 병기 규약
 
@@ -219,6 +219,8 @@ PK: `(tenant_id, source_system)`
 | `source_system` | VARCHAR(64) | Y | NULL | | 유입 원천 |
 | `onboarding_at` | TIMESTAMPTZ | Y | NULL | | 온보딩 시각 |
 | `next_review_due_at` | TIMESTAMPTZ | Y | NULL | | 주기적 재확인 예정(§11.2) |
+| `is_pep` | BOOLEAN | N | FALSE | | 정치적 주요인물(PEP) 여부 — 경영진 승인(`PEP_APPROVAL`) EXECUTED 시 TRUE(V24). PEP 등재 시 `PEP_INDIVIDUALS` 참조 리스트 + RA 위험등급 HIGH 강제 상향(거래 허용+EDD) |
+| `pep_approval_id` | UUID | Y | NULL | | PEP 확정 결재 row(`aml_approvals.approval_id`) 증거 링크(V24). 비-PEP은 NULL |
 | `created_at/created_by/updated_at/updated_by/trace_id/data_scope` | (공통) | | | | |
 
 PK: `(tenant_id, customer_ref)`
@@ -400,9 +402,15 @@ PK: `(tenant_id, case_id)`
 | `ctr_exemption_code` | VARCHAR(64) | Y | NULL | | CTR 제외(면제) 사유 코드(설계서 §14.3 — `GOV_ENTITY`/`FINANCIAL_INSTITUTION`/`OTHER_STATUTORY`, `CANCELLED` 제외 처리 시 필수·감사 대상) |
 | `closure_reason_code` | VARCHAR(64) | Y | NULL | | 종결(비제출) 사유 코드 — `REJECTED`/`CANCELLED` 전이 시 영속(설계서 §14.1a). `ctr_exemption_code`(CTR 면제 사유)와 **별개 의미·공존**. STR 미보고 사유 분포(API §2.7 `unreported-reasons`, PRD §12-B.3 ①)의 집계 원천. legacy 미영속 행은 통계에서 `UNSPECIFIED` 버킷(소급 seed 없음). 코드값(raw PII 아님). (T4 AML-ENG-04, V16 — **확정**) |
 | `evidence_hash` | VARCHAR(128) | Y | NULL | | 제출 manifest hash(§19.4) |
+| `subject_ref` | VARCHAR(256) | Y | NULL | | **CTR 멱등/집계 키** — 보고 주체(회원 UUID 등). `banking_day_key`와 함께 (테넌트,주체,영업일)당 CTR DRAFT 1건을 식별(V4). CTR/STR 통합, `CtrEvaluationService`. |
+| `banking_day_key` | DATE | Y | NULL | | **CTR 영업일 키** — 거래 instant 의 PHT(Asia/Manila) 캘린더 일자(정산/집계 축, `BankingCalendar.bankingDayKey`). 동일 영업일 현금거래를 하나의 CTR DRAFT 로 합산(V4). |
+| `report_amount` | NUMERIC(20,2) | Y | NULL | | **CTR 합산 금액** — freeze 된 서버 파생 PHP환산 합계(엔진 재계산 금지, BR-501). 동일 영업일 후속 현금거래 시 누적(CTR_DAILY 보완재, `accumulateCtr`)(V4). |
+| `due_at` | TIMESTAMPTZ | Y | NULL | | **CTR 법정 기한** — 거래 영업일 +5영업일 17:00 PHT(PH_AMLC policy pack, `BankingCalendar.dueAt`, CTR_DUE_BUSINESS_DAYS=5)(V4). |
+| `trigger_ref` | VARCHAR(256) | Y | NULL | | **STR 멱등 키** — 의심 트리거 참조. (테넌트,트리거)당 STR DRAFT 1건을 식별(V5). CTR/STR 통합, `StrEvaluationService`. |
+| `str_reason_codes` | JSONB | Y | NULL | | **STR 사유코드 집합** — 발화된 의심 사유코드(`StrReasonCode`, §14 STR 8종)를 이 행에 누적 fold(제2 DRAFT 금지, UPSERT). 동일 트리거 후속 룰의 사유를 병합(V5). |
 | `created_at/created_by/updated_at/updated_by/trace_id` | (공통) | | | | |
 
-PK: `(tenant_id, report_id)`
+PK: `(tenant_id, report_id)`. 부분 UNIQUE: `ux_aml_ctr_draft (tenant_id, subject_ref, banking_day_key) WHERE report_type='CTR' AND status='DRAFT'`(V4) · `ux_aml_str_draft (tenant_id, trigger_ref) WHERE report_type='STR' AND status='DRAFT'`(V5). CTR/STR 멱등 upsert 계약(같은 영업일/트리거는 새 DRAFT 대신 기존 DRAFT 누적, DRAFT 이탈 후 신규 DRAFT 허용).
 
 ### 3.13 `aml_business_documents` — 상업 증빙(trade/commerce) (설계서 §7.3, §17.5)
 
@@ -516,14 +524,14 @@ PK: `(tenant_id)`. FK `(tenant_id)`→`aml_tenants`. 1 tenant = 1 row(GET 첫 �
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
 |---|---|---|---|---|---|
 | `tenant_id` | VARCHAR(64) | N | — | PK,FK→aml_high_risk_registry | |
-| `list_type` | VARCHAR(32) | N | — | PK,enum,CHECK | §5.33 reference_list_type 3종(PRODUCT/VASP/HIGH_NET_WORTH, 가정 A4) |
+| `list_type` | VARCHAR(32) | N | — | PK,enum,CHECK | §5.33 reference_list_type 4종(PRODUCT/VASP/HIGH_NET_WORTH/PEP_INDIVIDUALS, 가정 A4·V24) |
 | `subject_ref` | VARCHAR(128) | N | — | PK | tokenized 고객/상품 식별자(원문 미저장, §19.2) |
 | `tier` | VARCHAR(16) | N | — | enum,CHECK | §5.34 classification_tier 2종(HIGH/VERY_HIGH, 가정 A5) |
 | `label` | VARCHAR(128) | Y | NULL | | 마스킹 표시명 |
 
 PK: `(tenant_id, list_type, subject_ref)`. FK `(tenant_id)`→`aml_high_risk_registry` ON DELETE CASCADE. 인덱스 `ix_hrr_items_subject (tenant_id, subject_ref)`(RA 강제 상향 매칭 조회). tier→RA 강제 floor: `VERY_HIGH`→PROHIBITED, `HIGH`→HIGH(상향만 보장, 가정 A6).
 
-### 3.21 `aml_pii_vault` — PII reveal 가역암호 vault (T3 AML-ENG-03, ADR 2026-06-15 확정, Flyway V15)
+### 3.21 `aml_pii_vault` — PII reveal 가역암호 vault (T3 AML-ENG-03, ADR 2026-06-15 확정, 구 Flyway V15·V23 — 2026-06-30 consolidate 로 통합 `V1__baseline.sql`에 흡수, §7)
 
 마스킹 토큰(`target_ref`)·필드별 원문의 **암호문** 역참조 저장소. reveal(`POST /internal/v1/aml/pii/reveal`, API §2.6)의 cleartext 산출 원천이다(§2.2). **평문 컬럼 0개** — `ciphertext` 만 저장(§2.2 "원문 컬럼 금지" 유지). 멀티테넌시 키 `(tenant_id, target_ref, field)` — PII reveal 은 고객 단위(workspace 차원 없음, 가정 A3).
 
@@ -531,11 +539,52 @@ PK: `(tenant_id, list_type, subject_ref)`. FK `(tenant_id)`→`aml_high_risk_reg
 |---|---|---|---|---|---|
 | `tenant_id` | VARCHAR(64) | N | — | PK,FK→aml_tenants | |
 | `target_ref` | VARCHAR(128) | N | — | PK | tokenized 대상 식별자(원문 미저장, §19.2) |
-| `field` | VARCHAR(16) | N | — | enum,CHECK | §5.35 pii_field 4종(NAME/DOC/ACCOUNT/WALLET, §2.2 의미 패턴) |
+| `field` | VARCHAR(16) | N | — | enum,CHECK | §5.35 pii_field 7종(NAME/DOC/ACCOUNT/WALLET/NATIONALITY/GENDER/DOB, §2.2 의미 패턴 + 식별정보 확장, V23) |
 | `ciphertext` | TEXT | N | — | | `SecretCipherPort.encrypt(원문)`(AES-256-GCM, `aws`=KMS). 평문 절대 미저장 |
 | `created_at/updated_at` | TIMESTAMPTZ | N | now() | | upsert 시 갱신 |
 
-PK: `(tenant_id, target_ref, field)`. FK `(tenant_id)`→`aml_tenants`. 인덱스 `ix_aml_pii_vault_target (tenant_id, target_ref)`(target 단위 reveal 역참조). reveal 은 복호화로 transient cleartext 산출 — 영속·로그 금지(§19.2, 가정 A6). vault 적재 시점·전 필드 확장은 후속(가정 A2).
+PK: `(tenant_id, target_ref, field)`. FK `(tenant_id)`→`aml_tenants`. 인덱스 `ix_aml_pii_vault_target (tenant_id, target_ref)`(target 단위 reveal 역참조). reveal 은 복호화로 transient cleartext 산출 — 영속·로그 금지(§19.2, 가정 A6). **vault 적재 결선 완료(2026-06-29, 가정 A2 해소)** — 회원 등록(`RegisterCustomerService`)이 raw name/nationality/gender/dob 를 동일 트랜잭션에서 `(tenant_id, customerRef, field)` 로 암호화 upsert, 워치리스트 업로드 import(`WatchlistImportService.uploadImport`)가 entry 원문 name/nationality/dob 를 `(tenant_id, entryId, field)` 로 암호화 upsert. 외부 feed fetch 는 원문 미가용 → hash-only 유지(vault 미적재). field 도메인은 4종 → 7종(NATIONALITY/GENDER/DOB 추가, V23).
+
+### 3.22 `aml_periodic_review_policy` — 위험등급별 EDD 재이행주기 정책 (구 Flyway V25 — 2026-06-30 consolidate 로 통합 `V1__baseline.sql`(스키마)+`V2__seed.sql`(default 시드)에 흡수, §7)
+
+위험등급(`risk_grade`)별 주기적 재확인(periodic review) 주기를 tenant 단위로 보관하는 정책 store다. RA 가 등급별 cadence 로 `aml_customers.next_review_due_at`(§3.3)·`aml_risk_scores.next_review_due_at`(§3.9)를 산정하고, 재심사 임박 큐(API §2.7 `due-for-review`)가 이 주기와 회원 기한을 결합해 노출한다. 정책 변경은 4-eyes(`PERIODIC_REVIEW_CHANGE`, §5.16) — 결재 EXECUTED 시 정책 저장 + 등급별 회원 `next_review_due_at` 재계산. **정책 메타만 — PII 없음.**
+
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| `tenant_id` | VARCHAR(64) | N | — | PK | 서비스(테넌트=서비스) 격리 키. `'default'`=baseline(미설정 tenant 가 해석하는 기본 정책) |
+| `risk_grade` | VARCHAR(32) | N | — | PK,enum,CHECK | §5.2 risk_grade 4종(`LOW`/`MEDIUM`/`HIGH`/`PROHIBITED`) |
+| `cadence_months` | INT | N | — | CHECK ≥ 0 | 재확인 주기(개월). **위험할수록 짧게** — 0=즉시 재심사(due=asOf) |
+| `grace_period_days` | INT | N | 14 | | 임박 유예 기간(일) — due 전 임박 표시 윈도우 |
+| `updated_at` | TIMESTAMPTZ | N | now() | | upsert 시 갱신 |
+
+PK: `(tenant_id, risk_grade)`. **FK 미설정** — `'default'` baseline row 가 fresh DB 간 portable하며, tenant-specific override 는 동일 PK 로 upsert 한다. baseline 시드(`ON CONFLICT DO NOTHING` 멱등): `default` LOW **12** / MEDIUM **6** / HIGH **3** / PROHIBITED **0**, grace **14** (위험할수록 짧은 주기·PROHIBITED 즉시). 도메인 값객체 `PeriodicReviewPolicy`(application port `PeriodicReviewPolicyStorePort`)와 1:1.
+
+### 3.22a `aml_ctr_thresholds` — 테넌트·통화별 CTR 보고 임계 (Flyway V3, CTR/STR 통합)
+
+CTR(고액현금거래보고) 발동 임계를 **테넌트·통화별**로 보관하는 정책 store다. `CtrEvaluationService`가 거래의 freeze 된 PHP환산액(`report_amount`)을 이 임계와 비교해 CTR_SINGLE(단건)·CTR_DAILY(영업일 합산) 발동을 판정한다. 임계 변경은 4-eyes(bo-api `CTR_THRESHOLD`, §5.16 후주) — **hot-reload 우회 불가**(승인 EXECUTED 시에만 반영). CTR 룰 카탈로그(`AmlReportRuleCatalog`)는 코드이며, 구체 통화 임계값만 이 테이블(per-tenant)에 둔다.
+
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| `tenant_id` | VARCHAR(64) | N | — | PK | 서비스(테넌트=서비스) 격리 키. `tenant_demo`=hanpass-ph |
+| `currency` | VARCHAR(3) | N | — | PK | 통화 코드(ISO 4217, 예 `PHP`/`KRW`) |
+| `threshold_amount` | NUMERIC(20,2) | N | — | | CTR 발동 임계 금액(해당 통화 기준) |
+| `updated_at` | TIMESTAMPTZ | Y | NULL(aml-svc) / now()(bo-api) | | 최종 변경 시각 |
+| `updated_by` | VARCHAR(128)(aml-svc) / VARCHAR(120)(bo-api) | Y | NULL | | 최종 변경 주체(4-eyes checker) |
+
+PK: `(tenant_id, currency)`. baseline 시드(멱등): `tenant_demo` PHP **500,000** / KRW **10,000,000**(bo-api 는 `platform`·`tenant_demo` 양쪽 동일값). 도메인 port `CtrThresholdPort`와 1:1. 정책 메타만 — **PII 없음**.
+
+### 3.22b `aml_ph_banking_calendar` — 필리핀 영업일 캘린더 (Flyway V3·V6, CTR/STR 통합)
+
+CTR/STR 보고 기한 산정을 위한 **필리핀 영업일/공휴일 override** store다. 주말(토/일)은 코드(`BankingCalendar.isWeekend`)에서 판정하고, 이 테이블에는 **공휴일 행(is_business_day=false)**과 근무 토요일 등 override 행만 둔다. `BankingCalendar.plusBusinessDays`가 이 캘린더를 소비해 `due_at`(거래 영업일 +5영업일 17:00 PHT)을 계산한다.
+
+| 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
+|---|---|---|---|---|---|
+| `tenant_id` | VARCHAR(64) | N | — | PK | 서비스(테넌트=서비스) 격리 키 |
+| `calendar_date` | DATE | N | — | PK | 대상 일자 |
+| `is_business_day` | BOOLEAN | N | — | | false=공휴일(비영업), true=근무일 override |
+| `holiday_name` | VARCHAR(128)(aml-svc) / VARCHAR(160)(bo-api) | Y | NULL | | 공휴일 명칭 |
+
+PK: `(tenant_id, calendar_date)`. baseline 시드(멱등): **2026 PH 고정일 정규 공휴일 8종(V3)** + **이동/종교 공휴일 11종(V6 — Holy Week·Eid 등)**. 이동 공휴일은 매년 음력/포고령 변동 → **연도 롤오버 시 신규 additive 마이그레이션 또는 테넌트 캘린더 admin 으로 시드**(적용된 마이그레이션 편집 금지). 도메인 port `BankingCalendarPort`와 1:1. 정책 메타만 — **PII 없음**.
 
 ### 3.15 지원 인프라 테이블 (도메인 14종을 떠받치는 필수 보조)
 
@@ -584,7 +633,7 @@ PK: `(tenant_id, event_id)` · UNIQUE: `(tenant_id, idempotency_key)`
 |---|---|---|---|---|
 | `tenant_id` | VARCHAR(64) | N | PK | |
 | `approval_id` | UUID | N | PK | |
-| `subject_type` | VARCHAR(64) | N | enum,CHECK | §5.16 subject_type 18종: `WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL`/`RISK_OVERRIDE`/`EDD_CLOSE`/`STR_SUBMIT`/`CTR_SUBMIT`/`TRAVEL_RULE_EXCEPTION`/`WATCHLIST_IMPORT`/`COUNTRY_RISK`/`POLICY_PACK`/`SECRET_CHANGE`/`RELATIONSHIP_REJECT`/`TM_SCENARIO`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`/`IRA_SUBMIT`/`HIGH_RISK_REGISTRY` (§13.5). **API `ApprovalDto.subjectType` enum이 정본**(전수), DB는 이를 동기화. V09 DDL CHECK 16종 → V13 17종(`IRA_SUBMIT`) → V14 18종(`HIGH_RISK_REGISTRY`). |
+| `subject_type` | VARCHAR(64) | N | enum,CHECK | §5.16 subject_type 19종: `WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL`/`RISK_OVERRIDE`/`EDD_CLOSE`/`STR_SUBMIT`/`CTR_SUBMIT`/`TRAVEL_RULE_EXCEPTION`/`WATCHLIST_IMPORT`/`COUNTRY_RISK`/`POLICY_PACK`/`SECRET_CHANGE`/`RELATIONSHIP_REJECT`/`TM_SCENARIO`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`/`IRA_SUBMIT`/`HIGH_RISK_REGISTRY`/`PEP_APPROVAL` (§13.5). **API `ApprovalDto.subjectType` enum이 정본**(전수), DB는 이를 동기화. V09 DDL CHECK 16종 → V13 17종(`IRA_SUBMIT`) → V14 18종(`HIGH_RISK_REGISTRY`) → V24 19종(`PEP_APPROVAL`). |
 | `subject_ref` | VARCHAR(256) | N | | 결재 대상 식별(case_id/report_id 등) |
 | `approval_line` | VARCHAR(64) | N | enum | §5.12 approval_line(MAKER_CHECKER/AML_OFFICER/COMPLIANCE_MANAGER/REPORTING_OFFICER/SECURITY_ADMIN/EXECUTIVE_APPROVAL) |
 | `status` | VARCHAR(32) | N | enum | §5.13 approval_status(DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED) |
@@ -835,7 +884,7 @@ stateDiagram-v2
 
 > **DB가 정본 enum**(CHECK 4종). integration §4.3/§9.3 payload의 `REVIEW`는 본 enum에 없으므로 `HIGH_RISK`로 정규화 매핑한다(exception 큐 트리거는 `risk_status IN (HIGH_RISK, SANCTIONED_ADDRESS, MIXER_EXPOSURE)` 또는 `completeness_status=INCOMPLETE`). integration의 `REVIEW` 표기는 본 enum 4종으로 교정 대상.
 
-### 5.16 subject_type — 결재 대상 (설계서 §13.5) — **18종(확정)**
+### 5.16 subject_type — 결재 대상 (설계서 §13.5) — **19종(확정)**
 
 | 코드값 | 표시값 | 결재 트리거 |
 |---|---|---|
@@ -857,7 +906,10 @@ stateDiagram-v2
 | `PERIODIC_REVIEW_CHANGE` | 주기적 재확인 변경 | periodic review 기준·주기 변경(§11.2 재심사) |
 | `IRA_SUBMIT` | 기관위험평가 제출/취소 | IRA(기관위험평가, ML/TF) 회차 보고파일 제출·취소(부록 E v6.0-2, T1 AML-ENG-01). `SUBMIT`\|`reportId` / `CANCEL`\|`reportId` subjectRef 접두로 분기 |
 | `HIGH_RISK_REGISTRY` | 당연고위험 레지스트리 변경 | 당연고위험 참조 리스트(상품·VASP·고액자산가) 변경 상신(부록 E v7.0, T2 AML-ENG-02). `UPDATE`\|`<version>` subjectRef, 전체 staged payload drift guard. 결재 EXECUTED 시 적용 + 일치 고객 RA 강제 상향 재평가 트리거 |
+| `PEP_APPROVAL` | PEP 경영진 승인 | 정치적 주요인물(PEP) 경영진 승인 상신. 승인선 `EXECUTIVE_APPROVAL`. subjectRef=customer_ref, staged payload `tenant\|customerRef\|action=PEP` self-consistency drift guard. 결재 EXECUTED 시 `aml_customers.is_pep=TRUE` + `PEP_INDIVIDUALS` 참조 리스트 등재(tier HIGH) + RA 위험등급 HIGH 강제 상향 재평가(거래 허용+EDD) 폐루프 |
 
+> **CTR/STR 룰·임계 4-eyes = bo-api 애플리케이션 계층(aml-svc DB CHECK 19종 유지, 코드=truth)**: CTR/STR 모니터링 통합(2026-07-01)의 두 결재 대상 — `CTR_THRESHOLD`(CTR 규제 임계 변경, 승인선 `POLICY_ADMIN`, hot-reload 우회 불가·§3.22a)·`REPORT_RULE`(CTR/STR 룰 활성화 파이프라인, 승인선 `POLICY_ADMIN`) — 은 **bo-api 데모 백오피스의 애플리케이션 enum `AmlApprovalDtos.SubjectType`(19→21종)** 과 스텁 스토어(`AmlStubStore`) 4-eyes 로 다룬다. aml-svc 엔진의 `aml_approvals.subject_type` CHECK·도메인 `ApprovalSubjectType` 는 **19종 그대로**(이 두 값은 엔진 결재 대상이 아님) — DB CHECK 협소화 없음. bo-api DB 측 변경은 `bo_audit_logs` `chk_bo_audit_logs_event` 에 P4 이벤트코드 3종 추가(`CTR_THRESHOLD_CHANGE_SUBMITTED`·`REPORT_RULE_ACTIVATE_SUBMITTED`·`AMLC_SUBMISSION_DELEGATED`, bo-api V6)로 국한된다. 결재 subject_type 배정은 기능정의서 `docs/plan/03-bo-iam-approval-functional-spec.md` §4.2(REPORTING_OFFICER/COMPLIANCE) 정본.
+> **PEP_APPROVAL 추가(18→19종, 확정)**: PEP(정치적 주요인물) 경영진 승인 → 당연고위험 레지스트리 등재 → RA 위험등급 HIGH 상향 폐루프. 승인선=`EXECUTIVE_APPROVAL`(`ApprovalLineResolver`). 기존 인프라 최대 재사용 — 4-eyes `ApprovalRequest`(maker≠checker), HRR 참조 리스트 `PEP_INDIVIDUALS`(tier HIGH), HRR 강제 RA 재평가(`reassessRegisteredSubjects`, 가정 A6·A7 floor HIGH 재사용, RA 채점 로직 미중복). 결재 EXECUTED 시 ① `aml_customers.is_pep=TRUE`·`pep_approval_id` 증거 링크 ② `PEP_INDIVIDUALS` 리스트에 customer_ref 병합(기존 항목 보존+추가, version bump) ③ RA HIGH 강제 상향(PROHIBITED 아님 — PEP는 거래 허용+EDD) ④ markExecuted. 동일 트랜잭션, audit `POLICY_CHANGE`. V24 `aml_approvals.subject_type` CHECK 19종으로 갱신(V3 인라인 + V14/V18 명명 CHECK DROP 후 19종 단일 제약 통합).
 > **HIGH_RISK_REGISTRY 추가(17→18종, 확정)**: T2(AML-ENG-02)로 aml-svc 엔진에 당연고위험 레지스트리(HRR) admin surface 정식 구축(부록 E v7.0 "제안 상태" → "확정"). scope `aml:admin:high-risk-registry`(가정 A1). 분류 기준(criteria)은 read-only seed(가정 A2), PUT 변경 대상은 참조 리스트로 한정. `HIGH_RISK_REGISTRY` 단일 subjectType이 참조 리스트 변경을 `UPDATE|<version>` subjectRef + 전체 staged payload self-consistency drift guard(PERIODIC_REVIEW_CHANGE/SECRET_CHANGE 군)로 커버. maker≠checker 일관. 적용은 결재 EXECUTED 시점이며 이때 일치 고객을 엔진 RA가 강제 상향 재평가(VERY_HIGH→PROHIBITED·HIGH→HIGH floor, 상향만 보장, 가정 A6·A7). V14 `aml_approvals.subject_type` CHECK 18종으로 갱신(V3 인라인 + V13 명명 CHECK 양쪽 DROP 후 18종 단일 제약 통합).
 > **IRA_SUBMIT 추가(16→17종, 확정)**: T1(AML-ENG-01)로 aml-svc 엔진에 IRA admin surface 정식 구축(부록 E v6.0-2 "제안 상태" → "확정"). `IRA_SUBMIT` 단일 subjectType이 submit·cancel 양 액션을 `subjectRef` 접두(`SUBMIT|`/`CANCEL|`)로 커버(STR_SUBMIT 패턴 차용). maker≠checker·payload drift guard 일관(submit 라인은 live 지표 재파생, cancel 라인은 staged self-consistency). V13 `aml_approvals.subject_type` CHECK 17종으로 갱신.
 > **API `ApprovalDto.subjectType` enum이 정본(전수)**, DB `aml_approvals.subject_type`은 이를 동기화한다. `TM_SCENARIO`는 TM 시나리오 활성화 결재 대상으로 추가(API §3.7·PRD §11.1 동기화). `CHECKLIST_CHANGE`(구 `CDD_CHECKLIST` — QA 이격 aml:db-api HIGH 해소: API 정본 코드값으로 교정)·`PERIODIC_REVIEW_CHANGE`는 T-12 결재 상신 API 계약(`PUT .../cdd/checklists/{id}`, API §10) 착수 전 필수. API §3.7 ApprovalDto·§10 등재표도 본 16종(`CHECKLIST_CHANGE` 포함)으로 동기화해야 한다. V09 `aml_approvals.subject_type` DDL CHECK 제약도 16종 기준(`CHECKLIST_CHANGE` 포함)으로 갱신.
@@ -879,19 +931,19 @@ stateDiagram-v2
 `AUTO`(엔진 RA/TM/screening metric 파생) / `MANUAL`(수동 입력 — CROSS_BORDER_VOLUME·TRAINING_COMPLETION 등 엔진 원천 부재 지표)
 
 ### 5.33 reference_list_type (`aml_high_risk_registry_items.list_type`, T2 AML-ENG-02, 부록 E v7.0)
-`PRODUCT`(당연고위험 상품군) / `VASP`(가상자산사업자) / `HIGH_NET_WORTH`(고액자산가)
+`PRODUCT`(당연고위험 상품군) / `VASP`(가상자산사업자) / `HIGH_NET_WORTH`(고액자산가) / `PEP_INDIVIDUALS`(정치적 주요인물)
 
-> DB가 물리 정본(CHECK 3종, V14). 도메인 enum `ReferenceListType`·bo-api 계약(가정 A4)과 1:1.
+> DB가 물리 정본(CHECK 4종, V14 3종 → V24 `PEP_INDIVIDUALS` 추가). 도메인 enum `ReferenceListType`·bo-api 계약(가정 A4)과 1:1. `PEP_INDIVIDUALS`는 PEP 경영진 승인(`PEP_APPROVAL`) EXECUTED 시 등재(tier HIGH) → RA 위험등급 HIGH 강제 상향(V24).
 
 ### 5.34 classification_tier (`aml_high_risk_registry_items.tier`, T2 AML-ENG-02, 부록 E v7.0)
 `HIGH`(당연고위험) / `VERY_HIGH`(당연초고위험)
 
 > DB가 물리 정본(CHECK 2종, V14). 도메인 enum `ClassificationTier`와 1:1. tier→RA 강제 floor: `VERY_HIGH`→PROHIBITED·`HIGH`→HIGH(상향만 보장, 가정 A6).
 
-### 5.35 pii_field (`aml_pii_vault.field`, T3 AML-ENG-03, ADR 2026-06-15)
-`NAME`(이름) / `DOC`(신분증·문서번호) / `ACCOUNT`(계좌) / `WALLET`(지갑주소)
+### 5.35 pii_field (`aml_pii_vault.field`, T3 AML-ENG-03, ADR 2026-06-15, V23 확장)
+`NAME`(이름) / `DOC`(신분증·문서번호) / `ACCOUNT`(계좌) / `WALLET`(지갑주소) / `NATIONALITY`(국적) / `GENDER`(성별) / `DOB`(생년월일)
 
-> DB가 물리 정본(CHECK 4종, V15). 도메인 enum `PiiField`와 1:1. §2.2 hash 의미 패턴(이름/문서번호/계좌/지갑주소)과 정합. reveal vault(§3.21) 키의 일부.
+> DB가 물리 정본(CHECK 7종, V23 — V15 4종에서 확장). 도메인 enum `PiiField`와 1:1. `NAME`/`DOC`/`ACCOUNT`/`WALLET` 은 §2.2 hash 의미 패턴(이름/문서번호/계좌/지갑주소)과 정합, `NATIONALITY`/`GENDER`/`DOB` 은 회원 본인·워치리스트 엔트리 식별정보 reveal 을 위한 ingest 시점 원문(2026-06-29 결선). reveal vault(§3.21) 키의 일부.
 
 > DB가 물리 정본(CHECK 2종, V13). 도메인 enum `IraIndicatorSource`와 1:1.
 
@@ -996,34 +1048,30 @@ stateDiagram-v2
 
 ## 7. 마이그레이션 순서 (Flyway, additive)
 
-스키마: `aml`. 파일 위치: `services/aml-svc/src/main/resources/db/migration/`. **본 표는 실제 구현 파일(V1~V20, fresh-DB Flyway 검증 통과)과 1:1 일치한다** — 구 설계 표(legacy `V01~V20` 가상 파일명·분할안)는 구현이 **phase 단위 마이그레이션**으로 재편되며 폐기되었다. 아래는 코드(truth) 기준.
+스키마: `aml`. 파일 위치: `services/aml-svc/src/main/resources/db/migration/`. **본 표는 실제 구현 파일(V1~V6, fresh-DB Flyway 검증 통과)과 1:1 일치한다** — 구 누적 마이그레이션 체인(구 phase 단위 `V1~V25`)은 2026-06-30 `AML-ENGINE-FIX: consolidate Flyway baselines`(commit 9a3ac74)로 **검증된 최종 상태의 pg_dump 를 단일 `V1__baseline.sql`(schema-only DDL) + `V2__seed.sql`(data-only bootstrap/demo seed)로 통합(consolidate)**되었다. 이후 CTR/STR 모니터링 통합(feature/aml-ctr-str-monitoring, 2026-07-01)이 `V3`~`V6` 을 additive 로 얹었다. 아래는 코드(truth) 기준.
 
 | 버전 | 파일 | 내용 | 의존 |
 |---|---|---|---|
-| V1 | `V1__baseline.sql` | 베이스라인 DDL: `aml_tenants`(`isolation_mode` CHECK 3종 — V2에서 `deployment_model` 컬럼으로 대체되나 **DROP 되지 않고 잔존**), `aml_source_systems`, `aml_customers`, `aml_entities`, `aml_relationships`, `aml_screening_results`, `aml_alerts`(status CHECK 6종), `aml_cases`. **`aml_api_credentials` 는 V2에서 생성**(아래). | — |
-| V2 | `V2__phase1_foundation.sql` | **Phase 1**: (1) `aml_tenants`에 `deployment_model VARCHAR(32) NOT NULL DEFAULT 'MANAGED_DEDICATED'`(CHECK 3종 §5.28)·`onboarding_status VARCHAR(32) NOT NULL DEFAULT 'REQUESTED'`(CHECK 8종 §5.28a)·`infra_ref VARCHAR(160)` 추가 + 구 `isolation_mode` 백필(컬럼은 잔존, DROP 안 함). `default_region` `'kr'`→`'KR'` 정규화. `status` CHECK **3→4종**(§5.28b, `OFFBOARDING`→`OFFBOARDED`) + DEFAULT `'ONBOARDING'`. (2) `aml_source_systems`에 `status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE'`(CHECK 2종)·`data_scope VARCHAR(64)` 추가. (3) `aml_relationships.data_scope` + natural-key UNIQUE. (4) `aml_canonical_events` 생성(idempotency UNIQUE). (5) **`aml_api_credentials` 생성**(PK `(tenant_id, credential_id)`, credential_type CHECK 4종 `API_KEY`/`OAUTH2_CLIENT`/`MTLS`/`WEBHOOK`, `secret_ciphertext VARCHAR(512)`). (6) demo tenant·source 시드. | V1 |
-| V3 | `V3__phase2_wlf.sql` | **Phase 2 WLF**: `aml_watchlist_sources`·`aml_watchlist_entries`(+GIN tokens), `aml_approvals`(CHECK maker≠checker; `subject_type` 인라인 CHECK 16종 — WLF_DECISION/FP_WHITELIST/RA_MODEL/RISK_OVERRIDE/EDD_CLOSE/STR_SUBMIT/CTR_SUBMIT/TRAVEL_RULE_EXCEPTION/WATCHLIST_IMPORT/COUNTRY_RISK/POLICY_PACK/SECRET_CHANGE/RELATIONSHIP_REJECT/TM_SCENARIO/CHECKLIST_CHANGE/PERIODIC_REVIEW_CHANGE), `aml_audit_events`(append-only hash chain). | V1,V2 |
-| V4 | `V4__phase3_ra_cdd.sql` | **Phase 3 RA+CDD**: `aml_risk_scores`(+ ix_ra_target/ix_ra_grade), `aml_risk_models`(versioned, weights JSONB), `aml_customers.kyc_status`/`next_review_due_at`·`aml_entities.next_review_due_at`·`aml_cases.edd_trigger` ALTER, **`aml_outbox` 생성**(aggregate_type 인라인 CHECK **5종** `REGULATORY_REPORT`/`CASE`/`SCREENING`/`FDS_FEEDBACK`/`WEBHOOK`, 발행 멱등 UNIQUE + ix_outbox_dispatch). | V1~V3 |
-| V5 | `V5__phase4_tm.sql` | **Phase 4 TM**: `aml_alerts` 보강(alert_type §5.18/severity §5.19/source_origin §5.20 CHECK, scenario_code nullable, evidence, external_alert_ref), `aml_tm_scenarios`(scenario DSL 그래프), `aml_cases.origin_alert_id`/`origin_fds_case_ref`. append-only 멱등(ux_alert_fds/ux_alert_tm). | V1~V4 |
-| V6 | `V6__phase5_reporting.sql` | **Phase 5 보고**: `aml_regulatory_reports`(report_type CHECK 7종 §5.10, status CHECK **8종** §5.11 — `fiu_ack_ref`·`submission_error_code`·`resubmit_count`·`ctr_exemption_code`·`evidence_hash` 컬럼 포함, FIU 폐루프), `aml_travel_rule_transfers`(completeness_status §5.22/risk_status §5.15, wallet_address_hash, exception_reason). | V1~V5 |
-| V7 | `V7__phase6_compliance_ops.sql` | **Phase 6 컴플라이언스 운영**: `aml_policy_packs`(baseline_locked, status 3종)·`aml_cdd_checklists`(items JSONB)·`aml_country_risk`(risk_grade, basis) versioned 정책 테이블 + KR_DEFAULT seed. | V1~V6 |
-| V8 | `V8__phase7_evidence_bridge.sql` | **Phase 7 증적+벤더 브리지**: `aml_evidence_exports`(export_type CHECK 10종, **status CHECK 4종 §5.30 `PENDING`/`PROCESSING`/`COMPLETED`/`FAILED`**, format 4종, **`reason VARCHAR(512) NOT NULL DEFAULT ''`**, manifest_hash), `aml_dual_run_decisions`, `aml_vendor_migration_inventory`, `aml_watchlist_freshness`. | V1~V7 |
-| V9 | `V9__phase8_advanced_domain.sql` | **Phase 8 고급 도메인**: `aml_business_documents`(trade/commerce 증빙). | V1~V8 |
-| V10 | `V10__phase9_saas.sql` | **Phase 9 SaaS**: `aml_usage_metering`(사용량 미터링). | V1~V9 |
-| V11 | `V11__bo_case_admin.sql` | **BO 케이스 admin**: `aml_cases`에 `priority VARCHAR(16)`(CHECK 4종 §5.27)·`due_at`·`closed_at` ALTER + case timeline FK. | V1~V10 |
-| V12 | `V12__approval_staged_payload.sql` | **결재 staged payload**: `aml_approvals`에 `staged_payload TEXT` ALTER — submit 시점 canonical payload 고정(approve-time drift guard `ApprovalPayloadRecomputer` self-consistency, PERIODIC_REVIEW_CHANGE/STR_SUBMIT/CTR_SUBMIT/POLICY_PACK/SECRET_CHANGE). raw secret/PII 미저장(secret_ref locator만). | V1~V11 |
-| V13 | `V13__phase_ira_surface.sql` | **T1 AML-ENG-01 IRA**: (1) `aml_ira_reports` 생성(§3.17, status CHECK 6종, FK→aml_tenants/aml_approvals, `ix_ira_status`·`ux_ira_submitted`; **IRA는 tenant 단위 — `data_scope` 컬럼 보유하나 workspace 차원 없음, 가정 A7**). (2) `aml_ira_indicators` 생성(§3.18, source CHECK 2종, FK→aml_ira_reports ON DELETE CASCADE). (3) `aml_approvals.subject_type` CHECK **16→17종**(`IRA_SUBMIT` 추가, ALTER DROP+ADD `ck_aml_approvals_subject_type`). (4) **`aml_outbox.aggregate_type` CHECK 5→6종**(`IRA_REPORT` 추가, 제출 폐루프 enqueue — §3.15·integration §8.1). additive only. | V1~V12 |
-| V14 | `V14__phase_high_risk_registry.sql` | **T2 AML-ENG-02 HRR**: (1) `aml_high_risk_registry` 생성(§3.19, tenant 1행 헤더, FK→aml_tenants). (2) `aml_high_risk_registry_items` 생성(§3.20, list_type CHECK 3종 PRODUCT/VASP/HIGH_NET_WORTH·tier CHECK 2종 HIGH/VERY_HIGH, FK→registry ON DELETE CASCADE, `ix_hrr_items_subject`; tenant 단위, **workspace 차원 없음 가정 A3**). (3) `aml_approvals.subject_type` CHECK **17→18종**(`HIGH_RISK_REGISTRY` 추가) — V3 인라인 `aml_approvals_subject_type_check` + V13 명명 `ck_aml_approvals_subject_type` 양쪽 DROP 후 18종 단일 제약 통합. additive only. | V1~V13 |
-| V15 | `V15__phase_pii_vault.sql` | **T3 AML-ENG-03 PII vault**: `aml_pii_vault` 생성(§3.21, PK `(tenant_id, target_ref, field)`, field CHECK 4종 §5.35 NAME/DOC/ACCOUNT/WALLET, `ciphertext TEXT` 평문 미저장, FK→aml_tenants, `ix_aml_pii_vault_target`). reveal(`POST /internal/v1/aml/pii/reveal`) cleartext 산출 원천(가역암호 AES-256-GCM). additive only. | V1~V14 |
-| V16 | `V16__report_closure_reason.sql` | **T4 AML-ENG-04 보고 종결 사유**: `aml_regulatory_reports`에 `closure_reason_code VARCHAR(64)` 추가(§3.12, nullable — legacy 행 무영향, `ADD COLUMN IF NOT EXISTS`). `REJECTED`/`CANCELLED` 종결 시 사유 코드 영속 → STR 미보고 사유 분포(API §2.7 `unreported-reasons`) 집계 원천. `ctr_exemption_code`와 별개·공존. | V1~V15 |
-| V17 | `V17__webhook_callback_url.sql` | **T10 ENG-WEBHOOK 콜백 URL**: `aml_api_credentials`에 `webhook_url VARCHAR(512)` 추가(`ADD COLUMN IF NOT EXISTS`). enabled `WEBHOOK` credential 이 콜백 URL + 공유 secret(`secret_ciphertext`=secret_ref)의 **단일 정본**(fds-svc `fds_api_credentials.webhook_url` 미러). `aml_source_systems`에는 webhook URL 컬럼 없음(integration §3.4 명문화). additive only. | V1~V16 |
-| V18 | `V18__approval_subject_type_line.sql` | **FS-BO-IAM-001 §4.2 / P3-T1 approval subject_type 정합**: `aml_approvals.subject_type` CHECK를 18종 union 으로 재정의(`aml_approvals_subject_type_check`·`ck_aml_approvals_subject_type` 양쪽 DROP 후 ADD) — `IRA_SUBMIT`·`HIGH_RISK_REGISTRY` 포함 Java `ApprovalSubjectType` enum(18종) 패리티 확정. `approval_line`은 `ApprovalLineResolver`가 subject_type별 해석(VARCHAR 유지·CHECK 미추가). 컬럼 협소화·데이터 재작성 없음. | V1~V17 |
-| V19 | `V19__demo_ph_scenarios.sql` | **hanpass-ph 데모 TM 시나리오 시드**: `aml_tm_scenarios`에 데모 전용 ACTIVE 2종(`STRUCTURING` velocity count≥5·`HIGH_RISK_CORRIDOR` amountBase≥5000) + 데모 watchlist source 1종(`DEMO_SANCTIONS`)·entry 2종 시드. **gated** — `tenant_demo` 부재 시 INSERT 0건(운영 비오염). 멱등(ON CONFLICT DO NOTHING). | V1~V18 |
-| V20 | `V20__demo_approval_seed.sql` | **데모 결재 폐루프 시드 교체**: phantom 결재 3건 DELETE(고정 payload_hash) + 실제 승인되는 결재 3종(`RA_MODEL`/`CHECKLIST_CHANGE`/`COUNTRY_RISK`, SUBMITTED·checker NULL) + 각 staged 대상 row(DRAFT) 시드(payload_hash = `PayloadHashing.canonicalSubjectRefOnly` 산식 일치 → approve drift guard 통과). **gated** — `tenant_demo` 부재 시 0건. 멱등(고정 UUID·ON CONFLICT DO NOTHING). | V1~V19 |
+| V1 | `V1__baseline.sql` | **통합 베이스라인(schema-only)** — 구 누적 체인(구 V1~V25)의 검증된 최종 스키마를 pg_dump 로 통합. `aml` 스키마 전 테이블 DDL: 도메인 14종(§3.1~§3.14) + IRA(§3.17~§3.18)·HRR(§3.19~§3.20)·PII vault(§3.21)·주기재확인정책(§3.22) + 지원 6종(§3.15 canonical_events/approvals/audit_events/evidence_exports/api_credentials/outbox). `aml_approvals.subject_type` CHECK **19종**(§5.16, `ck_aml_approvals_subject_type`) — CTR/STR 룰·임계 4-eyes(`CTR_THRESHOLD`·`REPORT_RULE`)는 **bo-api 애플리케이션 계층(`AmlApprovalDtos.SubjectType`, §5.16 후주)** 소관이라 aml-svc DB CHECK 는 19종 유지. 데모/부트스트랩 row 는 V2 로 분리. | — |
+| V2 | `V2__seed.sql` | **통합 시드(data-only)** — 구 누적 체인의 검증된 최종 데이터 상태를 통합. demo tenant(`tenant_demo`=hanpass-ph)·source·정책 baseline(KR_DEFAULT country risk·checklist·periodic review policy)·데모 TM 시나리오·데모 watchlist·데모 결재 폐루프 시드 등. **gated** — `tenant_demo` 부재 시 데모 전용 행 미삽입(운영 비오염). 멱등(ON CONFLICT DO NOTHING). | V1 |
+| V3 | `V3__ctr_str_rules_foundation.sql` | **CTR/STR 보고 룰 통합 P1 — 기반**: (1) `aml_ctr_thresholds` 생성(§3.22a, PK `(tenant_id, currency)`, `threshold_amount NUMERIC(20,2) NOT NULL`·`updated_at`·`updated_by`) — 테넌트·통화별 CTR 보고 임계(`CtrThresholdPort`). (2) `aml_ph_banking_calendar` 생성(§3.22b, PK `(tenant_id, calendar_date)`, `is_business_day BOOLEAN NOT NULL`·`holiday_name`) — 주말은 코드 판정(`BankingCalendar`), 공휴일 행(is_business_day=false)만 저장(`BankingCalendarPort`). (3) 시드: `tenant_demo` CTR 임계(PHP 500,000 / KRW 10,000,000) + 2026 PH 고정일 공휴일(New Year's Day·Araw ng Kagitingan·Labor Day·Independence Day·National Heroes Day·Bonifacio Day·Christmas Day·Rizal Day). CTR/STR 룰 카탈로그는 코드(`AmlReportRuleCatalog`)이며 DB 아님. additive·멱등. | V1,V2 |
+| V4 | `V4__ctr_report_idempotency.sql` | **CTR/STR 통합 P2 — CTR 멱등/일합산**: `aml_regulatory_reports`에 CTR 컬럼 4종 추가(`ADD COLUMN IF NOT EXISTS`, 전부 nullable — legacy/비-CTR 행 무영향): `subject_ref VARCHAR(256)`·`banking_day_key DATE`·`report_amount NUMERIC(20,2)`·`due_at TIMESTAMPTZ`(freeze 된 서버 파생 PHP환산 합계 + 법정 기한). 부분 UNIQUE `ux_aml_ctr_draft (tenant_id, subject_ref, banking_day_key) WHERE report_type='CTR' AND status='DRAFT'` — (테넌트,주체,영업일)당 열린 CTR DRAFT 정확히 1건, 동일 영업일 후속 현금거래는 `report_amount` 누적(CTR_DAILY 보완재). `CtrEvaluationService` upsert 계약과 일치. additive. | V1~V3 |
+| V5 | `V5__str_report_evaluation.sql` | **CTR/STR 통합 P3 — STR 멱등/사유코드**: `aml_regulatory_reports`에 STR 컬럼 2종 추가(`ADD COLUMN IF NOT EXISTS`, nullable): `trigger_ref VARCHAR(256)`·`str_reason_codes JSONB`(누적 의심 사유코드 집합). 부분 UNIQUE `ux_aml_str_draft (tenant_id, trigger_ref) WHERE report_type='STR' AND status='DRAFT'` — (테넌트,트리거)당 열린 STR DRAFT 정확히 1건, 동일 트리거 후속 룰은 사유코드를 이 행에 fold(제2 DRAFT 생성 금지, UPSERT). `StrEvaluationService` upsert 계약과 일치. additive. | V1~V4 |
+| V6 | `V6__ph_banking_calendar_2026_movable_holidays.sql` | **CTR/STR 통합 QA 수정 — 2026 이동/종교 공휴일 시드**: V3 은 고정일 정규 공휴일만 시드해 이동 공휴일(Holy Week·Eid 등)이 `BankingCalendar.plusBusinessDays`에서 영업일로 오판 → CTR/STR `due_at` 과소산정. `tenant_demo` 2026 이동 공휴일 11종 추가(Chinese New Year·Maundy Thursday·Good Friday·Black Saturday·Eidul Fitr·Eidul Adha·All Saints' Day·All Souls' Day·Feast of the Immaculate Conception·Christmas Eve·Last Day of the Year). 연도 롤오버 시 신규 additive 마이그레이션/테넌트 캘린더 admin 으로 시드(적용된 마이그레이션 편집 금지). additive·멱등(ON CONFLICT DO NOTHING, V3 무변경). | V1~V5 |
 
-> **구 설계 표가 기술한 미실현 분할 파일 정리**(코드 부재 grep 검증): 구 표의 `V17a/V17b`(`isolation_mode` DROP), `V18`(evidence_export `status` ALTER), `V19`(report submission loop ALTER), `V20`(source_systems status·tenant status ALTER) 등 가상 파일명은 **구현에 존재하지 않는다**. 단, 그 DDL이 의도한 **컬럼·CHECK는 모두 실현되어 있다** — `deployment_model`/`onboarding_status`/`infra_ref`·`aml_source_systems.status`/`data_scope`·`aml_tenants.status` 4종은 **V2**(Phase 1)에서, evidence_export `status`(4종)·`reason NOT NULL`은 **V8**(Phase 7 생성 시점부터), 보고 FIU 폐루프 컬럼(`fiu_ack_ref`·`submission_error_code`·`resubmit_count`·`ctr_exemption_code`)·status 8종은 **V6**(Phase 5 생성 시점부터) 도입되었다. 즉 컬럼 자체는 ALTER 분리 마이그레이션이 아니라 **각 phase의 CREATE/Phase1 ALTER에 흡수**되어 구현되었다. 구 `isolation_mode` 컬럼만은 **V1 baseline에 잔존**(V2가 대체 컬럼을 추가하되 DROP 하지 않음) — 운영 무해(미사용). `institution_ref`(상위 기관 참조)는 **어느 마이그레이션에도 부재 = 미구현(추후 예정)**.
+> **bo-api(스키마 `bo`) CTR/STR 마이그레이션(참고 — 데모 백오피스 소관, 코드=truth)**: bo-api 는 `services/bo-api/src/main/resources/db/migration/` 에 별도 체인(V1 baseline·V2 seed·V3 hanpass_demo_scope·V4 fds_hanpass_connector)을 두며, CTR/STR 모니터링은 다음 3개를 additive 로 얹는다 — **V5 `V5__ctr_str_rules_foundation.sql`**(`backoffice.aml_ctr_thresholds`·`backoffice.aml_ph_banking_calendar` 생성 + `platform`·`tenant_demo` CTR 임계 PHP 500,000/KRW 10,000,000 + 2026 PH 고정일 공휴일 7종 시드; 룰 카탈로그는 코드), **V6 `V6__ctr_str_monitoring_audit_events.sql`**(`backoffice.bo_audit_logs` `chk_bo_audit_logs_event` CHECK 에 P4 이벤트코드 3종 추가 — `CTR_THRESHOLD_CHANGE_SUBMITTED`·`REPORT_RULE_ACTIVATE_SUBMITTED`·`AMLC_SUBMISSION_DELEGATED`, 기존 allowlist 전량 보존 후 append), **V7 `V7__ph_banking_calendar_2026_movable_holidays.sql`**(aml-svc V6 대칭 — `platform`·`tenant_demo` 2026 이동 공휴일 11종씩 additive 시드). bo-api CTR/STR 4-eyes(`CTR_THRESHOLD`·`REPORT_RULE`)는 `AmlApprovalDtos.SubjectType`(21종) 애플리케이션 enum + 스텁 스토어(`AmlStubStore`)로 다루며 별도 approvals CHECK 컬럼 협소화 없음.
+
+> **구 누적 체인(구 V1~V25) → 통합(consolidate) 정리**: 통합 이전 §7 표가 기술하던 phase 단위 파일(`V1__baseline`·`V2__phase1_foundation`·`V3__phase2_wlf`·…·`V25__periodic_review_policy`)은 **더 이상 저장소에 존재하지 않는다**(2026-06-30 consolidate 로 삭제·통합). 그 DDL/데이터가 의도한 **모든 스키마·CHECK·시드는 통합 `V1__baseline.sql`(schema) + `V2__seed.sql`(data)에 최종 상태 그대로 흡수**되어 있다 — deployment_model/onboarding_status/infra_ref, source_systems status/data_scope, tenant status 4종, evidence_export status 4종·reason NOT NULL, 보고 FIU 폐루프 컬럼(fiu_ack_ref·submission_error_code·resubmit_count·ctr_exemption_code·closure_reason_code), IRA/HRR/PII vault(field 7종)/주기재확인정책, aml_approvals.subject_type 19종, aml_outbox.aggregate_type 6종, 데모 TM 시나리오 등. `institution_ref`(상위 기관 참조)는 통합 baseline 에도 부재 = **미구현(추후 예정)**.
 >
 > 롤백: Flyway는 forward-only이므로 각 V는 idempotent하게 작성하고, 데이터 변형은 별도 보정 마이그레이션으로 분리. 운영 롤백은 `UNDO` 대신 보상 마이그레이션 + feature flag로 처리한다.
+>
+> **위험등급별 차등 TM 임계 = `aml_tm_scenarios.dsl`(JSONB) 구조 확장, Flyway 없음**(코드=truth, grep 검증). `aml_tm_scenarios` 스키마(컬럼·CHECK·인덱스)는 **무변경**이며, velocity 노드의 위험등급별 차등 임계는 기존 `dsl` JSONB 문서에 **optional `thresholds` 키**(등급 키 `RiskGrade` 4종·값 numeric·미지 키/비숫자 reject=closed grammar·미설정 등급=base `value` fallback, API §3.4c)를 더한 것이다 — 별도 컬럼·테이블·마이그레이션 없음. 엔진(`aml-svc TmScenarioDslParser`/`TmCondition.Velocity`)이 평가 시 거래 주체 고객 위험등급으로 effective threshold를 선택한다(고위험=강화). `dsl` velocity 노드 구조 예시:
+>
+> ```jsonc
+> { "type": "velocity", "agg": "count", "dimension": "subject", "window": "7d",
+>   "op": ">=", "value": 5,
+>   "thresholds": { "HIGH": 3, "PROHIBITED": 1 } }   // optional 등급별 강화 임계(미설정 등급=value)
+> ```
 
 ---
 
@@ -1058,6 +1106,11 @@ stateDiagram-v2
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-01 | **CTR/STR 모니터링 통합 역전파(코드=truth, feature/aml-ctr-str-monitoring).** (1) **§7 마이그레이션 표 전면 재작성** — 2026-06-30 consolidate(commit 9a3ac74)로 구 누적 phase 체인(구 V1~V25)이 통합 `V1__baseline.sql`(schema-only)+`V2__seed.sql`(data-only)로 재편된 사실을 반영하고, CTR/STR 통합 additive 4파일(`V3__ctr_str_rules_foundation`·`V4__ctr_report_idempotency`·`V5__str_report_evaluation`·`V6__ph_banking_calendar_2026_movable_holidays`)을 등재 → 실제 저장소(V1~V6)와 1:1. bo-api(`bo`) CTR/STR 3파일(V5 foundation·V6 audit_events 이벤트코드 3종·V7 이동공휴일)을 참고 주석으로 명시. (2) **§3.22a `aml_ctr_thresholds` 신설**(PK `(tenant_id, currency)`, PHP 500,000/KRW 10,000,000 시드, `CtrThresholdPort`, hot-reload 우회 불가). (3) **§3.22b `aml_ph_banking_calendar` 신설**(PK `(tenant_id, calendar_date)`, 2026 PH 고정일 8종+이동 11종 시드, `BankingCalendarPort`). (4) **§3.12 `aml_regulatory_reports` 컬럼 6종 추가**(`subject_ref`·`banking_day_key`·`report_amount`·`due_at` CTR 멱등/집계·V4, `trigger_ref`·`str_reason_codes` STR·V5) + 부분 UNIQUE `ux_aml_ctr_draft`/`ux_aml_str_draft`. (5) **§5.16 후주** — CTR/STR 4-eyes(`CTR_THRESHOLD`·`REPORT_RULE`)는 **bo-api 애플리케이션 계층(`AmlApprovalDtos.SubjectType` 19→21종)** 소관이며 **aml-svc `aml_approvals.subject_type` CHECK 는 19종 유지**(엔진 결재 대상 아님)임을 명문화, bo-api DB 변경은 `bo_audit_logs` 이벤트코드 3종 추가로 국한. | data-modeler. 코드=truth. 근거=`services/aml-svc/.../db/migration/{V1__baseline,V2__seed,V3~V6}`·`domain/report/{AmlReportRuleCatalog,BankingCalendar}`·`domain/enums/{AmlReportRuleCode,ApprovalSubjectType(19),StrIndicator}`·`application/usecase/{CtrEvaluationService,StrEvaluationService}`·`adapter/out/submission/MockAmlcSubmissionAdapter`·bo-api `db/migration/{V5,V6,V7}`·`AmlApprovalDtos.SubjectType(21)`. API §2.7/§3.6/§14·기능정의서 §7/§9.1/§12-B.3·§03 §4.2 동기화. |
+| 2026-06-29 | **위험등급별 차등 TM 임계 = dsl JSONB 구조 확장·Flyway 없음 명시(코드=truth).** `aml_tm_scenarios` 스키마(컬럼·CHECK·인덱스) **무변경**이며 신규 마이그레이션 없음을 grep 검증 후 명문화. (1) **§7 V5 행 보강** — `aml_tm_scenarios.dsl` velocity 노드의 위험등급별 차등 임계 optional `thresholds`가 스키마 무변경 dsl 구조 확장임을 표기. (2) **§7 마이그레이션 표 직후 주석 신설** — 차등 임계는 기존 `dsl`(JSONB)에 optional `thresholds` 키(등급 키 `RiskGrade` 4종·값 numeric·미지 키/비숫자 reject=closed grammar·미설정 등급=base `value` fallback, API §3.4c)를 더한 것(별도 컬럼·테이블·마이그레이션 없음)임을 명시 + `dsl` velocity 노드 구조 예시(`thresholds:{HIGH:3,PROHIBITED:1}`) 추가. 엔진이 평가 시 거래 주체 고객 위험등급으로 effective threshold 선택(고위험=강화). | data-modeler. 코드=truth. 근거=`services/aml-svc/.../domain/tm/{TmScenarioDslParser(parseThresholdsByGrade),TmCondition.Velocity(effectiveThreshold)}`·`db/migration/`(신규 V 부재 grep 검증). API §3.4c·§3.4a·기능정의서 §12-A.6 동기화. |
+| 2026-06-29 | **위험등급별 EDD 재이행주기 정책 역삽입(EDD 브랜치, 코드=truth).** (1) **§7 마이그레이션 표에 V25 행 추가**(`V25__periodic_review_policy.sql`, 의존 V1~V24) — V23=pii_vault_fields(WLF)·V24=pep_approval(PEP)와 **별개 V번호**(머지 순서 WLF→PEP→EDD, V번호당 마이그레이션 1개 불변식 유지, 충돌·중복 없음). (2) **§3.22 `aml_periodic_review_policy` 테이블 신설** — PK `(tenant_id, risk_grade)`, `risk_grade` CHECK 4종·`cadence_months` CHECK ≥0·`grace_period_days` DEFAULT 14·`updated_at`, FK 미설정(`'default'` baseline portable). `'default'` baseline 시드 LOW 12 / MEDIUM 6 / HIGH 3 / PROHIBITED 0, grace 14(**위험할수록 짧게**·PROHIBITED 0=즉시). 정책 메타만(PII 없음). | aml-java-implementer. 근거=`services/aml-svc/.../db/migration/V25__periodic_review_policy.sql`(disk 검증)·`domain/cdd/PeriodicReviewPolicy`·`application/port/out/PeriodicReviewPolicyStorePort`·`application/usecase/CddEddService.approvePeriodicReviewChange`(4-eyes 정책 저장+등급별 `next_review_due_at` 재계산)·`RiskAssessmentService`(등급별 cadence 산정). API §2.7(엔진·bo-api GET 2종)·§3.11·기능정의서 §12-A.5 동기화. |
+| 2026-06-29 | **마이그레이션 V번호 충돌 해소 — V23=pii_vault_fields(WLF), V24=pep_approval(PEP) 분리 확정(코드=truth).** 직전 PEP 정합이 `V23__pii_vault_fields.sql`(WLF 브랜치 실파일)을 phantom 으로 오판하고 PEP 를 V23 에 이중 배정했으나, 두 기능 브랜치가 각기 다른 V번호를 추가한 별개 마이그레이션임을 재검증: WLF/PII reveal 브랜치 = `V23__pii_vault_fields.sql`(aml_pii_vault.field 4→7종), PEP 브랜치 = `V24__pep_approval.sql`(aml_customers is_pep/pep_approval_id·subject_type 18→19종·list_type 3→4종). (1) **§7 마이그레이션 표** — V23 행을 실제 `V23__pii_vault_fields.sql`(field 7종 확장)로 복원하고, PEP 는 **신규 V24 행**(`V24__pep_approval.sql`, 의존 V1~V23)으로 분리(V번호당 마이그레이션 1개 불변식 유지). (2) **PEP 관련 V번호 표기를 전부 V23→V24 로 정정** — §3.3 is_pep/pep_approval_id, §3.20 list_type, §5.16 subject_type 19종 CHECK·후주, §5.33 reference_list_type. (3) §5.35 pii_field 7종·§3.21·§2.2 의 V23(WLF 소관)은 그대로 유지. (4) 용어 '당면고위험'→'당연고위험' 정정. | aml-java-implementer. 근거=`aegis-aml/services/aml-svc/.../db/migration/{V23__pii_vault_fields.sql(WLF),V24__pep_approval.sql(PEP)}`(disk 검증: V23·V24 별개 파일 실재)·`domain/enums/{ApprovalSubjectType(19),ReferenceListType(4)}`·`ApprovalLineResolver`(PEP_APPROVAL→EXECUTIVE_APPROVAL)·`domain/identity/Customer`(isPep·pepApprovalId·withPepApproved)·`application/usecase/PepApprovalService`. 기존 4-eyes·HRR `reassessRegisteredSubjects` 재사용(RA 채점 미중복). API §3.7 ApprovalDto 동기화 필요. |
+| 2026-06-29 | **T3 AML-ENG-03 PII vault field 도메인 확장 + 적재 결선 역삽입(코드=truth).** (1) **§5.35 pii_field enum 4종→7종** — `NATIONALITY`(국적)/`GENDER`(성별)/`DOB`(생년월일) 추가, 도메인 `PiiField`(7종)와 1:1, CHECK 7종(V23). (2) **§3.21 `aml_pii_vault.field` 행** 7종으로 갱신 + 표제 `Flyway V15·V23` 병기. (3) **§7 마이그레이션 표에 V21·V22·V23 행 추가**(실제 저장소 파일과 1:1 정합 — 누락 보완): V21 `aml_customers.onboarding_at` 기본값·백필, V22 데모 TM 시나리오 10종, V23 `aml_pii_vault.field` CHECK 7종 확장. (4) **§2.2·§3.21 "vault 적재 후속(가정 A2)" → "결선 완료(2026-06-29)"** — 회원 등록(`RegisterCustomerService`) raw name/nationality/gender/dob, 워치리스트 업로드 import(`WatchlistImportService.uploadImport`) entry 원문 name/nationality/dob 를 동일 트랜잭션 암호화 upsert; 외부 feed fetch 는 원문 미가용 → hash-only 유지. | data-modeler. 근거=`services/aml-svc/.../domain/pii/PiiField.java`(7종)·`db/migration/V23__pii_vault_fields.sql`·`RegisterCustomerService`·`WatchlistImportService`. ADR 2026-06-15 가정 A2 해소. API §2.6·기능정의서 §3.1 동기화. |
 | 2026-06-21 | **WLF matchedCandidates 출처계보(가산) 반영.** §3.8 `aml_screening_results`에 `matched_candidates`가 **영속 컬럼이 아닌 파생(enrich) 응답 필드**임을 주석 명시 — API §3.2 `ScreenResponse.matchedCandidates[]`는 bo-api가 `matched_entries`의 entry_id로 `aml_watchlist_entries`(`entry_id`→`source_code`·`list_type`·`subject_kind`·`version`) + `aml_watchlist_sources`(`source_code`→`provider`·`source_type`·`last_imported_at`) 2단 조인해 산출. score/threshold/matchField는 `score_breakdown`·`matched_rules` best-effort, reasonCodes null. raw PII 미포함. 별도 DDL·마이그레이션 없음. | data-modeler. 코드=truth. API §3.2 동기화. |
 | 2026-06-21 | **코드 기준 마이그레이션·지원 테이블 정합화(이격 리포트 AML, 코드=truth).** (1) **§7 마이그레이션 표 전면 교정** — 구 설계 가상 표(`V01~V20`·`V17a/V17b` 분할안)를 실제 구현 파일 **V1~V20**(baseline·phase1~9·bo_case_admin·staged_payload·ira_surface·high_risk_registry·pii_vault·report_closure_reason·**webhook_callback_url(V17)**·**approval_subject_type_line(V18)**·**demo_ph_scenarios(V19)**·**demo_approval_seed(V20)**)과 1:1로 재작성. (2) **deployment_model/onboarding_status/status 4종·source_systems status·evidence_export status·report FIU 폐루프 컬럼은 미구현이 아니라 V2/V8/V6 phase 마이그레이션에 흡수 구현됨**을 grep 검증 후 명시. 구 `isolation_mode` 는 V1 잔존(DROP 안 됨). `institution_ref` 만 어느 마이그레이션에도 부재 = **미구현(추후 예정)**. (3) **§3.15 `aml_api_credentials` 테이블 명세 신설**(PK `(tenant_id, credential_id)`, credential_type 4종, `secret_ciphertext`·`webhook_url`(V17), 구현 V2) + 지원 테이블 5종→6종. (4) **§3.15 `aml_outbox.aggregate_type` 5종→6종**(`IRA_REPORT` 추가, V13). (5) §3.17 IRA `data_scope` 는 코드상 컬럼 존재 확인 → 제거 대신 'tenant 단위·workspace 미사용' 주석(이격7 코드 반증 → 미적용·주석). (6) §3.1 V17/V20 가상 마이그레이션 prose·institution_ref 후속 주석 교정. §8 동기화 표 갱신. | data-modeler. 근거=`services/aml-svc/.../db/migration/V1~V20` + V2 `aml_api_credentials`·V17 `webhook_url`·V13 outbox 6종. 이격1~7,17,18,23 반영. |
 | 2026-06-19 | **테넌트=서비스 재정의 + 기관 참조(institution_ref) 컬럼 신설(1 기관 : N 서비스).** §1.1/§2.1/§8 설명 텍스트의 '고객사'를 '서비스(테넌트=서비스)'로 정정(계층 기관→서비스(테넌트)→워크스페이스). §3.1 `aml_tenants`를 '서비스 마스터(테넌트=서비스)'로 라벨링하고 상위 기관 참조 컬럼 `institution_ref VARCHAR(64) NULL`(additive·후속 마이그레이션) 추가. §3.17 IRA·§3.15 outbox·§5.28 deployment_model 설명의 '고객사' 정정. `tenant_id`/`data_scope`/RLS `app.current_tenant`·scope 코드·PK 선두 규칙 불변(의미만 '서비스'). | data-modeler. 컬럼명·enum·경로 불변(라벨/설명만). |
