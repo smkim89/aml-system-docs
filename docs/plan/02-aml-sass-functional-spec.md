@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **9.21** | **2026-07-02** | **Hanpass Global Team** | **TM 알림 발동을 CTR/STR 룰 카탈로그로 한정 — 레거시 시나리오 발동 폐기 역전파(코드=truth, fix/aml-tm-ctr-str-rule-scope).** (1) **§7.1 AML-TM-001 BR-010** — v9.20 의 "모니터링 = TM + CTR + STR 동시 평가"를 **"TM 알림 = CTR/STR 룰 발동의 산출물"**로 개정: 엔진(`TmEvaluationService`)의 ACTIVE 시나리오→`TM_SCENARIO` 알림 영속 제거, CtrEvaluationService·StrEvaluationService 가 발동 룰마다 TM 알림을 보고 DRAFT 와 원자적 멱등 영속(`scenario_code` 칼럼=룰 코드, 기존 `ux_alert_tm` 재사용). 레거시 `ScenarioCode`(구조화거래·고위험 회랑 등 10종) 발동 폐기. 알림 목록/상세 컬럼·필터를 시나리오→룰(사유코드)로, 심각도 매핑(제재매칭=매우높음·그 외 STR=높음·CTR=중간) 명문화. (2) **§7.2/§12-A.6 AML-TM-002** — 시나리오 빌더는 **설정 전용**(발동과 분리) 콜아웃. (3) **§12-B.3 AML-STAT-001** — ② 효과성 행 코드 값=룰 코드(필드명 `scenarioCode` 유지)·라벨=룰 라벨, TM-002 드릴다운 제거(규제 보고 룰 관리로 안내). | 근거=aml-svc `application/usecase/{TmEvaluationService,CtrEvaluationService,StrEvaluationService,TransactionReportSideEffectRunner}`·`domain/report/AmlReportRule`(alertSeverity)·`domain/tm/AlertEvidence`(rule trigger)·`adapter/in/rest/AlertController`(ruleCode·rule 필터)·`db/migration/V7__tm_alert_rule_codes.sql`, bo-api `AmlTmService`·`TmDtos`·stats, bo-web `lib/aml-tm.ts`·`AmlTmAlerts`·상세 패널·`lib/aml-stats.ts`. API §3.4/§3.4a·DB §3.10/§마이그레이션(V7) 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **9.20** | **2026-07-01** | **Hanpass Global Team** | **CTR/STR 모니터링 통합 역전파(코드=truth, feature/aml-ctr-str-monitoring).** (1) **§9.1 AML-REP-001** — CTR/STR 룰 카탈로그(BR-009: CTR 2종 + STR 8종, `AmlReportRuleCatalog`)·멱등 보고 DRAFT/사유코드 UPSERT(BR-010: `ux_aml_ctr_draft`/`ux_aml_str_draft`, `str_reason_codes` fold, TEMP_FREEZE>STR>CTR)·보고 기한 PH_AMLC 5영업일+PII sha256(BR-011: CTR 거래일+5BD 17:00 PHT·STR 의심확정+5BD, eAMLA `amlc_submission_ref`, KR default 옵션 보존) 3개 BR 신설. (2) **§7.1 AML-TM-001** — 모니터링 = TM + CTR + STR 동시 평가(BR-010) 명문화(단일 인입 파이프라인의 서로 다른 산출물·우선순위 표기). (3) **§12-B.3 AML-STAT-001** — API 에 `GET /stats/report-rules?family=CTR|STR` 추가 + CTR/STR 메뉴별 룰 개요(BR-005) 신설. | 근거=aml-svc `domain/report/{AmlReportRuleCatalog,BankingCalendar}`·`domain/enums/{AmlReportRuleCode,StrReasonCode}`·`application/usecase/{CtrEvaluationService,StrEvaluationService,TransactionReportSideEffectRunner}`·`adapter/out/submission/MockAmlcSubmissionAdapter`, bo-api `AmlReportRuleController`·`AmlCtrThresholdController`·`AmlStatsService`. API §2.7/§3.6/§3.6a/§11·DB §3.12/§3.22a/§3.22b·integration §3.4 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **9.19** | **2026-07-01** | **Hanpass Global Team** | **§7.1 AML-TM-001 라이브 인입을 FDS처럼 룰베이스로 정합(코드 정합) — 채널→시나리오 하드매핑 폐기.** 데모(비-prod) 시뮬레이터 거래가 인입될 때 "채널→시나리오 단순 매핑으로 무조건 HIGH 알림 1건(집계 count=1·기준초과 true·관련거래 1건)"을 만들던 결함 해소. 이제 bo-api 라이브 인입(`IngestTestController`→`AmlTmService.ingestLiveTransaction`)이 **주체(회원)별 rolling 윈도우**에 거래를 누적해 **ACTIVE THRESHOLD 시나리오(STRUCTURING/RAPID_MOVEMENT/MULE_NETWORK/HIGH_RISK_CORRIDOR/ROUND_TRIPPING)의 설정 임계(금액 합산·건수·윈도우·다상대)로 실제 집계 평가** → **임계 충족 시에만** `TM_SCENARIO` 알림 발동/멱등 갱신((tenant,subject,scenario) upsert), 미충족 거래는 미발동(FDS ALLOW 대응). DRAFT(REFUND_LAUNDERING/TRADE_MISPRICING)·SIGNAL 계열 미발동 불변. 상세 ② 집계 근거에 **건수 기준·거래상대(다상대) 기준** 행 추가(순환거래=다수 상대방이 관련거래 다건으로 노출), ③ 관련 거래는 집계를 구성한 **윈도우 형제거래 다건**. 시뮬레이터는 회원 풀을 소수로 제한해 velocity 누적. 시나리오 임계=`ScenarioTemplates`(룰 관리) 단일 정본, raw PII 불변. | 근거=bo-api `AmlTmService`(appendLiveTxn·evaluateLiveScenario·upsertLiveAlert·windowFor·effectiveSeverity)·`IngestTestController`, aml-svc `TmEvaluationService.addRelatedTransactions`(windowPort 형제거래), bo-web `lib/aml-tm.ts`·`AmlTmAlertDetailPanel`(건수/다상대 임계 행), `tools/aml-ingest-simulator`(MEMBER_POOL). API §3.4a 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **9.18** | **2026-06-30** | **Hanpass Global Team** | **데모·시뮬레이터를 hanpass-ph 6 거래유형 기준으로 정렬 — WLF sender+receiver 양방향·RA 회원가입 기준 명문화(전체 그림 보강, 코드 정합) — 엔진 도메인 무변경.** v9.16/9.17(WLF 매치 알고리즘·식별정보)이 매치 상세 측면만 반영한 것을 보강 — ① **§3 WLF 절 콜아웃 신설**: WLF 스크리닝이 **해외송금(`remit-svc` cross-border)의 sender(회원, `CUSTOMER`) + receiver(상대방, `COUNTERPARTY`) 양방향**임을 명문화(수취국 PH/VN/ID 제재 = 진양성, aml-svc `V26` receiver 워치리스트 엔트리·bo-api 스텁 sender+receiver). 비-cross-border 거래는 sender만. ② **§5 RA 절 콜아웃 신설**: 데모·시뮬레이터의 1차 RA = **회원가입(`member-svc`) 시점 1회**·factor=`nationality`/`occupation`/`sourceOfFunds`/`kycLevel`(거래 기준 factor 1차 제거, 화면 ① 1차 RA와 1:1). ③ 시뮬레이터(`scripts/demo_ingest.py`·`demo_stream.py`)가 6 거래유형 생성·sender/receiver WLF·회원 온보딩 RA를 구동함을 명시. 엔진 도메인/enum/규제(CTR/STR) 불변 — 6유형 정렬은 데모/시뮬레이터/시드 한정. | 근거=`scripts/demo_ingest.py`·`demo_stream.py`(6유형·sender/receiver·회원 RA), aml-svc `V26`(STRUCTURING v2·HIGH_RISK_CORRIDOR v3·receiver 워치리스트), bo-api `AmlScreeningService`(sender+receiver)·`AmlRaService`(회원 KYC factor)·`AmlTmService.channelFor`. API §2.2/§3.2(WLF sender+receiver·COUNTERPARTY) 동기화. 코드=truth. PPT 재빌드는 후속. |
@@ -969,20 +970,20 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ TM 알림(분석가 트리아지)   서비스 [은행 A ▼]                  admin ▼      │
 ├─ 탭: [알림 적체] [시나리오 관리] ─────────────────────────────────────────┤
-│ [시나리오 ▼] [발생 출처 ▼] [심각도 ▼] [상태 ▼] [기간 ▼] [채널 ▼][corridor ▼]│
+│ [룰 ▼] [발생 출처 ▼] [심각도 ▼] [상태 ▼] [기간 ▼] [채널 ▼][corridor ▼]     │
 │                                                       🔍 대상 식별자(customerRef)│
 ├──────────────────────────────────────────────────────────────────────────┤
-│ 알림ID   │ 시나리오     │ 대상(식별자)│ 발생 출처        │심각도 │ 상태   │동작│
+│ 알림ID   │ 룰           │ 대상(식별자)│ 발생 출처        │심각도 │ 상태   │동작│
 │ ─────────┼──────────────┼─────────────┼──────────────────┼───────┼────────┼────┤
-│ alt-3301 │ 구조화거래   │ cust_…12    │ AML 모니터링     │ 높음  │ 탐지   │[케이스]│
-│ alt-3290 │ 뮬 네트워크  │ ent_…77     │ AML 모니터링     │매우높음│ 1차분류│[케이스]│
-│ alt-3277 │ 급속이동     │ cust_…90    │ FDS 에스컬레이션 │ 높음  │케이스생성│ ▶ │
+│ alt-3301 │ CTR 단건보고 │ cust_…12    │ AML 모니터링     │ 중간  │ 탐지   │[케이스]│
+│ alt-3290 │ STR 제재매칭 │ ent_…77     │ AML 모니터링     │매우높음│ 1차분류│[케이스]│
+│ alt-3277 │ STR PEP      │ cust_…90    │ FDS 에스컬레이션 │ 높음  │케이스생성│ ▶ │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ ▼ alt-3301 알림 상세                                  [대상 360° ▶]        │
 │ ┌─ 트리거 ─────────────────────────────────────────────────────────────┐ │
-│ │ 시나리오: 구조화거래(STRUCTURING) · 데이터 신호: STR_003(분할거래)     │ │
+│ │ 룰: CTR 단건보고(CTR_SINGLE) · 설명: 단건 현금거래 PHP환산액이 CTR 임계 이상│ │
 │ ├─ 근거(evidence) ─────────────────────────────────────────────────────┤ │
-│ │ 측정: 분할충전 합계 · 기간: 5영업일 · 충족: 9건 합계 ₱480,000(기준 충족)│ │
+│ │ 측정: 영업일 현금거래 합산 · 기간: 1영업일 · 충족: 합계 ₱600,000(기준 충족)│ │
 │ ├─ 관련 거래 ──────────────────────────────────────────────────────────┤ │
 │ │ txRef     │채널  │금액·통화   │corridor │상대     │시각   │FDS판정 │ │
 │ │ chg_…01   │충전  │₱60,000     │PH→PH    │self     │09:12  │허용 ▶ │ │
@@ -1014,14 +1015,14 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 | 항목(표시) | 설명 (괄호=내부 코드) |
 |------|------|
-| 시나리오 | 구조화거래(`STRUCTURING`)/급속이동(`RAPID_MOVEMENT`)/뮬 네트워크(`MULE_NETWORK`)/고위험 corridor(`HIGH_RISK_CORRIDOR`)/허위가맹점(`SHELL_MERCHANT`)/환불세탁(`REFUND_LAUNDERING`)/무역가격조작(`TRADE_MISPRICING`)/순환거래(`ROUND_TRIPPING`)/가상자산 현금화(`CRYPTO_OFF_RAMP`)/내부승인 남용(`INTERNAL_OVERRIDE_ABUSE`) (DB §5.6) |
-| 데이터 신호 | `StrIndicator`(STR_001~015, `remit.str_indicators` 매핑) — 시나리오 카탈로그의 **데이터 신호** 코드. 규제 STR 분류(KoFIU)는 보고 단계에서 별도 유지(BR-007) |
-| 심각도 | 낮음/중간/높음/매우높음 (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`, API §3.4) |
+| 룰 | **CTR/STR 보고 룰 카탈로그(`AmlReportRuleCatalog`)** 코드 — CTR 2종(CTR 단건보고 `CTR_SINGLE`·CTR 일합산보고 `CTR_DAILY`) + STR 8종(STR PEP `STR_PEP`·STR 제재매칭 `STR_SANCTION`·STR KYC소득불일치 `STR_KYC_INCOME_MISMATCH`·STR 구조화 `STR_STRUCTURED`·STR 목적부재 `STR_NO_PURPOSE`·STR 제3자명의 `STR_THIRD_PARTY`·STR 현금속도 `STR_VELOCITY_CASH`·STR 수동 `STR_MANUAL`). TM 알림의 발동 룰 코드는 `aml_alerts.scenario_code` 칼럼에 저장(DB §5.6, v9.21 CHECK 확장). 레거시 시나리오 코드(구조화거래 `STRUCTURING`·고위험 회랑 `HIGH_RISK_CORRIDOR` 등 10종)는 **발동 정본에서 폐기**되고 TM 시나리오 관리(AML-TM-002) 설정 화면에만 남는다 |
+| 사유코드(STR 전용) | `StrReasonCode`(PEP/SANCTION/KYC_MISMATCH/STRUCTURED/NO_PURPOSE/THIRD_PARTY/UNUSUAL_PATTERN/MANUAL) — STR 룰 발동 시 `evidence.trigger.strReasonCode` 로 노출. CTR 룰은 사유코드 없음. 규제 STR 분류(KoFIU 의심유형)는 보고 단계에서 별도 유지 |
+| 심각도 | 낮음/중간/높음/매우높음 (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`, API §3.4) — 룰 actions 기반: 제재매칭(`STR_SANCTION`, RESTRICT 차단)=매우높음(`CRITICAL`), 그 외 STR=높음(`HIGH`), CTR=중간(`MEDIUM`) |
 | 상태 | 탐지(`DETECTED`)/1차분류(`TRIAGED`)/케이스생성(`CASE_OPENED`)/기각(`DISMISSED`)/escalation(`ESCALATED`)/STR권고(`STR_RECOMMENDED`) (DB §5.7) |
 | 발생 출처 | **AML 모니터링**(`source_origin=AML`) / **FDS 에스컬레이션**(`source_origin=FDS`, alert_type=`FDS_ESCALATION`) / 벤더 경보(`VENDOR`) — 목록 컬럼·필터로 제공(DB §5.20, 부록 F) |
 | 채널 | 충전(walletchg)/국내(domestic)/해외(remit)/인바운드(inbound) (hanpass-ph, 관련 거래·필터) |
 | corridor | cross-border 거래의 송신/수취 국가·통화(remit `send/receive_country·currency`) — 필터·관련 거래 표시 |
-| 근거(evidence) | **TM 알림 상세 데이터모델**(DB §3.10·API §3.4a `evidence`): ① 트리거(시나리오·`strIndicator`·설명), ② 집계 패턴(측정값/기간/기준 충족 — 예 "5영업일 9건 분할충전 합계 ₱480,000"), ③ 관련 거래 목록(`transactionRef`→충전/국내/해외·금액·통화·corridor·상대·시각·FDS decision 링크), ④ 자금그래프(funnel, `wallet.transfer_links`) |
+| 근거(evidence) | **TM 알림 상세 데이터모델**(DB §3.10·API §3.4a `evidence`): ① 트리거(`ruleCode`·STR 전용 `strReasonCode`·룰 자연어 `description`), ② 집계 패턴(측정값/기간/기준 충족 — CTR 은 예 "1영업일 현금거래 합산 ₱600,000", STR 은 주체 rolling 윈도우), ③ 관련 거래 목록(`transactionRef`→충전/국내/해외·금액·통화·corridor·상대·시각·FDS decision 링크), ④ 자금그래프(funnel, `wallet.transfer_links`) |
 | 대상 360° | 대상 통합 뷰 링크(`subject360Ref` → `GET /api/v1/bo/aml/subjects/{customerRef}/360`, DB §3.16·API §2.5a·§3.4b) |
 
 #### 비즈니스 규칙
@@ -1031,11 +1032,11 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-003**: **시나리오 변경 적용 = 4-eyes**(`:activate`, subjectType=`TM_SCENARIO`로 결재, `aml:admin:policy`). 적용 전 시뮬레이션 권장(결재 불필요).
 - **BR-004 (시나리오 카탈로그 데이터화)**: 시나리오는 하드코딩 enum이 아니라 **`StrIndicator`(데이터 신호, STR_001~015) 기반 카탈로그**에 측정/기간/기준/소스필드(`remit.str_indicators`·corridor·channel)/evidence 를 매핑한다. UI 는 bo-api `ScenarioDefinition{family, fields[]}` 기반의 **스키마 주도 가이드 폼 + 자연어 미리보기**로 노출한다(내부 scenario DSL 비노출). 예: `HIGH_RISK_CORRIDOR`는 방향·고위험 국가·회랑 윈도우·건수/금액 임계, `STRUCTURING`은 윈도우·거래건수·단건 상한, SIGNAL 계열은 시그널 토글로 서로 다른 필드를 표시한다. **규제 STR 분류(KoFIU 의심유형)는 보고 단계(AML-REP-002)에서 별도 유지** — 본 카탈로그의 데이터 신호와 분리.
 - **BR-005**: FDS escalation 알림(`source_origin=FDS`)은 fds-svc Internal API(`/internal/v1/aml/fds-escalations`)로 수신된 결과만 표시(연동은 BE, T-15). 본 화면은 결과 검토만. 관련 거래 목록의 FDS decision 링크는 거래별 fds 판정(`fdsDecisionRef`) 역참조.
-- **BR-007 (알림 상세 데이터모델)**: 알림 행 클릭 시 **하단 상세**에 ① 트리거(시나리오·`strIndicator`·설명), ② evidence 집계 패턴(측정값/기간/기준 충족 — "거래·근거가 보이는" 정합 해소), ③ **관련 거래 목록**(transactionRef→충전/국내/해외·금액·통화·corridor·상대·시각·FDS decision), ④ **대상 360° 링크**(`subject360Ref`), ⑤ **자금그래프(funnel) 미니뷰**(`wallet.transfer_links`)를 표시한다(DB §3.10·API §3.4a). 회원번호/거래번호는 업무 식별자로 노출하고, 이름·계좌·지갑 등 원문 대조는 `aml:pii:reveal`+감사(`RAW_DATA_ACCESS`).
+- **BR-007 (알림 상세 데이터모델)**: 알림 행 클릭 시 **하단 상세**에 ① 트리거(`ruleCode`·STR 전용 `strReasonCode`·룰 자연어 설명), ② evidence 집계 패턴(측정값/기간/기준 충족 — "거래·근거가 보이는" 정합 해소), ③ **관련 거래 목록**(transactionRef→충전/국내/해외·금액·통화·corridor·상대·시각·FDS decision), ④ **대상 360° 링크**(`subject360Ref`), ⑤ **자금그래프(funnel) 미니뷰**(`wallet.transfer_links`)를 표시한다(DB §3.10·API §3.4a). 회원번호/거래번호는 업무 식별자로 노출하고, 이름·계좌·지갑 등 원문 대조는 `aml:pii:reveal`+감사(`RAW_DATA_ACCESS`).
 - **BR-008 (역할 분리 명문화)**: **TM 알림(본 화면 ① 알림 적체 = 분석가 트리아지, 운영)** 과 **TM 시나리오 빌더(② → AML-TM-002, 준법감시 4-eyes 설정)** 의 책임을 분리한다 — 메뉴 IA 상 이미 분리(§1.0, TM-001↔TM-002). 알림 적체는 `aml:case:read`/`aml:case:update`(분석가), 시나리오 변경은 `aml:admin:policy` 4-eyes(준법감시).
 - **BR-009 (Policy Pack 병기·규제 불변)**: 임계·기한·의심유형은 규제 레이어(Policy Pack) 정본이며 **불변**이다. 기본팩 `KR_DEFAULT`(CTR ₩10,000,000·STR 3영업일·KoFIU 의심유형) 위에 PH 운영은 **`PH_AMLC` 옵션**(CTR ₱500,000·Travel Rule ₱50,000·구조화 5BD·STR 5BD·near 0.90, `StrIndicator` STR_001~015)으로 **1줄 병기만** 한다. **임계/기한 숫자를 화면에서 교체하지 않는다** — 화면 측정/기간/기준 값은 활성 정책팩 파라미터의 읽기 표시.
 - **BR-006 (v6.0 벤치마크 보강)**: ② 시나리오 관리 목록에 **효과성 요약 컬럼(최근 30일 알림 건수·케이스 전환율 %)** 을 표시한다 — **화면 파생값**(알림 집계에서 파생, 별도 저장 없음). 시나리오 행 `▶` 클릭 시 효과성 상세는 **AML-STAT-001 ② 룰 효과성 통계**로 드릴다운(시나리오 코드 컨텍스트). 전환율이 비정상(과소·과다 추출)인 시나리오는 튜닝 후보 배지 ⚠ 표시 — 실계 운영 시스템의 룰 라이프사이클(정의→임계값→시뮬레이션→효과성 평가) 벤치마크 반영(부록 H).
-- **BR-010 (모니터링 = TM + CTR + STR 동시 평가, CTR/STR 모니터링 통합 — 코드=truth)**: 거래 인입 시 엔진은 **TM 시나리오 알림 + CTR 보고 룰 + STR 보고 룰을 동시에 평가**한다(단일 파이프라인). TM 시나리오는 이 화면(AML-TM-001)의 알림 적체로, CTR/STR 발동은 규제 보고 후보(AML-REP-001 §9.1 BR-009~011)로 각각 귀결된다 — 한 거래가 여러 의무를 유발하면 **TEMP_FREEZE > STR > CTR** 우선순위로 표기(BR-403). `STR_SANCTION` 만 차단(RESTRICT), 나머지 STR/CTR 은 플래그·보고 후보(거래 허용). 즉 이 화면의 알림과 §9.1 의 CTR/STR 후보는 같은 인입 이벤트의 서로 다른 산출물이며, 룰 개요는 STAT-001(§12-B.3)에서 룰군(CTR/STR/시나리오)별로 조회한다.
+- **BR-010 (TM 알림 = CTR/STR 룰 발동의 산출물 — 레거시 시나리오 발동 폐기, 코드=truth v9.21)**: 거래 인입 시 엔진은 **CTR 보고 룰 + STR 보고 룰만 평가**하며, **TM 알림은 발동한 CTR/STR 룰마다 하나씩 산출**된다(보고 DRAFT 와 원자적으로 멱등 영속) — 이 화면(AML-TM-001)의 알림 적체는 곧 CTR/STR 룰 발동의 목록이다. **레거시 TM 시나리오(`ScenarioCode`: `STRUCTURING`·`HIGH_RISK_CORRIDOR`(고위험 회랑) 등 10종)의 알림 발동은 전면 폐기**되었다 — 엔진(`TmEvaluationService`)의 ACTIVE 시나리오→`TM_SCENARIO` 알림 영속 경로 제거, 발동 정본은 CTR/STR 룰 카탈로그(§9.1 BR-009)로 일원화. 알림의 발동 룰 코드는 `aml_alerts.scenario_code` 칼럼에 저장하고 기존 `ux_alert_tm(tenant_id, transaction_ref, scenario_code)` 부분 UNIQUE 로 **(transactionRef, ruleCode) 단위 멱등** 보장(DB §3.10, V7 CHECK 확장). 한 거래가 여러 의무를 유발하면 **TEMP_FREEZE > STR > CTR** 우선순위로 표기(BR-403). `STR_SANCTION` 만 차단(RESTRICT)=매우높음(`CRITICAL`), 그 외 STR=높음(`HIGH`), CTR=중간(`MEDIUM`). `STR_MANUAL`(수동 전용)·비활성(DRAFT) 룰은 자동 발동하지 않으며, 룰 활성화는 4-eyes EXECUTED 시 반영(§9.1 BR-009). 룰 개요는 STAT-001(§12-B.3)에서 룰군(CTR/STR)별로 조회한다. **TM 시나리오 관리(AML-TM-002, 빌더·시뮬레이션·4-eyes)는 화면으로 유지되나 설정 전용 — 알림 발동과 분리**(발동 정본은 CTR/STR 룰 카탈로그이며, 시나리오 정의의 발동 재활성 여부는 후속 오픈 결정, 부록 E).
 
 ---
 
@@ -1436,6 +1437,8 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | **권한** | 시나리오 정책 `aml:admin:policy`🔒(적용) |
 | **API** | `GET /api/v1/bo/aml/tm-scenarios/{code}`(정의 read model) · `POST .../tm-scenarios/{code}/simulate` · `POST .../tm-scenarios/{code}:activate`🔒(TM_SCENARIO) |
 
+> **설정 전용(v9.21 — 발동과 분리)**: TM 시나리오 빌더는 시나리오 정의의 CRUD·시뮬레이션·4-eyes 를 유지하는 **설정 화면**이다. 단, TM 알림 발동 정본은 **CTR/STR 룰 카탈로그**로 일원화되었고(§7.1 BR-010, §9.1 BR-009) 레거시 시나리오(`STRUCTURING`·`HIGH_RISK_CORRIDOR` 등)의 알림 발동은 폐기되었으므로, 본 화면에서 활성화한 시나리오는 현재 알림을 발동시키지 않는다(정의 관리·백테스트 용도). 시나리오 정의의 발동 재활성 여부는 후속 오픈 결정(부록 E).
+
 - **구성**: bo-api가 내려준 `ScenarioDefinition{family, severity, fields[]}`를 단일 공통 폼으로 렌더하는 **스키마 주도 빌더**. THRESHOLD 계열은 윈도우·건수·금액·국가·방향 등 수치/선택 필드, SIGNAL 계열은 시그널 토글을 표시한다. `HIGH_RISK_CORRIDOR`는 방향·고위험 국가·회랑 윈도우·회랑 건수·회랑 합산금액 임계를 직접 확인·수정한다. **수치 임계 필드(NUMBER/AMOUNT)는 위험등급별 차등 임계 입력**(기본값 + LOW/MEDIUM/HIGH/PROHIBITED 등급별 오버라이드, 접을 수 있는 영역, **미입력 등급=기본값 적용**)을 제공한다 — 고위험 고객을 더 엄격한(보통 낮은) 임계로 강화 발동시키기 위함. 자연어 미리보기(등급별 차등이 있으면 등급별 강화 임계를 문장으로 함께 표시).
 - **BR-001**: 시나리오 변경 적용 = 4-eyes(`TM_SCENARIO`·준법감시 책임자). 적용 전 시뮬레이션(과거기간 백테스트) 권장(결재 불필요).
 - **BR-002**: 내부 scenario DSL 비노출(업무 용어 필드). 편집값은 `fields → parameters`로 평탄화되고 bo-api가 엔진 DSL로 컴파일한다. 위험등급별 차등 임계는 평탄 키 `<key>.thresholds.<등급>`(예 `minAmount.thresholds.HIGH`)로 왕복되어 엔진 velocity 노드의 optional `thresholds`로 컴파일된다(API §3.4c). payload_hash 고정·변경 시 무효화·자기 승인 차단.
@@ -1522,14 +1525,14 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | 항목 | 내용 |
 |------|------|
 | **기능 ID** | AML-STAT-001 |
-| **진입** | NAV `통계·내부통제` / AML-TM-001 ② 시나리오 행 `▶`(시나리오 코드 컨텍스트) |
+| **진입** | NAV `통계·내부통제`(② 룰 효과성 = CTR/STR 룰 코드 기준) |
 | **권한** | `aml:case:read` — **STR 통계 탭은 준법감시 전담 role 한정(tipping-off §19.2a)** |
 | **API** | **bo-api** `GET /api/v1/bo/aml/stats/str` · `GET /api/v1/bo/aml/stats/ctr` · `GET /api/v1/bo/aml/stats/scenarios` · **`GET /api/v1/bo/aml/stats/report-rules?family=CTR\|STR`(룰군별 룰 개요)** — **집계 소유=bo-api(API §9 경계 준수)** |
 
-- **구성**: STR 메뉴(`/aml/stats`)와 CTR 메뉴(`/aml/stats/ctr`) 모두 탭 `① 보고 현황 통계`/`② 룰 효과성` 동일 규격. ① 기간별 보고 퍼널(추출→검토→결재→제출) KPI 카드 + **지연 보고 일수 분포(법정 SLA 대비)** + 미보고(기각·취소) 사유 코드 분포 표. STR은 지연/미보고 원천(`str-delay`/`unreported-reasons`)을 표시하고, CTR은 동일 DTO 규격으로 퍼널을 우선 표시한다. ② 시나리오(룰)별 효과성 표 — 알림 건수(A)·케이스 전환(a)·**보고 전환(B, `reportCount`)**·**보고 전환율(B/A=`conversionRate`)**·**케이스 전환율(a/A=`caseConversionRate`)**·**관련 거래건수(`relatedTxnCount`)·관련 거래총액(`relatedTxnAmount`)**(BR-004 read-only 집계 파생값 — TM alert evidence `aggregationSummary` 출처)·전월 대비 변동·튜닝 권고 배지 ⚠. 행 `▶` → **AML-TM-002(`scenarioCode` 컨텍스트, 시나리오 튜닝)**. tipping-off 보호(① STR 통계 전담 한정)는 본 ② 효과성 표 확장과 무관하게 불변.
+- **구성**: STR 메뉴(`/aml/stats`)와 CTR 메뉴(`/aml/stats/ctr`) 모두 탭 `① 보고 현황 통계`/`② 룰 효과성` 동일 규격. ① 기간별 보고 퍼널(추출→검토→결재→제출) KPI 카드 + **지연 보고 일수 분포(법정 SLA 대비)** + 미보고(기각·취소) 사유 코드 분포 표. STR은 지연/미보고 원천(`str-delay`/`unreported-reasons`)을 표시하고, CTR은 동일 DTO 규격으로 퍼널을 우선 표시한다. ② 룰별 효과성 표 — 각 행의 **코드 값은 CTR/STR 룰 코드**(`ScenarioRow.scenarioCode` 필드명은 유지하되 값=`AmlReportRuleCode`, 화면 라벨=룰 라벨), 알림 건수(A)·케이스 전환(a)·**보고 전환(B, `reportCount`)**·**보고 전환율(B/A=`conversionRate`)**·**케이스 전환율(a/A=`caseConversionRate`)**·**관련 거래건수(`relatedTxnCount`)·관련 거래총액(`relatedTxnAmount`)**(BR-004 read-only 집계 파생값 — TM alert evidence `aggregationSummary` 출처)·전월 대비 변동·튜닝 권고 배지 ⚠. **AML-TM-002 시나리오 빌더 드릴다운은 제거**되었고(레거시 시나리오 발동 폐기, v9.21), 룰 튜닝은 규제 보고 룰 관리(§9.1 BR-009 `REPORT_RULE`/`CTR_THRESHOLD` 4-eyes)로 안내한다. tipping-off 보호(① STR 통계 전담 한정)는 본 ② 효과성 표와 무관하게 불변.
 - **BR-001**: 전 항목 **read-only 집계 파생값**(bo-api 소유, 30~60초 캐시·raw PII 미포함 — DASH-001과 동일 원칙). 개별 건 드릴다운은 AML-REP-001/AML-TM-001로 연결.
 - **BR-002**: ① STR 통계는 준법감시 전담 role에만 노출(비전담 메뉴 미노출·tipping-off). 지연 보고 일수는 법정 기한 SLA(STR 3영업일·CTR 30일, §9.1 BR) 기준 산출.
-- **BR-003**: ② 효과성 지표는 룰 튜닝 거버넌스 입력 — 전환율 비정상 시나리오의 임계 조정·중단은 AML-TM-002 4-eyes(`TM_SCENARIO`) 경유(본 화면은 판단 근거만 제공).
+- **BR-003**: ② 효과성 지표는 룰 튜닝 거버넌스 입력 — 전환율 비정상 룰의 활성화/중단·CTR 임계 조정은 규제 보고 룰 관리 4-eyes(`REPORT_RULE`/`CTR_THRESHOLD`, §9.1 BR-009) 경유(본 화면은 판단 근거만 제공). 레거시 TM 시나리오 빌더(AML-TM-002)는 설정 전용이며 발동과 분리(v9.21).
 - **BR-004 (코드 정합)**: ② 효과성 표의 STR 전환(`reportCount`)·보고 전환율(`conversionRate`=B/A)·케이스 전환율(`caseConversionRate`=a/A)·관련 거래건수(`relatedTxnCount`)·관련 거래총액(`relatedTxnAmount`)은 **bo-api가 read-only로 파생**한다(`GET /api/v1/bo/aml/stats/scenarios` ScenarioRow). 관련 거래건수·총액은 **TM alert evidence `aggregationSummary`(relatedCount/relatedAmount)** 에서, STR 전환은 alert `status=STR_RECOMMENDED` 집계에서 산출하며 엔진은 무변경(read-only 집계 파생). 비-prod stub 환경에서 가시화하되 **prod는 fail-closed**(소스 부재 시 노출 없음) 원칙을 DASH-001과 동일하게 따른다.
 - **BR-005 (CTR/STR 메뉴별 룰 개요, CTR/STR 모니터링 통합 — 코드=truth)**: ② 룰 효과성 탭은 **메뉴별로 룰군을 분리 조회**한다 — **CTR·탐지 효과성 통계 메뉴는 `family=CTR`(CTR 룰 개요 CTR_SINGLE·CTR_DAILY)**, **STR·탐지 효과성 통계 메뉴는 `family=STR`(STR 룰 개요 8종)**. `GET /api/v1/bo/aml/stats/report-rules?family=CTR|STR`(응답 `ReportRuleOverviewRow[]`, API §3.6a) 는 룰코드·family·reportType·reasonCode·evaluationMode·actions·status(ACTIVE/DRAFT — EXECUTED 활성화 반영)·자연어 설명·발동/DRAFT 카운트(라이브 DRAFT store `firedRules` 실집계·소스 없으면 0, seed 없음)·최근 발동 시각·튜닝 권고를 카탈로그 순서로 제공한다. `family=STR`은 STR 퍼널과 동일한 tipping-off 전담(COMPLIANCE) 게이트 — 비전담 `403`, CTR은 열림. 룰 활성화 4-eyes 는 관리 콘솔(§9.1 BR-009, `REPORT_RULE`)이며 본 화면은 개요 read-only.
 
