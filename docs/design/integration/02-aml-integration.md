@@ -205,15 +205,16 @@ API `IngestEventRequest`(02-aml-api §3.1)·`aml_canonical_events` 컬럼과 1:1
   "transaction": {
     "transactionRef": "tx_123", "direction": "OUTBOUND",
     "amount": "9500000.00000000", "amountMinor": 9500000, "currency": "KRW",
-    "purpose": "REMITTANCE", "channelType": "BANK_TRANSFER",
+    "purpose": "REMITTANCE", "channelType": "CROSS_BORDER_REMIT",
     "corridor": { "sendCountry": "KR", "receiveCountry": "PH", "sendCurrency": "KRW", "receiveCurrency": "PHP" },
-    "amountBase": "7000.00"
+    "amountBase": "7000.00", "receiverRef": "RCPT-24010042"
   },
   "screeningContext": { "requiresSanctionsScreening": true, "requiresTravelRule": false }
 }
 ```
 
 > 금액은 `amount`(NUMERIC(24,8) 문자열, 외화/crypto 소수 수용) + `amountMinor`(BIGINT 정수 최소단위) 병행(DB §3 규약과 일치).
+> **`receiverRef`(v9.25, nullable)**: 송금 거래(`DOMESTIC_REMIT`·`CROSS_BORDER_REMIT`)의 **비-PII 운영 수취인 식별자**(`RCPT-2401NNNN`, FDS/AML 공용 시뮬레이터 계약 — `HanpassPhTransactionPayload` 마지막 필드로 additive 가산). 송금 수취인의 STR_PEP·STR_SANCTION 동시 명단 평가(기능정의서 §7.1 BR-013)에서 수취인 COUNTERPARTY WLF 스크리닝(transactionRef 그룹)의 대상 키로 쓰인다. 수취인 이름·국적 등 원문은 reveal 체계로만(raw PII 미탑재). 비송금 채널·부재 시 수취인 평가 없음.
 > **corridor·amountBase(hanpass-ph cross-border, remit-svc)**: `corridor`(`sendCountry`/`receiveCountry` ← `remit.send_country/receive_country`, `sendCurrency`/`receiveCurrency` ← `remit.send_currency/receive_currency`)와 USD 정규화 `amountBase`(← `remit.usd_amount/report_amount`)는 cross-border 거래에 한해 채운다(국내 walletchg/domestic 은 corridor 동일국·생략 가능). TM corridor 시나리오·대상 360° 거래 표시·canonical event payload(DB §3.15)에 보존. 임계·기준금액은 규제 레이어(Policy Pack) 정본 — 본 필드는 데이터 신호일 뿐 임계 교체 아님.
 
 ### 4.3 crypto / Travel Rule payload (`aml_travel_rule_transfers`)
@@ -696,6 +697,7 @@ sequenceDiagram
 
 | 일자 | 버전 | 변경 | 비고 |
 |---|---|---|---|
+| 2026-07-02 | v2.5 | **송금 수취인 동시 명단 평가용 `receiverRef` 인입 payload 가산(코드=truth, feature/aml-tm-receiver-screening, 기능정의서 v9.25).** §4.2 transaction payload 에 **`receiverRef`(nullable, 비-PII 운영 수취인 식별자 `RCPT-2401NNNN`)** 추가 — 송금 거래(DOMESTIC_REMIT·CROSS_BORDER_REMIT)의 수취인 STR_PEP·STR_SANCTION 동시 평가(§7.1 BR-013)에서 수취인 COUNTERPARTY WLF 스크리닝(transactionRef 그룹) 대상 키. FDS/AML 공용 시뮬레이터 계약(`HanpassPhTransactionPayload` additive 마지막 필드, FDS 룰 로직 무변경). 수취인 원문은 reveal 체계로만(raw PII 미탑재). DB 스키마 무변경. | integration-designer. 근거=common `HanpassPhTransactionPayload.receiverRef`, aml-svc `StrEvaluationService`(수취인 COUNTERPARTY 계보 평가)·`ScreeningResultStorePort.findCounterpartyScreenings`. API §3.4a·기능정의서 §7.1 BR-013 동기화. DB 불변. |
 | 2026-06-21 | v2.4 | **코드 기준 outbox·webhook 정합(이격 리포트 AML).** (1) **§3.4 + §8.1 `aml_outbox.aggregate_type` 5종→6종** — `IRA_REPORT` 추가(IRA 제출 폐루프 enqueue, 구현 V13). 물리 테이블 마이그레이션 표기를 `Flyway V16` → 실제 **V4 생성**으로 교정. (2) **§3.4 `webhook.callback.requested` 콜백 URL 원천 명문화** — `aml_api_credentials`(`credential_type=WEBHOOK enabled`).`webhook_url`(구현 V17)이 정본이며 공유 secret은 동일 행 `secret_ciphertext`. **`aml_source_systems`에 webhook URL 컬럼 없음** 명시(fds-svc `fds_api_credentials.webhook_url` 미러). | integration-designer. 근거=`aml-svc/.../db/migration/V13`(outbox 6종)·V17(webhook_url)·V2(api_credentials). 이격6·18·21 반영. DB §3.15 동기화. |
 | 2026-06-19 | v2.3 | 테넌트=서비스 재정의(기관 → 서비스(테넌트=`tenant_id`) → 워크스페이스). 설명 텍스트의 "고객사"를 "서비스"로 치환(§1 운영자 집계 경계·§2.1 큐 카탈로그·§3.4 webhook envelope·§10.1 deployment_model 라우팅 표·`tenantId` 의미 재정의·§10.3 온보딩). `tenant_id`/`tenantId`/`Tenant-Id`·큐명(`aml-ingest-{tenantId}-{env}`)·RLS(`app.current_tenant`)·scope 코드명 불변(의미만 서비스). | integration-designer |
 | 2026-06-19 | v2.2 | **데이터 레이어 hanpass-ph 재그라운딩(REST sync).** §1.1 외부 시스템 박스를 hanpass-ph 7실서비스(member/walletchg/domestic/remit/wallet/tx-history/inbound-svc)로 교체. §3.1 인바운드 event family 발행자(source_system)를 실서비스별로 매핑(member-svc=customer/entity/beneficial-owner, walletchg/domestic/remit/inbound=transaction.requested, remit/wallet=settlement.posted, wallet=account.*) + 재그라운딩 주석(tx-history-svc=대상 360° 피드). §4.2 transaction payload 에 `corridor`(send/receive country·currency ← remit)·`amountBase`(USD ← remit usd_amount/report_amount) 추가. §7.2 필드매핑을 hanpass-ph 실컬럼(member_id/wallet_transaction_id/transfer_number/charge_order_id/transaction_id·account_hash·zoloz_aml_screening·str_indicators)으로 현행화. **규제 임계·기한 불변** — `str_indicators`·`sanction_screening_event`는 데이터 신호로만 매핑(규제 STR 분류 KR 정본 유지). | integration-designer. 식별자 keyed-HMAC. domestic-svc member_id varchar(36) join 정규화. DB §3.2/§3.8/§3.10/§3.15/§3.16·API·PRD §1.5/§7 동기화. |
