@@ -1,11 +1,13 @@
-# SaaS AML Platform 신규 구축 설계서
+# hanpass-ph AML Service(aml-svc) 소프트웨어 아키텍처 설계서
+
+> **본 문서 범위.** 본 설계서는 **hanpass-ph 송금 서비스의 AML(자금세탁방지) 엔진(`aml-svc`)** 소프트웨어 아키텍처 정본이다. 시스템 대상은 hanpass-ph 단일 서비스의 AML이며, 거래 유형·TM(거래 모니터링)·WLF(요주의 명단 필터링)·RA(고객위험평가)는 hanpass-ph 실제 거래(월렛충전·국내송금·해외송금·월렛결제·ATM출금·카드결제) 기준으로 기술한다. 멀티테넌트 격리 능력은 유지하나(전용 배포 기본), **운영 대상 테넌트는 hanpass-ph(`tenant_demo`)** 단일이다. 헥사고날·3-WAS 모노레포 구조는 코드(`services/aml-svc`)를 진실로 기술하며, 닫힌 enum 중 hanpass-ph가 사용하지 않는 값(advanced domain·vessel·crypto 등)은 "스키마·enum 잔존(미사용)"으로 명시한다.
 
 ## 목차
 
 1. [문서 목적](#1-문서-목적)
 2. [제품 방향](#2-제품-방향)
-3. [참조 구현으로서의 Hanpass AmlSvc](#3-참조-구현으로서의-hanpass-amlsvc)
-4. [지원 대상 금융 도메인](#4-지원-대상-금융-도메인)
+3. [hanpass-ph AmlSvc 참조 구현](#3-hanpass-ph-amlsvc-참조-구현)
+4. [hanpass-ph 거래 유형](#4-hanpass-ph-거래-유형)
 5. [핵심 설계 원칙](#5-핵심-설계-원칙)
 6. [플랫폼 아키텍처](#6-플랫폼-아키텍처)
 7. [공통 AML 데이터 모델](#7-공통-aml-데이터-모델)
@@ -30,116 +32,85 @@
 
 ## 1. 문서 목적
 
-본 문서는 기존 Hanpass `AmlSvc` 설계와 `22-1-fdsSvc-sass.md`의 SaaS FDS Platform 범위를 참조하여, **한국 금융시장**에서 여러 금융서비스에 독립적으로 연동 가능한 **SaaS형 AML(Anti-Money Laundering) Platform**을 신규 구축하기 위한 설계 기준서이다.
-
-FDS SaaS가 “거래 이상징후 탐지와 실시간 action”에 초점을 둔다면, AML SaaS는 다음 영역을 담당한다.
+본 문서는 **hanpass-ph 송금 서비스의 AML 엔진(`services/aml-svc`)** 소프트웨어 아키텍처 정본이다. hanpass-ph는 한국→해외(필리핀 등) 송금·월렛 서비스이며, `aml-svc`는 그 고객·거래·상대방 데이터를 입력으로 다음 AML 업무를 수행한다.
 
 - 고객확인(CDD)·강화된 고객확인(EDD)
-- 고객·법인·셀러·가맹점 위험평가(RA)
-- 요주의 명단 필터링(WLF)
-- 제재·PEP·RCA·adverse media screening
-- 실소유자(UBO)·관계자·법인 구조 위험평가
-- 거래 모니터링(TM)
+- 고객 위험평가(RA)
+- 요주의 명단 필터링(WLF) — 해외송금 sender(회원)·receiver(수취인) screening
+- 제재·PEP screening
+- 거래 모니터링(TM) — hanpass-ph 거래 채널·금액(phpEquivalent) 기반 시나리오
 - 의심거래보고(STR) 후보 생성·검토·보고
 - 고액현금거래보고(CTR) 데이터 수집·보고 보조
-- 가상자산 Travel Rule·지갑주소 위험평가
-- 무역기반 자금세탁(TBML) 탐지
-- 이커머스 해외정산·마켓플레이스 셀러 AML 리스크 평가
-- 내부 직원·법인 지급·B2B 인보이스 AML/내부통제 케이스
 
-본 문서는 특정 Hanpass PH 서비스의 확장이 아니라, 한국 금융회사·핀테크·PG·VAN·가상자산사업자·무역/B2B 결제 사업자·이커머스 플랫폼이 공통으로 사용할 수 있는 AML SaaS 제품의 신규 명세서이다.
+`fds-svc`(FDS 엔진)가 "거래 이상징후 탐지와 실시간 action"을 담당한다면, `aml-svc`는 고객·상대방·거래 패턴 중심의 자금세탁·제재·고위험고객 관리를 담당한다(§2.2). 본 문서는 hanpass-ph 단일 서비스의 AML 엔진을 기술하며, 비-hanpass 금융 도메인(카드 PG·가상자산 거래소·무역/TBML·이커머스 정산·B2B 인보이스)으로의 일반화는 본 엔진의 운영 범위가 아니다(스키마·enum에 잔존하는 미사용 값은 §4·§8·§12에서 명시).
+
+> **멀티테넌트.** 엔진은 멀티테넌트 격리 구조(전 테이블 `tenant_id` 선두 PK, 전용 배포 기본 §16)를 코드 차원에서 유지한다. 운영 대상 테넌트는 hanpass-ph(`tenant_demo`) 단일이며, 본 문서의 거래·시나리오·명단 예시는 모두 `tenant_demo` 시드(Flyway V19/V22/V26/V28) 기준이다.
 
 ---
 
 ## 2. 제품 방향
 
-### 2.1 제품 정의
+### 2.1 엔진 정의
 
-SaaS AML Platform은 금융회사 또는 핀테크 사업자가 자기 시스템의 고객·계좌·거래·상대방·법인·증빙·정산 데이터를 연동하면, 고객위험평가, 명단 필터링, 거래 모니터링, 케이스 관리, 규제 보고 증적을 멀티고객사 방식으로 제공하는 서비스이다.
+`aml-svc`는 hanpass-ph가 회원·거래·상대방 데이터를 연동하면 고객위험평가, 명단 필터링, 거래 모니터링, 케이스 관리, 규제 보고 증적을 제공하는 AML 엔진이다.
 
-본 제품의 1차 사업 포지션은 단순 AML rule engine이 아니라 **FIU·금융감독원·내부감사 대응 증적을 자동화하는 AML RegOps SaaS**이다. 고객사는 AML 의무를 수행했다는 사실을 설명 가능한 자료로 남겨야 하며, 실제 구매 가치는 다음 질문에 즉시 답할 수 있는지에서 나온다.
+엔진의 핵심 가치는 단순 rule engine이 아니라 **FIU·금융감독원·내부감사 대응 증적을 자동화하는 AML RegOps**이다. hanpass-ph는 AML 의무를 수행했다는 사실을 설명 가능한 자료로 남겨야 하며, 실제 가치는 다음 질문에 즉시 답할 수 있는지에서 나온다.
 
 - CDD/EDD가 언제, 어떤 기준과 증빙으로 수행됐는가?
 - WLF match가 true match인지 false positive인지 누가 판단했는가?
 - 고객위험평가(RA) 점수와 등급 산정 근거는 무엇인가?
 - STR 후보가 왜 생성됐고, 왜 보고 또는 기각됐는가?
-- CTR/Travel Rule/고위험 고객 관리 증적을 기간별로 바로 제출할 수 있는가?
+- CTR·고위험 고객 관리 증적을 기간별로 바로 제출할 수 있는가?
 - 명단 import, 국가위험, RA 모델, TM scenario 변경이 4-eyes로 승인됐는가?
-- 기존 AML 솔루션 결과와 고객사 내부 처리 이력을 하나의 timeline으로 추적할 수 있는가?
 
-가장 중요한 제품 목표는 **개발팀 의존 없이 준법감시실이 AML을 직접 운용할 수 있게 하는 것**이다. 개발팀의 역할은 초기 연동, 권한/IAM, 데이터 mapping, 고객·거래·증빙 event 공급, 외부 보고 adapter 구축까지로 제한한다. 이후 WLF 정책, RA 모델, CDD/EDD workflow, TM scenario, STR 후보 검토, CTR evidence, Travel Rule exception, 검사 대응 자료 생성은 준법감시실이 UI와 승인 workflow로 직접 수행해야 한다.
+가장 중요한 목표는 **개발팀 의존 없이 hanpass-ph 준법감시 담당이 AML을 직접 운용할 수 있게 하는 것**이다. 개발팀의 역할은 초기 연동, 권한/IAM, 데이터 mapping, 회원·거래 event 공급, 외부 보고 adapter 구축까지로 제한한다. 이후 WLF 정책, RA 모델, CDD/EDD workflow, TM scenario, STR 후보 검토, CTR evidence, 검사 대응 자료 생성은 운영 콘솔(bo-web→bo-api)의 UI와 승인 workflow로 직접 수행한다.
 
-이를 위해 플랫폼은 다음을 기본 제공한다.
+이를 위해 엔진은 다음을 기본 제공한다(운영 UI는 bo-web).
 
 - no-code WLF threshold와 false positive rule 관리
 - RA factor와 risk grade 정책 편집
 - CDD/EDD checklist와 periodic review 주기 설정
 - TM scenario builder와 simulation
 - STR 후보 생성 기준과 case workflow 관리
-- CTR/Travel Rule evidence self-service export
+- CTR evidence self-service export
 - 명단 import diff 확인과 승인
 - policy/model version rollback
 - maker-checker 기반 승인 workflow
 - 개발팀 개입 없는 감사자료 생성·다운로드·재생성
 
-### 2.2 FDS SaaS와 AML SaaS의 관계
+### 2.2 fds-svc와 aml-svc의 관계
 
-| 구분 | FDS SaaS | AML SaaS |
+hanpass-ph 모노레포는 거래 fraud를 `fds-svc`, AML을 `aml-svc`로 분리한다. 두 엔진은 같은 event·feature·case·audit·4-eyes·tenant 격리 기반을 공유하되 책임이 다르다.
+
+| 구분 | fds-svc | aml-svc |
 |---|---|---|
 | 핵심 목적 | 이상거래 탐지, fraud 방지, 실시간 차단 | 자금세탁·테러자금조달·제재·고위험고객 관리 |
-| 판단 대상 | 거래·기기·채널·행동 패턴 | 고객·법인·실소유자·상대방·거래 패턴 |
+| 판단 대상 | 거래·기기·채널·행동 패턴 | 고객·상대방(수취인)·거래 패턴 |
 | 주요 결과 | ALLOW/BLOCK/HOLD/REVIEW | LOW/MEDIUM/HIGH risk, WLF match, STR/CTR candidate |
-| 실시간성 | 승인 전 block/hold 중심 | 가입·온보딩 WLF는 실시간, RA/TM은 비동기 중심 |
+| 실시간성 | 승인 전 block/hold 중심 | 가입·수취인 등록 WLF는 실시간, RA/TM은 비동기 중심 |
 | 조치 | block, hold, release, case | CDD/EDD, relationship reject, STR filing, periodic review |
-| 공통점 | event ingest, feature store, case, audit, 4-eyes, tenant isolation |
+| 공통점 | event ingest, feature store, case, audit, 4-eyes, tenant 격리 |
 
-### 2.3 제품 모듈
+### 2.3 엔진 모듈
 
 | 모듈 | 설명 |
 |---|---|
-| Data Ingest | 고객·법인·계좌·거래·증빙·명단 데이터 수신 |
-| Identity & Entity Store | 개인, 법인, 실소유자, 대표자, 관계자, 셀러, 가맹점 |
-| Watchlist Management | 제재·PEP·RCA·adverse media·내부 블랙리스트 명단 관리 |
-| WLF Engine | 이름·생년·국적·문서번호·법인명·주소 기반 fuzzy matching |
-| Customer Risk Assessment | 고객/법인/셀러/가맹점/거래소 회원 위험평가 |
-| Transaction Monitoring | 구조화거래, 반복거래, 고위험국가, 비정상 정산 패턴 탐지 |
-| CDD / EDD | 고객확인, 증빙, 강화심사, 주기적 재확인 |
+| Data Ingest | 회원·거래·상대방 canonical event 수신(REST/queue) |
+| Identity Store | 개인 회원(Customer), 관계자(Relationship)·실소유자(UBO graph) |
+| Watchlist Management | 제재·PEP 명단 import·diff·apply·freshness |
+| WLF Engine | 이름·생년·국적·문서번호 기반 fuzzy matching(설명 가능 score) |
+| Customer Risk Assessment | 회원 위험평가(factor breakdown·grade) |
+| Transaction Monitoring | hanpass-ph 거래 채널·금액(phpEquivalent) 기반 시나리오(분할·반복·고위험회랑·환류 등) |
+| CDD / EDD | 고객확인, 증빙 checklist, 강화심사, 주기적 재확인 |
 | Case Management | alert triage, investigation, maker-checker, escalation |
-| Regulatory Reporting | STR/CTR/Travel Rule/검사 대응 리포트 증적 |
-| Admin Console | 모델, 룰, 명단, 국가위험, connector, 권한, 감사 |
-| Audit & Evidence | append-only 감사, hash chain, 장기 보존 |
-| Evidence Export | FIU·금융감독원·내부감사 제출용 CSV/PDF/Excel/API export |
-| Legacy Vendor Bridge | 옥타솔루션 등 기존 AML 솔루션과 병행 연동·점진 대체 |
+| Regulatory Reporting | STR/CTR 후보·검토·제출 증적 |
+| Audit & Evidence | append-only 감사, hash chain, 장기 보존, evidence export |
 
-### 2.4 시장 진입 제품 포지션
+> 위 모듈은 `aml-svc` 도메인·application 레이어로 구현되며(§6.2), 운영 콘솔(Admin Console)·결재 UI·고객사 관리는 `bo-api`/`bo-web`가 담당한다(§6.1). Legacy Vendor Bridge(기존 벤더 alert 병행 수신)·dual-run은 도메인(`domain/vendor`)·스키마에 존재하나 hanpass-ph 운영에서는 활성화하지 않는다(§15.5 미사용 잔존).
 
-초기 제품은 기존 AML 솔루션을 즉시 대체하는 전체 엔진보다, 고객사가 이미 사용 중인 AML/FDS 솔루션과 병행 가능한 감사대응 자동화 허브로 진입한다.
+### 2.4 준법감시 자율 운영 원칙
 
-| 단계 | 제품 포지션 | 고객 가치 |
-|---|---|---|
-| 1단계 | AML Evidence Hub | 기존 AML 판정, 수동 심사, 보고 후보, 증빙을 통합 보존 |
-| 2단계 | AML Event Gateway | DB 직접 insert 대신 API/queue/file/CDC로 고객 데이터를 수신 |
-| 3단계 | Case & Report Automation | CDD/EDD/STR/CTR/Travel Rule 검토·승인·export 자동화 |
-| 4단계 | WLF/RA/TM Engine | 기존 벤더 룰과 명단 의존을 점진적으로 내장 엔진으로 이전 |
-| 5단계 | Full AML SaaS | 고객확인, 명단필터링, 위험평가, 거래모니터링, 보고증적 통합 제공 |
-
-이 전략은 월 과금이 높고 연동 방식이 폐쇄적인 기존 AML 솔루션 사용 고객에게 현실적이다. 고객은 기존 시스템을 바로 걷어내지 않고도 감사 대응 품질을 개선할 수 있고, SaaS 사업자는 dual-run 결과와 운영 증적으로 전환 근거를 축적할 수 있다.
-
-### 2.5 기존 벤더 대비 차별화 기준
-
-| 기존 pain point | SaaS AML 설계 기준 |
-|---|---|
-| 고객사 DB 또는 벤더 DB에 직접 insert하는 연동 | 표준 ingest API, queue, SFTP file, CDC, adapter SDK 제공 |
-| 벤더 schema에 고객 서비스가 종속 | canonical AML event + customer/entity graph로 분리 |
-| CDD/EDD/STR 증적 수작업 | case timeline, report candidate, approval evidence 자동 생성 |
-| WLF false positive 근거 관리 부족 | match feature, score breakdown, analyst decision, whitelist version 저장 |
-| RA 모델 변경 이력 설명 어려움 | model version, factor snapshot, approval workflow 보존 |
-| 검사 대응 export 품질 낮음 | 제출용 manifest, hash, row-level evidence id, 재생성 가능한 query snapshot 제공 |
-| AML 정책 변경마다 개발팀 또는 벤더 요청 필요 | 준법감시실용 no-code policy builder, simulation, 승인 workflow 제공 |
-
-### 2.6 준법감시실 자율 운영 원칙
-
-SaaS AML은 “개발팀이 만드는 규제 시스템”이 아니라 “준법감시실이 직접 운영하는 AML 통제 플랫폼”이어야 한다.
+`aml-svc`는 "개발팀이 만드는 규제 시스템"이 아니라 "hanpass-ph 준법감시 담당이 직접 운영하는 AML 통제 엔진"이어야 한다.
 
 | 운영 업무 | 준법감시실 직접 수행 | 개발팀 개입 필요 여부 |
 |---|---|---|
@@ -151,7 +122,6 @@ SaaS AML은 “개발팀이 만드는 규제 시스템”이 아니라 “준법
 | TM scenario 생성·수정 | 가능 | 불필요 |
 | STR 후보 검토·기각·보고 승인 | 가능 | 불필요 |
 | CTR evidence 검증·export | 가능 | 불필요 |
-| Travel Rule exception 처리 | 가능 | 불필요 |
 | 명단 import 승인·rollback | 가능 | 불필요 |
 | 감사자료 export | 가능 | 불필요 |
 | 신규 source system 연동 | 불가 | 필요 |
@@ -160,83 +130,74 @@ SaaS AML은 “개발팀이 만드는 규제 시스템”이 아니라 “준법
 
 운영 UI는 개발자용 rule DSL이 아니라 준법감시 업무 언어로 제공해야 한다.
 
-예시:
+예시(hanpass-ph):
 
 ```text
-고객이 고위험 국가 거주자이거나
-실소유자 확인이 미완료이고
-최근 30일 거래금액이 예상 활동 범위를 3배 초과하면
+회원이 고위험 국가 수취인에게 송금하거나
+실소유자/수취인 확인이 미완료이고
+최근 거래금액이 예상 활동 범위를 크게 초과하면
 EDD_REVIEW case를 생성한다.
 ```
 
-내부적으로는 rule DSL 또는 model artifact로 저장하되, 운영자는 고객 속성, 국가위험, 거래금액, 기간, 증빙상태, case type을 화면에서 선택한다.
+내부적으로는 TM scenario DSL 또는 model artifact로 저장하되, 운영자는 고객 속성, 국가위험, 거래금액·채널, 기간, 증빙상태, case type을 화면에서 선택한다.
 
 ---
 
-## 3. 참조 구현으로서의 Hanpass AmlSvc
+## 3. hanpass-ph AmlSvc 참조 구현
 
-`23-amlSvc.md`의 Hanpass AmlSvc는 고객 위험평가(RA), 요주의 명단 필터링(WLF), CDD/EDD, 명단·국가위험 데이터 관리, 규제 리포트·감사를 단일 서비스로 설계한다. SaaS AML Platform은 이 개념을 유지하되, Hanpass 내부 서비스와 국가별 특화 결합은 제거한다.
+hanpass-ph AmlSvc는 고객 위험평가(RA), 요주의 명단 필터링(WLF), CDD/EDD, 명단·국가위험 데이터 관리, 규제 리포트·감사를 단일 서비스(`services/aml-svc`)로 구현한다. 핵심 도메인은 hanpass-ph 송금·월렛 거래에 맞춰 다음과 같이 구성된다.
 
-### 3.1 재사용할 개념
+### 3.1 핵심 구성 요소(코드 기준)
 
-| Hanpass AmlSvc 요소 | SaaS 플랫폼에서의 재사용 방향 |
+| 요소 | 구현 위치(`com.aegis.aml`) | 설명 |
+|---|---|---|
+| WLF 스코어링 엔진 | `domain/screening/match`(`FuzzyMatchEngine`·`NameSimilarity`·`TextNormalizer`·`MatchRuleSet`) | 이름·생년·국적·문서 토큰 기반 설명 가능 score |
+| RA 모델 | `domain/risk`(`RaScoringEngine`·`RiskModel`·`RiskScore`) | factor breakdown·grade·next review |
+| CDD/EDD 케이스 | `domain/cdd`·`domain/Case` | 회원 CDD/EDD checklist·EDD trigger·case |
+| 명단·국가위험 관리 | `domain/watchlist`·`domain/policy/CountryRisk` | versioned import + diff + freshness gate |
+| 4-eyes 결재 | `domain/approval/ApprovalRequest`·`RunApprovalUseCase` | 모델/룰/명단/판정/보고/케이스 종결 전면 적용 |
+| 감사 evidence | `domain/evidence`·`AuditEvent*` | append-only audit + hash manifest |
+| FDS 핸드오프 | `adapter/in/sqs/FdsDecisionConsumer`·outbox | fds-svc decision/case escalation 수신·아웃바운드 전파 |
+
+### 3.2 hanpass-ph 특화 입력
+
+| 입력 | 적용 |
 |---|---|
-| WLF 스코어링 엔진 | 다국어·다문자·법인명·주소 matching engine으로 확장 |
-| RA 모델 | tenant/domain별 risk model template으로 확장 |
-| CDD/EDD 케이스 | customer/entity/seller/merchant/corporate case로 일반화 |
-| 명단·국가위험 관리 | source plugin + versioned import + diff + quality gate로 확장 |
-| 4-eyes | 모델/룰/명단/판정/보고/케이스 종결 전면 적용 |
-| 감사 hash chain | SaaS tenant별 append-only audit evidence로 확장 |
-| FDS 핸드오프 | FDS/action/case/reporting system으로 routing하는 outbound event로 일반화 |
-
-### 3.2 그대로 가져오면 안 되는 부분
-
-| 현재 결합 | SaaS 신규 설계에서의 처리 |
-|---|---|
-| MemberSvc 중심 실시간 가입 WLF | 모든 customer/entity onboarding source에 적용 |
-| Remit/FdsSvc 중심 RA behavior input | 카드, PG, ATM, 코인, 무역, 이커머스 정산 feature까지 확장 |
-| KR/PH 혼합 파라미터 | 한국 시장 기본 policy pack + tenant별 jurisdiction plugin |
-| FDS가 CTR/STR 실행 담당 | AML SaaS가 report candidate/case/evidence를 관리하고 제출 방식은 tenant별 adapter |
-| 개인 회원 중심 모델 | 개인, 법인, 실소유자, 셀러, merchant, 직원, counterparty 통합 모델 |
+| 회원 가입·KYC | 실시간 가입 WLF screening(sender) |
+| 해외송금 수취인 등록 | 수취인(receiver) WLF screening — sender+receiver를 `transactionRef`로 묶어 거래당 한 쌍으로 묶음(§13) |
+| 송금·월렛 거래 behavior | RA behavior input + TM velocity/금액(phpEquivalent) feature |
+| 한국 policy pack | `KR_DEFAULT` baseline(특정금융정보법 CDD/STR/CTR), §5.5 |
 
 ---
 
-## 4. 지원 대상 금융 도메인
+## 4. hanpass-ph 거래 유형
 
-AML SaaS는 `22-1-fdsSvc-sass.md`와 같은 금융서비스 범위를 지원하되, 각 도메인을 AML 관점으로 평가한다.
+`aml-svc`가 모니터링하는 hanpass-ph 거래는 6개 채널(`transaction.channelType`)로 정규화된다(데모 시드 Flyway V26 기준).
 
-| 도메인 | AML 관점 주요 리스크 |
-|---|---|
-| Card Payment | 카드 현금화, 반복 환불, 고위험 merchant, 차명 결제 |
-| PG / Merchant Payment | 허위 가맹점, 위장 매출, chargeback 회피, settlement laundering |
-| Domestic Remittance | 보이스피싱 수취계좌, 대포통장, 분산 송금, 반복 소액 구조화 |
-| Cross-border Remittance | 제재국 우회, 고위험 corridor, 수취인 명단 hit, 목적 불일치 |
-| Wallet | 충전 후 즉시 출금, 다계정 순환거래, mule wallet |
-| ATM Withdrawal | 현금화, 분산 출금, card mule, 고위험 지역 출금 |
-| Bank Transfer | 자금세탁 layering, 법인계좌 우회, beneficiary 변경 |
-| Virtual Account | 입금자·계약자 불일치, 피싱 수취, 대량 VA abuse |
-| Crypto Exchange | Travel Rule 누락, 제재 지갑, mixer, off-ramp laundering |
-| Internal Bank Audit | 내부자 우회 승인, 의심거래 미보고, 고객정보 남용 |
-| Loan / Insurance | 허위 대출·보험금 지급, 법인 위장, 자금출처 불명 |
-| Trade Payment | 허위 인보이스, 가격 조작, TBML, 제재국 우회 |
-| E-commerce Cross-border Settlement | 허위 주문, 해외 매출 국내정산 위장, 셀러 UBO 불명 |
-| Marketplace Seller Settlement | 셀러 위장, 정산 계좌 변경, 반품/환불 비정상 |
-| B2B Invoice Payment | vendor impersonation, 허위 청구, 승인 우회 |
+| 채널(`channelType`) | hanpass-ph 거래 | AML 관점 주요 리스크 |
+|---|---|---|
+| `CASH_IN` | 월렛 충전 | 충전 후 즉시 출금/송금, 다계정 순환 |
+| `DOMESTIC_REMIT` | 국내 송금 | 분산 송금, 반복 소액 구조화, 대포통장 후보 |
+| `CROSS_BORDER_REMIT` | 해외 송금 | 고위험 corridor, 수취인 명단 hit, 목적·소득 불일치 |
+| `WALLET_PAYMENT` | 월렛 결제 | 위장 결제, 환류(refund laundering) |
+| `WALLET_WITHDRAWAL` | ATM/월렛 출금 | 현금화, 분산 출금 |
+| `CARD_NOT_PRESENT` | 카드(비대면) 결제 | 카드 현금화, 차명 결제 |
+
+> 거래 운반(transaction-bearing) canonical event family는 `transaction.*`와 hanpass-ph 결제 taxonomy `remit.*`/`domestic.*`/`wallet.*`이며(§8.1, `EventFamily.isTransactionBearing()`), 이들이 TM velocity 윈도우·자금 그래프 funnel에 합류한다. 위 6채널은 그 payload의 `channelType` 값이다.
 
 ### 4.1 공통 AML 질문
 
-모든 도메인은 아래 질문으로 정규화한다.
+hanpass-ph 거래는 아래 질문으로 정규화한다.
 
-1. 고객 또는 법인은 누구인가? (`customer`, `entity`, `subject`)
-2. 실제 소유자는 누구인가? (`beneficialOwner`, `controllingPerson`)
-3. 거래 상대방은 누구인가? (`counterparty`, `beneficiary`, `seller`, `merchant`)
+1. 회원(고객)은 누구인가? (`customer`, `subject`)
+2. 실소유자/관계자는 누구인가? (`beneficialOwner`, UBO graph)
+3. 수취인(상대방)은 누구인가? (`counterparty`, `beneficiary`)
 4. 자금 출처와 목적은 무엇인가? (`sourceOfFunds`, `purposeOfTransaction`)
-5. 어떤 국가·통화·채널·수단을 통과하는가? (`jurisdiction`, `currency`, `channel`, `instrument`)
-6. 제재·PEP·고위험국가·adverse media에 걸리는가? (`screeningResult`)
-7. 고객의 평소 profile과 거래가 맞는가? (`expectedActivity`, `behaviorDeviation`)
-8. 상업 증빙이 거래와 일치하는가? (`invoice`, `shipment`, `order`, `settlement`)
-9. 보고 또는 보존 의무가 있는가? (`STR`, `CTR`, `TravelRule`, `auditRetention`)
-10. EDD 또는 관계거절이 필요한가? (`EDD`, `reject`, `exit`)
+5. 어떤 국가·통화·채널을 통과하는가? (`country`, `currency`, `channelType`)
+6. 제재·PEP·고위험국가에 걸리는가? (`screeningResult`)
+7. 회원의 평소 profile과 거래가 맞는가? (`expectedActivity`, `behaviorDeviation`)
+8. 보고 또는 보존 의무가 있는가? (`STR`, `CTR`, `auditRetention`)
+9. EDD 또는 관계거절이 필요한가? (`EDD`, `reject`)
 
 ---
 
@@ -264,39 +225,31 @@ watchlist source, country risk, WLF rule, RA model, TM scenario는 모두 versio
 
 한국 시장 기본 pack은 특정금융정보법상 CDD/STR/CTR, 가상자산사업자 신고·Travel Rule, 개인정보보호법/신용정보법, 전자금융·보이스피싱 관련 운영 요구를 기준으로 한다. 국가별 확장은 별도 policy pack으로 추가한다.
 
-**기본 번들·확장 plugin 모델(필수 baseline + 토글 확장).** 한국 기본 pack(`KR_DEFAULT`)은 **필수 baseline**으로, 위 영역(CDD/STR/CTR·Travel Rule·개인정보·전자금융 등)을 **하나의 번들로 일괄 적용**한다. 이 baseline은 AML 최소 규제 요건이므로 tenant 단위로 **비활성화하거나 개별 영역을 끌 수 없다(잠금)**. CTR 기준금액·고위험 임계 등은 baseline의 **parameter**로, effective version + 4-eyes(`POLICY_PACK`)로만 변경한다(§14.3). 국가·업권별 확장은 baseline **위에 plugin으로 추가(토글 활성/비활성)** 하며, 추가/제거 또한 4-eyes(`POLICY_PACK`) 대상이다. 이 모델은 백오피스 고객사 상세 정책팩 화면·Policy Pack 관리 화면(AML 기능정의서 §13.2 ④·§12-A.9)의 정본이다. (FDS는 법령·관할별 규제 팩을 개별 토글하는 카탈로그 모델로, 서비스별 규제 책임 범위 차이에 따른 의도된 구조 차이다.)
+**기본 번들·확장 plugin 모델(필수 baseline + 토글 확장).** 한국 기본 pack(`KR_DEFAULT`)은 **필수 baseline**으로, 위 영역(CDD/STR/CTR·개인정보·전자금융 등)을 **하나의 번들로 일괄 적용**한다. 이 baseline은 AML 최소 규제 요건이므로 **비활성화하거나 개별 영역을 끌 수 없다(잠금)**. CTR 기준금액·고위험 임계 등은 baseline의 **parameter**로, effective version + 4-eyes(`POLICY_PACK`)로만 변경한다(§14.3). hanpass-ph는 `KR_DEFAULT` 단일 baseline으로 운영하며, 국가·업권 plugin 토글 구조는 향후 확장을 위한 모델로 코드(`domain/policy/PolicyPack`)에 존재한다. 이 모델은 백오피스 Policy Pack 관리 화면(AML 기능정의서 §13.2 ④·§12-A.9)의 정본이다. (FDS는 법령·관할별 규제 팩을 개별 토글하는 카탈로그 모델로, 서비스별 규제 책임 범위 차이에 따른 의도된 구조 차이다.)
 
 ---
 
-## 6. 플랫폼 아키텍처
+## 6. 엔진 아키텍처
 
 ```mermaid
 flowchart TB
-    subgraph External["External Financial Systems"]
-        Bank["Bank / Core Banking"]
-        Card["Card / VAN / PG"]
-        Remit["Remittance"]
-        Crypto["Crypto Exchange"]
-        Commerce["E-commerce / Marketplace"]
-        Trade["Trade / B2B Payment"]
-        Audit["Internal Audit / HR / IAM"]
+    subgraph External["hanpass-ph Source Systems"]
+        Member["Member / KYC"]
+        Remit["Remittance / Wallet (송금·월렛·ATM·카드)"]
+        Recipient["Recipient Registry (해외송금 수취인)"]
+        FDS["fds-svc (decision / case escalation)"]
     end
 
     subgraph Ingest["AML Ingest Layer"]
         Push["REST Push"]
         Queue["Queue Connector"]
-        Poll["Polling Connector"]
-        CDC["CDC Connector"]
-        Snapshot["Snapshot Importer"]
         ListSrc["Watchlist Source Importer"]
     end
 
     subgraph Normalize["Normalization & Identity"]
-        Schema["Schema Registry"]
-        Mapper["Field Mapping"]
         PII["PII Tokenization / Hashing"]
-        Entity["Customer / Entity Resolution"]
-        UBO["Beneficial Owner Graph"]
+        Entity["Customer Resolution"]
+        UBO["Relationship / UBO Graph"]
     end
 
     subgraph Core["AML Core"]
@@ -310,7 +263,7 @@ flowchart TB
     subgraph CaseReport["Case & Reporting"]
         Alert["Alert Triage"]
         Case["CDD / EDD / Investigation Case"]
-        Report["STR / CTR / Travel Rule Evidence"]
+        Report["STR / CTR Evidence"]
         AuditLog["Audit Evidence"]
     end
 
@@ -343,7 +296,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    Ext["External Financial Systems"] -->|ingest API / queue / CDC / file| AML["aml-svc (engine)"]
+    Ext["hanpass-ph Source Systems"] -->|ingest API / queue| AML["aml-svc (engine)"]
     FDS["fds-svc (FDS engine)"] -->|fraud case escalation / decision event| AML
     AML -->|WLF true match / high-risk customer 전파| FDS
     BOWEB["bo-web (Next.js)"] -->|REST only| BOAPI["bo-api (admin/approval/audit)"]
@@ -352,45 +305,71 @@ flowchart LR
     AML -->|report submission adapter / webhook| Ext
 ```
 
-> FDS와 AML은 같은 event·feature·case·audit·4-eyes·tenant isolation 기반을 공유하되 책임이 다르다(2.2 참조). 두 엔진 간 연계는 정본의 횡단 원칙에 따라 **event 연동 우선**(오픈결정 D-07)으로 처리하며, 직접 DB 공유는 하지 않는다.
+> FDS와 AML은 같은 event·feature·case·audit·4-eyes·tenant 격리 기반을 공유하되 책임이 다르다(2.2 참조). 두 엔진 간 연계는 정본의 횡단 원칙에 따라 **event 연동 우선**(오픈결정 D-07)으로 처리하며, 직접 DB 공유는 하지 않는다.
 
-### 6.2 aml-svc 헥사고날 패키지 레이아웃
+### 6.2 aml-svc 헥사고날 패키지 레이아웃 (코드 기준)
 
-설계 표기(design notation)는 `com.hanpass.aml` 하위로 배치한다(참조 구현 `hanpass-ph/services/fds-svc`의 `com.hanpass.fds` 패턴과 동일). 단, **구현(aegis-aml) 패키지 루트는 `com.aegis.aml`** 이다(정본 target-architecture §5 — `com.aegis.{fds,aml,backoffice}`, 로드맵 §0). 본 문서의 `com.hanpass.aml` 표기는 참조 구현과 동일한 레이아웃을 보이기 위한 설계 표기이며, 실제 코드 패키지 루트는 `com.aegis.aml`로 치환한다(FDS 설계서 §6.2 표기 방식과 동일). 도메인 불변식은 `domain`, 유스케이스·트랜잭션 경계는 `application`, I/O는 `adapter`.
+구현 패키지 루트는 **`com.aegis.aml`** 이다(target-architecture §5 — `com.aegis.{fds,aml,backoffice}`). 도메인 불변식은 `domain`, 유스케이스·트랜잭션 경계는 `application`, I/O는 `adapter`이며 의존은 domain ← application ← adapter 단방향이다. 아래 레이아웃은 실제 소스(`services/aml-svc/src/main/java/com/aegis/aml`)를 기준으로 한다.
 
 ```
-com.hanpass.aml
-├── domain/        # Customer, LegalEntity, BeneficialOwner, Relationship,
-│                  #   WatchlistEntry, ScreeningResult, RiskScore, Alert, Case,
-│                  #   RegulatoryReport, BusinessDocument, TravelRuleTransfer 등 ADT·불변식
+com.aegis.aml
+├── domain/        # 순수 ADT·불변식 (프레임워크 의존 0)
+│   ├── identity/        # Customer, Entity, Relationship(UBO graph)
+│   ├── screening/       # ScreeningResult, FalsePositiveWhitelist,
+│   │                    #   match/(FuzzyMatchEngine·NameSimilarity·TextNormalizer·MatchRuleSet)
+│   ├── risk/            # RaScoringEngine, RiskModel, RiskScore, RiskFactorInput
+│   ├── tm/              # TmEvaluationEngine, TmScenarioDefinition, TmScenarioDslParser,
+│   │                    #   TmCondition, TmWindow, TmVelocityAggregate, FundGraphBuilder(자금 그래프),
+│   │                    #   SubjectTransaction, AlertEvidence, TmFeatureSnapshot
+│   ├── cdd/            # CddProfile, EddTriggerEvaluator, PeriodicReviewPolicy
+│   ├── watchlist/      # WatchlistSource, WatchlistEntry, WatchlistFreshness, WatchlistReconciliation
+│   ├── policy/         # PolicyPack, CountryRisk, CddChecklistTemplate, ChecklistItem
+│   ├── report/         # RegulatoryReport, ReportManifest, StrReportingStats
+│   ├── approval/       # ApprovalRequest(4-eyes)
+│   ├── evidence/       # EvidenceExport, EvidenceTimeline, ExportManifest
+│   ├── pii/            # PiiField, PiiVaultEntry, RevealResult (vault 토큰/마스킹)
+│   ├── event/          # CanonicalEvent
+│   ├── registry/       # HighRiskRegistry, ReferenceList, ClassificationCriterion (HRR)
+│   ├── ira/            # IraReport, IraIndicator (의심거래 internal report surface)
+│   ├── tenant/         # Tenant, SourceSystem
+│   ├── metering/       # UsageMetric (과금 metering)
+│   ├── webhook/        # WebhookSignature
+│   ├── vendor/         # DualRunComparison, VendorMigrationInventory (Legacy Bridge, 미활성)
+│   ├── commerce/·travelrule/  # advanced domain·Travel Rule (Phase 8 잔존, hanpass-ph 미사용)
+│   └── enums/          # EventFamily, TmScenario, CaseType, ScreeningStatus 등 닫힌 enum
 ├── application/
-│   ├── usecase/   # IngestEvent(source_origin=VENDOR 시 Legacy Vendor Bridge 흡수, 연동 §3.1),
-│   │              #   ScreenSubject(WLF), EvaluateRisk(RA),
-│   │              #   EvaluateTransaction(TM), ManageCddEdd, ReviewStrCtr,
-│   │              #   ManageWatchlist, ExportEvidence, RunApproval(maker-checker)
-│   ├── port/in/   # IngestEventUseCase, ScreenUseCase, EvaluateRiskUseCase,
-│   │              #   EvaluateTransactionUseCase, ManageCaseUseCase, ExportEvidenceUseCase,
-│   │              #   ManageCddEddUseCase(CDD/EDD 워크플로 실행, API §3.5/§2.7),
-│   │              #   ReviewStrCtrUseCase(STR/CTR 작성·검토·제출, API §2.7/§3.6),
-│   │              #   ManagePolicyUseCase(CDD checklist·periodic review 주기 정책 변경, API §2.7),
-│   │              #   ManageWatchlistUseCase(명단 import/diff/apply, API §2.7 watchlist-sources),
-│   │              #   RunApprovalUseCase(maker-checker 결재 상신/승인/실행, API §2.7 approval)
-│   └── port/out/  # CanonicalEventStorePort, WatchlistStorePort, ScreeningIndexPort,
-│                  #   RiskModelPort, ScenarioStorePort, FeatureStorePort,
-│                  #   FdsCasePort(fds-svc), ReportSubmissionPort, AuditEvidencePort,
-│                  #   SchemaRegistryPort, PiiTokenizationPort
+│   ├── usecase/   # AmlEventIngestService, ScreenSubject·ReviewScreening·WhitelistFalsePositive,
+│   │              #   RiskAssessmentService·RiskOverrideService, TmEvaluationService·AlertTriageService,
+│   │              #   CddEddService·CaseManagementService, RegulatoryReportService,
+│   │              #   ApprovalDispatchService(4-eyes), OutboxRelayService(아웃박스),
+│   │              #   IdentityProjectionService·LinkRelationshipService, FdsDecisionService,
+│   │              #   PolicyManagementService·PolicyPackService·PolicySimulationService,
+│   │              #   Watchlist/HighRiskRegistry/IraReport/PepApproval/PiiReveal/EvidenceExport …
+│   ├── port/in/   # IngestAmlEventUseCase, ScreenSubjectUseCase(transactionRef로 sender+receiver 묶음),
+│   │              #   AssessRiskUseCase, EvaluateTmUseCase, ManageCaseUseCase·ManageCddUseCase,
+│   │              #   ManageRegulatoryReportUseCase, RunApprovalUseCase, ImportWatchlistUseCase …
+│   └── port/out/  # CanonicalEventStorePort, CanonicalEventWindowPort(velocity·phpEquivalent),
+│                  #   WatchlistEntry/Source/FreshnessStorePort, ScreeningResultStorePort,
+│                  #   RiskModel/RiskScoreStorePort, TmScenarioStorePort, CaseRepositoryPort,
+│                  #   RegulatoryReportStorePort, ApprovalRequestPort, OutboxStore/MessagingPort,
+│                  #   PiiTokenPort·PiiVaultPort, ReportSubmissionPort, WebhookSenderPort, AuditEventPort …
 ├── adapter/
 │   ├── in/rest/        # 3-plane(API §0): Public /api/v1/aml/**(ingest·screen·RA·TM·evidence),
-│   │                   #   Internal /internal/v1/aml/**, Admin /api/v1/admin/aml/**(bo-api 전용)
-│   ├── in/sqs/         # Queue Connector consumer (대량 거래·정산·crypto·FDS decision)
-│   ├── in/scheduled/   # Polling/CDC/snapshot import, periodic review, watchlist freshness
-│   ├── out/persistence/# aml_* 테이블 (PostgreSQL)
-│   └── out/external/   # report submission adapter, fds-svc client, legacy vendor bridge,
-│                       #   watchlist source importer, blockchain/adverse-media intel client
-└── global/        # tenant context, traceId 전파, PII 마스킹/토큰화 필터, 보안/설정
+│   │                   #   Internal /internal/v1/aml/**(screen·RA·PII reveal·FDS escalation),
+│   │                   #   Admin /api/v1/admin/aml/**(watchlist·policy·tm-scenario·report·결재, bo-api 전용)
+│   ├── in/sqs/         # FdsDecisionConsumer, ReportSubmissionCallbackConsumer
+│   ├── in/scheduled/   # OutboxRelayScheduler, WatchlistReconciliationScheduler
+│   ├── out/persistence/# aml_* 테이블 (PostgreSQL JPA) + pii/(vault)
+│   ├── out/crypto/     # HmacPiiTokenAdapter, AesGcmSecretCipher
+│   ├── out/messaging/  # OutboxRelay(SQS/InMemory), HighRiskOutboxAdapter
+│   ├── out/submission/ # MockRegulatorSubmissionAdapter (보고 제출)
+│   ├── out/feed/       # MockWatchlistFeedAdapter (명단 source)
+│   ├── out/webhook/    # HttpWebhookRelayAdapter
+│   └── out/policy/·out/evidence/  # ConfigWlfPolicyAdapter, LocalExportArtifactAdapter
+└── global/        # tenant context, traceId 전파, PII 마스킹/토큰화, 보안/설정
 ```
 
-> `adapter/in/rest`의 엔드포인트 전체 표면(Public GET/POST·Internal·Admin 30+종)은 **API 명세(`docs/design/api/02-aml-api.md` §2.1~§2.7) 정본**을 참조한다. 본 레이아웃은 plane 경계(Public 연동 / Internal 엔진 간 / Admin)만 표기하며, **Admin API는 bo-api 전용 운영 콘솔 경계**다(엔진은 저수준 데이터 API만 제공, §15.7 운영자 집계 소유 경계).
+> `adapter/in/rest`의 엔드포인트 전체 표면(Public/Internal/Admin)은 **API 명세(`docs/design/api/02-aml-api.md` §2.1~§2.7) 정본**을 참조한다. 본 레이아웃은 plane 경계만 표기하며, **Admin API는 bo-api 전용 운영 콘솔 경계**다(엔진은 저수준 데이터 API만 제공, §15.7 운영자 집계 소유 경계). report 제출·명단 feed·webhook 외부 어댑터는 hanpass-ph 운영에서 Mock/실연동 교체 지점이다(외부 실연동만 후속).
 >
 > **usecase ↔ port/in ↔ scope 매핑(정본 scope=API §1.1).** `ManageCddEddUseCase`·`ReviewStrCtrUseCase`·`ManagePolicyUseCase`는 case/정책 도메인의 세부 유스케이스로, 결재가 필요한 종결·제출 경로는 `ManageCaseUseCase`/`RunApprovalUseCase`로 합류한다(통합 결재 게이트). 보호 scope는 API §1.1을 정본으로 다음과 같이 매핑한다: CDD/EDD 워크플로=`aml:case:read`/`aml:case:update`(EDD 트리거·검토), STR/CTR 작성·제출=`aml:case:update` + 제출 4-eyes(`REPORTING_OFFICER`), STR 화면 조회는 정보누설금지 통제로 `COMPLIANCE` 전담 scope(§19.2a, API §2.7); CDD checklist·periodic review 정책 변경=`aml:admin:policy`(4-eyes `subjectType=CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`, §13.4); 명단=`ManageWatchlistUseCase`=`aml:admin:watchlist`; 결재=`RunApprovalUseCase`=`aml:admin:approval`. scope 코드값 전수(13종)는 API §1.1이 정본이다.
 
@@ -404,39 +383,36 @@ com.hanpass.aml
 
 | 객체 | 의미 | 예시 |
 |---|---|---|
-| Tenant | SaaS 고객사 | 은행 A, PG B, 거래소 C |
-| Source System | 데이터 원천 | core-banking, card-processor, exchange-core |
-| Customer | 개인 고객 | 회원, 카드회원, 예금주 |
-| Legal Entity | 법인·사업자 | merchant, seller, 법인 고객, vendor |
-| Beneficial Owner | 실소유자 | UBO, 대표자, 지배주주 |
-| Related Party | 관계자 | 임원, 대리인, 수취인, 연결 계정 |
-| Account | 금융 계정 | 은행 계좌, 월렛, 거래소 계정 |
-| Instrument | 거래 수단 | 카드, 계좌, 지갑주소, 가상계좌 |
-| Transaction | 자금 이동 | 결제, 송금, 출금, 정산, 무역대금 |
-| Business Document | 상업 증빙 | invoice, PO, B/L, 통관서류, order |
-| Watchlist Entry | 요주의 대상 | sanction, PEP, RCA, adverse media |
-| Screening Result | WLF 결과 | match, no-match, false-positive |
+| Tenant | 운영 테넌트 | hanpass-ph(`tenant_demo`) |
+| Source System | 데이터 원천 | member(가입/KYC), remit/wallet(거래), recipient(수취인), fds-svc |
+| Customer | 개인 회원 | hanpass-ph 송금/월렛 회원 |
+| Entity | 법인·사업자 | (정산 파트너 등, hanpass-ph 1차 범위에서는 제한적 사용) |
+| Beneficial Owner | 실소유자 | UBO, 관계자 |
+| Related Party | 관계자 | 대리인, 수취인, 연결 계정 |
+| Transaction | 자금 이동 | 월렛충전·국내송금·해외송금·월렛결제·ATM출금·카드결제(§4) |
+| Watchlist Entry | 요주의 대상 | sanction, PEP |
+| Screening Result | WLF 결과 | match, no-match, false-positive(sender/receiver) |
 | Risk Score | 고객위험평가 | low/medium/high, factor breakdown |
-| Alert | 룰 또는 모델 경보 | structuring alert, TBML alert |
+| Alert | 룰 또는 모델 경보 | structuring/rapid-movement/corridor alert(§12.1) |
 | Case | 조사 케이스 | EDD, STR review, sanctions case |
-| Report | 규제 보고 증적 | STR, CTR, Travel Rule |
+| Report | 규제 보고 증적 | STR, CTR |
 
-### 7.2 고객·법인·실소유자 graph
+> `Entity`(법인)·`Business Document`(상업 증빙)·`Instrument`·`Account` 도메인은 스키마·enum에 존재하나 hanpass-ph 송금/월렛 운영에서는 핵심 경로가 회원(개인)·거래·수취인이며, 법인·증빙 중심 도메인은 advanced domain pack(§21 Phase 8, 미사용 잔존)에 속한다.
 
-AML SaaS는 단일 customer row만으로 부족하다. 법인, 대표자, 실소유자, 계열사, 셀러, merchant, 직원, 수취인을 graph로 연결해야 한다.
+### 7.2 고객·관계자·실소유자 graph
 
-관계 예시:
+AML은 단일 customer row만으로 부족하다. hanpass-ph는 회원, 대리인, 실소유자(UBO), 수취인, 연결 계정을 graph(`domain/identity/Relationship`)로 연결한다.
+
+관계 예시(`relationship_type`):
 
 | 관계 | 설명 |
 |---|---|
 | `OWNS` | 실소유자 또는 지분 보유 |
 | `CONTROLS` | 실질 지배 |
 | `REPRESENTS` | 대표자 또는 대리인 |
-| `OPERATES` | merchant/seller 운영 |
 | `USES_ACCOUNT` | 계좌 또는 instrument 사용 |
-| `PAYS_TO` | 반복 수취 관계 |
+| `PAYS_TO` | 반복 수취 관계(수취인) |
 | `RELATED_TO` | 동일 주소/전화/기기/계좌 기반 관련성 |
-| `EMPLOYED_BY` | 내부 직원 관계 |
 
 ### 7.3 Transaction과 AML Evidence 분리
 
@@ -444,13 +420,10 @@ AML SaaS는 단일 customer row만으로 부족하다. 법인, 대표자, 실소
 
 | Evidence | 설명 |
 |---|---|
-| KYC evidence | 신분증, 법인등록, 업종, 주소, 직업 |
-| KYB evidence | 사업자등록, UBO, 대표자, 업종, merchant category |
-| Transaction evidence | 금액, 통화, 상대방, 목적, 채널 |
-| Commercial evidence | invoice, order, shipment, customs, settlement |
+| KYC evidence | 신분증, 주소, 직업(회원 KYC checklist) |
+| Transaction evidence | 금액, 통화, 상대방(수취인), 목적, 채널 |
 | Screening evidence | 명단 후보, 유사도 score, 판정자 |
 | Behavioral evidence | expected activity 대비 편차 |
-| External intelligence | adverse media, blockchain risk, merchant risk |
 
 ---
 
@@ -458,27 +431,36 @@ AML SaaS는 단일 customer row만으로 부족하다. 법인, 대표자, 실소
 
 ### 8.1 최상위 event family
 
-최상위 event family는 **15종으로 종결**한다(본 §8.1이 family 카운트 정본). 연동 §3.1은 15종 정본과 동기화 완료 상태다(연동 v1.6에서 `vendor.*` 등재 반영 — 본 표 15종이 단일 진실).
+최상위 event family는 코드 `EventFamily` enum(`com.aegis.aml.domain.enums.EventFamily`)이 정본이며 **20종**이다. `EventFamily.fromEventType()`이 `eventType`(`<family>.<verb>`)의 prefix를 strict allow-list로 검증해, 미등재 family는 ingest에서 `REJECTED`된다(canonical store 비오염, DB family CHECK V27과 1:1).
 
-방향(Direction) 축: **IN**=외부 source가 ingest API/queue로 보내는 인바운드 canonical event(연동 §3.1), **DERIVED**=엔진 내부 파생(비동기 워커·내부 큐), **OUT**=아웃박스 경유 아웃바운드(fds-svc·webhook·report submission, 연동 §3.3/§3.4). `screening.*`·`case.*`는 외부 ingest 대상이 아니며 내부 파생/아웃바운드로만 발생한다. `screening.*` 큐명은 연동 §2.1 큐 카탈로그를 참조한다(본 문서에 큐명 직접 표기하지 않음).
+방향(Direction): **IN**=외부 source가 ingest API/queue로 보내는 인바운드 canonical event, **DERIVED**=엔진 내부 파생/재생, **OUT**=아웃박스 경유 아웃바운드(fds-svc·webhook·report submission). `isExternallyIngestable()`이 `false`인 `aml.*`·`case.*`는 외부 ingest 대상이 아니다(내부 파생/아웃바운드).
 
-| Family | 방향 | 설명 |
-|---|---|---|
-| `customer.*` | IN | 개인 고객 생성·KYC 변경·상태 변경 |
-| `entity.*` | IN | 법인·merchant·seller·vendor 생성·변경 |
-| `beneficial-owner.*` | IN | 실소유자·대표자·관계자 변경 |
-| `account.*` | IN | 계좌 생성·정지·폐쇄 |
-| `instrument.*` | IN | 카드·계좌·지갑주소·가상계좌 등록 |
-| `transaction.*` | IN | 자금 이동 요청·완료·취소·환불 |
-| `settlement.*` | IN | merchant/seller/partner 정산 |
-| `trade.*` | IN | 무역대금·선적·통관·인보이스 |
-| `invoice.*` | IN | B2B 인보이스 |
-| `order.*` | IN | 이커머스 주문·배송·반품 |
-| `crypto.*` | IN | 가상자산 입출금·주소·Travel Rule |
-| `screening.*` | DERIVED | WLF/제재 screening 요청·결과(내부 큐명은 연동 §2.1 큐 카탈로그 참조) |
-| `case.*` | DERIVED/OUT | CDD/EDD/STR case 상태 변경. FDS feedback·webhook은 아웃바운드(`aml.case.*`, 연동 §3.3) |
-| `employee.*` | IN | 내부 직원 작업·승인·override |
-| `vendor.*` | IN | 기존 AML 벤더 alert/case 수신(Legacy Vendor Bridge 경유, `legacy-vendor-bridge` connector, `vendor.alert-ingested`, 연동 §3.1). 독립 usecase 없이 **`IngestEvent(source_origin=VENDOR)` 흡수 처리**(연동 §3.1과 정합), `source_origin=VENDOR`로 저장(§15.5 dual-run) |
+| Family(코드값) | prefix | 방향 | hanpass-ph | 설명 |
+|---|---|---|---|---|
+| `CUSTOMER` | `customer` | IN | ✅ | 회원 생성·KYC 변경·상태 변경 |
+| `ENTITY` | `entity` | IN | △ | 법인·사업자 생성·변경(제한적) |
+| `BENEFICIAL_OWNER` | `beneficial-owner` | IN | ✅ | 실소유자·관계자 변경 |
+| `TRANSACTION` | `transaction` | IN(거래 운반) | ✅ | 자금 이동(velocity·자금그래프 source) |
+| `REMIT` | `remit` | IN(거래 운반) | ✅ | hanpass-ph 송금(`remit.transfer.requested` 등) |
+| `DOMESTIC` | `domestic` | IN(거래 운반) | ✅ | hanpass-ph 국내송금(`domestic.transfer.requested`) |
+| `WALLET` | `wallet` | IN(거래 운반) | ✅ | hanpass-ph 월렛(`wallet.charge`/`wallet.pay`/`wallet.withdraw`) |
+| `CASE` | `case` | DERIVED/OUT | ✅ | CDD/EDD/STR case 상태. FDS feedback·webhook은 아웃바운드(`aml.case.*`) |
+| `AML` | `aml` | DERIVED/OUT | ✅ | 엔진 내부 파생·아웃박스(외부 ingest 불가) |
+| `VENDOR` | `vendor` | IN | ✕(미사용) | 기존 AML 벤더 alert 수신(Legacy Bridge, `IngestEvent(source_origin=VENDOR)` 흡수). hanpass-ph 미활성(§15.5) |
+| `TRADE` | `trade` | IN | ✕(미사용) | advanced domain(무역/TBML, Phase 8) |
+| `INVOICE` | `invoice` | IN | ✕(미사용) | advanced domain(B2B 인보이스) |
+| `CRYPTO` | `crypto` | IN | ✕(미사용) | advanced domain(가상자산) |
+| `TRAVEL_RULE` | `travel-rule` | IN | ✕(미사용) | advanced domain(Travel Rule) |
+| `SETTLEMENT` | `settlement` | IN | ✕(미사용) | advanced domain(정산) |
+| `ORDER` | `order` | IN | ✕(미사용) | advanced domain(이커머스 주문) |
+| `SELLER` | `seller` | IN | ✕(미사용) | advanced domain(마켓플레이스 셀러) |
+| `MARKET` | `market` | IN | ✕(미사용) | advanced domain(마켓플레이스) |
+| `INTERNAL` | `internal` | IN | ✕(미사용) | advanced domain(내부통제) |
+| `AUDIT` | `audit` | IN | ✕(미사용) | advanced domain(내부 감사) |
+
+> **거래 운반(transaction-bearing).** `isTransactionBearing()` ⇒ `TRANSACTION`·`REMIT`·`DOMESTIC`·`WALLET`. 이 4종만 TM velocity 윈도우·자금 그래프 funnel에 합류한다(§12, fds-svc와 대칭). hanpass-ph 6채널(§4)은 이들 거래 payload의 `channelType` 값이다.
+>
+> **advanced domain·vendor 잔존.** `TRADE`/`INVOICE`/`CRYPTO`/`TRAVEL_RULE`/`SETTLEMENT`/`ORDER`/`SELLER`/`MARKET`/`INTERNAL`/`AUDIT`·`VENDOR`는 enum·DB family CHECK·projection 분기에 잔존하나 hanpass-ph 운영에서는 인입되지 않는다(Phase 8 advanced domain pack §21, Legacy Bridge §15.5 미활성). strict gate가 superset이어야 하므로 enum에는 유지된다.
 
 ### 8.2 Canonical AML event 예시
 
@@ -491,12 +473,12 @@ AML SaaS는 단일 customer row만으로 부족하다. 법인, 대표자, 실소
 ```json
 {
   "schemaVersion": "aml.event.v1",
-  "tenantId": "tenant_bank_a",
+  "tenantId": "tenant_demo",
   "dataScope": "default",
-  "sourceSystem": "core-banking",
-  "sourceSchemaVersion": "core-banking.v1",
+  "sourceSystem": "remit",
+  "sourceSchemaVersion": "remit.v1",
   "eventId": "evt-001",
-  "idempotencyKey": "core-banking:evt-001",
+  "idempotencyKey": "remit:evt-001",
   "eventType": "transaction.completed",
   "occurredAt": "2026-06-06T10:00:00Z",
   "traceId": "00-4bf92f...-01",
@@ -511,41 +493,45 @@ AML SaaS는 단일 customer row만으로 부족하다. 법인, 대표자, 실소
     "counterparty": {
       "counterpartyRef": "bene_hmac_999",
       "counterpartyType": "PERSON",
-      "country": "VN"
+      "country": "PH"
     },
     "transaction": {
       "transactionRef": "tx_123",
       "direction": "OUTBOUND",
       "amount": "9500000.00000000",
       "amountMinor": 9500000,
+      "phpEquivalent": 380000,
       "currency": "KRW",
       "purpose": "REMITTANCE",
-      "channelType": "BANK_TRANSFER"
+      "channelType": "CROSS_BORDER_REMIT"
     },
     "screeningContext": {
-      "requiresSanctionsScreening": true,
-      "requiresTravelRule": false
+      "requiresSanctionsScreening": true
     }
   }
 }
 ```
 
+> hanpass-ph 해외송금 예시: 회원(sender, KR) → 수취인(receiver, PH), `channelType=CROSS_BORDER_REMIT`. `transaction.phpEquivalent`(PHP 환산 금액)는 TM 금액 임계 시나리오(§12.1, V28)의 feature이며, 부재 시 해당 시나리오는 발화하지 않는다(fail-safe). `requiresTravelRule`은 hanpass-ph 미사용(가상자산 비대상).
+
 ---
 
 ## 9. Customer·Entity·Beneficial Owner 모델
 
-### 9.1 Customer type
+### 9.1 Customer/Entity type (닫힌 enum, DB 정본)
 
-| Type | 설명 |
-|---|---|
-| `PERSON` | 개인 고객 |
-| `SOLE_PROPRIETOR` | 개인사업자 |
-| `LEGAL_ENTITY` | 법인 |
-| `MERCHANT` | 가맹점 |
-| `SELLER` | 마켓플레이스 셀러 |
-| `VASP_CUSTOMER` | 가상자산 거래소 회원 (→ §9.1.1 참조: 개인=`customer_type`, 법인=`entity_type`, 동일 ref 중복 저장 금지) |
-| `EMPLOYEE` | 내부 직원 |
-| `VENDOR` | B2B 공급업체 |
+`CustomerType`/`EntityType` enum(DB §3.3/§3.4)은 닫힌 집합이다. hanpass-ph 운영의 핵심은 개인 회원(`PERSON`)이며, 법인·셀러·가맹점 등은 enum·스키마에 존재하나 hanpass-ph 1차 범위에서는 사용하지 않는다(advanced domain).
+
+| Type | 설명 | hanpass-ph |
+|---|---|---|
+| `PERSON` | 개인 회원 | ✅ |
+| `SOLE_PROPRIETOR` | 개인사업자 | △ |
+| `EMPLOYEE` | 내부 직원 | △ |
+| `LEGAL_ENTITY` | 법인 | ✕(미사용) |
+| `MERCHANT` | 가맹점 | ✕(미사용) |
+| `SELLER` | 마켓플레이스 셀러 | ✕(미사용) |
+| `VENDOR` | B2B 공급업체 | ✕(미사용) |
+| `VASP_CUSTOMER` | 가상자산 거래소 회원 (→ §9.1.1: 개인=`customer_type`, 법인=`entity_type`, 동일 ref 중복 저장 금지) | ✕(미사용) |
 
 #### 9.1.1 customer_type vs entity_type 도메인 분할 (DB 정본)
 
@@ -596,31 +582,35 @@ UBO는 단순 JSON 배열이 아니라 별도 관계 graph로 관리한다.
 
 ## 10. WLF·Sanctions Screening 모델
 
-### 10.1 명단 source
+### 10.1 명단 source (`WatchlistSourceType` 닫힌 enum)
 
-| Source type | 예시 |
-|---|---|
-| Sanctions | UN, OFAC, EU, 국내 제재 관련 source |
-| PEP | 국내외 정치적 주요 인물 |
-| RCA | PEP 관련자 |
-| Adverse Media | 부정 뉴스·범죄 연루 |
-| Internal Watchlist | tenant 내부 요주의 대상 |
-| Law Enforcement List | 수사기관·금융기관 공유 목록 |
-| VASP / Crypto Risk | 제재 지갑, mixer, darknet exposure |
+`WatchlistSourceType` enum(DB §3.6)은 닫힌 집합이다. hanpass-ph는 제재·PEP를 핵심으로 운영하며, 데모 시드는 `DEMO_SANCTIONS`(SANCTIONS) source를 사용한다(V19/V26).
+
+| Source type | 예시 | hanpass-ph |
+|---|---|---|
+| Sanctions | UN, OFAC, EU, 국내 제재 관련 source | ✅ |
+| PEP | 국내외 정치적 주요 인물 | ✅ |
+| RCA | PEP 관련자 | ✅ |
+| Adverse Media | 부정 뉴스·범죄 연루 | △ |
+| Internal Watchlist | 내부 요주의 대상 | △ |
+| Law Enforcement List | 수사기관·금융기관 공유 목록 | △ |
+| VASP / Crypto Risk | 제재 지갑, mixer, darknet exposure | ✕(미사용, 가상자산 비대상) |
 
 ### 10.2 Matching 대상
 
-| 대상 | 필드 |
-|---|---|
-| 개인 | 이름, 영문명, 생년월일, 국적, 문서번호 hash |
-| 법인 | 법인명, 영문명, 사업자번호 hash, 주소, 대표자 |
-| UBO | 이름, 생년, 국적, 지분율 |
-| 수취인 | 이름, 계좌 hash, 국가 |
-| merchant/seller | 상호, 법인명, 대표자, 정산계좌 |
-| crypto address | 지갑주소 hash, chain, risk tag |
-| vessel | 선박명, IMO/MMSI, 선적국 (OFAC 등 vessel 제재 대응) |
+| 대상 | 필드 | hanpass-ph |
+|---|---|---|
+| 개인(회원·수취인) | 이름, 영문명, 생년월일, 국적, 문서번호 hash | ✅ |
+| UBO | 이름, 생년, 국적, 지분율 | ✅ |
+| 법인 | 법인명, 영문명, 사업자번호 hash, 주소, 대표자 | △ |
+| crypto address | 지갑주소 hash, chain, risk tag | ✕(미사용) |
+| vessel | 선박명, IMO/MMSI, 선적국 | ✕(미사용) |
 
-> screening 대상 종류(`subject_kind`)는 `PERSON`/`ENTITY`/`VESSEL`/`CRYPTO_ADDRESS`로 정규화한다(DB §3.7·§5.5와 1:1).
+> screening 대상 종류(`subject_kind`)는 `PERSON`/`ENTITY`/`VESSEL`/`CRYPTO_ADDRESS`로 정규화한다(DB §3.7·§5.5, 닫힌 enum). hanpass-ph는 `PERSON`(회원·수취인) 중심이며 `VESSEL`/`CRYPTO_ADDRESS`는 미사용이다.
+
+### 10.2a 거래당 sender/receiver screening (hanpass-ph 해외송금)
+
+해외송금(`CROSS_BORDER_REMIT`)은 sender(회원, `TargetType=CUSTOMER`)와 receiver(수취인, `TargetType=COUNTERPARTY`)를 **각각 screening**하고, `ScreenCommand.transactionRef`(송금 거래번호)로 한 쌍을 묶어 WLF 화면이 거래당 sender+receiver로 그룹핑한다(`ScreenSubjectUseCase`). 데모 시드는 sender 매치(JUAN/MARIA, V19)에 더해 수취국(PH/VN/ID) receiver 제재 엔트리 3종(V26)을 등재해 진양성을 재현한다. raw PII는 입력·저장하지 않으며 매칭 입력은 토큰/hash다(§19.2).
 
 ### 10.3 Scoring
 
@@ -653,18 +643,20 @@ WLF score는 설명 가능해야 한다.
 
 ### 11.1 RA factor category
 
-| Category | Factor 예시 |
-|---|---|
-| Customer | 국적, 거주지, 직업, 법인형태, KYC completeness |
-| Geography | 고위험국가, 제재국, corridor |
-| Product | 카드, 송금, 가상자산, 무역금융, PG 정산 |
-| Channel | 비대면, API, ATM, agent, marketplace |
-| Transaction Behavior | 월 거래금액, 상대방 수, 현금성 거래, 해외 비중 |
-| Screening | WLF match, PEP, adverse media |
-| Entity Structure | UBO 복잡도, nominee 의심, shell company |
-| Merchant/Seller | 업종, chargeback, refund, 정산 패턴 |
-| Crypto | wallet risk, mixer exposure, Travel Rule completeness |
-| Trade | invoice mismatch, high-risk goods, price deviation |
+`RiskFactorCategory` enum은 닫힌 집합이며, hanpass-ph는 회원·지역·송금/월렛 거래·screening 중심 factor를 사용한다. 법인/가맹점·crypto·무역 factor는 enum에 잔존하나 미사용이다.
+
+| Category | Factor 예시 | hanpass-ph |
+|---|---|---|
+| Customer | 국적, 거주지, 직업, KYC completeness | ✅ |
+| Geography | 고위험국가, 제재국, corridor(수취국) | ✅ |
+| Product | 송금·월렛(충전·결제·출금)·ATM | ✅ |
+| Channel | 비대면, API, agent | ✅ |
+| Transaction Behavior | 월 거래금액, 상대방(수취인) 수, 해외 비중 | ✅ |
+| Screening | WLF match, PEP | ✅ |
+| Entity Structure | UBO 복잡도, nominee 의심 | △ |
+| Merchant/Seller | 업종, chargeback, refund, 정산 패턴 | ✕(미사용) |
+| Crypto | wallet risk, mixer exposure | ✕(미사용) |
+| Trade | invoice mismatch, high-risk goods | ✕(미사용) |
 
 ### 11.2 RA output
 
@@ -691,20 +683,24 @@ WLF score는 설명 가능해야 한다.
 
 ## 12. Transaction Monitoring 모델
 
-### 12.1 TM scenario
+### 12.1 TM scenario (`TmScenario` 닫힌 enum, 10종)
 
-| Scenario | 설명 |
-|---|---|
-| Structuring | 고액 기준 회피를 위한 반복 소액 거래 |
-| Rapid movement | 입금 후 즉시 출금·송금 |
-| Mule network | 다수 sender → 동일 beneficiary / 동일 계좌 |
-| High-risk corridor | 고위험 국가·지역과 반복 거래 |
-| Shell merchant | 허위 가맹점 또는 셀러 거래 |
-| Refund laundering | 결제 후 반복 환불 |
-| Trade mispricing | 인보이스 단가·수량 이상 |
-| Round-tripping | 순환 거래 또는 자기거래 |
-| Crypto off-ramp | 가상자산 → 원화 현금화 패턴 |
-| Internal override abuse | 내부자 수동 승인·한도 변경 남용 |
+`TmScenario` enum(DB §5.6)은 10종으로 닫혀 있다. hanpass-ph 데모(`tenant_demo`)는 송금/월렛 거래에 맞는 시나리오를 ACTIVE로 시드한다(Flyway V19/V22/V26/V28). 시나리오 정의는 tenant별 `aml_tm_scenarios`에 version·DSL·threshold로 저장되며, `TmScenarioDslParser`(`and`/`or`/`cmp`/`velocity`)와 `TmEvaluationEngine`이 평가한다.
+
+| Scenario(코드값) | 설명 | hanpass-ph(데모 ACTIVE) |
+|---|---|---|
+| `STRUCTURING` | 분할 거래(반복 소액) — `DOMESTIC_REMIT`/`CASH_IN` 채널 24h 건수 ≥ 5 (v2, V26) | ✅ |
+| `HIGH_RISK_CORRIDOR` | 해외송금 단건 고액 — `CROSS_BORDER_REMIT` ∧ `phpEquivalent ≥ 280000` (v3, V26/V28) | ✅ |
+| `RAPID_MOVEMENT` | 입금 후 즉시 이동 — 2h 건수 ≥ 3 ∧ `phpEquivalent ≥ 56000` (V28) | ✅ |
+| `REFUND_LAUNDERING` | 반복 환류 — 7d 건수 ≥ 6 ∧ `phpEquivalent ≥ 28000` (V28) | ✅ |
+| `ROUND_TRIPPING` | 순환/자기거래 — 14d 건수 ≥ 4 ∧ `phpEquivalent ≥ 112000` (V28) | ✅ |
+| `MULE_NETWORK` | 다수 sender → 동일 수취인/계좌(velocity 기반) | ✅ |
+| `SHELL_MERCHANT` | 허위 가맹점 거래 | ✕(미사용) |
+| `TRADE_MISPRICING` | 인보이스 단가·수량 이상 | ✕(미사용) |
+| `CRYPTO_OFF_RAMP` | 가상자산 → 원화 현금화 | ✕(미사용) |
+| `INTERNAL_OVERRIDE_ABUSE` | 내부자 수동 승인·한도 변경 남용 | ✕(미사용) |
+
+> **phpEquivalent 금액 feature.** 금액 기반 시나리오의 임계는 hanpass-ph PHP 환산액(`transaction.phpEquivalent`)을 사용한다. `TmEvaluationService.buildSnapshot`이 subject의 최신 거래-운반 canonical payload(`payload->>'phpEquivalent'`)에서 노출하며, 부재 시 key 미설정 ⇒ 금액 시나리오 미발화(fail-safe). count·channel cmp 노드는 금액과 무관하게 동작한다. fds-svc의 `FeatureComputeAdapter.readPhpEquivalent`와 대칭이다. `SHELL_MERCHANT`/`TRADE_MISPRICING`/`CRYPTO_OFF_RAMP`/`INTERNAL_OVERRIDE_ABUSE`는 enum 잔존이나 hanpass-ph 데모 ACTIVE 시드가 없다.
 
 ### 12.2 TM alert lifecycle (alert_status)
 
@@ -766,7 +762,7 @@ CDD는 고객·법인·셀러·merchant onboarding과 주기적 갱신의 기본
 
 ### 13.2 EDD trigger
 
-> 코드값은 DB §5.29 `aml_cases.edd_trigger` enum(SCREAMING_SNAKE_CASE 8종)이 물리 정본이며, API §3.5 `CaseDto.eddTrigger`도 동일 8종으로 동기화한다.
+> 코드값은 DB §5.29 `aml_cases.edd_trigger` enum(SCREAMING_SNAKE_CASE 8종)이 물리 정본이며, API §3.5 `CaseDto.eddTrigger`도 동일 8종으로 동기화한다. hanpass-ph는 `WLF_TRUE_MATCH`·`HIGH_RA_SCORE`·`HIGH_RISK_COUNTRY`·`UNUSUAL_TRANSACTION`·`COMPLEX_OWNERSHIP`를 사용하며, `TRADE_MISMATCH`·`CRYPTO_RISK`·`INTERNAL_OVERRIDE`는 닫힌 enum 잔존(advanced domain, 미사용)이다.
 
 | Trigger(코드값) | 표시값 | 설명 |
 |---|---|---|
@@ -783,20 +779,20 @@ CDD는 고객·법인·셀러·merchant onboarding과 주기적 갱신의 기본
 
 | Case type | 설명 |
 |---|---|
-| `SANCTIONS_REVIEW` | 제재 매칭 검토 |
-| `PEP_REVIEW` | PEP/RCA 검토 |
-| `EDD_REVIEW` | 강화된 고객확인 |
-| `STR_REVIEW` | 의심거래보고 후보 검토 |
-| `CTR_REVIEW` | 고액현금거래 보고 데이터 검토 |
-| `TBML_REVIEW` | 무역기반 자금세탁 검토 |
-| `VASP_TRAVEL_RULE_REVIEW` | Travel Rule·지갑주소 검토 |
-| `MERCHANT_AML_REVIEW` | 가맹점/셀러 AML 검토 |
-| `INTERNAL_CONTROL_REVIEW` | 내부통제·직원 행위 검토 |
-| `MULE_ACCOUNT_REVIEW` | 대포통장·mule 계좌 검토 (§18.2) |
-| `B2B_INVOICE_REVIEW` | B2B 인보이스 검토 (§18.5) |
-| `ECOMMERCE_SETTLEMENT_REVIEW` | 이커머스 해외정산 검토 (§18.6) |
+| `SANCTIONS_REVIEW` | 제재 매칭 검토 | ✅ |
+| `PEP_REVIEW` | PEP/RCA 검토 | ✅ |
+| `EDD_REVIEW` | 강화된 고객확인 | ✅ |
+| `STR_REVIEW` | 의심거래보고 후보 검토 | ✅ |
+| `CTR_REVIEW` | 고액현금거래 보고 데이터 검토 | ✅ |
+| `MULE_ACCOUNT_REVIEW` | 대포통장·mule 계좌 검토 | ✅ |
+| `TBML_REVIEW` | 무역기반 자금세탁 검토 | ✕(미사용) |
+| `VASP_TRAVEL_RULE_REVIEW` | Travel Rule·지갑주소 검토 | ✕(미사용) |
+| `MERCHANT_AML_REVIEW` | 가맹점/셀러 AML 검토 | ✕(미사용) |
+| `INTERNAL_CONTROL_REVIEW` | 내부통제·직원 행위 검토 | ✕(미사용) |
+| `B2B_INVOICE_REVIEW` | B2B 인보이스 검토 | ✕(미사용) |
+| `ECOMMERCE_SETTLEMENT_REVIEW` | 이커머스 해외정산 검토 | ✕(미사용) |
 
-> case_type 정본 enum은 위 12종(DB §5.8과 1:1). §18 도메인 본문에서 사용하는 case 이름과 표가 일치한다.
+> `case_type` 정본 enum은 위 12종(DB §5.8과 1:1, 닫힌 집합). hanpass-ph 운영은 제재/PEP/EDD/STR/CTR/대포통장 case가 핵심이며, advanced domain case(TBML·VASP·가맹점·내부통제·B2B·이커머스)는 enum 잔존이나 미사용이다(Phase 8).
 
 ### 13.3a Case 상태머신 (case_status)
 
@@ -845,7 +841,7 @@ OPEN
 
 ### 13.5 결재 시스템
 
-AML SaaS에는 준법감시실이 개발팀 또는 벤더 도움 없이 AML 업무를 운영하기 위한 결재 시스템이 필요하다. 결재 시스템은 case workflow와 분리된 공통 업무 통제 계층이며, WLF·RA·TM·CDD/EDD·STR/CTR·Travel Rule·명단 관리에 모두 적용된다.
+`aml-svc`에는 hanpass-ph 준법감시 담당이 개발팀 또는 벤더 도움 없이 AML 업무를 운영하기 위한 결재 시스템이 필요하다. 결재 시스템은 case workflow와 분리된 공통 업무 통제 계층이며, WLF·RA·TM·CDD/EDD·STR/CTR·명단 관리에 모두 적용된다(Travel Rule exception은 닫힌 enum 잔존이나 hanpass-ph 미사용).
 
 결재 필요 여부는 다음 기준으로 결정한다.
 
@@ -920,13 +916,13 @@ DISPATCHING -> FAILED -> (PENDING 재시도 | DLQ)
 
 | Report(코드값) | 표시값(권고) | 설명 |
 |---|---|---|
-| `STR` | STR | 의심거래보고 후보·검토·제출 증적 |
-| `CTR` | CTR | 고액현금거래보고 데이터 수집·검증 |
-| `TRAVEL_RULE` | Travel Rule | 가상자산 이전 정보 보존·전달 증적 |
-| `EDD_REGISTER` | EDD Register | 고위험 고객·EDD 이행 현황 |
-| `WLF_REGISTER` | WLF Register | 제재/PEP screening 결과 |
-| `RA_REPORT` | RA Report | 고객위험평가 모델·점수·등급 분포 |
-| `AUDIT_EXPORT` | Audit Export | 검사 대응용 변경·판정 감사 |
+| `STR` | STR | 의심거래보고 후보·검토·제출 증적 (✅) |
+| `CTR` | CTR | 고액현금거래보고 데이터 수집·검증 (✅) |
+| `EDD_REGISTER` | EDD Register | 고위험 고객·EDD 이행 현황 (✅) |
+| `WLF_REGISTER` | WLF Register | 제재/PEP screening 결과 (✅) |
+| `RA_REPORT` | RA Report | 고객위험평가 모델·점수·등급 분포 (✅) |
+| `AUDIT_EXPORT` | Audit Export | 검사 대응용 변경·판정 감사 (✅) |
+| `TRAVEL_RULE` | Travel Rule | 가상자산 이전 정보 보존·전달 증적 (✕ 미사용, 가상자산 비대상) |
 
 ### 14.1a Report 상태머신 (report_status)
 
@@ -962,16 +958,15 @@ SUBMISSION_FAILED
 
 ### 14.2 STR 후보 생성
 
-STR 후보는 다음 경로에서 생성된다.
+STR 후보는 hanpass-ph에서 다음 경로로 생성된다.
 
-- WLF true match
+- WLF true match(회원·수취인)
 - EDD 거래거절
-- TM scenario high severity
+- TM scenario high severity(분할·고위험회랑·급속이동 등)
 - FDS fraud case escalation (`fds.case.escalated`, 연동 §3.2)
-- trade document mismatch
-- crypto high-risk withdrawal
-- internal suspicious employee action
-- tenant analyst manual registration
+- 준법감시 담당 수동 등록
+
+> trade document mismatch·crypto high-risk withdrawal·internal employee action 등 advanced domain STR 트리거는 코드 분기/스키마에 잔존하나 hanpass-ph 운영에서는 사용하지 않는다.
 
 ### 14.3 CTR
 
@@ -983,8 +978,8 @@ STR 후보는 다음 경로에서 생성된다.
 |---|---|---|---|
 | CTR 고액현금거래 기준금액 | `ctrThreshold` | 1거래 1천만원 이상 현금거래 | 특정금융정보법 고액현금거래보고(FIU 고시) |
 | RA 고위험 임계 | `raHighThreshold` | 0.75 (고위험 → EDD 자동 트리거) | 위험기반접근(RBA) 내부 기준(설계서 §5.2·§11) |
-| Travel Rule 기준 | `travelRuleThreshold` | 100만원 상당 이상 | 특정금융정보법 VASP Travel Rule |
 | 분할 의심 임계 | `structuringThreshold` | 9,000만원 / 7일 | 분할거래 의심 모니터링 기준 |
+| Travel Rule 기준 | `travelRuleThreshold` | 100만원 상당 이상 | 특정금융정보법 VASP Travel Rule (✕ hanpass-ph 미사용 — 가상자산 비대상, parameter 잔존) |
 
 > CTR 기준 표기는 화면·문서 전수에서 **"1거래 1천만원 이상 현금거래(정책팩 정본 기준)"** 로 통일한다(PRD·PPT 표기 혼재 제거).
 
@@ -1038,42 +1033,21 @@ Idempotency-Key: onboarding:cust-123:v1
 
 ### 15.3 Queue Connector
 
-대량 거래·정산·이벤트는 queue connector로 받는다.
+hanpass-ph 대량 거래·이벤트는 queue connector(SQS)로 받는다. 코드의 인입 큐 consumer는 `FdsDecisionConsumer`·`ReportSubmissionCallbackConsumer`다.
 
 대상:
 
-- 거래 완료 이벤트
-- 정산 이벤트
-- order/refund/chargeback
-- crypto deposit/withdrawal
-- employee operation log
-- FDS decision/case event
+- 거래 완료 이벤트(송금·월렛·ATM·카드)
+- FDS decision/case escalation event
+- 보고 제출 콜백(FIU 회신)
 
-### 15.4 Polling / Snapshot / CDC
+### 15.4 Polling / Snapshot / CDC (미사용)
 
-AML SaaS는 많은 고객사가 레거시 core banking, ERP, PG 정산 시스템을 사용한다는 전제를 둔다. 따라서 push API 외에 polling, snapshot import, CDC를 모두 지원한다.
+`ingest_mode` enum(`REST_PUSH`/`QUEUE`/`POLLING`/`CDC`/`SNAPSHOT`/`VENDOR_BRIDGE`)은 닫힌 집합으로 잔존하나, hanpass-ph 운영은 **REST Push + Queue(SQS)** 만 사용한다. polling/snapshot/CDC connector·스케줄러는 hanpass-ph 범위 밖이다(`adapter/in/scheduled`의 실제 스케줄러는 outbox relay·watchlist reconciliation).
 
-### 15.5 Legacy Vendor Bridge
+### 15.5 Legacy Vendor Bridge (미사용 잔존)
 
-국내 AML 시장에는 옥타솔루션 등 기존 벤더를 사용 중인 고객이 많다. 신규 SaaS AML은 기존 벤더를 즉시 대체하는 방식이 아니라, 병행 연동과 점진 대체를 지원해야 한다.
-
-지원 모드:
-
-| 모드 | 설명 | 목적 |
-|---|---|---|
-| Vendor Alert Ingest | 기존 AML 솔루션의 WLF/RA/TM alert와 case 결과를 수신 | 감사 증적 통합 |
-| Vendor DB Export Adapter | 고객이 제공하는 export file 또는 read-only replica를 canonical AML event로 변환 | DB 직접 insert 의존 완화 |
-| Dual Run | 동일 고객·거래를 기존 벤더와 SaaS AML이 동시에 평가 | WLF/RA/TM 품질 비교 |
-| Shadow Case | SaaS AML case를 내부 evidence로만 보존하고 고객 운영 action은 하지 않음 | 전환 리스크 감소 |
-| Rule/Model Migration | 기존 WLF threshold, RA factor, TM scenario를 SaaS model로 이전 | 벤더 종속 제거 |
-
-설계 원칙:
-
-- 고객 운영 DB 또는 기존 벤더 DB에 직접 write하지 않는다.
-- 불가피하게 기존 벤더 DB insert가 필요한 고객은 별도 adapter가 담당하고 core AML domain은 vendor schema를 알지 않는다.
-- vendor alert는 `aml_alerts.external_alert_ref`(vendor_alert_id, `source_origin=VENDOR`)로 저장하고, SaaS alert와 dual-run 구분한다(DB §3.10·연동 §7.3).
-- dual-run 기간에는 기존 벤더 판단, SaaS 판단, 최종 analyst decision을 분리 저장한다.
-- 기존 벤더 장애·명단 freshness·batch 누락은 connector health와 reconciliation report로 관리한다.
+기존 AML 벤더 alert 병행 수신(`source_origin=VENDOR`, `aml_alerts.external_alert_ref`)·dual-run 비교(`domain/vendor/DualRunComparison`·`VendorMigrationInventory`)는 도메인·스키마에 존재하나 hanpass-ph 운영에서는 활성화하지 않는다. 인입 시에는 독립 usecase 없이 `IngestEvent(source_origin=VENDOR)`로 흡수된다(연동 §3.1). 향후 기존 벤더 병행 전환이 필요할 때 활성화하는 확장 surface다.
 
 ### 15.6 Evidence Export API
 
@@ -1093,14 +1067,13 @@ export 대상:
 - RA factor snapshot, score, grade, model version
 - TM alert 생성 근거와 case 처리 이력
 - STR 후보 생성·기각·보고 승인 이력
-- CTR/Travel Rule evidence
+- CTR evidence
 - watchlist import/apply 이력
 - 명단·모델·국가위험·policy 변경 승인 이력
-- 기존 벤더 alert와 SaaS alert cross-reference
 
-### 15.7 Public API 제품화
+### 15.7 Public API
 
-SaaS AML은 고객사 내부 서비스, BO, onboarding system, core banking, PG 정산 시스템, 가상자산 지갑 시스템이 API로 직접 사용할 수 있는 외부 AML 솔루션이어야 한다. 따라서 event ingest뿐 아니라 WLF screening, RA 평가, TM alert, CDD/EDD case, STR/CTR evidence를 API로 제공한다.
+hanpass-ph 내부 서비스(member·remit/wallet·recipient)와 운영 콘솔(bo-api)이 API로 사용하는 AML 엔진이다. event ingest뿐 아니라 WLF screening, RA 평가, TM alert, CDD/EDD case, STR/CTR evidence를 API로 제공한다.
 
 API 제공 원칙:
 
@@ -1115,12 +1088,12 @@ API 제공 원칙:
 
 | API group | plane | 용도 | 대표 endpoint |
 |---|---|---|---|
-| Ingest API | Public | 고객·법인·거래·증빙 event 수신 | `POST /api/v1/aml/events` |
-| Screening API | Public | WLF/제재/PEP 실시간 screening | `POST /api/v1/aml/screen` |
-| Risk Assessment API | Public | 고객·법인·셀러 위험평가 | `POST /api/v1/aml/risk-assessments/evaluate` |
+| Ingest API | Public | 회원·거래·수취인 event 수신 | `POST /api/v1/aml/events` |
+| Screening API | Public | WLF/제재/PEP 실시간 screening(sender/receiver) | `POST /api/v1/aml/screen` |
+| Risk Assessment API | Public | 회원 위험평가 | `POST /api/v1/aml/risk-assessments/evaluate` |
 | TM API | Public | 거래 모니터링 평가·alert 생성 | `POST /api/v1/aml/transactions/evaluate` |
 | CDD/EDD API | Admin | checklist, case, periodic review 관리 (운영 콘솔, bo-api 경유) | `GET /api/v1/admin/aml/cdd/cases` |
-| Regulatory Evidence API | Public | STR/CTR/Travel Rule 증적 조회·export | `POST /api/v1/evidence/aml/exports` |
+| Regulatory Evidence API | Public | STR/CTR 증적 조회·export | `POST /api/v1/evidence/aml/exports` |
 | Webhook (outbound) | OUT | screening/case/report 상태변경 콜백(서명·재시도/멱등) | `POST {customerWebhookUrl}` (계약=API §8·연동 §3.4) |
 | Admin API | Admin | 명단(watchlist-sources)·RA 정책·TM scenario·country risk·case 관리·CDD/EDD·규제 보고·결재(4-eyes)·감사·data source(source-systems)·key·scope 관리 (bo-api 전용, scope `aml:admin:*`/`aml:case:*`/`aml:evidence:export` — 전수는 **API §1.1 enum 전수 13종** 정본 참조, 본 표는 약식 표기) | `GET /api/v1/admin/aml/watchlist-sources`, `GET /api/v1/admin/aml/source-systems`, `GET /api/v1/admin/aml/cdd/cases` |
 | 고객사 관리 API | Admin/BO | 고객사 목록·상세, **배포 유형 선택+온보딩 신청**, 설정변경 (bo-api 소유). `deployment_model`/`onboarding_status`/`status`/`default_region`/`infra_ref` (§16.0) | `GET/POST /api/v1/bo/aml/tenants`, `GET/PUT /api/v1/bo/aml/tenants/{tenantId}` |
@@ -1140,8 +1113,8 @@ API 제공 원칙:
 
 ```http
 POST /api/v1/aml/screen
-Tenant-Id: tenant-a
-Source-System: onboarding
+Tenant-Id: tenant_demo
+Source-System: member
 Idempotency-Key: onboarding:customer:C20260606-0001:v1
 X-Signature: hmac-sha256=...
 ```
@@ -1167,8 +1140,8 @@ API 인증·권한:
 |---|---|
 | API Key + HMAC | 서버 간 기본 연동 |
 | OAuth2 Client Credentials | 권한 scope 기반 중대형 고객 연동 |
-| mTLS | 금융회사·VASP·고위험 screening API |
-| IP allowlist | 운영망 고정 고객 |
+| mTLS | 고위험 screening API |
+| IP allowlist | 운영망 고정 |
 | Webhook signature | 고객 callback 위변조 방지 (서명 입력=`timestamp+rawBody` HMAC, 계약 정본=API §8.3) |
 
 권한 scope(정본=API §1.1 enum 전수, OAuth2/RBAC 공통, 13종):
@@ -1191,13 +1164,13 @@ API 인증·권한:
 
 API 장애 원칙:
 
-- WLF/제재 screening API 장애 시 onboarding·수취인 등록·가상자산 출금주소 등록은 `manual-review` 또는 `fail-closed`를 기본값으로 둔다.
+- WLF/제재 screening API 장애 시 가입·수취인 등록은 `manual-review` 또는 `fail-closed`를 기본값으로 둔다.
 - 단순 batch TM ingest 장애는 replay와 reconciliation을 전제로 지연 허용할 수 있다.
 - API timeout, retry, duplicate, late event는 idempotency store와 evidence completeness report에 남긴다.
 
 ### 15.8 Transactional Outbox (아웃박스)
 
-규제 보고 제출(STR/CTR/Travel Rule)·webhook 콜백·fds-feedback 등 외부 부작용은 도메인 변경(결재 `EXECUTED` 포함)과 **동일 트랜잭션**으로 `aml_outbox`에 적재하고, `OutboxDispatcher`(poller, SELECT FOR UPDATE SKIP LOCKED)가 비동기 발행한다. 이중 발행 방지·재시도·DLQ로 정확히 한 번 효과를 보장한다(연동 §8).
+규제 보고 제출(STR/CTR)·webhook 콜백·fds-feedback 등 외부 부작용은 도메인 변경(결재 `EXECUTED` 포함)과 **동일 트랜잭션**으로 `aml_outbox`에 적재하고, `OutboxRelayService`/`OutboxRelayScheduler`(poller, SELECT FOR UPDATE SKIP LOCKED)가 비동기 발행한다. 이중 발행 방지·재시도·DLQ로 정확히 한 번 효과를 보장한다(연동 §8).
 
 | 항목 | 정본 |
 |---|---|
@@ -1210,9 +1183,11 @@ API 장애 원칙:
 
 ---
 
-## 16. SaaS 멀티테넌시
+## 16. 멀티테넌시
 
-> **핵심 전환(v1.6, FDS §13과 동일 모델).** AML/FDS는 고객 PII·거래·제재 데이터의 규제·내부보안 요건이 커서 **고객사별 전용 배포가 기본**이다(공유 SaaS DB 아님, 정본 target-architecture §4.1). 따라서 멀티테넌시는 ① **배포 모델(deployment topology)** + ② **온보딩 프로비저닝(IaC/설치형)** + ③ **배포 내부 분리 키(tenant/workspace/data-scope) 의미 재정의** 의 3층으로 구성된다. 격리는 화면 라디오로 즉석 선택하는 값이 아니라 **온보딩 프로비저닝 프로세스의 산출**이다. 구 §16.1 `isolation_mode`(SHARED/SCHEMA/DB) 토글은 **폐기**한다.
+> **hanpass-ph 운영.** `aml-svc`는 멀티테넌트 격리 구조를 코드 차원에서 유지하나(전 테이블 `tenant_id` 선두 PK, 배포 모델·온보딩 상태머신), **현재 운영 대상 테넌트는 hanpass-ph(`tenant_demo`) 단일**이며 기본 배포 모델은 전용 배포(`MANAGED_DEDICATED`)다. 아래 배포 모델·온보딩 프로비저닝 framework는 향후 테넌트 확장을 위한 멀티테넌트 능력의 정의이며, hanpass-ph 단일 운영에서는 `tenant_demo` 1개 배포로 동작한다.
+>
+> **핵심 전환(v1.6, FDS §13과 동일 모델).** AML/FDS는 고객 PII·거래·제재 데이터의 규제·내부보안 요건이 커서 **테넌트별 전용 배포가 기본**이다(공유 DB 아님, 정본 target-architecture §4.1). 멀티테넌시는 ① **배포 모델(deployment topology)** + ② **온보딩 프로비저닝(IaC/설치형)** + ③ **배포 내부 분리 키(tenant/data-scope) 의미 재정의** 의 3층으로 구성된다. 격리는 화면 라디오로 즉석 선택하는 값이 아니라 **온보딩 프로비저닝 프로세스의 산출**이다. 구 §16.1 `isolation_mode`(SHARED/SCHEMA/DB) 토글은 **폐기**한다.
 
 ### 16.0 배포 모델 (deployment topology)
 
@@ -1220,7 +1195,7 @@ API 장애 원칙:
 
 | 모델 | 의미 | 대상 | 프로비저닝 |
 |---|---|---|---|
-| `MANAGED_DEDICATED`(기본) | 플랫폼(우리 클라우드)에 **고객사별 전용 DB·스택** | 일반 금융사·핀테크·PG·VASP | 온보딩 파이프라인 **IaC(Terraform)** 자동 — 승인→프로비저닝→시크릿/DNS→배포→검증→운영전환(ops 작업, 화면 라디오 아님) |
+| `MANAGED_DEDICATED`(기본) | 플랫폼 클라우드에 **테넌트별 전용 DB·스택**(hanpass-ph 기본) | 핀테크·송금사업자 | 온보딩 파이프라인 **IaC(Terraform)** 자동 — 승인→프로비저닝→시크릿/DNS→배포→검증→운영전환(ops 작업, 화면 라디오 아님) |
 | `SELF_HOSTED` | **고객 자체 인프라**(데이터센터/VPC)에 설치형 | 은행·고PII·내부망 요건 | **설치형 패키지(Helm/Docker/installer)** 를 고객 측이 배포. 플랫폼은 산출물·가이드·라이선스만 제공(자동 프로비저닝 불가) |
 | `SHARED`(옵션) | 공유 DB + `tenant_id` 행 격리 | 소규모/체험 | 즉시(프로비저닝 없음) |
 
@@ -1632,24 +1607,21 @@ CREATE TABLE aml_travel_rule_transfers (
 
 ---
 
-## 18. 도메인별 AML 적용 예시
+## 18. hanpass-ph 거래 유형별 AML 적용
 
-### 18.1 카드·PG
+§4의 6채널(`channelType`)별 AML feature·case 매핑이다.
+
+### 18.1 월렛 충전 (`CASH_IN`)
 
 AML 관점 feature:
 
-- merchant UBO
-- MCC 고위험 업종
-- 반복 환불·chargeback
-- 매출 대비 정산 급증
-- 동일 카드·동일 계좌 기반 merchant network
+- 충전 후 즉시 출금/송금(rapid movement)
+- 다계정 순환 충전
+- 분할 충전(structuring)
 
-Case:
+Case: `STR_REVIEW` · `MULE_ACCOUNT_REVIEW`
 
-- `MERCHANT_AML_REVIEW`
-- `STR_REVIEW`
-
-### 18.2 국내송금·계좌이체
+### 18.2 국내 송금 (`DOMESTIC_REMIT`)
 
 AML 관점 feature:
 
@@ -1659,90 +1631,50 @@ AML 관점 feature:
 - 동일 수취인 다수 송금인
 - 피싱 피해 신고 계좌와 연결
 
-Case:
+Case: `STR_REVIEW` · `MULE_ACCOUNT_REVIEW`
 
-- `STR_REVIEW`
-- `MULE_ACCOUNT_REVIEW`
-
-### 18.3 해외송금
+### 18.3 해외 송금 (`CROSS_BORDER_REMIT`)
 
 AML 관점 feature:
 
-- 고위험 corridor
-- 수취인 WLF
+- 고위험 corridor(수취국)
+- 수취인(receiver) WLF — sender+receiver 거래당 한 쌍(§10.2a)
 - 목적/직업/소득 대비 금액 불일치
-- 반복 소액 송금
+- 반복 소액 송금(structuring)
 - sanction/PEP hit
+- 단건 고액(`phpEquivalent ≥ 280000`, §12.1)
 
-Case:
+Case: `EDD_REVIEW` · `STR_REVIEW` · `SANCTIONS_REVIEW`/`PEP_REVIEW`
 
-- `EDD_REVIEW`
-- `STR_REVIEW`
-
-### 18.4 코인거래소
+### 18.4 월렛 결제 (`WALLET_PAYMENT`)
 
 AML 관점 feature:
 
-- 제재 지갑주소
-- mixer exposure
-- Travel Rule 정보 누락
-- fiat 입금 후 즉시 crypto 출금
-- API key 기반 대량 출금
+- 결제 후 반복 환불(refund laundering, §12.1)
+- 순환/자기거래(round-tripping)
 
-Case:
+Case: `STR_REVIEW`
 
-- `VASP_TRAVEL_RULE_REVIEW`
-- `STR_REVIEW`
-
-### 18.5 무역대금·B2B 지급
+### 18.5 ATM/월렛 출금 (`WALLET_WITHDRAWAL`)
 
 AML 관점 feature:
 
-- invoice amount deviation
-- HS code / 품목 고위험
-- 선적국·수취국·계약국 불일치
-- 반복 invoice number
-- 신규 수취계좌
-- UBO 불명확 vendor
-- 특수관계자 거래 의심
+- 현금화
+- 분산 출금
+- 충전→즉시 출금 연계
 
-Case:
+Case: `STR_REVIEW` · `MULE_ACCOUNT_REVIEW`
 
-- `TBML_REVIEW`
-- `B2B_INVOICE_REVIEW`
-- `STR_REVIEW`
-
-### 18.6 이커머스 해외정산·마켓플레이스
+### 18.6 카드(비대면) 결제 (`CARD_NOT_PRESENT`)
 
 AML 관점 feature:
 
-- 신규 seller 고액 정산
-- seller country와 payout country 불일치
-- 동일 정산계좌 다수 seller
-- refund/chargeback 급증
-- 배송 증빙 불일치
-- 가짜 주문·자전거래 의심
+- 카드 현금화
+- 차명/반복 결제
 
-Case:
+Case: `STR_REVIEW`
 
-- `MERCHANT_AML_REVIEW`
-- `ECOMMERCE_SETTLEMENT_REVIEW`
-- `STR_REVIEW`
-
-### 18.7 은행 내부 감사
-
-AML 관점 feature:
-
-- 의심거래 미보고
-- WLF true match override
-- EDD 없이 고위험 고객 거래 승인
-- 영업점/직원별 수동 해제 급증
-- 고객정보 반복 조회
-
-Case:
-
-- `INTERNAL_CONTROL_REVIEW`
-- `STR_REVIEW`
+> 비-hanpass 도메인(코인거래소·무역대금/TBML·이커머스 정산·B2B 인보이스·은행 내부감사)은 advanced domain pack(§21 Phase 8)으로 enum·스키마에 잔존하나 hanpass-ph 운영 대상이 아니다.
 
 ---
 
@@ -1757,7 +1689,6 @@ Case:
 | CTR | 고액현금거래 데이터 수집·검증·보고 보조 |
 | Sanctions | 제재·테러자금조달 관련 명단 필터링 |
 | PEP/RCA | 정치적 주요 인물 및 관련자 위험관리 |
-| VASP | 가상자산사업자 AML, Travel Rule, 지갑주소 risk |
 | Privacy | 개인정보보호법·신용정보법 기반 최소수집·목적제한 |
 | Audit | 검사 대응 가능하도록 append-only 증적 보존 |
 
@@ -1806,7 +1737,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 ### 19.4 검사 대응 자동화 산출물
 
-AML SaaS는 AML 의무 수행 여부를 설명 가능한 증적으로 남기는 것이 핵심 가치다. 따라서 FIU·금융감독원·내부감사·외부감사 요청에 제출 가능한 evidence pack을 자동 생성해야 한다.
+`aml-svc`는 AML 의무 수행 여부를 설명 가능한 증적으로 남기는 것이 핵심 가치다. 따라서 FIU·금융감독원·내부감사·외부감사 요청에 제출 가능한 evidence pack을 자동 생성해야 한다.
 
 기본 evidence pack:
 
@@ -1818,9 +1749,7 @@ AML SaaS는 AML 의무 수행 여부를 설명 가능한 증적으로 남기는 
 | TM alert 처리 이력 | scenario, alert 근거, case 전환, 기각·보고 사유 |
 | STR 후보·보고 증적 | 후보 생성 원인, 검토 timeline, 보고/기각 결정, 승인자 |
 | CTR 데이터 검증 | 기준금액 대상 거래, 집계 기준, 제외·보정 사유 |
-| Travel Rule 증적 | 송수신 VASP, beneficiary/originator 정보, exception 처리 |
 | 명단·국가위험 변경 | import, diff, 승인, 적용 시점, rollback |
-| 기존 벤더 병행 이력 | vendor alert id, SaaS alert id, analyst final decision |
 | 개인정보 접근 | 원문 접근 사유, 승인, 조회 범위, masking/tokenization 적용 |
 
 생성 원칙:
@@ -1828,7 +1757,6 @@ AML SaaS는 AML 의무 수행 여부를 설명 가능한 증적으로 남기는 
 - evidence export는 생성자, 생성 사유, 기간, filter, row count, hash manifest를 남긴다.
 - 제출 파일은 CSV/Excel/PDF를 지원하되, 각 row에 evidence id와 case id를 포함한다.
 - export 파일은 재생성 가능한 query snapshot과 함께 보존한다.
-- 기존 벤더 결과를 포함할 때는 vendor schema 원문을 그대로 노출하지 않고 표준 evidence field로 변환한다.
 
 ---
 
@@ -1851,14 +1779,13 @@ AML SaaS는 AML 의무 수행 여부를 설명 가능한 증적으로 남기는 
 
 ### 20.2 운영 화면
 
-- tenant별 WLF 처리량
+- WLF 처리량(sender/receiver)
 - watchlist freshness
 - RA score distribution
 - high-risk customer 현황
 - TM alert backlog
 - case SLA
 - STR/CTR 후보 현황
-- Travel Rule exception
 - connector lag
 - audit export
 
@@ -1926,24 +1853,28 @@ AML SaaS는 AML 의무 수행 여부를 설명 가능한 증적으로 남기는 
 
 ### Phase 6. Compliance Operations Console
 
-- 준법감시실용 no-code WLF/RA/TM policy builder
+- 준법감시 담당용 no-code WLF/RA/TM policy builder
 - WLF threshold와 false positive self-service 관리
 - CDD/EDD checklist와 periodic review 정책 편집
-- STR/CTR/Travel Rule case workflow 관리
+- STR/CTR case workflow 관리
 - policy/model simulation과 영향도 분석
 - maker-checker approval workflow
 - 개발팀 개입 없는 evidence export
 
-### Phase 7. Audit Evidence Hub + legacy bridge
+### Phase 7. Audit Evidence Hub + legacy bridge (hanpass-ph 미활성 잔존)
 
-- CDD/EDD/WLF/RA/TM evidence timeline
-- FIU·금융감독원·내부감사 제출용 export
-- 기존 AML 벤더 alert/case ingest
-- dual-run quality comparison
-- vendor rule/model migration inventory
-- watchlist freshness reconciliation
+> 코드·스키마에 구현되어 있으나 hanpass-ph 단일 서비스 운영에서는 활성화하지 않는다(기존 벤더 병행이 없으므로). 향후 기존 벤더 병행 전환 시 활성화.
 
-### Phase 8. Advanced domain pack
+- CDD/EDD/WLF/RA/TM evidence timeline (✅ 사용)
+- FIU·금융감독원·내부감사 제출용 export (✅ 사용)
+- 기존 AML 벤더 alert/case ingest (✕ 미활성, §15.5)
+- dual-run quality comparison (✕ 미활성)
+- vendor rule/model migration inventory (✕ 미활성)
+- watchlist freshness reconciliation (✅ 사용, `WatchlistReconciliationScheduler`)
+
+### Phase 8. Advanced domain pack (hanpass-ph 미사용 잔존)
+
+> `domain/commerce`·`domain/travelrule`·관련 EventFamily/CaseType/TmScenario enum·DB 컬럼에 잔존하나 **hanpass-ph 운영 대상이 아니다**(§4·§8·§12). 송금/월렛 외 금융 도메인 확장 시 활성화하는 surface.
 
 - trade payment / TBML
 - cross-border ecommerce settlement
@@ -1952,7 +1883,7 @@ AML SaaS는 AML 의무 수행 여부를 설명 가능한 증적으로 남기는 
 - bank internal audit
 - B2B invoice payment
 
-### Phase 9. SaaS productization
+### Phase 9. 테넌트 productization (멀티테넌트 능력)
 
 - 배포 모델 온보딩 kit(매니지드 전용 IaC 파이프라인 + self-hosted 설치형 패키지·라이선스, §16.0)
 - 온보딩 프로비저닝 상태머신·운영자 카탈로그(`onboarding_status` 8종, §16.0b)
@@ -1977,9 +1908,9 @@ AML SaaS는 AML 의무 수행 여부를 설명 가능한 증적으로 남기는 
 | D-05 | raw PII 처리 | 미저장 / tokenization / tenant-managed key | tenant-managed tokenization |
 | D-06 | 배포 모델(deployment topology) | MANAGED_DEDICATED / SELF_HOSTED / SHARED | **MANAGED_DEDICATED 기본**(고객사별 전용 DB·스택, IaC 온보딩) + 내부망/고PII는 SELF_HOSTED 설치형 + 소규모는 SHARED. 격리는 온보딩 프로비저닝 산출(§16.0). **결정 확정**: 구 isolation_mode(shared/schema/db) 폐기 |
 | D-07 | FDS 연동 | 같은 플랫폼 내부 / event 연동 / 독립 | event 연동 우선 |
-| D-08 | crypto AML | 기본 포함 / domain pack | domain pack |
-| D-09 | TBML | 기본 포함 / domain pack | advanced domain pack |
-| D-10 | 기존 벤더 병행 | 미지원 / alert ingest / dual-run / full migration | alert ingest + dual-run 우선 |
+| D-08 | crypto AML | 기본 포함 / domain pack | domain pack (hanpass-ph 미사용) |
+| D-09 | TBML | 기본 포함 / domain pack | advanced domain pack (hanpass-ph 미사용) |
+| D-10 | 기존 벤더 병행 | 미지원 / alert ingest / dual-run / full migration | alert ingest + dual-run 우선 (hanpass-ph 미활성) |
 | D-11 | evidence export | UI 다운로드 / API / 고객 GRC 연동 | UI + API + manifest hash |
 | D-12 | 준법감시실 자율 운영 범위 | WLF만 / WLF+RA / WLF+RA+TM+보고 | WLF+RA+TM+보고 |
 | D-13 | 외부 API 인증 | API Key / OAuth2 / mTLS / 혼합 | API Key+HMAC 기본, OAuth2/mTLS 옵션 |
@@ -2002,15 +1933,15 @@ AML SaaS는 AML 의무 수행 여부를 설명 가능한 증적으로 남기는 
 
 ## 결론
 
-SaaS AML Platform은 `23-amlSvc.md`의 WLF·RA·CDD/EDD·명단관리·감사 구조를 출발점으로 삼되, `22-1-fdsSvc-sass.md`가 정의한 카드, 국내송금, PG, ATM, 해외송금, 코인거래소, 무역대금, 이커머스 해외정산, 마켓플레이스, B2B 인보이스 범위까지 AML 관점으로 확장해야 한다.
+`aml-svc`는 hanpass-ph 송금/월렛 서비스의 AML 엔진으로, WLF·RA·CDD/EDD·명단관리·TM·STR/CTR·감사를 헥사고날(`com.aegis.aml`) 단일 서비스로 구현한다.
 
 핵심 설계 결정은 다음 다섯 가지다.
 
-1. 모든 고객·법인·실소유자·거래·증빙을 `AML Canonical Event`와 `Customer/Entity Graph`로 정규화한다.
-2. WLF, RA, TM, CDD/EDD, STR/CTR/Travel Rule을 같은 case/evidence 플랫폼 위에서 운영한다.
-3. 한국 시장의 특정금융정보법·전자금융·개인정보·가상자산 규제 요구를 기본 policy pack으로 제공하고, 국가·업권별 확장은 plugin으로 추가한다.
+1. 회원·관계자·거래를 `AML Canonical Event`(`EventFamily` 20종 strict gate)와 `Customer/Relationship Graph`로 정규화한다.
+2. WLF(sender/receiver), RA, TM(phpEquivalent 시나리오), CDD/EDD, STR/CTR을 같은 case/evidence 기반 위에서 운영한다.
+3. 한국 특정금융정보법·전자금융·개인정보 규제 요구를 `KR_DEFAULT` baseline policy pack으로 제공한다(가상자산/Travel Rule parameter는 잔존하나 미사용).
 4. FIU·금융감독원·내부감사 대응에 필요한 `Evidence Pack`을 자동 생성한다.
-5. 기존 AML 벤더를 즉시 대체하지 않고, alert ingest와 dual-run으로 병행 도입한다.
+5. 멀티테넌트 격리 구조를 유지하되 운영 대상은 hanpass-ph(`tenant_demo`) 단일이며, advanced domain pack·legacy vendor bridge는 enum·스키마에 잔존하나 미활성이다(Phase 7·8).
 
 ---
 
@@ -2018,6 +1949,7 @@ SaaS AML Platform은 `23-amlSvc.md`의 WLF·RA·CDD/EDD·명단관리·감사 �
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-06-30 | **hanpass-ph 기준 재작성(코드 truth).** 본 설계서를 SaaS 다도메인 AML 일반화 → **hanpass-ph 단일 서비스 AML 엔진(`aml-svc`)** 정본으로 재정렬. (1) 제목·§1·§2 — 시스템=hanpass-ph AML, 비-hanpass 도메인(카드 PG·crypto·trade/TBML·ecommerce·B2B) 일반화 제거, fds/aml 관계 유지. (2) §3·§4 — Hanpass 참조구현을 코드 구성요소 매핑으로 교체, "지원 금융 도메인 15종" → hanpass-ph 거래 6채널(`CASH_IN`/`DOMESTIC_REMIT`/`CROSS_BORDER_REMIT`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`/`CARD_NOT_PRESENT`, V26). (3) §6.2 — 헥사고날 패키지 레이아웃을 실제 소스(`com.aegis.aml` domain/application/adapter) 기준으로 재작성. (4) §8.1 — event family를 코드 `EventFamily` enum **20종** 정본으로 교체(hanpass-ph `REMIT`/`DOMESTIC`/`WALLET` transaction-bearing, advanced/vendor는 미사용 잔존 명시). (5) §10.2a — 거래당 sender/receiver WLF(`transactionRef`) 신설. (6) §12.1 — `TmScenario` 10종 + 데모 ACTIVE 시나리오(phpEquivalent 임계, V19/V22/V26/V28)로 재작성. (7) §9/§10/§11/§13.3/§14.1 — 닫힌 enum의 hanpass-ph 미사용 값을 ✕ 표기. (8) §15.3~§15.5 — REST+SQS만, polling/CDC·legacy bridge 미사용 잔존. (9) §16 — 멀티테넌트 유지·운영=`tenant_demo` 단일 명시. (10) §18 — 도메인별 예시를 hanpass-ph 6채널로 교체. (11) Travel Rule/VASP·advanced domain·vendor 전수에 미사용 주석. | aegis-java-implementer. 근거=`services/aml-svc/src/main/java/com/aegis/aml`(EventFamily·TmScenario·ScreenSubjectUseCase·TmEvaluationService)·migration V19/V22/V26/V27/V28/V29. 닫힌 enum·DB 컬럼은 삭제 아닌 "잔존(미사용)" 표기 — 코드/DB 정본 보존. |
 | 2026-06-21 | **코드 기준 outbox aggregate_type 정합(이격 리포트 AML).** §15.8 `aml_outbox.aggregate_type` 허용값 5종→**6종**(`IRA_REPORT` 추가 — 구현 V13, IRA 제출 폐루프 enqueue). DB §3.15·integration §8.1 동기화. | system-architect. 근거=`aml-svc/.../db/migration/V13`. 이격18 반영. |
 | 2026-06-11 | QA HIGH(L118) 해소: §8.1 cross-reference 구문 "연동 §3.1이 14종으로 표기한 것은 오기" → "연동 §3.1은 15종 정본과 동기화 완료"로 교체(연동 v1.6 `vendor.*` 등재 반영 직접 확인). | system-architect |
 | 2026-06-11 | QA HIGH 3건(L295·L307·L308) 해소: ① §6.2 패키지를 '설계 표기 `com.hanpass.aml` / 구현 `com.aegis.aml`' 이중 표기로 정정(FDS 설계서 §6.2 동일 패턴, target-architecture §5). ② §8.2에 FDS `workspaceId` ↔ AML `dataScope` 의도된 비대칭 교차 주석 추가(연동 §4.1 cross-service 정책 — `fds-aml-handoff` 어댑터 `workspaceId`→`dataScope` 변환). ③ §17.1에 'AML `failure_policy`(`MANUAL_REVIEW`/`FAIL_CLOSED`/`DELAY_ALLOWED`) ↔ FDS `fail_policy`(`FAIL_CLOSED`/`FAIL_OPEN`/`CASE_ONLY`) 별도 enum — 혼동 금지, bo-web 표시명 매핑=bo-api' 명문화. | system-architect |

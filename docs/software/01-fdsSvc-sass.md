@@ -1,4 +1,4 @@
-# SaaS FDS Platform 신규 구축 설계서
+# hanpass-ph FDS(fds-svc) 소프트웨어 아키텍처 설계서
 
 ## 목차
 
@@ -28,29 +28,19 @@
 
 ## 1. 문서 목적
 
-본 문서는 기존 Hanpass PH `FdsSvc`를 참조 구현(reference implementation)으로 삼아, **한국 금융시장**에서 여러 금융서비스에 독립적으로 연동 가능한 **SaaS형 FDS(Fraud Detection System) 플랫폼**을 신규 구축하기 위한 설계 기준서이다.
+본 문서는 기존 Hanpass PH `FdsSvc`를 참조 구현(reference implementation)으로 삼아 구축한 **hanpass-ph 송금·월렛 서비스용 FDS(Fraud Detection System) 엔진(`fds-svc`)**의 소프트웨어 아키텍처 정본이다. 대상 시스템은 일반 멀티서비스 SaaS 플랫폼이 아니라 **hanpass-ph 한 운영 주체(테넌트 `tenant_demo`)의 FDS**이며, hanpass-ph가 실제로 발생시키는 송금·월렛 거래를 공통 캐논 이벤트로 정규화한 뒤 룰·케이스·액션을 운영한다.
 
-대상은 특정 월렛·송금 서비스 하나가 아니라 다음과 같은 다양한 금융거래를 포괄하는 토탈 FDS 플랫폼이다.
+대상 거래는 hanpass-ph가 운영하는 다음 5개 거래 채널이다(구현 정본 = `ChannelType` enum의 hanpass 운영 채널 + `scripts/demo_*` 시뮬레이터).
 
-- 카드 결제
-- 국내 송금
-- 해외 송금
-- PG 거래
-- 월렛 충전·결제·출금
-- ATM 출금
-- 은행 계좌 이체
-- 가상계좌 입금
-- 코인거래소 입출금·거래
-- 은행 내부 감사·직원 이상행위 탐지
-- 대출 실행·상환
-- 보험금 청구·지급
-- 파트너 정산·merchant settlement
-- 무역대금 지급·수취
-- 이커머스 해외판매대금 한국 정산
-- 마켓플레이스 셀러 정산
-- B2B 인보이스 지급
+- 해외송금(`CROSS_BORDER_REMIT`) — `remit-svc`
+- 국내송금(`DOMESTIC_REMIT`) — `domestic-svc`
+- 월렛 충전(`CASH_IN`) — `walletchg-svc`
+- 월렛 결제(`WALLET_PAYMENT`, PAY/QRPH) — `wallet-svc`
+- ATM 출금(`WALLET_WITHDRAWAL`, DEBIT/ATM) — `wallet-svc`
 
-핵심 목표는 “각 금융서비스별로 FDS를 다시 만드는 것”이 아니라, 모든 금융 이벤트를 공통 모델로 정규화한 뒤 룰·ML·케이스·액션을 같은 플랫폼에서 운영하는 것이다.
+> 파트너 인바운드 송금(`INBOUND_REMIT`, `inbound-svc`)은 소스 레지스트리에 예약돼 있으나 현재 시뮬레이터/룰에서 미운영이다.
+
+핵심 목표는 hanpass-ph의 모든 거래 이벤트를 공통 모델로 정규화한 뒤 룰·케이스·액션을 같은 엔진에서 운영하고, 그 판단 근거를 검사 대응 가능한 증적으로 남기는 것이다. 멀티테넌시·캐논 이벤트 모델 등 인프라는 일반화돼 있으나(코드 truth), **운영 대상은 hanpass-ph 단일 테넌트**이다.
 
 ---
 
@@ -58,9 +48,9 @@
 
 ### 2.1 제품 정의
 
-SaaS FDS Platform은 금융회사 또는 핀테크 사업자가 자기 시스템의 거래·회원·계좌·기기·KYC·정산·감사 이벤트를 연동하면, 실시간 또는 비동기로 이상거래를 탐지하고 조치할 수 있게 하는 멀티고객사 위험 탐지 플랫폼이다.
+hanpass-ph FDS(`fds-svc`)는 hanpass-ph가 자기 시스템의 송금·월렛 거래·회원·기기 이벤트를 연동하면, 실시간으로 이상거래를 탐지하고 조치할 수 있게 하는 위험 탐지 엔진이다. 엔진 자체는 멀티테넌시 인프라를 갖추고 있으나(코드 truth, §13), 운영 대상은 hanpass-ph 단일 테넌트이다.
 
-본 제품의 1차 사업 포지션은 단순 탐지 엔진이 아니라 **금융감독원·금융보안·내부감사 대응 증적을 자동화하는 FDS RegOps SaaS**이다. 고객사가 실제로 구매 가치를 느끼는 지점은 rule hit 자체보다 다음 질문에 즉시 답할 수 있는 운영 증적이다.
+본 엔진의 1차 운영 포지션은 단순 탐지 엔진이 아니라 **이상거래 판단·조치·증적을 자동화하는 FDS RegOps 엔진**이다. hanpass-ph 운영팀이 실제로 가치를 느끼는 지점은 rule hit 자체보다 다음 질문에 즉시 답할 수 있는 운영 증적이다.
 
 - 어떤 거래를 어떤 rule/model version으로 탐지했는가?
 - 어떤 입력 feature와 원천 이벤트 snapshot으로 판단했는가?
@@ -69,7 +59,7 @@ SaaS FDS Platform은 금융회사 또는 핀테크 사업자가 자기 시스템
 - 보이스피싱·계정탈취·가맹점 abuse·내부자 우회 승인에 대해 기간별 대응 자료를 바로 제출할 수 있는가?
 - connector 장애, 누락, replay, 중복 처리 이력이 감사 가능하게 남아 있는가?
 
-가장 중요한 제품 목표는 **개발팀 의존 없이 준법감시실·리스크관리·FDS 운영자가 직접 FDS를 운용할 수 있게 하는 것**이다. 개발팀의 역할은 초기 연동, 권한/IAM, 데이터 mapping, action adapter 구축까지로 제한하고, 이후 룰 변경·임계값 조정·watchlist 관리·case 처리·보고자료 생성·감사 대응은 비개발 조직이 UI와 승인 workflow로 수행해야 한다.
+가장 중요한 운영 목표는 **개발팀 의존 없이 hanpass-ph 준법감시·리스크·FDS 운영자가 직접 FDS를 운용할 수 있게 하는 것**이다. 개발팀의 역할은 초기 연동, 권한/IAM, 데이터 mapping, action adapter 구축까지로 제한하고, 이후 룰 변경·임계값 조정·watchlist 관리·case 처리·보고자료 생성·감사 대응은 비개발 조직이 UI와 승인 workflow로 수행해야 한다.
 
 이를 위해 플랫폼은 다음을 기본 제공한다.
 
@@ -83,50 +73,50 @@ SaaS FDS Platform은 금융회사 또는 핀테크 사업자가 자기 시스템
 - 운영 대시보드와 connector health 확인
 - 개발팀 개입 없는 tenant policy 변경 이력 관리
 
-### 2.2 고객 유형
+### 2.2 운영 대상 거래
 
-| 고객 유형 | 대표 사용처 |
+hanpass-ph FDS는 hanpass-ph가 운영하는 송금·월렛 거래를 대상으로 한다(§1 5채널).
+
+| hanpass-ph 거래 | 대표 탐지 대상 |
 |---|---|
-| 전자금융·월렛 사업자 | 충전, 결제, 송금, 출금, 계정 탈취 탐지 |
-| PG / VAN / 결제대행 | 카드 결제 fraud, merchant abuse, chargeback risk |
-| 은행 | 계좌이체, ATM 출금, 내부 직원 감사, AML alert |
-| 해외송금 사업자 | cross-border remittance, beneficiary risk, mule account |
-| 국내송금 사업자 | 계좌 기반 송금, 보이스피싱, 대포통장 |
-| 코인거래소 | fiat deposit/withdrawal, crypto withdrawal, market manipulation |
-| 보험·대출 사업자 | 보험금 부정청구, 대출 실행 fraud, identity fraud |
-| 무역·B2B 결제 사업자 | 인보이스 기반 지급, 무역대금, 공급망 금융 fraud |
-| 이커머스·마켓플레이스 | 해외 셀러 정산, 가맹점/셀러 리스크, 정산 보류 |
+| 해외송금(`CROSS_BORDER_REMIT`, `remit-svc`) | 고액 송금, 수취인 재사용, corridor 위험, 보이스피싱·대포통장 |
+| 국내송금(`DOMESTIC_REMIT`, `domestic-svc`) | 동일 수취계좌 velocity, 신규 수취인, 계정 탈취 |
+| 월렛 충전(`CASH_IN`, `walletchg-svc`) | 고액 충전, 충전 후 즉시 출금, velocity |
+| 월렛 결제(`WALLET_PAYMENT`, `wallet-svc` PAY/QRPH) | 가맹점 이상결제, 고액 결제 |
+| ATM 출금(`WALLET_WITHDRAWAL`, `wallet-svc` DEBIT/ATM) | mule withdrawal, 고액 출금, geo anomaly |
 
-### 2.3 제품 모듈
+> 멀티테넌시 인프라(§13)는 일반화돼 있으나 운영 테넌트는 hanpass-ph(`tenant_demo`) 단일이다.
 
-| 모듈 | 설명 |
-|---|---|
-| Ingest | 외부 시스템 이벤트 수신, polling, snapshot import, CDC adapter |
-| Normalization | 외부 payload를 canonical event로 변환 |
-| Feature Store | 회원·계좌·수단·거래·기기·상대방 상태 materialization |
-| Rule Engine | DSL 기반 룰 평가, threshold, velocity, group match |
-| ML Scoring | 외부 또는 내장 ML score 수신·평가 |
-| Decision Engine | ALLOW/BLOCK/REVIEW/CHALLENGE/FREEZE 등 결정 |
-| Action Router | 고객 시스템별 block/hold/cancel/release/case-only action 전달 |
-| Case Management | 조사 케이스, 4-eyes 승인, 증적 관리 |
-| Admin Console | 룰, connector, mapping, 감사, 리포트 관리 |
-| Audit & Compliance | 7년 이상 감사로그, 규정 리포트, PII 통제 |
-| Evidence Export | 감독기관·내부감사 제출용 CSV/PDF/Excel/API export |
-| Legacy Vendor Bridge | 옥타솔루션 등 기존 FDS/AML 솔루션과 병행 연동·점진 대체 |
+### 2.3 엔진 모듈 (구현 정본)
 
-### 2.4 시장 진입 제품 포지션
+아래는 `fds-svc` 구현 컴포넌트(유스케이스·어댑터)에 대응하는 모듈이다.
 
-초기 제품은 “기존 FDS 솔루션을 즉시 교체하는 엔진”보다 “기존 시스템과 병행 가능한 감사대응 자동화 허브”로 진입한다.
-
-| 단계 | 제품 포지션 | 고객 가치 |
+| 모듈 | 구현 컴포넌트(예) | 설명 |
 |---|---|---|
-| 1단계 | Audit Evidence Hub | 기존 FDS/AML 판정, 고객사 거래 이벤트, 수동 조치 이력을 한곳에 보존 |
-| 2단계 | FDS Event Gateway | DB 직접 insert 대신 API/queue/file/CDC로 표준 event ingest 제공 |
-| 3단계 | Case & Report Automation | 조사·승인·종결·제출자료 생성을 자동화 |
-| 4단계 | Rule/Decision Engine | 기존 벤더 의존 룰을 점진적으로 내장 FDS로 이전 |
-| 5단계 | Full FDS SaaS | 탐지, 조치, 감사, 리포트, 운영 모니터링을 통합 제공 |
+| Ingest | `IngestEventService`, `adapter/in/rest`(`/events`), `adapter/in/sqs` | hanpass-ph 소스(remit/domestic/walletchg/wallet) 이벤트 수신·멱등·검증 |
+| Feature Compute | `FeatureComputeAdapter`(`FeatureComputePort`) | 거래·채널·subject·velocity feature + `transaction.phpEquivalent`(PHP 환산) materialize |
+| Rule Engine | `RuleEngine`(domain/rule), `RuleAdminService`, `RuleSimulationService` | DSL 기반 룰 평가, threshold, velocity, group match |
+| Decision Engine | `EvaluateDecisionService` | `ALLOW`/`BLOCK`/`REVIEW`/`CHALLENGE` 등(`DecisionOutcome`) 결정 |
+| Action Router | `ActionRelayService`, `ActionEmissionService`, `ActionOutboxPort` | capability 기반 block/hold/cancel/release/case-only action outbox 전달 |
+| Case Management | `CaseWorkflowService`, `ApprovalService` | 조사 케이스, 4-eyes 승인, 증적 관리 |
+| AML Handoff | `RestAmlHandoffPublisher`/`SqsAmlHandoffPublisher`(`AmlHandoffPort`) | `OPEN_AML_CASE`/`REGULATORY_REPORT` 후보를 aml-svc로 위임 |
+| Admin | `RuleAdminService`·`ConnectorAdminService`·`SourceSystemAdminService`·`RiskGroupAdminService`·`NotifyChannelAdminService` 등 | 룰·connector·source·group·notify 관리 |
+| Audit & Evidence | `AuditLogPort`, `EvidenceExportService`, `EvidenceTimelineService` | 감사로그, 증적 timeline, export(CSV/JSON/Excel/PDF) |
+| Vendor Bridge(참조 인프라) | `ExternalDecisionService`, `ConnectorReconciliationService` | 기존 벤더 결정 ingest·dual-run·reconciliation. **hanpass-ph 현재 미운영, 인프라만 존재** |
 
-이 접근은 고객사가 이미 옥타솔루션 등 기존 솔루션을 사용하고 있어도 도입 가능하게 만든다. 초기에는 기존 솔루션의 결과를 수신하고, 운영 증적과 검사 대응 자료를 자동화한 뒤, 비용·유지보수·확장성 문제가 큰 영역부터 단계적으로 대체한다.
+> ML 스코어링 외부 어댑터는 현재 미구현이다. 룰 점수는 `RiskScoringPolicy`(domain)로 직렬화·합산하며, 외부 ML score 수신 포트는 후속(예정)이다.
+
+### 2.4 도입 단계 (참조 로드맵)
+
+아래는 참조 구현(Hanpass FdsSvc) 대비 hanpass-ph FDS 엔진의 단계적 도입 관점이다. 기존 벤더(예: 옥타솔루션) 병행 단계는 Vendor Bridge 인프라(§2.3)로 가능하나 현재 hanpass-ph 운영에는 적용하지 않는다.
+
+| 단계 | 포지션 | 운영 가치 |
+|---|---|---|
+| 1단계 | Audit Evidence Hub | 기존 판정·거래 이벤트·수동 조치 이력을 한곳에 보존 |
+| 2단계 | FDS Event Gateway | DB 직접 insert 대신 표준 event ingest(REST push) 제공 |
+| 3단계 | Case & Report Automation | 조사·승인·종결·제출자료 생성을 자동화 |
+| 4단계 | Rule/Decision Engine | 룰을 내장 FDS로 운영(현재 단계) |
+| 5단계 | Full FDS | 탐지·조치·감사·리포트·모니터링 통합 운영 |
 
 ### 2.5 기존 벤더 대비 차별화 기준
 
@@ -174,13 +164,13 @@ REVIEW case를 생성한다.
 
 ## 3. 참조 구현으로서의 Hanpass FdsSvc
 
-Hanpass PH `FdsSvc`는 신규 SaaS FDS의 출발점으로 참고할 수 있지만, 그대로 복제하면 안 된다. 본 문서의 목표 시장은 한국이며, PH 특화 규정·서비스 결합은 참조 구현의 사례로만 사용한다.
+Hanpass PH `FdsSvc`는 hanpass-ph FDS 엔진의 참조 구현이다. 그 구조(이벤트 ingest·룰 엔진·materialized state·outbox·감사 워크플로)를 헥사고날로 재구현하되, 운영 대상은 hanpass-ph 송금·월렛 5채널이다.
 
 ### 3.1 재사용할 개념
 
-| Hanpass FdsSvc 요소 | SaaS 플랫폼에서의 재사용 방향 |
+| Hanpass FdsSvc 요소 | hanpass-ph FDS 엔진에서의 재사용 방향 |
 |---|---|
-| SQS 이벤트 기반 ingest | Queue connector 패턴으로 일반화 |
+| SQS 이벤트 기반 ingest | REST push + Queue connector 패턴으로 인입 |
 | `sourceService + eventType` 정규화 | `sourceSystem + schemaVersion + eventType` 정규화로 확장 |
 | DSL 룰 엔진 | multi-domain feature catalog 기반 룰 엔진으로 확장 |
 | materialized profile | subject/account/instrument/counterparty feature store로 확장 |
@@ -201,33 +191,25 @@ Hanpass PH `FdsSvc`는 신규 SaaS FDS의 출발점으로 참고할 수 있지�
 
 ---
 
-## 4. 지원 대상 금융 도메인
+## 4. 운영 대상 거래 도메인 (hanpass-ph)
 
-SaaS FDS는 금융서비스 유형을 “서비스명”이 아니라 “거래 행위”와 “자금 수단” 기준으로 모델링한다.
+hanpass-ph FDS는 거래를 “서비스명”이 아니라 “거래 행위”와 “자금 수단” 기준으로 모델링한다. 운영 대상은 hanpass-ph 5개 채널이다.
 
 ### 4.1 거래 도메인
 
-| 도메인 | 대표 이벤트 | 주요 리스크 |
-|---|---|---|
-| Card Payment | authorization, capture, refund, chargeback | 도난카드, CNP fraud, merchant abuse |
-| PG / Merchant Payment | payment request, approval, settlement | 가맹점 이상거래, 허위 매출, 환불 남용 |
-| Domestic Remittance | transfer request, account debit, payout | 보이스피싱, 대포통장, mule network |
-| Cross-border Remittance | remit request, FX quote, payout | AML, sanction, beneficiary risk |
-| Wallet | charge, pay, withdraw, balance change | 계정 탈취, 충전 후 즉시 출금, velocity |
-| ATM Withdrawal | card insert, withdrawal request, cash dispensed | card skimming, mule withdrawal, geo anomaly |
-| Bank Transfer | debit, credit, hold, reversal | unauthorized transfer, account takeover |
-| Virtual Account | VA issued, deposit received, expired | 입금자 불일치, 사기 수취계좌 |
-| Crypto Exchange | fiat deposit, crypto withdrawal, trade, address change | travel rule, wallet address risk, market abuse |
-| Internal Bank Audit | employee action, approval override, manual adjustment | 내부자 위협, 권한 남용, 4-eyes 우회 |
-| Loan / Insurance | application, disbursement, claim, payout | identity fraud, synthetic identity, claim abuse |
-| Trade Payment | invoice issued, document matched, payment requested, settlement completed | 허위 인보이스, 가격 조작, 제재국 우회, 무역기반 자금세탁(TBML) |
-| E-commerce Cross-border Settlement | order captured, seller payout requested, FX settlement, KRW payout | 허위 주문, 셀러 정산 사기, chargeback 회피, 해외자금 국내정산 리스크 |
-| Marketplace Seller Settlement | seller onboarded, settlement calculated, payout held/released | 가짜 셀러, 정산 선지급 남용, 반품/환불 급증 |
-| B2B Invoice Payment | invoice approved, payment scheduled, payment completed | invoice fraud, vendor impersonation, approval bypass |
+| 도메인 | 채널(`ChannelType`) | 정규화 eventType | 주요 리스크 |
+|---|---|---|---|
+| 해외송금 | `CROSS_BORDER_REMIT`(`remit-svc`) | `remit.transfer.requested` | 고액 송금, 수취인 재사용, corridor 위험, 보이스피싱 |
+| 국내송금 | `DOMESTIC_REMIT`(`domestic-svc`) | `domestic.transfer.requested` | 동일 수취계좌 velocity, 신규 수취인, 대포통장 |
+| 월렛 충전 | `CASH_IN`(`walletchg-svc`) | `wallet.charge.requested` | 고액 충전, 충전 후 즉시 출금, velocity |
+| 월렛 결제 | `WALLET_PAYMENT`(`wallet-svc` PAY/QRPH) | `wallet.pay.requested` | 가맹점 이상결제, 고액 결제 |
+| ATM 출금 | `WALLET_WITHDRAWAL`(`wallet-svc` DEBIT/ATM) | `wallet.withdraw.requested` | mule withdrawal, 고액 출금, geo anomaly |
+
+> 인입 정본 = `docs/integration/hanpass-ph-push-contract.md`. `ChannelType` enum에는 카드·PG·코인·무역·이커머스 등 다수 채널이 닫힌 enum으로 존재하나(§9.2), hanpass-ph는 위 5채널만 운영한다(나머지는 미사용). `INBOUND_REMIT`(`inbound-svc`)는 소스 레지스트리에 예약(미운영).
 
 ### 4.2 공통 판단
 
-모든 도메인은 아래 질문으로 정규화한다.
+모든 거래는 아래 질문으로 정규화한다.
 
 1. 누가 요청했는가? (`subject`, `actor`)
 2. 어떤 자금 또는 가치가 움직이는가? (`transaction`, `asset`)
@@ -244,9 +226,9 @@ SaaS FDS는 금융서비스 유형을 “서비스명”이 아니라 “거래 
 
 ## 5. 핵심 설계 원칙
 
-### 5.1 서비스별 스키마가 아니라 공통 금융 이벤트 모델
+### 5.1 소스별 스키마가 아니라 공통 금융 이벤트 모델
 
-카드, 송금, ATM, 코인, 은행 감사마다 별도 테이블을 만들면 플랫폼이 빠르게 복잡해진다. 원천별 상세 payload는 adapter에서 처리하고, core는 공통 이벤트 모델만 본다.
+해외송금·국내송금·월렛 충전/결제/출금 등 hanpass-ph 소스마다 별도 테이블을 만들면 엔진이 빠르게 복잡해진다. 원천(remit/domestic/walletchg/wallet)별 상세 payload는 adapter에서 처리하고, core는 공통 캐논 이벤트 모델만 본다.
 
 ### 5.2 룰 평가는 내부 materialized state만 사용
 
@@ -265,7 +247,7 @@ SaaS FDS는 금융서비스 유형을 “서비스명”이 아니라 “거래 
 
 ### 5.4 Dedicated-deployment first (multi-tenant within deployment)
 
-AML/FDS는 고객 PII·거래·제재 데이터의 규제·내부보안 요건이 커서 **고객사별 전용 배포가 기본**이다(공유 SaaS DB 아님). 격리는 DB 행/스키마 토글이 아니라 **배포 모델(`deployment_model`) + 온보딩 프로비저닝**의 산출이다(§13.0, target-architecture §4.1). `tenant_id`/`workspace_id`/`data_scope`는 **배포 내부 분리** 키이며, 전용 배포에서는 `tenant_id`가 사실상 단일 값이다. 제품은 처음부터 배포 모델 3종, tenant별 schema version, workspace별 룰셋·connector 설정을 고려해야 한다.
+FDS는 고객 PII·거래 데이터의 규제·내부보안 요건이 커서 **전용 배포가 기본**이다(공유 SaaS DB 아님). 격리는 DB 행/스키마 토글이 아니라 **배포 모델(`deployment_model`) + 온보딩 프로비저닝**의 산출이다(§13.0, target-architecture §4.1). `tenant_id`/`workspace_id`/`data_scope`는 **배포 내부 분리** 키이며, hanpass-ph 운영 배포에서는 `tenant_id`가 사실상 단일 값(`tenant_demo`)이다. 멀티테넌시 인프라(배포 모델·tenant별 schema version·workspace별 룰셋)는 코드 truth로 유지하되, 현재 운영 테넌트는 hanpass-ph 단일이다.
 
 ### 5.5 Compliance plugin
 
@@ -277,22 +259,17 @@ AML, STR, 고액현금거래 보고, 전자금융 이상거래 탐지, 보이스
 
 ```mermaid
 flowchart TB
-    subgraph External["External Financial Systems"]
-        Card["Card Processor"]
-        Bank["Bank Core / Transfer"]
-        PG["PG / Merchant"]
-        Remit["Remittance"]
-        Crypto["Crypto Exchange"]
-        ATM["ATM Switch"]
-        Audit["Internal Audit System"]
+    subgraph External["hanpass-ph Source Systems"]
+        Remit["remit-svc (해외송금)"]
+        Domestic["domestic-svc (국내송금)"]
+        WalletChg["walletchg-svc (월렛충전)"]
+        Wallet["wallet-svc (결제/ATM출금)"]
+        Member["member-svc (회원/KYC)"]
     end
 
     subgraph Ingest["Ingest Layer"]
-        Push["REST Event Push"]
-        Queue["Queue Connector"]
-        Poll["Polling Connector"]
-        CDC["CDC Connector"]
-        Snapshot["Snapshot Importer"]
+        Push["REST Event Push (/api/v1/fds/events)"]
+        Queue["Queue Connector (SQS)"]
     end
 
     subgraph Normalize["Normalization Layer"]
@@ -397,76 +374,63 @@ com.hanpass.fds
 
 ## 7. 공통 데이터 모델
 
-SaaS FDS의 데이터 모델은 다음 상위 객체를 중심으로 잡는다.
+hanpass-ph FDS의 데이터 모델은 다음 상위 객체를 중심으로 잡는다. Business Entity·Business Document·Order·Settlement(commerce/trade 도메인)는 `domain/commerce`·`domain/evidence`에 코드로 존재하나 hanpass-ph 5채널에서는 사용하지 않는 인프라 객체이다(닫힌 도메인 잔존).
 
 ### 7.1 핵심 객체
 
-| 객체 | 의미 | 예시 |
+| 객체 | 의미 | 예시(hanpass-ph) |
 |---|---|---|
-| Tenant | SaaS 고객사 | 은행 A, PG B, 거래소 C |
-| Source System | 이벤트 원천 시스템 | card-processor, core-banking, atm-switch |
-| Subject | 위험 판단 대상 고객·회원·계좌주 | 개인, 법인, merchant |
-| Actor | 이벤트를 수행한 행위자 | 고객, 직원, 시스템, 파트너 |
-| Account | 금융 계정 | 은행 계좌, 월렛 계정, 거래소 계정 |
-| Instrument | 자금 수단 | 카드, 계좌, 월렛, 가상계좌, crypto address |
-| Counterparty | 상대방 | 수취인, merchant, exchange wallet, ATM |
-| Business Entity | 상업 거래 주체 | buyer, seller, merchant, vendor, shipper |
-| Business Document | 상업 증빙 | invoice, purchase order, bill of lading, customs declaration |
-| Order | 이커머스 주문 | marketplace order, cart, shipment |
-| Settlement | 정산 | merchant settlement, seller payout, cross-border KRW settlement |
-| Transaction | 자금 또는 가치 이동 | 결제, 송금, 출금, 입금, 매매 |
+| Tenant | 운영 주체(전용 배포) | hanpass-ph(`tenant_demo`) 단일 |
+| Source System | 이벤트 원천 시스템 | remit-svc, domestic-svc, walletchg-svc, wallet-svc, member-svc / (AML) core-banking |
+| Subject | 위험 판단 대상 회원·계좌주 | hanpass-ph 개인 회원 |
+| Actor | 이벤트를 수행한 행위자 | 회원, 시스템 |
+| Account | 금융 계정 | 월렛 계정, 송금 수취/출금 계좌 |
+| Instrument | 자금 수단 | 월렛, 은행 계좌 |
+| Counterparty | 상대방 | 송금 수취인, 결제 가맹점 |
+| Business Entity / Document / Order / Settlement | 상업 거래 주체·증빙·주문·정산 | commerce/trade 인프라 객체 — **hanpass-ph 미사용** |
+| Transaction | 자금 또는 가치 이동 | 송금, 출금, 충전, 결제 |
 | Event | 상태 변화 | requested, authorized, completed, failed |
-| Decision | FDS 판단 결과 | allow, block, review, freeze |
+| Decision | FDS 판단 결과 | allow, block, review, challenge |
 | Action | 외부 조치 | hold, cancel, release, case |
-| Case | 조사 케이스 | AML case, fraud case, internal audit case |
+| Case | 조사 케이스 | fraud case, AML case(위임) |
 
 ### 7.2 Subject와 Actor 분리
 
-내부 감사나 은행 직원 권한 남용 탐지에서는 고객이 아니라 직원이 risk actor일 수 있다. 따라서 `subject`와 `actor`를 분리해야 한다.
+대부분 hanpass-ph 거래는 회원 본인이 subject=actor이나, 시스템/배치가 actor일 수 있어 `subject`와 `actor`를 분리한다(인프라는 직원·API key actor도 지원).
 
 | 시나리오 | Subject | Actor |
 |---|---|---|
-| 고객 카드 결제 | 카드회원 | 카드회원 |
-| 은행 직원 수동 한도 변경 | 고객 계좌 | 직원 |
-| 콜센터 환불 처리 | 고객 | 상담원 |
-| 시스템 자동 정산 | merchant | batch system |
-| 코인 출금 | 거래소 회원 | 거래소 회원 또는 API key |
-| 무역대금 지급 | 수입자 또는 법인 | 법인 담당자 또는 ERP system |
-| 이커머스 셀러 정산 | seller 또는 merchant | marketplace settlement batch |
-| B2B 인보이스 지급 | buyer 법인 | 결재자 또는 회계 시스템 |
+| 회원 송금/충전/결제 | 회원 | 회원 |
+| ATM 출금 | 회원 | 회원 |
+| 시스템 자동 처리 | 회원 | batch system |
 
 ### 7.3 Transaction과 Event 분리
 
 하나의 transaction에는 여러 event가 발생한다.
 
-예: 카드 결제
+예: 해외송금(`CROSS_BORDER_REMIT`)
 
 ```text
-transaction.created
-transaction.authorized
-transaction.captured
-transaction.refunded
-chargeback.opened
+remit.transfer.requested
+remit.transfer.authorized
+remit.transfer.completed
+remit.transfer.failed
 ```
 
-예: ATM 출금
+예: 월렛 충전(`CASH_IN`)
 
 ```text
-atm.session.started
-transaction.requested
-transaction.authorized
-cash.dispensed
-transaction.completed
+wallet.charge.requested
+wallet.charge.authorized
+wallet.charge.completed
 ```
 
-예: 코인 출금
+예: ATM 출금(`WALLET_WITHDRAWAL`)
 
 ```text
-withdrawal.requested
-address.screened
-withdrawal.approved
-blockchain.broadcasted
-withdrawal.completed
+wallet.withdraw.requested
+wallet.withdraw.authorized
+wallet.withdraw.completed
 ```
 
 FDS는 각 event를 평가하되, decision과 action은 transaction 단위로도 조회 가능해야 한다.
@@ -477,40 +441,44 @@ FDS는 각 event를 평가하되, decision과 action은 transaction 단위로도
 
 ### 8.1 최상위 event family
 
-| Family | 설명 |
-|---|---|
-| `transaction.*` | 금융거래 요청·승인·완료·실패·환불 |
-| `authorization.*` | 카드/ATM/계좌 승인 단계 |
-| `settlement.*` | PG/merchant/partner 정산 |
-| `trade.*` | 무역대금·선적·통관·무역금융 인보이스(`trade.invoice.issued` 등) |
-| `invoice.*` | B2B 인보이스(`invoice.approved`·`invoice.paid`) 발행·승인·지급 |
-| `order.*` | 이커머스 주문·배송·취소·반품 |
-| `seller.*` | 셀러 온보딩·정산·보류 |
-| `account.*` | 계좌 생성·상태 변경 |
-| `instrument.*` | 카드/계좌/지갑/주소/가상계좌 등록·정지 |
-| `member.*` | 회원/KYC/profile 변경 |
-| `device.*` | 기기 등록·변경·위험 신호 |
-| `session.*` | 로그인·API key·ATM session |
-| `aml.*` | AML screening, sanction hit, travel rule |
-| `case.*` | 조사 케이스 생성·승인·종결 |
-| `employee.*` | 내부 직원 작업·승인·override |
-| `market.*` | 코인/증권 주문·체결·시세 이상 |
+`EventFamily` enum(구현 정본, 19종 닫힌 enum)은 다음과 같다. **hanpass-ph가 실제 운영하는 transaction-bearing family는 `remit.*`·`domestic.*`·`wallet.*`(+`transaction.*` 일반)** 이며, 나머지는 enum에 존재하나 hanpass-ph 미사용이다.
 
-> `aml.*`·`case.*` family는 **fds-svc 내부 생성·aml-svc 위임 이벤트**이며 외부 ingest 대상이 아니다(integration §3.1·§9 참조). 외부 connector가 `aml.*`/`case.*` event를 push해도 ingest에서 수용하지 않는다.
+| Family | 설명 | hanpass-ph |
+|---|---|---|
+| `transaction.*` | 금융거래 요청·승인·완료·실패·환불(일반 캐논) | 운영(AML 정규 집계) |
+| `remit.*` | 해외송금(`remit.transfer.requested`) | **운영** |
+| `domestic.*` | 국내송금(`domestic.transfer.requested`) | **운영** |
+| `wallet.*` | 월렛 충전/결제/출금(`wallet.charge.requested`·`wallet.pay.requested`·`wallet.withdraw.requested`) | **운영** |
+| `authorization.*` | 카드/ATM/계좌 승인 단계 | 미사용 |
+| `settlement.*` | 정산 | 미사용 |
+| `trade.*` | 무역대금·선적·통관 | 미사용 |
+| `invoice.*` | B2B 인보이스 | 미사용 |
+| `order.*` / `seller.*` | 이커머스 주문·셀러 정산 | 미사용 |
+| `account.*` / `instrument.*` | 계좌·수단 등록·상태 변경 | 인프라 |
+| `member.*` | 회원/KYC/profile 변경 | 운영(회원 마스터) |
+| `device.*` / `session.*` | 기기·세션 | 인프라 |
+| `employee.*` / `market.*` | 내부 직원·시세 | 미사용 |
+| `aml.*` / `case.*` | AML screening·조사 케이스 | 내부 생성·위임 |
+
+> `remit.*`·`domestic.*`·`wallet.*`은 hanpass-ph 결제 taxonomy family이며 transaction-bearing(`CanonicalEvent.isTransactionBearing()` → `transactionRef`+`transactionType` 필수)이고 외부 ingest 대상이다.
+>
+> `aml.*`·`case.*` family는 **fds-svc 내부 생성·aml-svc 위임 이벤트**이며 외부 ingest 대상이 아니다(`EventFamily.isExternallyIngestable()=false`, integration §3.1·§9). 외부 connector가 `aml.*`/`case.*` event를 push해도 ingest에서 수용하지 않는다.
 
 ### 8.2 Canonical event 예시
+
+hanpass-ph 해외송금(`remit-svc`) 인입 예시(`POST /api/v1/fds/events`):
 
 ```json
 {
   "messageVersion": "v1",
-  "tenantId": "tenant_bank_a",
+  "tenantId": "tenant_demo",
   "workspaceId": "default",
-  "sourceSystem": "atm-switch",
-  "schemaVersion": "atm-switch.v1",
-  "eventId": "atm-evt-001",
-  "idempotencyKey": "atm-switch:atm-evt-001",
-  "eventType": "transaction.requested",
-  "correlationId": "corr-atm-evt-001",
+  "sourceSystem": "remit-svc",
+  "schemaVersion": "remit-svc.v1",
+  "eventId": "remit-evt-001",
+  "idempotencyKey": "remit-svc:remit-evt-001",
+  "eventType": "remit.transfer.requested",
+  "correlationId": "corr-remit-evt-001",
   "traceparent": "00-8f3c...-...-01",
   "occurredAt": "2026-06-06T19:00:00+09:00",
   "subject": {
@@ -523,39 +491,36 @@ FDS는 각 event를 평가하되, decision과 action은 transaction 단위로도
     "actorRef": "subj_hmac_123"
   },
   "transaction": {
-    "transactionRef": "atm-tx-001",
-    "transactionType": "WITHDRAWAL",
+    "transactionRef": "RMT-0001",
+    "transactionType": "REMITTANCE",
     "direction": "OUTBOUND",
-    "amount": "200000.00",
+    "amount": "5000.00",
     "currency": "KRW",
-    "amountBase": "200000.00",
-    "baseCurrency": "KRW",
-    "status": "REQUESTED"
+    "amountBase": "5000.00",
+    "baseCurrency": "USD",
+    "status": "REQUESTED",
+    "phpEquivalent": "280000.00"
   },
   "instrument": {
-    "instrumentType": "CARD",
-    "instrumentRef": "card_token_123",
-    "accountRef": "acct_hmac_123",
-    "institutionCode": "BANK01"
-  },
-  "counterparty": {
-    "counterpartyType": "ATM",
-    "counterpartyRef": "atm_0001",
-    "country": "KR"
+    "instrumentType": "WALLET",
+    "instrumentRef": "wallet_token_123",
+    "accountRef": "acct_hmac_123"
   },
   "channel": {
-    "channelType": "ATM",
-    "paymentRail": "ATM_SWITCH",
-    "entryMode": "CARD_PRESENT"
+    "channelType": "CROSS_BORDER_REMIT",
+    "paymentRail": "PARTNER_API"
   },
-  "location": {
-    "country": "KR",
-    "city": "Seoul",
-    "ipCountry": null
+  "corridor": {
+    "sendCountry": "KR",
+    "receiveCountry": "PH",
+    "sendCurrency": "KRW",
+    "receiveCurrency": "PHP"
   },
   "payloadHash": "sha256:..."
 }
 ```
+
+> `transaction.phpEquivalent`(결제액 PHP 환산)은 캐논 typed 컬럼이 아니라 `canonicalPayload.transaction.phpEquivalent`로 운반돼 `FeatureComputeAdapter`가 룰 feature `transaction.phpEquivalent`로 노출한다(부재/파싱불가 시 미노출, fail-safe). 룰 임계는 PHP 환산값으로 발화한다(§10.2). 캐논 스키마 정본에는 미정의 — 데모 grounding feature(예정).
 
 ### 8.3 필수 필드
 
@@ -604,29 +569,36 @@ FDS는 각 event를 평가하되, decision과 action은 transaction 단위로도
 | `SELLER_SETTLEMENT_ACCOUNT` | 셀러 정산 계좌 | 마켓플레이스 정산 계좌 |
 | `ESCROW_ACCOUNT` | 에스크로 계정 | 구매확정 전 보관 계정 |
 
+> `InstrumentType`은 닫힌 enum(12종)이다. hanpass-ph는 주로 `WALLET`(월렛)·`BANK_ACCOUNT`(송금 수취/출금계좌)를 사용하며, `CARD`/`VIRTUAL_ACCOUNT`/`CRYPTO_ADDRESS`/`MERCHANT_ACCOUNT`/법인·셀러·에스크로 계정은 미사용(닫힌 enum 잔존).
+
 ### 9.2 Channel type
 
-| Channel | 설명 |
-|---|---|
-| `CARD_PRESENT` | 오프라인 카드 결제 |
-| `CARD_NOT_PRESENT` | 온라인 카드 결제 |
-| `ATM` | ATM 출금·조회 |
-| `BANK_TRANSFER` | 계좌이체 |
-| `DOMESTIC_REMIT` | 국내송금 |
-| `CROSS_BORDER_REMIT` | 해외송금 |
-| `PG_PAYMENT` | PG 결제 |
-| `WALLET_PAYMENT` | 월렛 결제 |
-| `WALLET_WITHDRAWAL` | 월렛 출금 |
-| `VIRTUAL_ACCOUNT_DEPOSIT` | 가상계좌 입금 |
-| `CRYPTO_DEPOSIT` | 가상자산 입금 |
-| `CRYPTO_WITHDRAWAL` | 가상자산 출금 |
-| `EXCHANGE_TRADE` | 코인/증권 주문·체결 |
-| `INTERNAL_OPERATION` | 내부 직원 작업 |
-| `BATCH_SETTLEMENT` | 정산 batch |
-| `TRADE_PAYMENT` | 무역대금 지급·수취 |
-| `CROSS_BORDER_ECOMMERCE_SETTLEMENT` | 해외 이커머스 판매대금 국내 정산 |
-| `MARKETPLACE_SELLER_PAYOUT` | 마켓플레이스 셀러 정산 |
-| `B2B_INVOICE_PAYMENT` | 법인 인보이스 지급 |
+`ChannelType`은 닫힌 enum(구현 정본, 21종)이다. **hanpass-ph가 운영하는 채널은 아래 ✅ 5종**이며, 나머지는 enum에 존재하나 미운영이다(닫힌 enum 잔존 — 향후 채널 확장 슬롯).
+
+| Channel | 설명 | hanpass-ph |
+|---|---|---|
+| `CROSS_BORDER_REMIT` | 해외송금(`remit-svc`) | ✅ |
+| `DOMESTIC_REMIT` | 국내송금(`domestic-svc`) | ✅ |
+| `CASH_IN` | 월렛 충전(`walletchg-svc`, top-up) | ✅ |
+| `WALLET_PAYMENT` | 월렛 결제(`wallet-svc` PAY/QRPH) | ✅ |
+| `WALLET_WITHDRAWAL` | 월렛/ATM 출금(`wallet-svc` DEBIT) | ✅ |
+| `INBOUND_REMIT` | 파트너 인바운드 송금(`inbound-svc`) | 예약(미운영) |
+| `CARD_PRESENT` | 오프라인 카드 결제 | 미사용 |
+| `CARD_NOT_PRESENT` | 온라인 카드 결제 | 미사용 |
+| `ATM` | ATM 출금·조회 | 미사용 |
+| `BANK_TRANSFER` | 계좌이체 | 미사용 |
+| `PG_PAYMENT` | PG 결제 | 미사용 |
+| `VIRTUAL_ACCOUNT_DEPOSIT` | 가상계좌 입금 | 미사용 |
+| `CRYPTO_DEPOSIT` / `CRYPTO_WITHDRAWAL` | 가상자산 입출금 | 미사용 |
+| `EXCHANGE_TRADE` | 코인/증권 주문·체결 | 미사용 |
+| `INTERNAL_OPERATION` | 내부 직원 작업 | 미사용 |
+| `BATCH_SETTLEMENT` | 정산 batch | 미사용 |
+| `TRADE_PAYMENT` | 무역대금 지급·수취 | 미사용 |
+| `CROSS_BORDER_ECOMMERCE_SETTLEMENT` | 해외 이커머스 판매대금 국내 정산 | 미사용 |
+| `MARKETPLACE_SELLER_PAYOUT` | 마켓플레이스 셀러 정산 | 미사용 |
+| `B2B_INVOICE_PAYMENT` | 법인 인보이스 지급 | 미사용 |
+
+> 운영 5채널은 `wallet-svc`(PAY/QRPH→`WALLET_PAYMENT`, DEBIT/ATM→`WALLET_WITHDRAWAL`) 1개 소스가 2채널을 발생시킨다. `ChannelType.domain()`은 Phase 3 risk domain 분류(`WALLET`/`DOMESTIC_TRANSFER`/`OTHER` 등)에 쓰인다.
 
 ### 9.3 Payment rail
 
@@ -650,6 +622,8 @@ FDS는 각 event를 평가하되, decision과 action은 transaction 단위로도
 | `ESCROW` | 에스크로 보관·해제 |
 | `MARKETPLACE_SETTLEMENT` | 마켓플레이스 정산 |
 | `TRADE_FINANCE` | 무역금융 / 무역대금 결제 |
+
+> `PaymentRail`은 닫힌 enum(18종)이다. hanpass-ph 송금/월렛은 주로 `PARTNER_API`(파트너 송금)·`INTERNAL_LEDGER`(내부 원장)·`EASY_PAY`(간편결제/선불)를 사용하며, 카드망·SWIFT·블록체인·무역금융 등은 미사용(닫힌 enum 잔존).
 
 ### 9.4 Control capability
 
@@ -676,101 +650,73 @@ FDS는 각 event를 평가하되, decision과 action은 transaction 단위로도
 | Category | Feature 예시 |
 |---|---|
 | Subject | age, country, KYC level, risk rating, account age |
-| Transaction | amount, currency, amount base, direction, status |
+| Transaction | amount, currency, amount base, direction, status, **phpEquivalent(결제액 PHP 환산)** |
 | Instrument | type, issuer, age, status, previous usage |
-| Counterparty | beneficiary country, merchant MCC, crypto address risk |
+| Counterparty | beneficiary country, beneficiary account key |
 | Device | device id, fingerprint, first seen, device change |
-| Location | IP country, ATM city, geo distance |
+| Location | IP country, geo distance, corridor(send/receive country) |
 | Velocity | count/sum in window by subject/instrument/counterparty |
 | Behavior | baseline deviation, unusual channel, time-of-day anomaly |
 | Group | blacklist, whitelist, watchlist, mule network group |
-| AML | sanction hit, PEP, structuring, travel rule missing |
-| Internal Audit | employee role, override count, approval bypass |
-| Merchant | refund ratio, chargeback ratio, settlement anomaly |
-| Crypto | address risk score, mixer exposure, chain hop count |
-| Trade | invoice amount, HS code, shipment country, document mismatch |
-| Commerce | seller age, order velocity, refund ratio, delivery status |
-| Settlement | payout amount, reserve ratio, chargeback exposure, FX spread |
-| Corporate Approval | approver role, approval chain, maker-checker distance |
+| AML | sanction hit, PEP, structuring(위임 후보) |
 
-### 10.2 룰 예시
+> `transaction.phpEquivalent`는 `FeatureComputeAdapter`가 `canonicalPayload.transaction.phpEquivalent`에서 독해해 노출하는 hanpass-ph grounding feature이다(부재 시 미노출). `RiskGroup`(watchlist/allowlist) 매칭은 `GroupMembership`로 룰에 노출된다.
+>
+> `FeatureComputeAdapter`에는 Internal Audit·Merchant·Crypto·Trade·Commerce·Settlement(Phase 7 advanced domain) feature 계산 분기가 코드에 존재하나, 이는 `EventFamily`(trade/order/seller/invoice/employee/market)·미운영 채널에만 routing되며 **hanpass-ph 5채널에서는 트리거되지 않는다**(닫힌 분기 잔존). 외부 인텔리전스 의존 신호(주소 위험·HS code·risk grade 등)는 catalog input slot으로 룰 빌더가 값을 주입(연동 미정).
 
-ATM:
+### 10.2 룰 예시 (hanpass-ph 운영 데모 룰)
 
-```text
-IF channelType = ATM
-AND amountBase >= 20000
-AND ipCountry/memberCountry mismatch OR atmCountry/memberCountry mismatch
-AND instrument.firstSeenDaysAgo <= 3
-THEN REVIEW or DECLINE_AUTH
-```
+임계는 결제액 PHP 환산(`transaction.phpEquivalent`) 기준이다(데모 룰 정본 = Flyway `V22__demo_rules_php_equivalent.sql`, USD 임계 × 56 환산). hanpass PH CTR(₱500,000)은 운영 임계 참고치이다.
 
-카드 CNP:
+해외송금 REVIEW:
 
 ```text
-IF channelType = CARD_NOT_PRESENT
-AND merchantRiskLevel >= HIGH
-AND device.firstSeenMinutesAgo <= 60
-AND velocity.count(subject, 10m) >= 3
-THEN DECLINE_AUTH
+IF channelType = CROSS_BORDER_REMIT
+AND transaction.phpEquivalent >= 280000
+THEN REVIEW
 ```
 
-국내송금:
+국내송금 REVIEW(고액):
 
 ```text
-IF channelType = BANK_TRANSFER
-AND beneficiaryInstrumentRef IN_GROUP mule_accounts
-THEN BLOCK_TRANSACTION
+IF channelType = DOMESTIC_REMIT
+AND transaction.phpEquivalent >= 112000
+THEN REVIEW
 ```
 
-코인 출금:
+국내송금 velocity:
 
 ```text
-IF channelType = CRYPTO_WITHDRAWAL
-AND cryptoAddressRiskScore >= 80
-THEN HOLD_FUNDS + OPEN_COMPLIANCE_CASE
+IF channelType = DOMESTIC_REMIT
+AND velocity.count(subject, 24h) >= 5
+THEN REVIEW
 ```
 
-무역대금:
+월렛 충전 BLOCK:
 
 ```text
-IF channelType = TRADE_PAYMENT
-AND invoiceAmountBase >= 100000000
-AND shipmentCountry IN highRiskCountries
-AND invoiceUnitPriceDeviation >= 30%
-THEN HOLD_FUNDS + OPEN_TRADE_FINANCE_CASE
+IF channelType = CASH_IN
+AND transaction.phpEquivalent >= 560000
+THEN BLOCK
 ```
 
-이커머스 해외정산:
+월렛 결제 REVIEW:
 
 ```text
-IF channelType = CROSS_BORDER_ECOMMERCE_SETTLEMENT
-AND sellerAgeDays <= 30
-AND refundRatio7d >= 0.3
-AND payoutCountry != sellerRegisteredCountry
-THEN HOLD_SETTLEMENT + OPEN_MERCHANT_RISK_CASE
+IF channelType = WALLET_PAYMENT
+AND transaction.phpEquivalent >= 168000
+THEN REVIEW
 ```
 
-B2B 인보이스 지급:
+ATM 출금 CHALLENGE:
 
 ```text
-IF channelType = B2B_INVOICE_PAYMENT
-AND beneficiaryInstrumentChangedWithinDays <= 3
-AND approverRole NOT_IN financeApproverRoles
-THEN REQUIRE_SECOND_APPROVAL + OPEN_INTERNAL_AUDIT_CASE
+IF channelType = WALLET_WITHDRAWAL
+AND transaction.phpEquivalent >= 84000
+THEN CHALLENGE
 ```
 
-은행 내부 감사:
-
-```text
-IF channelType = INTERNAL_OPERATION
-AND actor.role = TELLER
-AND operationType = LIMIT_OVERRIDE
-AND velocity.count(actor, 1h) >= 5
-THEN OPEN_INTERNAL_AUDIT_CASE
-```
-
-> 위 룰 예시의 `OPEN_*_CASE`·`OPEN_COMPLIANCE_CASE`는 가독성을 위한 별칭이다. 저장·전송 시에는 정본 `action_type`(+`case_type`)으로 환원한다(§11.2a 매핑). 예: `OPEN_COMPLIANCE_CASE` → `OPEN_AML_CASE`(`case_type=CRYPTO_TRAVEL_RULE`), `OPEN_TRADE_FINANCE_CASE` → `OPEN_CASE`(`case_type=TRADE_FINANCE_REVIEW`).
+> 위 룰의 outcome(`REVIEW`/`BLOCK`/`CHALLENGE`)은 `DecisionOutcome` enum이며, `OPEN_AML_CASE`/`REGULATORY_REPORT` 후보는 §11.2a 매핑으로 정본 `action_type`(+`case_type`)으로 환원해 aml-svc로 위임한다. mule 계좌 등 `IN_GROUP` 매칭은 `RiskGroup`(watchlist)으로 노출한다.
 
 ---
 
@@ -1358,17 +1304,22 @@ stateDiagram-v2
 
 ## 12. 외부 시스템 연동 방식
 
+> hanpass-ph 운영 연동은 **REST Push(§12.1)** 가 정본이다(`docs/integration/hanpass-ph-push-contract.md`). Queue Connector(§12.2)는 코드 인프라로 존재하며(SQS), Polling/Snapshot/CDC/Legacy Vendor Bridge(§12.3~12.6)는 인프라/참조 패턴으로 hanpass-ph 현재 운영에는 적용하지 않는다.
+
 ### 12.1 REST Push
 
-외부 시스템이 FDS ingest API를 호출한다.
+hanpass-ph 소스 시스템(remit/domestic/walletchg/wallet)이 FDS ingest API를 호출한다.
 
 > 경로 표기 정본: 모든 REST 엔드포인트는 게이트웨이 prefix를 포함한 **`/api/v1/...`** 형태가 정본이다(API 명세 `docs/design/api/01-fds-api.md` §1.1·§3.1과 reconcile). 본 §12.x의 `/api/v1/...` HTTP 예시는 게이트웨이 정규화 경로이며, 과거 `/v1/...` 약식 표기는 동일 경로의 prefix 생략형으로 더 이상 사용하지 않는다.
 
 ```http
 POST /api/v1/fds/events
-Tenant-Id: tenant-a
-Source-System: atm-switch
-Idempotency-Key: atm-switch:evt-001
+Tenant-Id: tenant_demo
+Workspace-Id: default
+Source-System: remit-svc
+Idempotency-Key: remit-svc:remit-evt-001
+X-Api-Key: ...
+X-Timestamp: 2026-06-06T19:00:00Z
 X-Signature: hmac-sha256=...
 ```
 
@@ -1648,9 +1599,9 @@ flowchart LR
 
 | 단위 | 의미(재정의) | 예시 | 적용 |
 |---|---|---|---|
-| `tenantId` | **배포의 고객사**. 전용 배포(`MANAGED_DEDICATED`/`SELF_HOSTED`)에서는 사실상 **단일 값**(배포=고객사). `SHARED`에서만 고객사 간 격리로 동작 | 전용 배포: `tenant_bank_a` 단일 / 공유 배포: 여러 tenant | 모든 `fds_*` 테이블 partition key, 모든 API의 `Tenant-Id` 헤더 |
-| `workspaceId` | **그 고객사의 서비스/환경** | 은행 A의 `retail` / `corporate`, `prod` / `sandbox` | rule set·connector·case 큐·결재 라인을 workspace 단위로 분리 |
-| `dataScope` | 운영자 row-level **권한 필터** | `domain=CARD`, `region=KR`, `branch=B001` | 운영자가 볼 수 있는 subject·transaction·case 범위 제한 |
+| `tenantId` | **배포의 운영 주체**. 전용 배포(`MANAGED_DEDICATED`/`SELF_HOSTED`)에서는 사실상 **단일 값**(배포=운영 주체). hanpass-ph 운영 배포는 `tenant_demo` 단일 | hanpass-ph 전용 배포: `tenant_demo` 단일 | 모든 `fds_*` 테이블 partition key, 모든 API의 `Tenant-Id` 헤더 |
+| `workspaceId` | **그 운영 주체의 서비스/환경** | hanpass-ph의 `prod` / `sandbox`(기본 `default`) | rule set·connector·case 큐·결재 라인을 workspace 단위로 분리 |
+| `dataScope` | 운영자 row-level **권한 필터** | `channel=CROSS_BORDER_REMIT`, `region=KR` | 운영자가 볼 수 있는 subject·transaction·case 범위 제한 |
 
 규칙:
 
@@ -1704,7 +1655,7 @@ SaaS형 FDS는 국가별 data residency 요구를 고려해야 한다. 한국 �
 | 항목 | 기본 방향 |
 |---|---|
 | 리전 | 한국 리전 우선. 해외 리전 처리는 tenant별 별도 동의·계약·법무 검토 필요 |
-| 데이터 분리 | **고객사별 전용 배포(`MANAGED_DEDICATED`) 기본**(전용 DB·스택). 은행·고PII·내부망 요건은 `SELF_HOSTED` 설치형, 소규모/체험만 `SHARED` 공유 DB. 격리는 온보딩 프로비저닝 산출(§13.0) |
+| 데이터 분리 | **전용 배포(`MANAGED_DEDICATED`) 기본**(전용 DB·스택). hanpass-ph는 단일 전용 테넌트(`tenant_demo`)로 운영. 고PII·내부망 요건은 `SELF_HOSTED` 설치형, 소규모/체험만 `SHARED` 공유 DB(인프라 옵션). 격리는 온보딩 프로비저닝 산출(§13.0) |
 | 접속 통제 | tenant admin, 운영자, 내부 support 권한 분리 |
 | 원문 접근 | raw payload와 식별자 원문 접근은 원칙적으로 미제공. 필요 시 break-glass + 감사 |
 | 로그 보존 | 금융권 감사 요구에 맞춰 장기 보존 정책 tenant별 설정 |
@@ -1930,9 +1881,11 @@ CREATE TABLE fds_cases (
 );
 ```
 
-### 14.6 Commerce / trade evidence
+### 14.6 Commerce / trade evidence (인프라 — hanpass-ph 미사용)
 
-무역대금, 이커머스 해외정산, 마켓플레이스 정산은 단순 자금 이동만으로 위험을 판단하기 어렵다. 주문, 인보이스, 선적, 통관, 반품, chargeback, 정산 보류액 같은 상업 증빙이 함께 있어야 한다.
+> 아래 commerce/trade evidence 테이블(`fds_business_documents`·`fds_commerce_orders`·`fds_settlements`)은 `domain/commerce`·`adapter/out/persistence`에 코드로 존재하나, hanpass-ph 5채널(송금·월렛)은 상업 증빙을 동반하지 않으므로 운영에서 사용하지 않는다(닫힌 인프라 잔존). 무역·이커머스·마켓플레이스 채널 활성화 시에만 적재된다.
+
+무역대금·이커머스 해외정산·마켓플레이스 정산은 단순 자금 이동만으로 위험을 판단하기 어렵다. 주문, 인보이스, 선적, 통관, 반품, chargeback, 정산 보류액 같은 상업 증빙이 함께 있어야 한다.
 
 ```sql
 CREATE TABLE fds_business_documents (
@@ -2031,295 +1984,103 @@ CREATE TABLE fds_connector_offsets (
 
 ---
 
-## 15. 도메인별 확장 예시
+## 15. 도메인별 예시 (hanpass-ph 5채널)
 
-### 15.1 ATM 출금
+아래는 hanpass-ph가 운영하는 5채널의 필수 이벤트·주요 feature·가능 action이다. `ChannelType`/`EventFamily` enum에는 카드·코인·무역·이커머스·B2B·내부감사 등 다수 도메인 분기가 닫힌 enum/코드로 존재하나(§9.2·§10.1), hanpass-ph 운영 대상이 아니므로 본 절은 5채널만 다룬다(나머지 advanced domain 예시는 미운영).
 
-필수 이벤트:
+### 15.1 해외송금 (`CROSS_BORDER_REMIT`, `remit-svc`)
 
-- `atm.session.started`
-- `transaction.requested`
-- `authorization.approved` 또는 `authorization.declined`
-- `cash.dispensed`
-- `transaction.completed`
+정규화 eventType: `remit.transfer.requested`.
 
 주요 feature:
 
-- ATM location
-- card/instrument first seen
-- withdrawal amount velocity
-- same card multi-location
-- member country vs ATM country
-- time-of-day anomaly
-- failed PIN attempts
+- corridor(send/receive country)
+- transaction.phpEquivalent(결제액 PHP 환산)
+- beneficiary account key 재사용
+- subject velocity(count/sum)
+- sender country
+- new beneficiary
 
 가능 action:
 
-- `DECLINE_AUTHORIZATION`
-- `SUSPEND_INSTRUMENT`
-- `OPEN_CASE`
-- `SEND_ALERT`
+- `BLOCK_TRANSACTION`
+- `HOLD_FUNDS`
+- `OPEN_AML_CASE`(aml-svc 위임)
+- `REGULATORY_REPORT`(aml-svc 위임)
 
-### 15.2 카드 결제
+### 15.2 국내송금 (`DOMESTIC_REMIT`, `domestic-svc`)
 
-필수 이벤트:
-
-- `authorization.requested`
-- `authorization.approved`
-- `capture.completed`
-- `refund.requested`
-- `chargeback.opened`
+정규화 eventType: `domestic.transfer.requested`.
 
 주요 feature:
 
-- merchant MCC
-- merchant risk score
-- card present / card not present
-- device fingerprint
-- BIN country
-- velocity by card/merchant/device
-- refund ratio
-- chargeback ratio
-
-가능 action:
-
-- `DECLINE_AUTHORIZATION`
-- `CHALLENGE`
-- `OPEN_CHARGEBACK_REVIEW`
-- `SUSPEND_INSTRUMENT`
-
-### 15.3 국내송금·계좌이체
-
-필수 이벤트:
-
-- `transaction.requested`
-- `account.debited`
-- `account.credited`
-- `transaction.completed`
-- `transaction.refunded`
-
-주요 feature:
-
-- beneficiary account risk
-- mule account group
+- beneficiary account key
+- mule account group(`RiskGroup` watchlist) 매칭
 - first transfer to beneficiary
-- amount velocity
-- account age
-- device change
 - same beneficiary from many subjects
+- transaction.phpEquivalent
+- subject/beneficiary velocity
 
 가능 action:
 
 - `BLOCK_TRANSACTION`
 - `HOLD_FUNDS`
 - `CANCEL_TRANSACTION`
-- `OPEN_MULE_ACCOUNT_CASE`
+- `OPEN_AML_CASE`(mule/보이스피싱 후보, aml-svc 위임)
 
-### 15.4 해외송금
+### 15.3 월렛 충전 (`CASH_IN`, `walletchg-svc`)
+
+정규화 eventType: `wallet.charge.requested`.
 
 주요 feature:
 
-- sender country
-- receiver country
-- corridor risk
-- FX amount
-- beneficiary reuse
-- sanction/PEP hit
-- travel rule completeness
-- purpose of remittance
+- transaction.phpEquivalent(고액 충전)
+- 충전 후 즉시 출금 latency(충전↔출금 연계)
+- subject velocity(충전 빈도/누적)
+- payment method(간편결제/선불)
 
 가능 action:
 
 - `BLOCK_TRANSACTION`
 - `HOLD_FUNDS`
-- `OPEN_AML_CASE`
-- `REGULATORY_REPORT`
+- `OPEN_AML_CASE`(structuring 후보, aml-svc 위임)
 
-### 15.5 PG 거래
+### 15.4 월렛 결제 (`WALLET_PAYMENT`, `wallet-svc` PAY/QRPH)
 
-주요 feature:
-
-- merchant onboarding age
-- MCC
-- transaction spike
-- refund ratio
-- chargeback ratio
-- split settlement
-- same payer multi-merchant pattern
-
-가능 action:
-
-- `REVIEW`
-- `HOLD_SETTLEMENT`
-- `SUSPEND_MERCHANT`
-- `OPEN_MERCHANT_RISK_CASE`
-
-### 15.6 무역대금 지급·수취
-
-필수 이벤트:
-
-- `trade.invoice.issued`
-- `trade.document.submitted`
-- `trade.document.matched`
-- `transaction.requested`
-- `transaction.completed`
-- `settlement.completed`
+정규화 eventType: `wallet.pay.requested`.
 
 주요 feature:
 
-- invoice amount
-- buyer/seller country
-- shipment country
-- HS code / item category
-- invoice unit price deviation
-- repeated invoice number
-- document mismatch
-- new beneficiary account
-- high-risk corridor
-- split payment pattern
-- related-party 거래 의심
+- merchant ref(가맹점)
+- transaction.phpEquivalent(고액 결제)
+- 가맹점·subject velocity
+- device change
 
 가능 action:
 
+- `REVIEW`(CHALLENGE 등 decision)
 - `HOLD_FUNDS`
-- `REQUIRE_SECOND_APPROVAL`
-- `OPEN_TRADE_FINANCE_CASE`
-- `REQUEST_ADDITIONAL_DOCUMENT`
-- `REGULATORY_REPORT`
+- `OPEN_CASE`
 
-### 15.7 이커머스 해외판매대금 한국 정산
+### 15.5 ATM 출금 (`WALLET_WITHDRAWAL`, `wallet-svc` DEBIT/ATM)
 
-필수 이벤트:
-
-- `seller.onboarded`
-- `order.created`
-- `order.shipped`
-- `order.cancelled`
-- `refund.requested`
-- `chargeback.opened`
-- `settlement.calculated`
-- `settlement.payout.requested`
-- `settlement.payout.completed`
+정규화 eventType: `wallet.withdraw.requested`.
 
 주요 feature:
 
-- seller onboarding age
-- seller registered country
-- payout country
-- order/refund/chargeback ratio
-- delivery proof mismatch
-- 급격한 매출 증가
-- 동일 수취계좌 다중 seller 연결
-- 정산 직전 계좌 변경
-- FX settlement spread anomaly
-- marketplace reserve ratio
+- transaction.phpEquivalent(고액 출금)
+- subject/instrument velocity
+- geo anomaly(location mismatch)
+- mule withdrawal 패턴(`RiskGroup` 매칭)
 
 가능 action:
 
-- `HOLD_SETTLEMENT`
-- `SUSPEND_SELLER_PAYOUT`
-- `REQUEST_ADDITIONAL_DOCUMENT`
-- `OPEN_MERCHANT_RISK_CASE`
-- `REGULATORY_REPORT`
-
-### 15.8 마켓플레이스 셀러 정산
-
-주요 feature:
-
-- seller risk grade
-- gross merchandise value spike
-- refund ratio
-- delayed delivery ratio
-- buyer concentration
-- seller-bank-account mismatch
-- reserve balance
-- settlement acceleration request
-
-가능 action:
-
-- `HOLD_SETTLEMENT`
-- `INCREASE_RESERVE`
-- `SUSPEND_MERCHANT`
-- `OPEN_MERCHANT_RISK_CASE`
-
-### 15.9 B2B 인보이스 지급
-
-주요 feature:
-
-- vendor onboarding age
-- invoice amount deviation
-- bank account recently changed
-- approver role mismatch
-- duplicate invoice number
-- weekend/after-hours approval
-- invoice without purchase order
-- buyer/vendor related-party signal
-
-가능 action:
-
-- `REQUIRE_SECOND_APPROVAL`
+- `CHALLENGE`
 - `HOLD_FUNDS`
-- `OPEN_INTERNAL_AUDIT_CASE`
-- `REQUEST_ADDITIONAL_DOCUMENT`
+- `SUSPEND_INSTRUMENT`
+- `OPEN_CASE`
 
-### 15.10 코인거래소
-
-필수 이벤트:
-
-- `fiat.deposit.requested`
-- `fiat.deposit.completed`
-- `crypto.withdrawal.requested`
-- `crypto.withdrawal.completed`
-- `trade.order.created`
-- `trade.executed`
-- `wallet.address.registered`
-
-주요 feature:
-
-- blockchain address risk
-- mixer exposure
-- travel rule missing
-- fiat deposit to crypto withdrawal latency
-- new address withdrawal
-- API key first use
-- market manipulation pattern
-
-가능 action:
-
-- `HOLD_FUNDS`
-- `BLOCK_WITHDRAWAL`
-- `OPEN_AML_CASE`
-- `REQUEST_TRAVEL_RULE_INFO`
-- `SUSPEND_API_KEY`
-
-### 15.11 은행 내부 감사
-
-필수 이벤트:
-
-- `employee.login`
-- `employee.customer.viewed`
-- `employee.limit.changed`
-- `employee.manual.adjustment`
-- `employee.approval.override`
-- `case.closed`
-
-주요 feature:
-
-- employee role
-- branch
-- customer relation
-- after-hours access
-- override count
-- approval bypass
-- high-value account access
-- repeated access without transaction
-
-가능 action:
-
-- `OPEN_INTERNAL_AUDIT_CASE`
-- `REQUIRE_SECOND_APPROVAL`
-- `SUSPEND_EMPLOYEE_SESSION`
-- `SEND_SECURITY_ALERT`
+> 위 '가능 action'의 `OPEN_AML_CASE`/`REGULATORY_REPORT`는 fds-svc가 후보로 산출해 aml-svc로 위임(`AmlHandoffPort`)하며, 가독성 별칭은 §11.2a 매핑으로 정본 `action_type`(+`case_type`)으로 환원한다.
 
 ---
 
@@ -2475,15 +2236,17 @@ SaaS FDS는 한국 policy pack을 기본으로 하되, 국가별 규정을 plugi
 - decision store
 - rule admin
 
-### Phase 3. 주요 금융 도메인 1차 지원
+### Phase 3. hanpass-ph 거래 도메인 지원
 
-우선순위:
+hanpass-ph 5채널:
 
-1. domestic transfer
-2. wallet / account transfer
-3. card payment
-4. PG payment
-5. ATM withdrawal
+1. 해외송금(`CROSS_BORDER_REMIT`)
+2. 국내송금(`DOMESTIC_REMIT`)
+3. 월렛 충전(`CASH_IN`)
+4. 월렛 결제(`WALLET_PAYMENT`)
+5. ATM 출금(`WALLET_WITHDRAWAL`)
+
+각 채널은 `transaction.phpEquivalent`(결제액 PHP 환산)과 velocity·corridor·group feature로 평가한다.
 
 ### Phase 4. Action router + case management
 
@@ -2517,19 +2280,11 @@ SaaS FDS는 한국 policy pack을 기본으로 하되, 국가별 규정을 plugi
 
 > **프로그램 로드맵 매핑**: 프로그램 로드맵 **P6('규제·교차연동·증적')** 는 본 §18 Phase 6(Audit Evidence Hub + legacy bridge)와 §16(운영·관측성·보안)을 재조합한 범위다. Phase 파일은 §18 Phase 6·§16을 입력으로 인용하며, 명칭 차이는 로드맵 Phase 기준(규제·교차연동·증적)을 정본으로 한다(로드맵 §2 P6).
 
-### Phase 7. Advanced domain pack
+### Phase 7. Advanced domain pack (hanpass-ph 미운영 — 인프라 잔존)
 
-- cross-border remittance
-- crypto exchange
-- bank internal audit
-- merchant risk
-- trade payment / TBML risk
-- cross-border e-commerce settlement
-- marketplace seller payout
-- B2B invoice payment
-- AML/regulatory reports
+crypto·trade·marketplace·B2B·internal-audit 등 advanced domain은 `ChannelType`/`EventFamily` enum과 `FeatureComputeAdapter.computeAdvancedDomainFeatures`에 **닫힌 분기로 코드에 잔존**하나, hanpass-ph 5채널 운영에서는 트리거되지 않는다(미운영). 외부 인텔리전스 의존 신호는 catalog input slot으로만 노출된다.
 
-> **프로그램 로드맵 매핑**: 본 §18 Phase 7(Advanced domain pack)은 프로그램 로드맵에 미반영된 **별도 Phase 보류** 범위다. 로드맵 **P7('운영·관측성·하드닝')** 과는 내용이 상이하며, 로드맵 P7은 본 §16(운영·관측성·보안) 범위에 대응한다. Advanced domain pack은 후속 로드맵 확정 시 별도 Phase로 배치한다(로드맵 §2 P7).
+> **프로그램 로드맵 매핑**: 본 §18 Phase 7(Advanced domain pack)은 hanpass-ph 운영 범위 밖이며, 후속 채널 확장 시 별도 Phase로 활성화한다. 로드맵 **P7('운영·관측성·하드닝')** 은 본 §16(운영·관측성·보안) 범위에 대응한다(로드맵 §2 P7).
 
 ### Phase 8. SaaS productization
 
@@ -2568,17 +2323,17 @@ SaaS FDS는 한국 policy pack을 기본으로 하되, 국가별 규정을 plugi
 
 ## 결론
 
-신규 SaaS FDS는 Hanpass `FdsSvc`를 그대로 복제하는 것이 아니라, 그 안의 좋은 구조인 이벤트 ingest, 룰 엔진, materialized state, outbox, 감사 워크플로를 일반화해야 한다.
+hanpass-ph FDS(`fds-svc`)는 Hanpass `FdsSvc`를 참조 구현으로 삼되, 그 안의 좋은 구조인 이벤트 ingest, 룰 엔진, materialized state, outbox, 감사 워크플로를 헥사고날(domain/application/adapter/global) 구조로 구현한 hanpass-ph 단일 운영 엔진이다.
 
 가장 중요한 설계 결정은 다음 다섯 가지다.
 
-1. 모든 금융서비스를 `Canonical Event`로 정규화한다.
-2. 월렛·계좌·카드·ATM·코인주소·직원계정까지 `Instrument / Actor / Subject` 모델로 통합한다.
+1. hanpass-ph 5채널 거래를 `Canonical Event`로 정규화한다(`remit.*`·`domestic.*`·`wallet.*`).
+2. 월렛·은행계좌를 `Instrument / Actor / Subject` 모델로 통합한다.
 3. block, hold, release, cancel, case-only를 `Capability 기반 Action Router`로 분리한다.
 4. 탐지 결과를 검사 대응 가능한 `Evidence Pack`으로 자동 생성한다.
-5. 기존 FDS/AML 벤더를 즉시 대체하지 않고, result ingest와 dual-run으로 병행 도입한다.
+5. AML 규제 케이스(`OPEN_AML_CASE`/`REGULATORY_REPORT`)는 fds-svc가 후보 산출 후 aml-svc로 위임한다.
 
-이 구조를 잡으면 ATM 출금, 카드 결제, 국내송금, PG 거래, 해외송금, 코인거래소, 은행 내부 감사뿐 아니라 무역대금, 이커머스 해외판매대금 한국 정산, 마켓플레이스 셀러 정산, B2B 인보이스 지급처럼 상업 증빙과 정산 흐름이 섞인 금융서비스도 같은 FDS 플랫폼 위에 단계적으로 올릴 수 있다.
+멀티테넌시·다채널 enum 등 인프라는 코드 truth로 일반화돼 있으나(닫힌 enum 잔존), 운영 대상은 hanpass-ph(`tenant_demo`) 단일 테넌트의 5채널이다. 카드·PG·코인·무역·이커머스·B2B·내부감사 등 advanced domain은 코드에 닫힌 분기로 잔존하되 미운영이며, 후속 채널 확장 시 활성화한다.
 
 ---
 
@@ -2603,6 +2358,7 @@ SaaS FDS는 한국 policy pack을 기본으로 하되, 국가별 규정을 plugi
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-06-30 | v2.6 | **hanpass-ph grounding 재정합(코드 truth 기준).** 문서를 일반 멀티서비스 SaaS FDS 플랫폼 서술에서 **hanpass-ph 단일 FDS 엔진(`fds-svc`, 테넌트 `tenant_demo`) 아키텍처 정본**으로 재작성. 제목·§1 목적·§2.1~2.4·§4·§5.1/5.4·§6 아키텍처 다이어그램·§7 데이터 모델·§8.1 event family·§8.2 캐논 예시·§9.1~9.3 enum·§10.1/10.2 룰·§13.0b/13.4 멀티테넌시·§12 연동·§14.6 commerce·§15 도메인 예시·§18 Phase3/7·결론·§3.1 — hanpass-ph **5채널**(`CROSS_BORDER_REMIT`·`DOMESTIC_REMIT`·`CASH_IN`·`WALLET_PAYMENT`·`WALLET_WITHDRAWAL`) + `transaction.phpEquivalent`(결제액 PHP 환산) 룰 feature로 정렬. 카드·PG·코인·무역·이커머스·B2B·내부감사 등 **비-hanpass 채널/Phase 7 advanced domain**과 다수 도메인 예시는 제거하되, `ChannelType`/`EventFamily`/`InstrumentType`/`PaymentRail` 닫힌 enum·commerce/trade 도메인·feature 분기는 코드 truth로 **닫힌 잔존(미사용)** 명시. 헥사고날(domain/application/adapter/global)·멀티테넌시 인프라는 코드 truth로 유지. `EventFamily` REMIT/DOMESTIC/WALLET 보강. | aml-system-docs 역전파(코드 truth) |
 | 2026-06-21 | v2.5 | **룰 추천 엔드포인트·빌더 인라인 시뮬 반영(코드 정합).** §18 Phase 5(Compliance Operations Console)의 rule simulation 인접에 **rule recommendation(threshold sweep)** 1줄 추가 — 목표 적중률 → 표본(거래) 내 단일 피처 분포 percentile 임계값 역산 + 단일조건 룰 엔진 재평가 검증(인접 대안 ±1·2%p), 표본 500 근사·read-only, 빌더 인라인 추천 패널 소비(API §4.6 `POST /admin/fds/rules/recommendations`). 도메인 모델·enum 불변. | aegis-java-implementer |
 | 2026-06-15 | v2.4 | T9(FDS-ENG-05) evidence export 산출 포맷 명문화 — 설계서-코드 갭 마감: §16.4 생성 원칙에 `export_format` 4종 **네이티브 산출** 항목 추가(`CSV`/`JSON_API`=텍스트, `EXCEL`=Apache POI 실 `.xlsx`, `PDF`=OpenPDF 실 `.pdf`, content-type·확장자 정합, EXCEL/PDF도 CSV와 동일 masking 논리 콘텐츠만 소비—raw PII 미도입 DB §7.1) + manifest hash는 바이너리 비결정 메타데이터 배제 위해 **canonical 논리 콘텐츠 + format enum** 위 SHA-256으로 계산(재현성 보장) 명문화. §11.6.15 export_format 표에 §16.4 cross-ref 추가. 코드 정본(`LocalExportArtifactAdapter`) 정합 — enum 4종↔코드↔content-type 1:1. | aegis-java-implementer |
 | 2026-06-11 | v2.3 | QA HIGH cross(L303) 해소: §11.6.7 교차 주석 'AML 3종 OFFBOARDING'(구버전) → 'AML 4종 OFFBOARDED(§16.0c V20 교정 후 동기화)'로 갱신 — 모델 차이 서술을 동기화 완료 서술로 교체, bo-web 표시 라벨 매핑 단순화. | system-architect |

@@ -1,8 +1,10 @@
-# FDS DB 설계서 (fds-svc 스키마)
+# FDS DB 설계서 (fds-svc 스키마) — hanpass-ph
 
 > 정본: `.claude/skills/_shared/target-architecture.md` (PostgreSQL · Flyway · 서비스별 별도 스키마 · 멀티테넌시 · PII 마스킹 · 4-eyes).
 > 입력 설계서: `docs/software/01-fdsSvc-sass.md` v1.1 (특히 §7 공통 데이터 모델, §8 event taxonomy, §9 수단/채널, §10 룰/feature, §11 action/case/결재, §13 멀티테넌시, §14 DDL, §16 PII/규제).
 > 책임 서비스: **`services/fds-svc`** (Java 25, Spring Boot 3.5.x, 헥사고날, `adapter/out/persistence`). AML 규제 케이스는 `aml-svc`, 결재·감사·IAM 운영은 `bo-api`가 별도 스키마로 보유한다.
+>
+> **대상 시스템 = hanpass-ph**: 한국→필리핀 해외송금(`CROSS_BORDER_REMIT`) + 필리핀 국내송금(`DOMESTIC_REMIT`) + 지갑(월렛충전 `CASH_IN`·월렛결제 `WALLET_PAYMENT`·ATM/지갑출금 `WALLET_WITHDRAWAL`) 5거래유형의 AML/FDS RegOps 백오피스. 운영 테넌트는 단일(`tenant_demo` = hanpass-ph). 본 문서는 그 데이터 모델을 실제 저장소 Flyway(V1~V22)·도메인 enum과 1:1로 확정한다.
 
 ## 목차
 1. [범위·원칙](#1-범위원칙)
@@ -22,11 +24,11 @@
 ## 1. 범위·원칙
 
 - 본 문서는 **fds-svc 소유 스키마 `fds`** 의 물리 데이터 모델을 확정한다. 모든 테이블 prefix `fds_`, 스키마 `fds`.
-- 4서비스는 별도 스키마/DB를 갖는다: `fds`(fds-svc) · `aml`(aml-svc) · `bo`(bo-api). bo-web은 DB 미보유(bo-api 경유).
-- 멀티테넌시 3단 격리(`tenant_id` / `workspace_id` / `data_scope`)를 **모든 운영 테이블**에 강제한다(§2).
+- 3서비스는 별도 스키마/DB를 갖는다: `fds`(fds-svc) · `aml`(aml-svc) · `bo`(bo-api). bo-web은 DB 미보유(bo-api 경유).
+- 멀티테넌시 3단 격리(`tenant_id` / `workspace_id` / `data_scope`) 인프라를 **모든 운영 테이블**에 유지한다(§2). hanpass-ph는 단일 운영 테넌트(`tenant_demo`)로 가동하므로 `tenant_id`는 사실상 단일 값이며, 격리 키 컬럼·인덱스·PK 선두 규칙은 향후 다테넌트 확장 대비로 보존한다.
 - raw PII 미저장: 식별자는 tenant별 keyed hash 또는 token(`*_ref`, `*_hash`) 컬럼만 저장한다(§7).
 - 감사 컬럼: 모든 운영 테이블에 `created_at` / `updated_at`, 변경 주체가 있는 테이블에 `created_by` / `updated_by`(운영자 subject token).
-- 금액: `NUMERIC(24,8)`로 통화 원단위 + 소수 자릿수 보존(가상자산 8자리 수용). 표시 통화와 base 통화를 분리 저장. KRW는 정수부만 사용.
+- 금액: `NUMERIC(24,8)`로 통화 원단위 + 소수 자릿수 보존. 표시 통화(현지: PHP/KRW)와 base 통화(`USD` 환산)를 분리 저장. 금액 임계 판단은 **`phpEquivalent`(PHP 환산) feature** 기준이며 USD를 병기한다(§5.17, V22). KRW/PHP는 정수부만 사용.
 - enum은 DB에서 `VARCHAR` + CHECK 또는 애플리케이션 enum으로 관리(§4 코드값·표시값 병기). Flyway additive migration 원칙(§8).
 
 ---
@@ -165,10 +167,21 @@ stateDiagram-v2
 ### 4.3 instrument_type (§9.1)
 `WALLET` / `BANK_ACCOUNT` / `CARD` / `VIRTUAL_ACCOUNT` / `CRYPTO_ADDRESS` / `CASH` / `MERCHANT_ACCOUNT` / `API_KEY` / `EMPLOYEE_ACCOUNT` / `CORPORATE_BANK_ACCOUNT` / `SELLER_SETTLEMENT_ACCOUNT` / `ESCROW_ACCOUNT`
 
-### 4.4 channel_type (§9.2)
-`CARD_PRESENT` / `CARD_NOT_PRESENT` / `ATM` / `BANK_TRANSFER` / `DOMESTIC_REMIT` / `CROSS_BORDER_REMIT` / `CASH_IN` / `INBOUND_REMIT` / `PG_PAYMENT` / `WALLET_PAYMENT` / `WALLET_WITHDRAWAL` / `VIRTUAL_ACCOUNT_DEPOSIT` / `CRYPTO_DEPOSIT` / `CRYPTO_WITHDRAWAL` / `EXCHANGE_TRADE` / `INTERNAL_OPERATION` / `BATCH_SETTLEMENT` / `TRADE_PAYMENT` / `CROSS_BORDER_ECOMMERCE_SETTLEMENT` / `MARKETPLACE_SELLER_PAYOUT` / `B2B_INVOICE_PAYMENT` (**21종**)
+### 4.4 channel_type (§9.2 · 정본 `domain/enums/ChannelType.java` 21종 closed enum · `ck_fds_events_channel_type` CHECK)
 
-> **데이터 레이어 hanpass-ph 재그라운딩(§5.3, Flyway V16 `V16__ph_data_grounding.sql`)**: `CASH_IN`(월렛충전 cash-in/top-up — `walletchg-svc`), `INBOUND_REMIT`(파트너 인바운드 송금 — `inbound-svc`) 2종을 추가(19→21종). 저장소 `V16`이 `ck_fds_events_channel_type` CHECK를 21종으로 재정의하고 §5.5 corridor 4컬럼·§5.3a 소스 시드를 함께 적재한다. `CROSS_BORDER_REMIT`은 화면 라벨 '해외송금'(OVERSEAS_REMIT 의미, `remit-svc`)·`DOMESTIC_REMIT`은 국내송금(`domestic-svc`)에 대응한다. **채널 enum 변경은 데이터 레이어 한정이며 규제 임계(CTR/STR)·기한은 불변**이다.
+**hanpass-ph 5거래유형 = 운영 채널(정본·실사용)**:
+
+| 코드값 | 화면 라벨 | 거래유형 | source_system(§5.3a) | 도메인(`TransactionDomain`) |
+|---|---|---|---|---|
+| `CROSS_BORDER_REMIT` | 해외송금 | KR→PH 해외송금 | `remit-svc` | OTHER |
+| `DOMESTIC_REMIT` | 국내송금 | PH 국내송금 | `domestic-svc` | DOMESTIC_TRANSFER |
+| `CASH_IN` | 월렛충전 | 월렛 cash-in/top-up | `walletchg-svc` | WALLET |
+| `WALLET_PAYMENT` | 월렛결제 | 지갑 가맹점 결제 | `wallet-svc` | WALLET |
+| `WALLET_WITHDRAWAL` | ATM/지갑출금 | 지갑·ATM 출금 | `wallet-svc` | WALLET |
+| `INBOUND_REMIT` | (파트너 인바운드) | 파트너 인바운드 송금 | `inbound-svc` | DOMESTIC_TRANSFER |
+
+- `ChannelType` enum 자체는 **21종 closed**(`ck_fds_events_channel_type` CHECK, V16 재정의)이나, hanpass-ph 운영에서 인입·룰·집계되는 채널은 위 5유형(+파트너 인바운드 `INBOUND_REMIT`)으로 한정한다. 나머지 코드값(`CARD_PRESENT`/`CARD_NOT_PRESENT`/`ATM`/`BANK_TRANSFER`/`PG_PAYMENT`/`VIRTUAL_ACCOUNT_DEPOSIT`/`CRYPTO_DEPOSIT`/`CRYPTO_WITHDRAWAL`/`EXCHANGE_TRADE`/`INTERNAL_OPERATION`/`BATCH_SETTLEMENT`/`TRADE_PAYMENT`/`CROSS_BORDER_ECOMMERCE_SETTLEMENT`/`MARKETPLACE_SELLER_PAYOUT`/`B2B_INVOICE_PAYMENT`)은 enum 호환을 위해 코드값으로 존속하나 **hanpass-ph에서는 미사용**이다(데모 카드룰 `CARD_NOT_PRESENT`은 V22에서 `DISABLED`로 비활성). `CASH_IN`·`INBOUND_REMIT` 2종은 V16이 `ck_fds_events_channel_type` CHECK를 21종으로 재정의하며 함께 추가했고(§5.5 corridor 4컬럼·§5.3a 소스 시드 동반), corridor 정규화·USD 환산은 §5.5 참조.
+- **규제 임계(CTR/STR)·기한은 채널 enum과 직교하며 불변**이다. PH AML(예: CTR ₱500,000)은 Policy Pack `PH_AMLC` 옵션으로 병기한다(§5.3a).
 
 ### 4.5 payment_rail (§9.3)
 `INTERNAL_LEDGER` / `CARD_NETWORK` / `ATM_SWITCH` / `BANK_ACH` / `OPEN_BANKING` / `FIRM_BANKING` / `CMS` / `BANK_CD_NETWORK` / `EASY_PAY` / `VAN_PG` / `SWIFT` / `LOCAL_RTP` / `PARTNER_API` / `BLOCKCHAIN` / `MANUAL_BACKOFFICE` / `ESCROW` / `MARKETPLACE_SETTLEMENT` / `TRADE_FINANCE`
@@ -236,8 +249,11 @@ stateDiagram-v2
 ### 4.15 document_type (§14.6)
 `INVOICE` / `PURCHASE_ORDER` / `BILL_OF_LADING` / `AIR_WAYBILL` / `CUSTOMS_DECLARATION` / `DELIVERY_PROOF` / `TAX_INVOICE` / `PLATFORM_ORDER`
 
-### 4.16 event_family (§8.1, `event_type` 접두)
-`transaction` / `authorization` / `settlement` / `trade` / `invoice` / `order` / `seller` / `account` / `instrument` / `member` / `device` / `session` / `aml` / `case` / `employee` / `market`
+### 4.16 event_family (§8.1, `event_type` 접두 · 정본 `domain/enums/EventFamily.java` 19종 · `ck_fds_events_family` CHECK)
+
+`transaction` / `authorization` / `settlement` / `trade` / `invoice` / `order` / `seller` / `account` / `instrument` / `member` / `device` / `session` / `aml` / `case` / `employee` / `market` / **`remit`** / **`domestic`** / **`wallet`** (**19종**)
+
+> **hanpass-ph 결제 taxonomy(V21 `V21__event_family_remit_domestic_wallet.sql`)**: `remit`(해외송금 `remit.transfer.requested`)·`domestic`(국내송금 `domestic.transfer.requested`)·`wallet`(월렛 `wallet.charge.requested`/`wallet.pay.requested`/`wallet.withdraw.requested`) 3종을 1급 캐논 패밀리로 수용한다. 저장소 V21이 `ck_fds_events_family` CHECK를 16종→19종으로 확장(`DROP CONSTRAINT IF EXISTS` 후 `ADD`)했고, 정본은 `domain/enums/EventFamily`(19종)다. `event_family`는 인입 필드가 아니라 `event_type` 접두(`<family>.<verb>`)에서 서버가 파생(`EventFamily.fromEventType`)해 `fds_canonical_events.event_family`에 적재한다. `aml`·`case`는 내부/aml-svc 위임 패밀리로 외부 커넥터 인입 불가(`isExternallyIngestable()=false`); `remit`/`domestic`/`wallet`은 거래성·외부 인입 가능. **DB 저장값은 대문자**(`TRANSACTION`/`REMIT`/…, CHECK 토큰), enum prefix는 소문자.
 
 ### 4.17 export_format / export_status (§16.4)
 | 도메인 | 코드값 |
@@ -550,13 +566,16 @@ case의 다중 data-scope(다대다).
 | rule_id | UUID | N | PK | |
 | rule_set_id | VARCHAR(80) | N | FK→fds_rule_sets | |
 | name | VARCHAR(160) | N | | |
-| channel_scope | VARCHAR(64) | Y | enum 4.4 | 적용 채널 |
-| dsl_source | TEXT | Y | | no-code 컴파일 전 표현 |
-| rule_json | JSONB | N | | 컴파일된 룰 |
+| channel_scope | VARCHAR(64) | Y | enum 4.4 | 적용 채널(hanpass: `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`) |
+| dsl_source | TEXT | Y | | no-code 컴파일 전 표현(예: `IF channelType = CROSS_BORDER_REMIT AND phpEquivalent >= 280000 THEN REVIEW`) |
+| rule_json | JSONB | N | | 컴파일된 룰 그래프(`cmp`/`velocity`/`and`). 금액 조건은 `transaction.phpEquivalent` feature 기준(V22) |
 | decision_outcome | VARCHAR(32) | Y | enum 4.7 | hit 시 decision |
+| evaluation_mode | VARCHAR(32) | N | `'INLINE_AND_ASYNC'` | CHECK(`INLINE_AND_ASYNC`/`ASYNC_ONLY`). 인라인+비동기 vs 비동기 전용 평가 모드(V3 보강, API §4.6 5-axis 필터) |
 | status | VARCHAR(32) | N | `'DRAFT'` | enum 4.13 |
 | created_by / updated_by | VARCHAR(128) | Y | | |
 | created_at / updated_at | TIMESTAMPTZ | N | | |
+
+> **phpEquivalent 임계 정본(hanpass-ph, V22 `V22__demo_rules_php_equivalent.sql`)**: 데모 금액 임계 룰은 `transaction.phpEquivalent`(PHP 환산, `FeatureComputeAdapter`) feature로 정렬한다. USD×56 환산으로 데모 결정 동등을 유지하며 PH CTR(₱500,000)을 참고한다. 데모 5룰: `CROSS_BORDER_REMIT` REVIEW ≥ ₱280,000(USD 5,000) · `CASH_IN` BLOCK ≥ ₱560,000(USD 10,000) · `DOMESTIC_REMIT` REVIEW ≥ ₱112,000(USD 2,000) · `WALLET_PAYMENT` REVIEW ≥ ₱168,000(USD 3,000) · `WALLET_WITHDRAWAL` CHALLENGE ≥ ₱84,000(USD 1,500). `DOMESTIC_REMIT` 분할입금 velocity(24h count≥5 → REVIEW)는 금액 임계 무관(V20). hanpass에 없는 카드(`CARD_NOT_PRESENT`) 룰은 V22에서 `status='DISABLED'`(행 보존·발화 중지). 데모 룰 시드는 `tenant_demo` scope·고정 UUID·`tenant_demo` 부재(=운영) 시 0건(V17/V18/V20/V22).
 
 ### 5.18 fds_rule_versions
 rule version rollback 증적(§2.1).
@@ -771,7 +790,7 @@ vendor 결과를 evidence로 보존(원천 이벤트 아님).
 | 컬럼 | 타입 | NULL | 제약 | 설명 |
 |---|---|---|---|---|
 | tenant_id / workspace_id | VARCHAR(64) | N | PK | |
-| scope | VARCHAR(32) | N | PK | `EVENT`/`DECISION`/`ACTION` |
+| scope | VARCHAR(32) | N | PK, CHECK | `EVENT`/`DECISION`/`ACTION`/`AML_FEEDBACK`(4종, `ck_fds_idempotency_scope`). `AML_FEEDBACK`=aml→fds 피드백 이벤트 멱등 소비(V19, integration §3.3) |
 | idempotency_key | VARCHAR(256) | N | PK | |
 | result_ref | VARCHAR(256) | Y | | 매핑된 결과 id |
 | created_at | TIMESTAMPTZ | N | now() | TTL 정리 대상 |
@@ -877,45 +896,36 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 
 ## 8. Flyway 마이그레이션 순서
 
-스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(롤백은 신규 보정 migration). `services/fds-svc` 빌드에 포함.
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(V1~V22, 누락 없음)이다.
 
-| 버전 | 파일 | 내용 |
-|---|---|---|
-| V1 | `V1__fds_schema.sql` | `CREATE SCHEMA fds`; search_path 설정 |
-| V2 | `V2__tenant_workspace.sql` | fds_tenants, fds_workspaces |
-| V3 | `V3__source_systems.sql` | fds_source_systems, fds_schema_mappings, fds_connector_offsets |
-| V4 | `V4__canonical_events.sql` | fds_canonical_events (+ 파티션 옵션), fds_idempotency_keys |
-| V5 | `V5__subject_account_instrument.sql` | fds_subjects, fds_accounts, fds_instruments |
-| V6 | `V6__transactions.sql` | fds_transactions |
-| V7 | `V7__decisions_actions.sql` | fds_decisions, fds_decision_reasons, fds_actions |
-| V8 | `V8__cases.sql` | fds_cases, fds_case_events, fds_case_scopes |
-| V9 | `V9__rules_features.sql` | fds_rule_sets, fds_rules, fds_rule_versions, fds_rule_simulations, fds_feature_catalog |
-| V10 | `V10__risk_groups.sql` | fds_risk_groups, fds_risk_group_members |
-| V11 | `V11__approval.sql` | fds_approval_requests, fds_approval_steps |
-| V12 | `V12__commerce_trade.sql` | fds_business_documents, fds_commerce_orders, fds_settlements |
-| V13 | `V13__api_credentials.sql` | fds_api_credentials |
-| V14 | `V14__external_bridge.sql` | fds_external_decisions |
-| V15 | `V15__evidence_audit.sql` | fds_evidence_exports, fds_audit_logs |
-| V16 | `V16__indexes.sql` | §6 인덱스 일괄 생성 (CONCURRENTLY 옵션 별도 migration) |
-| 논리 | (배포 모델/규제 팩) | `fds_tenants` `deployment_model`/`onboarding_status`/`infra_ref` 컬럼 추가(default `MANAGED_DEDICATED`/`REQUESTED`) → 데이터 매핑(`isolation_mode='SHARED'`→`deployment_model='SHARED'`, `SCHEMA`/`DB`→`MANAGED_DEDICATED`; 매핑 row는 `onboarding_status='ACTIVE'`) → `isolation_mode` DROP + `compliance_policy JSONB NOT NULL DEFAULT '{"base":"KR_BASE","packs":["EFIN","SPECIAL_AML","PIPA","INTERNAL_CONTROL"],"optional":[]}'` 추가(설계서 §16.2)·`subject_kind`에 `POLICY_PACK` 허용. **저장소 실제 파일은 `V2__phase1_foundation.sql`이 이 전환을 일괄 수행**한다(아래 매핑 주석) |
+| 버전 | 파일 | 내용(실제) | 비고 |
+|---|---|---|---|
+| V1 | `V1__baseline.sql` | `CREATE SCHEMA fds` + 핵심 테이블 9종 생성: `fds_tenants`(구 `isolation_mode` 포함)·`fds_workspaces`·`fds_source_systems`·`fds_canonical_events`·`fds_decisions`·`fds_actions`·`fds_cases`·`fds_rule_sets`·`fds_rules`. 기본 인덱스 | baseline |
+| V2 | `V2__phase1_foundation.sql` | `fds_schema_mappings`·`fds_idempotency_keys`·`fds_api_credentials` 생성. **`fds_tenants` 배포 모델 전환**: `deployment_model`/`onboarding_status`/`infra_ref`/`compliance_policy` 추가·`isolation_mode` 백필·`ck_fds_tenants_deployment_model` CHECK·`isolation_mode` DROP(§2.1). `fds_canonical_events.event_family` `ck_fds_events_family` CHECK(16종) 적용 | phase1 |
+| V3 | `V3__phase2_rule_engine.sql` | `fds_decision_reasons`·`fds_rule_versions`·`fds_rule_simulations`·`fds_feature_catalog`·`fds_risk_groups`·`fds_risk_group_members` 생성 + **`fds_rules.evaluation_mode`** 추가(`ck_fds_rules_evaluation_mode`, §5.17). closed `decision_outcome` CHECK(§4.7) | phase2 |
+| V4 | `V4__phase3_domain_pack.sql` | `fds_canonical_events`에 도메인 feature 컬럼 추가(`ck_fds_events_channel_type` 19종 초기 CHECK 포함) + 도메인 라우팅 인덱스 | phase3 |
+| V5 | `V5__phase4_action_case.sql` | `fds_case_events`·`fds_approval_requests`·`fds_approval_steps`·`fds_capabilities` 생성 + `fds_actions`/`fds_cases` 보강(결재/케이스) | phase4 |
+| V6 | `V6__phase5_compliance_ops.sql` | `fds_fp_feedback`(오탐 피드백) 생성 + `fds_cases` close_reason 보강(§4.11) | phase5 |
+| V7 | `V7__phase6_evidence_bridge.sql` | `fds_connector_offsets`·`fds_external_decisions`·`fds_evidence_exports`·`fds_audit_logs` 생성 | phase6 |
+| V8 | `V8__phase7_advanced_domain.sql` | `fds_business_documents`·`fds_commerce_orders`·`fds_settlements` 생성(advanced domain — hanpass 미사용, enum 호환 유지) | phase7 |
+| V9 | `V9__phase8_saas_productization.sql` | `fds_usage_metering` 생성(사용량 미터링) | phase8 |
+| V10 | `V10__pr1_query_admin.sql` | 조회·admin 보강(PR1) 인덱스 | PR1 |
+| V11 | `V11__pr2_approval_exec.sql` | 결재 실행(PR2). `fds_approval_requests`에 `payload_json JSONB NULL` 추가(결재 대상 변경 명세, §5.23) | PR2 |
+| V12 | `V12__materialized_state.sql` | `fds_subjects`·`fds_accounts`·`fds_instruments`·`fds_transactions`·`fds_case_scopes` materialized state 생성(§5.6~§5.9·§5.15) | 자재화 |
+| V13 | `V13__action_outbox_backoff.sql` | `fds_actions`에 `next_attempt_at TIMESTAMPTZ` 추가 + 클레임 인덱스 `ix_fds_actions_claim`(디스패처 SKIP LOCKED 백오프, §5.12·§6) | 아웃박스 |
+| V14 | `V14__notify_channels.sql` | `fds_notify_channels`(§5.34) + `ix_fds_notify_channels_scope`. 알림 채널 설정(엔진 T8 FDS-ENG-04). 의존 없음 | 알림 |
+| V15 | `V15__webhook_outbox.sql` | `fds_webhook_outbox`(§5.35) + 멱등·클레임 인덱스(엔진 T10 ENG-WEBHOOK). 서명 webhook 콜백 transactional outbox | webhook |
+| V16 | `V16__ph_data_grounding.sql` | **hanpass-ph 데이터 그라운딩**: §4.4 `channel_type` 21종 closed CHECK 재정의(`ck_fds_events_channel_type`에 `CASH_IN`·`INBOUND_REMIT` 추가) + §5.5 corridor 4컬럼(`send_country`/`receive_country`/`send_currency`/`receive_currency`) 추가 + §5.3a hanpass-ph 소스 7종(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`)·`fds_schema_mappings`(ACTIVE) 시드(`tenant_demo`, `REST_PUSH`). 규제 임계/분류 불변 | DDL+시드 |
+| V17 | `V17__demo_ph_rules.sql` | **데모 시드** — hanpass-ph ACTIVE 룰 3종(`CROSS_BORDER_REMIT` REVIEW·`CASH_IN` BLOCK·`DOMESTIC_REMIT` REVIEW, amountBase USD 기준) + `fds_rule_versions` v1 동반. `tenant_demo` scope·고정 UUID·`ON CONFLICT DO NOTHING`·`tenant_demo` 부재(=운영) 시 0건. **DDL 아님** | 데모 |
+| V18 | `V18__demo_approval_seed.sql` | **데모 시드** — phantom 결재 정리 + PENDING_APPROVAL 데모 룰 2종(`CROSS_BORDER_REMIT`·`CARD_NOT_PRESENT`) + 승인 가능한 SUBMITTED 결재 2건(`subject_kind=RULE`, payload `{"action":"ACTIVATE"}`, maker=`kim.officer@aegis.example`). 멱등·운영 시 0건. **DDL 아님** | 데모 |
+| V19 | `V19__aml_feedback_idempotency_scope.sql` | `fds_idempotency_keys.scope` CHECK에 **`AML_FEEDBACK`** 추가(`EVENT`/`DECISION`/`ACTION`/`AML_FEEDBACK`) — aml→fds 피드백 이벤트 멱등 소비(integration §3.3) | DDL |
+| V20 | `V20__demo_six_types_rules.sql` | **데모 시드** — hanpass-ph 6거래유형 가시화용 ACTIVE 룰 4종 추가: `WALLET_PAYMENT` REVIEW·`WALLET_WITHDRAWAL` CHALLENGE·`CARD_NOT_PRESENT` CHALLENGE·`DOMESTIC_REMIT` 분할입금 velocity(24h count≥5) REVIEW + `fds_rule_versions` v1. `tenant_demo` scope·고정 UUID·운영 시 0건. **DDL 아님** | 데모 |
+| V21 | `V21__event_family_remit_domestic_wallet.sql` | `fds_canonical_events.event_family` `ck_fds_events_family` CHECK를 16종→**19종**으로 확장(`REMIT`/`DOMESTIC`/`WALLET` 추가, §4.16). 정본 `domain/enums/EventFamily`(19종) | DDL |
+| V22 | `V22__demo_rules_php_equivalent.sql` | **데모 시드(UPDATE)** — 데모 금액 임계 룰을 `transaction.phpEquivalent`(PHP 환산)로 재정렬(§5.17): 해외송금 ≥₱280,000·월렛충전 ≥₱560,000·국내송금 ≥₱112,000·월렛결제 ≥₱168,000·ATM출금 ≥₱84,000(USD×56). 카드(`CARD_NOT_PRESENT`, …006) `status='DISABLED'`(행 보존). `fds_rule_versions` v1 rule_json 동반 갱신. `tenant_demo` scope·멱등·운영 시 0건. **DDL 아님** | 데모 |
 
-> **저장소 ↔ 설계 버전 매핑(실제 저장소 1:1)**: 위 V1~V16 행은 논리(설계) Flyway 순서이며, `services/fds-svc` 저장소는 누적 phase 마이그레이션(`V1~V9` baseline·phase1~8)과 후속 보강(`V10~V18`)을 사용한다. **배포 모델·규제 팩 전환(논리 'V17/V18'에 해당)은 별도 파일이 아니라 저장소 `V2__phase1_foundation.sql`이 일괄 수행**한다(`isolation_mode`는 `V1__baseline.sql`에서 생성 후 `V2`에서 `deployment_model`/`onboarding_status`/`infra_ref`/`compliance_policy` 추가·백필·`ck_fds_tenants_deployment_model` CHECK·`isolation_mode` DROP). §5.6~§5.15 materialized state(subject/account/instrument/transaction)는 저장소 `V12__materialized_state.sql`에서 생성된다.
+> **DDL ↔ 데모 시드 분리**: V1~V16·V19·V21이 스키마 DDL(테이블/컬럼/CHECK/인덱스)이고, V17·V18·V20·V22는 **데모 전용 시드(`tenant_demo` scope, 운영=tenant_demo 부재 시 0건)**다. 데모 시드는 운영 스키마에 영향이 없으며 hanpass-ph 데모 화면 가시화 목적이다.
 >
-> **저장소 후속 마이그레이션 표(V10~V18, 실제 파일명·내용 1:1)**: 위 논리 표와 별개로, 저장소에 실재하는 보강 마이그레이션은 다음과 같다.
->
-> | 파일 | 내용 |
-> |---|---|
-> | `V10__pr1_query_admin.sql` | 조회·admin 보강(PR1) |
-> | `V11__pr2_approval_exec.sql` | 결재 실행(PR2). `fds_approval_requests`에 `payload_json JSONB NULL` 컬럼 추가(결재 대상 변경 명세, §5.23) |
-> | `V12__materialized_state.sql` | `fds_subjects`/`fds_accounts`/`fds_instruments`/`fds_transactions`/`fds_case_scopes` materialized state(§5.6~§5.9·§5.15). 설계 논리 V5/V6/V8 ↔ 저장소 V12 |
-> | `V13__action_outbox_backoff.sql` | `fds_actions`에 `next_attempt_at TIMESTAMPTZ` 추가 + 클레임 인덱스 `ix_fds_actions_claim`(디스패처 SKIP LOCKED 백오프, §5.12·§6) |
-> | `V14__notify_channels.sql` | `fds_notify_channels`(§5.34) + `ix_fds_notify_channels_scope`. 알림 채널 설정(엔진 T8 FDS-ENG-04). 의존 없음 |
-> | `V15__webhook_outbox.sql` | `fds_webhook_outbox`(§5.35) + 멱등·클레임 인덱스(엔진 T10 ENG-WEBHOOK). 서명 webhook 콜백 transactional outbox |
-> | `V16__ph_data_grounding.sql` | §4.4 `channel_type` 21종 closed CHECK 재정의(`ck_fds_events_channel_type`에 `CASH_IN`·`INBOUND_REMIT` 추가) + §5.5 corridor 4컬럼(`send_country`/`receive_country`/`send_currency`/`receive_currency`) 추가 + §5.3a hanpass-ph 소스 시스템 7종(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`)·schema_mappings 시드(`tenant_demo` scope). 규제 임계/분류 불변 |
-> | `V17__demo_ph_rules.sql` | **데모 전용 시드** — hanpass-ph 데모 룰 3종(CROSS_BORDER_REMIT·DOMESTIC_REMIT·CASH_IN ACTIVE 룰). `tenant_demo` scope·고정 UUID·`ON CONFLICT DO NOTHING`·운영(tenant_demo 부재) 시 0건. **DDL 아님** |
-> | `V18__demo_approval_seed.sql` | **데모 전용 시드** — 승인 가능한 결재 2건(subject_kind=RULE, payload `{"action":"ACTIVATE"}`) + PENDING_APPROVAL 데모 룰 2종. `tenant_demo` scope·멱등·운영 시 0건. **DDL 아님** |
-
-FK 의존: V7은 V4·V6, V8은 V7, V12는 V6, V14는 V7에 의존하므로 위 논리 순서 고정. 배포 모델·규제 팩 전환은 V2(`fds_tenants`) 이후 수행한다(저장소는 `V2__phase1_foundation.sql`이 담당).
+> **FK·CHECK 의존 순서**: `fds_decisions`/`fds_actions`는 `fds_canonical_events`(V1) 이후, `fds_case_events`/결재(V5)는 케이스/액션(V1) 이후, 자재화(V12)는 V1 거래 테이블 이후, webhook(V15)은 액션·credential 이후에 적용된다. 배포 모델·규제 팩 전환은 `fds_tenants`(V1) 이후 V2가 일괄 수행한다. event_family CHECK 확장(V21)·channel CHECK 재정의(V16)·idempotency scope 확장(V19)은 모두 기존 CHECK를 `DROP … IF EXISTS` 후 `ADD`로 supersede한다(기존 마이그레이션 무수정·체크섬 보존).
 
 ---
 
@@ -950,7 +960,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 - **배포/온보딩 메타(`fds_tenants`)**: `deployment_model`(`MANAGED_DEDICATED`/`SELF_HOSTED`/`SHARED`, 3종), `onboarding_status`(`REQUESTED`/`PROVISIONING`/`DEPLOYED`/`VERIFIED`/`ACTIVE`/`PACKAGE_ISSUED`/`CUSTOMER_DEPLOYED`/`REGISTERED`, 8종), `default_region`, `infra_ref`. 구 `isolation_mode` 컬럼·enum(`SHARED`/`SCHEMA`/`DB`) 폐기. API `DeploymentModel`/`OnboardingStatus` enum, `TenantDto.deploymentModel`/`onboardingStatus`/`region`/`infraRef` 필드와 1:1. 온보딩 엔드포인트는 bo-api 전용(`POST .../onboarding/provision`, `GET .../onboarding`, `POST .../onboarding/register`).
 - **핵심 테이블**: `fds_canonical_events`, `fds_decisions`, `fds_decision_reasons`, `fds_actions`, `fds_cases`, `fds_case_events`, `fds_rules`, `fds_rule_versions`, `fds_rule_simulations`, `fds_feature_catalog`, `fds_risk_groups`, `fds_risk_group_members`, `fds_approval_requests`, `fds_approval_steps`, `fds_api_credentials`, `fds_external_decisions`, `fds_evidence_exports`, `fds_audit_logs`, `fds_idempotency_keys`, `fds_business_documents`, `fds_commerce_orders`, `fds_settlements`, `fds_connector_offsets`, `fds_schema_mappings`, `fds_source_systems`, `fds_subjects`, `fds_accounts`, `fds_instruments`, `fds_transactions`, `fds_tenants`, `fds_workspaces`.
 - **PK 패턴**: `(tenant_id, workspace_id, <natural key>)`. decision/action/case/approval/export/audit는 `UUID` 식별자, event는 원천 `event_id`(VARCHAR).
-- **enum 코드값**: §4 전체(decision 8종, **action_type 23종 — API `ActionType` enum이 정본, §4.8과 1:1**, case_type 11종, instrument 12종, **channel 21종**(`CASH_IN`·`INBOUND_REMIT` 추가, §4.4 hanpass-ph 재그라운딩), payment_rail 18종, capability 9종, approval_line 6종, approval_status 8종, **transaction_type 12종(§4.19, `fds_transactions.transaction_type` 폐쇄 CHECK)**). `subject_kind` **9종**(`CASE_CLOSE` case 종결 4-eyes + `POLICY_PACK` 규제 팩 토글 4-eyes 포함, 설계서 §11.5).
+- **enum 코드값**: §4 전체(decision 8종, **action_type 23종 — API `ActionType` enum이 정본, §4.8과 1:1**, case_type 11종, instrument 12종, **channel_type 21종 closed**(`ChannelType.java`·`ck_fds_events_channel_type` CHECK; hanpass-ph 운영 채널은 `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`(+`INBOUND_REMIT`) 5(+1)유형으로 한정, §4.4), **event_family 19종**(`EventFamily.java`·`ck_fds_events_family` CHECK; `REMIT`/`DOMESTIC`/`WALLET` 포함, V21, §4.16), payment_rail 18종, capability 9종, approval_line 6종, approval_status 8종, **transaction_type 12종(§4.19, `fds_transactions.transaction_type` 폐쇄 CHECK)**, idempotency scope 4종(`EVENT`/`DECISION`/`ACTION`/`AML_FEEDBACK`, V19)). `subject_kind` **9종**(`CASE_CLOSE` case 종결 4-eyes + `POLICY_PACK` 규제 팩 토글 4-eyes 포함, 설계서 §11.5).
 - **AML cross-ref 컬럼**: `fds_cases.aml_case_id VARCHAR(96) NULL`(API `amlCaseRef`, integration §9.1). FK 아님.
 - **금액 타입**: `NUMERIC(24,8)`, base/표시 통화 분리(`amount`/`amount_base`, `currency`/`base_currency`).
 - **증적 컬럼**: `payload_hash`, `input_event_hash`, `feature_snapshot`, `matched_rules`, `manifest_hash`, `evidence_hash`.
@@ -961,6 +971,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-06-30 | v3.0 | **hanpass-ph 재그라운딩 + 저장소 Flyway V1~V22 1:1 정합**: (1) 헤더·§1에 대상 시스템=hanpass-ph(KR→PH 해외송금+PH 국내송금+지갑 5거래유형)·단일 운영 테넌트 `tenant_demo`(멀티테넌트 인프라는 보존)·금액 임계 `phpEquivalent`(PHP, USD 병기) 명문화. (2) §4.4 `channel_type`을 hanpass 5(+1)유형(`CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`(+`INBOUND_REMIT`)) 중심으로 재서술(enum은 코드 truth대로 21종 closed 유지, 비-hanpass 채널은 enum 호환 존속·미사용·카드룰 V22 DISABLED 명시). (3) §4.16 `event_family`를 16종→**19종**(`REMIT`/`DOMESTIC`/`WALLET`, V21·`EventFamily.java`)으로 정정. (4) §5.17 `fds_rules`에 누락 컬럼 `evaluation_mode`(V3) 추가 + `phpEquivalent` 임계 정본(V22 5룰·USD×56·PH CTR ₱500,000) 명문화. (5) §5.33 `fds_idempotency_keys.scope`에 `AML_FEEDBACK`(V19) 추가. (6) **§8 Flyway 표 전면 교체** — 저장소 실제 파일 V1~V22 1:1(누락 없이): V1 baseline·V2 phase1(배포모델 전환)·V3 phase2(evaluation_mode)·V4~V9 phase3~8·V10 PR1·V11 PR2(payload_json)·V12 자재화·V13 outbox backoff·V14 notify·V15 webhook·V16 ph_data_grounding(channel 21·corridor·소스 7종)·V17/V18/V20/V22 데모 시드·V19 idempotency scope·V21 event_family 19. DDL↔데모시드 분리 명시. (7) §10 downstream enum 요약에 channel/event_family/idempotency scope 코드 truth 반영. **enum·컬럼 정본 코드 집합은 코드(truth) 기준 불변, 비-hanpass 일반채널/Phase7 도메인 서술만 정리.** | data-modeler |
 | 2026-06-21 | v2.0 | **코드 정합(저장소 fds-svc Flyway 실제 파일 1:1) — §8 마이그레이션 표 전면 교정·증적 컬럼 back-fill.** (1) §8 표의 논리 `V17__deployment_model.sql`/`V18__compliance_policy.sql`/`V19__notify_channels.sql` 행을 폐기하고, 저장소 실제 파일과 1:1 매핑 표(V10~V18) 신설: 배포 모델·규제 팩 전환(`deployment_model`/`onboarding_status`/`infra_ref`/`compliance_policy`·`isolation_mode` DROP)은 별도 파일이 아니라 **`V2__phase1_foundation.sql`** 이 수행함을 명시(`isolation_mode`는 `V1__baseline.sql` 생성). V11 `payload_json`·V12 materialized_state·V13 action_outbox_backoff(`next_attempt_at`)·V14 notify_channels·V15 webhook_outbox·V16 ph_data_grounding(channel 21종 CHECK·corridor 4컬럼·hanpass 소스 7종 시드)·V17 demo_ph_rules(데모 시드)·V18 demo_approval_seed(데모 시드) 실내용 기재. (2) §5.23 `fds_approval_requests`에 `payload_json JSONB NULL` 행 추가(V11). (3) §5.10 `fds_decisions` 채널/금액/corridor가 `fds_canonical_events` LEFT JOIN 파생(현재 구현)임을 주석화·향후 비정규화 예정. (4) §4.9 `ACKED` 전이 트리거(`SENT→ACKED`, `ActionResultConsumer`/`aws` 프로파일) 명시. (5) §4.4 hanpass 채널 재그라운딩 주석에 `(Flyway V16)` 병기. §5.1/§4.1 `(§8 V17)` 인라인 참조를 `V2__phase1_foundation.sql`로 정정. enum·컬럼 정본 코드 집합 불변. | data-modeler |
 | 2026-06-19 | v1.9 | **테넌트=서비스 재정의 + 기관 참조(institution_ref) 컬럼 신설(1 기관 : N 서비스)**: §2.1/§2.2/§10 설명 텍스트의 '고객사'를 '서비스(테넌트=서비스)'로 정정(계층 기관→서비스(테넌트)→워크스페이스). §5.1 `fds_tenants`를 '서비스 마스터(테넌트=서비스)'로 라벨링하고 상위 기관 참조 컬럼 `institution_ref VARCHAR(64) NULL`(additive·후속 마이그레이션) 추가. `tenant_id`/`workspace_id`/RLS·scope 코드·PK 선두 규칙 불변(의미만 '서비스'). | data-modeler |
 | 2026-06-18 | v1.8 | **데이터 레이어 hanpass-ph 소스 재그라운딩 — 소스 카탈로그·channel CASH_IN/INBOUND_REMIT·corridor·연동 키**(규제 레이어 불변): (1) §4.4 `channel_type`에 `CASH_IN`(월렛충전 top-up)·`INBOUND_REMIT`(파트너 인바운드) 2종 추가(19→21종) + hanpass-ph 매핑 주석. (2) §5.3 `fds_source_systems`를 hanpass-ph 트랜잭션 마이크로서비스로 예시화 + §5.3a 소스 카탈로그 표(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`) 신설(REST sync 인입·연동 키 매핑·token/HMAC). (3) §5.5 `fds_canonical_events`에 corridor 컬럼(`send_country`/`receive_country`/`send_currency`/`receive_currency`) + `amount_base`(USD) 출처(remit `usd_amount`/`report_amount`) 주석. (4) §5.6/§5.7 subject_ref=member_id HMAC·account=wallet 매핑 주석. (5) §10 downstream enum channel 19→21종. **CTR/STR 임계·기한·KoFIU 분류 미변경(규제 불변)** — PH 운영은 Policy Pack `PH_AMLC` 옵션 병기만. | data-modeler |

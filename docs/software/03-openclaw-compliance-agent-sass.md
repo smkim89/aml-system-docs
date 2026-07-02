@@ -1,4 +1,8 @@
-# OpenClaw 기반 Compliance Operations Agent 개발 계획
+# OpenClaw 기반 Compliance Operations Agent 개발 계획 (개념 설계 · 미구현)
+
+> 상태: **개념 설계(아직 미구현)**. 본 문서가 기술하는 OpenClaw 기반 agent runtime·Agent Tool Proxy·agent 전용 테이블/API는 현재 코드베이스(`aegis-aml`)에 구현되어 있지 않다. 실제 구현된 것은 FDS/AML 엔진(fds-svc·aml-svc)과 백오피스(bo-api·bo-web)뿐이며, 본 문서는 그 위에 얹을 **add-on의 방향성**을 정의한다. 본문에서 "구현됨"으로 단정하지 않고, 기존 엔진에 의존하는 부분은 그 사실을 명시한다.
+>
+> 운영 기준 테넌트는 **hanpass-ph**(엔진 식별자 `tenant_demo`, 표기명 "hanpass PH (데모)", 업권 코드 `HANPASS`)이다. 멀티테넌트 구조는 유지하되, 모든 예시·시나리오는 hanpass-ph 해외송금 AML/FDS 운영 맥락을 기준으로 한다.
 
 ## 목차
 
@@ -32,19 +36,18 @@
 
 ## 1. 문서 목적
 
-본 문서는 `22-1-fdsSvc-sass.md`와 `23-1-amlSvc-sass.md`에서 정의한 SaaS FDS/AML 플랫폼에 **OpenClaw 기반 AI 운영 모니터링 agent**를 add-on 상품으로 붙이기 위한 개발 계획서이다.
+본 문서는 `01-fdsSvc-sass.md`와 `02-amlSvc-sass.md`에서 정의한 SaaS FDS/AML 플랫폼에 **OpenClaw 기반 AI 운영 모니터링 agent**를 add-on 상품으로 붙이기 위한 개발 계획서이다. 1차 적용 대상은 hanpass-ph(`tenant_demo`) 해외송금 AML/FDS 운영이다.
 
-목표는 FDS/AML 탐지 엔진을 AI가 대체하는 것이 아니다. 핵심 목표는 **준법감시실이 개발팀 도움 없이 FDS/AML 운영 상태를 감시하고, 케이스를 우선순위화하고, 감사대응 자료를 빠르게 준비하도록 돕는 AI 운영 보조원**을 만드는 것이다.
+목표는 FDS/AML 탐지 엔진을 AI가 대체하는 것이 아니다. 핵심 목표는 **hanpass-ph 준법감시실이 개발팀 도움 없이 FDS/AML 운영 상태를 감시하고, 케이스를 우선순위화하고, 감사대응 자료를 빠르게 준비하도록 돕는 AI 운영 보조원**을 만드는 것이다.
 
-본 문서에서 설계하는 agent는 다음을 담당한다.
+본 문서에서 설계하는 agent는 다음을 담당한다(모두 hanpass-ph 운영 기준의 목표 기능이며, 현재는 미구현).
 
 - FDS/AML alert와 case backlog 상시 모니터링
 - 준법감시 담당자에게 daily briefing 제공
 - 미처리 case, SLA 초과, high-risk alert 우선순위 정렬
-- STR/CTR/EDD/FDS case 보고서 초안 작성
+- STR/EDD/FDS case 보고서 초안 작성
 - 감사대응 evidence pack 생성 요청 초안
-- 기존 벤더와 SaaS 엔진의 dual-run 결과 비교
-- connector 장애·누락·replay 상태 요약
+- hanpass-ph 인입 push(REST sync) 누락·지연·재처리 상태 요약
 - rule/model 변경 영향도와 위험 요약
 - Slack, Teams, Email, BO console로 알림 전달
 
@@ -67,7 +70,7 @@
 
 > 준법감시실이 FDS/AML을 직접 운용할 수 있게 하는 24시간 AI 운영 보조원
 
-국내 핀테크·전자금융업자·PG·VASP·해외송금업자는 FDS/AML 솔루션을 도입하더라도 운영 인력이 alert, case, evidence, 보고자료를 계속 수작업으로 관리한다. 이 add-on은 그 수작업을 줄이는 유료 부가서비스다.
+해외송금업자(1차 대상: hanpass-ph)를 포함한 핀테크·전자금융업자·VASP는 FDS/AML 솔루션을 도입하더라도 운영 인력이 alert, case, evidence, 보고자료를 계속 수작업으로 관리한다. 이 add-on은 그 수작업을 줄이는 유료 부가서비스다. 멀티테넌트 SaaS 구조이지만, 본 문서의 검증·예시는 hanpass-ph(`tenant_demo`) 운영을 기준으로 한다.
 
 ### 2.3 가격 가설
 
@@ -90,8 +93,8 @@ Compliance Operations Agent는 FDS/AML core의 일부가 아니라 **운영 계�
 | 계층 | 역할 |
 |---|---|
 | FDS SaaS | 이상거래 탐지, rule decision, action, case, evidence |
-| AML SaaS | WLF, RA, TM, CDD/EDD, STR/CTR/Travel Rule, case, evidence |
-| Compliance Agent | 모니터링, 요약, 우선순위화, 초안 생성, 승인 요청, 운영 알림 |
+| AML SaaS | WLF, RA, TM, CDD/EDD, STR/Travel Rule, case, evidence (CTR은 업권 적용 시) |
+| Compliance Agent | 모니터링, 요약, 우선순위화, 초안 생성, 승인 요청, 운영 알림 (개념 · 미구현) |
 
 Agent는 FDS/AML 판단의 원천이 아니다. 판단 원천은 항상 FDS/AML core의 rule/model/case/evidence store다. Agent는 이를 읽고 정리하거나 초안을 만들며, 조치가 필요한 경우 준법감시실의 승인을 요청한다.
 
@@ -156,27 +159,27 @@ Agent add-on은 token, tool call, schedule, monitored case 수 기준으로 quot
 
 | 사용자 | 목적 |
 |---|---|
-| 준법감시 담당자 | AML/FDS case 검토, STR/CTR/EDD 증적 확인 |
+| 준법감시 담당자 | AML/FDS case 검토, STR/EDD 증적 확인(CTR은 업권 적용 시) |
 | 준법감시 책임자 | daily briefing, backlog, SLA, high-risk 현황 파악 |
 | FDS 운영자 | 이상거래 alert triage, false positive 관리 |
 | 내부감사 담당자 | 감사 요청 자료 export, 권한·조치 이력 확인 |
 | 리스크관리 담당자 | rule/model 변경 영향과 고위험 그룹 추이 확인 |
-| 고객사 개발팀 | connector 상태와 schema error만 확인 |
+| hanpass-ph 연동 담당자 | REST push 인입 상태와 schema error만 확인 |
 
 ### 6.2 대표 사용 시나리오
 
 #### Daily Briefing
 
-매일 오전 9시 agent가 준법감시실 채널에 요약을 보낸다.
+매일 오전 9시 agent가 hanpass-ph 준법감시실 채널에 요약을 보낸다.
 
 ```text
-어제 발생한 AML/FDS 주요 이슈입니다.
+어제 발생한 hanpass-ph AML/FDS 주요 이슈입니다.
 
 1. HIGH risk case 12건 생성, 이 중 3건 SLA 4시간 이내 만료 예정
-2. 신규 WLF true-match 후보 2건, analyst 미배정
-3. 국내송금 FDS rule R-102 hit rate가 평소 대비 3.4배 증가
-4. 기존 AML 벤더와 SaaS TM dual-run 불일치 17건 발생
-5. connector pg-settlement lag 42분 지속
+2. 신규 WLF true-match 후보 2건(sender 1·receiver 1), analyst 미배정
+3. 해외송금 FDS rule 1건의 hit rate가 평소 대비 3.4배 증가
+4. TM 시나리오(구조화 분할송금 의심) 신규 case 5건
+5. hanpass-ph 인입 push가 42분간 지연, 일부 evidence incomplete
 ```
 
 #### Case Triage
@@ -486,7 +489,7 @@ agent는 tool 실행 전 결재 정책을 조회한다.
 ```http
 POST /internal/agent/v1/approval-policy/evaluate
 X-Agent-Id: evidence-agent
-X-Tenant-Id: tenant-a
+X-Tenant-Id: tenant_demo
 ```
 
 요청 예시:
@@ -526,8 +529,8 @@ Agent는 다음 변화를 감시한다.
 - STR candidate 급증
 - case SLA 초과 증가
 - connector lag 증가
-- legacy vendor와 SaaS decision mismatch 증가
-- 특정 고객·가맹점·채널에 alert 집중
+- legacy vendor와 SaaS decision mismatch 증가(병행 운영 테넌트 한정)
+- 특정 송금인·수취인·송금 회랑(corridor)에 alert 집중
 
 ### 14.2 Case SLA Monitoring
 
@@ -543,23 +546,23 @@ SLA 위험 case:
    - reason: WLF candidate + high-value transfer + new beneficiary
 
 2. FDS-CASE-20260606-017
-   - type: VOICE_PHISHING_REVIEW
+   - type: REMITTANCE_FRAUD_REVIEW
    - risk: HIGH
    - SLA: 45분 초과
-   - reason: domestic transfer velocity + mule account group
+   - reason: 단기 반복 해외송금 velocity + 신규 수취인 + 고위험 회랑
 ```
 
 ### 14.3 Connector Health
 
-Agent는 개발팀이 아닌 준법감시실도 이해할 수 있게 connector 상태를 업무 영향으로 번역한다.
+Agent는 개발팀이 아닌 준법감시실도 이해할 수 있게 hanpass-ph 인입(REST sync push) 상태를 업무 영향으로 번역한다.
 
 ```text
-pg-settlement connector가 42분 지연 중입니다.
+hanpass-ph 거래 push 인입이 42분 지연 중입니다.
 현재 영향:
-- PG 정산 fraud rule 3개가 최신 데이터 없이 평가될 수 있습니다.
-- 오늘 14:10 이후 settlement evidence가 incomplete 상태입니다.
+- 해외송금 FDS rule이 최신 거래 없이 평가될 수 있습니다.
+- 오늘 14:10 이후 송금 evidence가 incomplete 상태입니다.
 권장 조치:
-- 개발팀 connector 담당자에게 ticket 생성
+- hanpass-ph 연동 담당자에게 ticket 생성
 - 해당 기간 evidence export 시 incomplete flag 표시
 ```
 
@@ -597,9 +600,11 @@ Agent는 다음 보고서 초안을 생성한다.
 
 ---
 
-## 16. 기존 벤더 병행 모니터링
+## 16. 기존 벤더 병행 모니터링 (개념 · 적용 조건부)
 
-OpenClaw agent는 기존 옥타솔루션 등 vendor 결과와 SaaS FDS/AML 결과를 비교해 전환 근거를 만든다.
+> 본 섹션은 고객이 기존 AML/FDS 벤더를 병행 운영 중이고 그 결과를 push해 줄 수 있을 때만 적용되는 **선택 기능 개념**이다. hanpass-ph(`tenant_demo`)의 경우 현재 코드베이스에 dual-run 대상 외부 벤더 연동이 없으므로, 이 기능은 해당 연동이 확보된 테넌트에 한해 제공한다. 아래 벤더명·수치는 예시이다.
+
+OpenClaw agent는 (병행 운영 시) 기존 벤더 결과와 SaaS FDS/AML 결과를 비교해 전환 근거를 만든다.
 
 ### 16.1 비교 항목
 
@@ -790,7 +795,9 @@ Agent는 월간 전환 리포트를 생성한다.
 
 ---
 
-## 19. 데이터베이스 설계 방향
+## 19. 데이터베이스 설계 방향 (예정 · 미구현)
+
+> 아래 스키마는 add-on 구현 시 신설할 **예정** 테이블이다. 현재 `aegis-aml` 코드베이스에는 `agent_*` 테이블·Flyway 마이그레이션이 존재하지 않는다. 실제 구현 시 멀티테넌시 키는 기존 엔진 규약(`(tenant_id, …)` 선두)을 따르고, hanpass-ph는 `tenant_id`가 엔진 식별자 `tenant_demo`에 매핑된다.
 
 ### 19.1 agent_sessions
 
@@ -880,14 +887,16 @@ CREATE TABLE agent_usage_meter (
 
 ---
 
-## 20. API·Tool 계약
+## 20. API·Tool 계약 (예정 · 미구현)
+
+> `/internal/agent/v1/*` 엔드포인트는 add-on 구현 시 신설할 **예정** 계약이다. 현재 bo-api·fds-svc·aml-svc에는 해당 `agent` 네임스페이스 API가 없다. 아래 예시의 테넌트는 hanpass-ph(`tenant_demo`) 기준이다.
 
 ### 20.1 Read Tool 예시
 
 ```http
 GET /internal/agent/v1/cases/summary?risk=HIGH&status=OPEN
 X-Agent-Id: briefing-agent
-X-Tenant-Id: tenant-a
+X-Tenant-Id: tenant_demo
 X-Tool-Scope: case:read-summary
 ```
 
@@ -913,7 +922,7 @@ X-Tool-Scope: case:read-summary
 ```http
 POST /internal/agent/v1/reports/drafts
 X-Agent-Id: report-draft-agent
-X-Tenant-Id: tenant-a
+X-Tenant-Id: tenant_demo
 ```
 
 ### 20.3 Approval Tool 예시
@@ -921,7 +930,7 @@ X-Tenant-Id: tenant-a
 ```http
 POST /internal/agent/v1/evidence/exports/requests
 X-Agent-Id: evidence-agent
-X-Tenant-Id: tenant-a
+X-Tenant-Id: tenant_demo
 ```
 
 이 API는 실제 export를 만들지 않고 approval request를 생성한다.
@@ -1003,11 +1012,11 @@ Agent가 읽는 case memo, 고객 입력, vendor message에는 악성 지시문�
 
 ### 23.1 PoC 목표
 
-1개 tenant를 대상으로 FDS/AML SaaS core 없이도 mock data와 일부 read-only API로 다음 가치를 검증한다.
+hanpass-ph(`tenant_demo`) 단일 테넌트를 대상으로 FDS/AML SaaS core 없이도 mock data와 일부 read-only API로 다음 가치를 검증한다.
 
 - 준법감시 daily briefing 자동 생성
 - high-risk case 우선순위 정렬
-- connector 장애를 업무 영향으로 설명
+- hanpass-ph 인입 push 지연을 업무 영향으로 설명
 - STR/FDS 운영 보고서 초안 생성
 - OpenClaw skill -> Tool Proxy -> masked API 호출 구조 검증
 - token cost와 월 100만원 가격의 마진 가능성 확인
@@ -1060,7 +1069,7 @@ OpenClaw 관련 공개 자료는 제품화 전 공식 repository, license, 보�
 
 ## 결론
 
-Compliance Operations Agent는 FDS/AML SaaS의 핵심 수익 add-on이 될 수 있다. 고객이 실제로 비용을 지불할 이유는 AI 자체가 아니라, 준법감시실의 반복 운영 업무와 검사 대응 준비 시간을 줄이는 데 있다.
+Compliance Operations Agent는 FDS/AML SaaS의 핵심 수익 add-on이 될 수 있다(현재는 개념 설계 단계, 미구현). 고객이 실제로 비용을 지불할 이유는 AI 자체가 아니라, 준법감시실의 반복 운영 업무와 검사 대응 준비 시간을 줄이는 데 있다. 1차 검증 대상은 hanpass-ph(`tenant_demo`) 해외송금 운영이다.
 
 핵심 설계 결정은 다음 다섯 가지다.
 
