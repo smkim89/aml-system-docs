@@ -322,6 +322,8 @@ stateDiagram-v2
 
 데이터 레이어를 hanpass-ph 필리핀 송금/월렛 플랫폼의 실제 트랜잭션 마이크로서비스로 현행화한다(generic placeholder `card-processor`/`core-banking`/`atm-switch` 예시 대체). 업스트림은 **REST sync(`REST_PUSH`)** 로 canonical event를 인입하며, 모든 식별자는 원문 금지(token/keyed-HMAC).
 
+> **BO 데모/시뮬레이터 집계 커넥터**: 로컬 BO 콘솔과 `tools/aml-ingest-simulator`는 FDS 탐지 결정과 AML TM에 같은 실시간 거래 payload를 넣기 위해 집계 source/connector id `HANPASS_PH`를 사용한다. 운영 fds-svc의 세부 source catalog(아래 7개 실서비스)와 구분하며, generic `atm-switch` seed는 사용하지 않는다.
+
 | `source_system` | 역할 | emit하는 정규 이벤트 family(§4.16) | FDS `channel_type`(§4.4) |
 |---|---|---|---|
 | `member-svc` | 회원/KYC/CDD/제재·PEP 스크리닝 | `member.*`(customer.*/entity.*/beneficial-owner.* 흡수) | — (subject/instrument materialize 소스) |
@@ -379,7 +381,7 @@ stateDiagram-v2
 | send_currency | VARCHAR(12) | Y | | | corridor 송금 통화(미지정 시 `canonical_payload.corridor`로 표기 가능) |
 | receive_currency | VARCHAR(12) | Y | | | corridor 수취 통화 |
 | payload_hash | VARCHAR(128) | Y | | | `sha256:...` 원천 payload 해시 |
-| canonical_payload | JSONB | N | | | PII 제거된 정규화 payload. cross-border corridor(`send_country`/`receive_country`/`send_currency`/`receive_currency`)는 본 컬럼 또는 `canonical_payload.corridor`에 표기 |
+| canonical_payload | JSONB | N | | | PII 제거된 정규화 payload. cross-border corridor(`send_country`/`receive_country`/`send_currency`/`receive_currency`)는 본 컬럼 또는 `canonical_payload.corridor`에 표기. FDS/TM 공통 보조 신호 `geo.*`, `customer.accountAgeDays`, `account.changedWithinHours`, `device.changedWithinHours`, `behavior.*`, `election.*` 포함 가능 |
 | data_scope | VARCHAR(128) | Y | | | row-level 가시 필터 |
 
 > raw payload 미저장. `canonical_payload`는 PII 제거 후. 식별자는 모두 token/hash.
@@ -554,9 +556,12 @@ case의 다중 data-scope(다대다).
 | dsl_source | TEXT | Y | | no-code 컴파일 전 표현 |
 | rule_json | JSONB | N | | 컴파일된 룰 |
 | decision_outcome | VARCHAR(32) | Y | enum 4.7 | hit 시 decision |
+| evaluation_mode | VARCHAR(32) | N | `INLINE_AND_ASYNC`/`INLINE_ONLY`/`ASYNC_ONLY` | 실시간 평가와 사후 모니터링 적용 범위 |
 | status | VARCHAR(32) | N | `'DRAFT'` | enum 4.13 |
 | created_by / updated_by | VARCHAR(128) | Y | | |
 | created_at / updated_at | TIMESTAMPTZ | N | | |
+
+> C-1213/M-2025 초기 룰팩(`V3__c1213_rule_pack.sql`, `V4__rule_variables_and_country_groups.sql`): feature catalog에 6h velocity, counterparty 24h amount sum, geo/customer/account/device/behavior/election 보조 신호를 등록하고 7개 ACTIVE 룰을 배포한다. VELOCITY는 `INLINE_AND_ASYNC`, DEVICE/GEO 제한 룰은 `INLINE_ONLY`, DEVICE/GEO 모니터링·BEHAVIOR·ELECTION 룰은 `ASYNC_ONLY`로 분리한다. 임계값·가중치·그룹 ID는 `fds_rule_variables`의 `valueRef`/`groupRef`로 참조하고, 위험국가 목록은 `fds_risk_groups`/`fds_risk_group_members`에 `RISK_COUNTRY`/`COUNTRY` 멤버로 관리한다.
 
 ### 5.18 fds_rule_versions
 rule version rollback 증적(§2.1).
@@ -571,6 +576,19 @@ rule version rollback 증적(§2.1).
 | effective_from / effective_to | TIMESTAMPTZ | Y | | 적용 기간(증적) |
 | created_by | VARCHAR(128) | Y | | |
 | created_at | TIMESTAMPTZ | N | now() | |
+
+### 5.18a fds_rule_variables
+룰 DSL이 참조하는 tenant/workspace 범위 운영 변수. 룰 엔진은 평가 직전 ACTIVE 변수만 로딩하고, `rule_json`의 `valueRef`(비교/velocity 임계값)와 `groupRef`(위험그룹 ID)를 실제 값으로 치환한다.
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK | |
+| variable_key | VARCHAR(128) | N | PK | 예: `c1213.geo.risk_country.group` |
+| value_type | VARCHAR(32) | N | `STRING`/`NUMBER`/`BOOLEAN`/`LIST`/`JSON` | |
+| value_json | JSONB | N | | scalar/list/object 값 |
+| status | VARCHAR(32) | N | `ACTIVE`/`DISABLED` | ACTIVE만 평가에 사용 |
+| description | VARCHAR(512) | Y | | 운영 설명 |
+| created_by / updated_by | VARCHAR(128) | Y | | |
+| created_at / updated_at | TIMESTAMPTZ | N | | |
 
 ### 5.19 fds_rule_simulations
 rule 영향도 분석(§12.8 Rule Simulation API).
@@ -604,7 +622,7 @@ no-code rule builder가 노출하는 feature 정의(§10.1).
 |---|---|---|---|---|
 | tenant_id / workspace_id | VARCHAR(64) | N | PK | |
 | group_id | VARCHAR(96) | N | PK | `mule_accounts` |
-| group_type | VARCHAR(32) | N | enum 4.14 | |
+| group_type | VARCHAR(32) | N | enum 4.14(`RISK_COUNTRY` 포함) | |
 | display_name | VARCHAR(160) | N | | |
 | created_by / updated_by | VARCHAR(128) | Y | | 4-eyes 대상 |
 | created_at / updated_at | TIMESTAMPTZ | N | | |
@@ -614,8 +632,8 @@ no-code rule builder가 노출하는 feature 정의(§10.1).
 |---|---|---|---|---|
 | tenant_id / workspace_id | VARCHAR(64) | N | PK | |
 | group_id | VARCHAR(96) | N | PK, FK→fds_risk_groups | |
-| member_ref | VARCHAR(256) | N | PK | token(계좌/주소/subject) |
-| member_kind | VARCHAR(32) | N | `SUBJECT`/`INSTRUMENT`/`COUNTERPARTY` | |
+| member_ref | VARCHAR(256) | N | PK | token(계좌/주소/subject) 또는 ISO 국가코드 |
+| member_kind | VARCHAR(32) | N | `SUBJECT`/`INSTRUMENT`/`COUNTERPARTY`/`COUNTRY`/`VALUE` | |
 | added_by | VARCHAR(128) | Y | | |
 | expires_at | TIMESTAMPTZ | Y | | |
 | created_at | TIMESTAMPTZ | N | now() | |
@@ -914,6 +932,12 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 > | `V16__ph_data_grounding.sql` | §4.4 `channel_type` 21종 closed CHECK 재정의(`ck_fds_events_channel_type`에 `CASH_IN`·`INBOUND_REMIT` 추가) + §5.5 corridor 4컬럼(`send_country`/`receive_country`/`send_currency`/`receive_currency`) 추가 + §5.3a hanpass-ph 소스 시스템 7종(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`)·schema_mappings 시드(`tenant_demo` scope). 규제 임계/분류 불변 |
 > | `V17__demo_ph_rules.sql` | **데모 전용 시드** — hanpass-ph 데모 룰 3종(CROSS_BORDER_REMIT·DOMESTIC_REMIT·CASH_IN ACTIVE 룰). `tenant_demo` scope·고정 UUID·`ON CONFLICT DO NOTHING`·운영(tenant_demo 부재) 시 0건. **DDL 아님** |
 > | `V18__demo_approval_seed.sql` | **데모 전용 시드** — 승인 가능한 결재 2건(subject_kind=RULE, payload `{"action":"ACTIVATE"}`) + PENDING_APPROVAL 데모 룰 2종. `tenant_demo` scope·멱등·운영 시 0건. **DDL 아님** |
+>
+> **중립(canonical) 수집 블록 feature 마이그레이션(코드=truth, feature/aml-neutral-canonical-ingest, additive)**: 아래 파일은 위 누적 phase 표와 별개로 본 브랜치 저장소(`services/fds-svc/src/main/resources/db/migration`)에 실재하는 신규 마이그레이션이다(실제 파일명·내용 1:1).
+>
+> | 파일 | 내용 |
+> |---|---|
+> | `V6__neutral_block_features.sql` | **`fds_feature_catalog` upsert(시드, DDL 아님)** — AML 중립 수집 5 product(카드/잔액/충전/국내송금) 신호를 no-code 룰 빌더에 노출하는 feature 카탈로그 행 13종을 `_global`/`default` scope 로 `ON CONFLICT DO UPDATE`. **신규 룰팩 INSERT 없음**(기존 C1213 이 cmp 노드로 소비 "가능"까지가 목표). 등록 키: `merchant.mcc`(Merchant/STRING)·`merchant.country`(Merchant/STRING)·`card.scheme`(Instrument/STRING)·`card.issuerCountry`(Instrument/STRING)·`card.international`(Instrument/BOOL)·`balance.before`(Transaction/NUMBER)·`balance.after`(Transaction/NUMBER)·`balance.delta`(Transaction/NUMBER, pass-through 탐지)·`funding.instrumentType`(Instrument/STRING, 분산충전)·`funding.autoTopup`(Instrument/BOOL)·`funding.manualApproval`(Instrument/BOOL)·`transfer.accountHolderNameMatch`(Counterparty/BOOL, 차명 탐지)·`transfer.fundingSourceType`(Transaction/STRING). §5.20 `fds_feature_catalog`·API §5.1 CardDto/BalanceDto/FundingDto·`domain/rule/DomainFeatureKeys` 1:1 |
 
 FK 의존: V7은 V4·V6, V8은 V7, V12는 V6, V14는 V7에 의존하므로 위 논리 순서 고정. 배포 모델·규제 팩 전환은 V2(`fds_tenants`) 이후 수행한다(저장소는 `V2__phase1_foundation.sql`이 담당).
 
@@ -961,6 +985,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-04 | v3.0 | **중립(canonical) 수집 블록 feature 마이그레이션 반영(코드=truth, feature/aml-neutral-canonical-ingest, additive).** §8 저장소 마이그레이션 표에 신규 파일 `V6__neutral_block_features.sql`(1:1) 행 추가 — `fds_feature_catalog`에 AML 중립 5 product(카드/잔액/충전/국내송금) 신호 feature 13종을 `_global`/`default` scope `ON CONFLICT DO UPDATE` upsert(시드·DDL 아님). 신규 룰팩 INSERT 없음(기존 C1213 이 cmp 노드로 소비 "가능"까지가 목표). 키=`merchant.mcc`·`merchant.country`·`card.scheme`·`card.issuerCountry`·`card.international`·`balance.before`·`balance.after`·`balance.delta`·`funding.instrumentType`·`funding.autoTopup`·`funding.manualApproval`·`transfer.accountHolderNameMatch`·`transfer.fundingSourceType`. §5.20·API §5.1·`domain/rule/DomainFeatureKeys` 1:1. | aegis-java-implementer. 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V6__neutral_block_features.sql`·`domain/rule/DomainFeatureKeys`. |
 | 2026-06-21 | v2.0 | **코드 정합(저장소 fds-svc Flyway 실제 파일 1:1) — §8 마이그레이션 표 전면 교정·증적 컬럼 back-fill.** (1) §8 표의 논리 `V17__deployment_model.sql`/`V18__compliance_policy.sql`/`V19__notify_channels.sql` 행을 폐기하고, 저장소 실제 파일과 1:1 매핑 표(V10~V18) 신설: 배포 모델·규제 팩 전환(`deployment_model`/`onboarding_status`/`infra_ref`/`compliance_policy`·`isolation_mode` DROP)은 별도 파일이 아니라 **`V2__phase1_foundation.sql`** 이 수행함을 명시(`isolation_mode`는 `V1__baseline.sql` 생성). V11 `payload_json`·V12 materialized_state·V13 action_outbox_backoff(`next_attempt_at`)·V14 notify_channels·V15 webhook_outbox·V16 ph_data_grounding(channel 21종 CHECK·corridor 4컬럼·hanpass 소스 7종 시드)·V17 demo_ph_rules(데모 시드)·V18 demo_approval_seed(데모 시드) 실내용 기재. (2) §5.23 `fds_approval_requests`에 `payload_json JSONB NULL` 행 추가(V11). (3) §5.10 `fds_decisions` 채널/금액/corridor가 `fds_canonical_events` LEFT JOIN 파생(현재 구현)임을 주석화·향후 비정규화 예정. (4) §4.9 `ACKED` 전이 트리거(`SENT→ACKED`, `ActionResultConsumer`/`aws` 프로파일) 명시. (5) §4.4 hanpass 채널 재그라운딩 주석에 `(Flyway V16)` 병기. §5.1/§4.1 `(§8 V17)` 인라인 참조를 `V2__phase1_foundation.sql`로 정정. enum·컬럼 정본 코드 집합 불변. | data-modeler |
 | 2026-06-19 | v1.9 | **테넌트=서비스 재정의 + 기관 참조(institution_ref) 컬럼 신설(1 기관 : N 서비스)**: §2.1/§2.2/§10 설명 텍스트의 '고객사'를 '서비스(테넌트=서비스)'로 정정(계층 기관→서비스(테넌트)→워크스페이스). §5.1 `fds_tenants`를 '서비스 마스터(테넌트=서비스)'로 라벨링하고 상위 기관 참조 컬럼 `institution_ref VARCHAR(64) NULL`(additive·후속 마이그레이션) 추가. `tenant_id`/`workspace_id`/RLS·scope 코드·PK 선두 규칙 불변(의미만 '서비스'). | data-modeler |
 | 2026-06-18 | v1.8 | **데이터 레이어 hanpass-ph 소스 재그라운딩 — 소스 카탈로그·channel CASH_IN/INBOUND_REMIT·corridor·연동 키**(규제 레이어 불변): (1) §4.4 `channel_type`에 `CASH_IN`(월렛충전 top-up)·`INBOUND_REMIT`(파트너 인바운드) 2종 추가(19→21종) + hanpass-ph 매핑 주석. (2) §5.3 `fds_source_systems`를 hanpass-ph 트랜잭션 마이크로서비스로 예시화 + §5.3a 소스 카탈로그 표(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`) 신설(REST sync 인입·연동 키 매핑·token/HMAC). (3) §5.5 `fds_canonical_events`에 corridor 컬럼(`send_country`/`receive_country`/`send_currency`/`receive_currency`) + `amount_base`(USD) 출처(remit `usd_amount`/`report_amount`) 주석. (4) §5.6/§5.7 subject_ref=member_id HMAC·account=wallet 매핑 주석. (5) §10 downstream enum channel 19→21종. **CTR/STR 임계·기한·KoFIU 분류 미변경(규제 불변)** — PH 운영은 Policy Pack `PH_AMLC` 옵션 병기만. | data-modeler |
