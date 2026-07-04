@@ -500,6 +500,28 @@ sequenceDiagram
 | `vendor_verdict` | `aml_alerts.evidence.vendorVerdict` | 표준 evidence field로 변환(벤더 schema 원문 미노출) |
 | (dual-run) | `aml_alerts.source_origin=VENDOR` | analyst final decision은 별도 저장 |
 
+### 7.4 외부 제재 명단 수집 — OFAC SDN · UN Consolidated (real-sanctions-daily-import, 코드=truth)
+
+무료·무인증 공개 제재 명단을 일일 수집해 `DEMO_SANCTIONS` 데모 명단을 실데이터로 병행/대체하는 흐름. `WatchlistFeedPort`(out)의 `@Primary WatchlistFeedRouter`가 `source_code`로 transport 를 라우팅한다 — `OFAC_SDN`→`OfacSdnFeedAdapter`, `UN_CONSOLIDATED`→`UnConsolidatedFeedAdapter`, 그 외→`MockWatchlistFeedAdapter`(DEMO 데모 피드·기존 fail-closed 라이브 가드 보존). 신규 의존성 0(JDK `HttpClient`+StAX).
+
+**소스(실증 2026-07-04, GET+redirect-follow)**
+| 소스 | URL(설정 기본값) | 특성 |
+|---|---|---|
+| OFAC SDN | `https://sanctionslistservice.ofac.treas.gov/api/publicationpreview/exports/sdn.xml` | ~28MB·19,129건. GET 200(→302 서명 S3 1회 리다이렉트). 레거시 `treasury.gov/ofac/downloads/sdn.xml`은 이 URL로 302. `Publish_Date`→버전 `ofac-yyyy-MM-dd`. |
+| UN Consolidated | `https://scsanctions.un.org/resources/xml/en/consolidated.xml` | ~2MB·INDIVIDUAL 730+ENTITY 272. GET 200(→302 Azure blob SAS). **HEAD는 404 — 반드시 GET**. 루트 `dateGenerated`→버전 `un-yyyy-MM-dd`. |
+
+라이선스: OFAC·UN 공개데이터(무료·재배포 제약 없음). OpenSanctions 등 **상업 라이선스 소스는 미사용**.
+
+**fetch·파싱(memory-safe·XXE 방어)**: `SanctionsXmlHttpFetcher`(JDK `HttpClient`, `Redirect.NORMAL`, connect 10s·read 120s·**64MB 스트림 상한 가드**·IO 재시도 2회 백오프). 리다이렉트 SAS/서명 URL 은 매 요청 원 URL 시작·캐시 금지(가정 A11). StAX 스트리밍 파서(`OfacSdnXmlParser`·`UnConsolidatedXmlParser`, `SUPPORT_DTD=false`·`IS_SUPPORTING_EXTERNAL_ENTITIES=false` = XXE 무해)가 `sdnEntry`/`INDIVIDUAL`·`ENTITY` 단위 소비. 매핑: 인물→`PERSON`, 단체/항공기→`ENTITY`, 선박→`VESSEL`; 이름→대문자 `normalized_tokens`(raw PII 미저장·§19.2, primary_name_hash=null); attributes{uid/dataId·program/unListType·dob?·nationality?·listedReason}; **strong aka(OFAC `category=strong`)·good-quality alias(UN, Low 제외)만 별도 엔트리**(recall↑, 가정 A3) `external_ref=uid:aka:n`.
+
+**동기화 파이프라인(`SanctionsSyncService`, 가정 A1·A4·A5)**: fetch(트랜잭션 밖) → publish 버전 결정 → **동일 버전이면 SKIP**(freshness·`last_imported_at`만 갱신, `SKIP_UNCHANGED`) → 아니면 delete-then-insert 멱등 적재(`external_ref` 키) → **auto-apply**(공개·권위 소스는 사람 승인 없이 `active_version` 승격, actor `system:sanctions-sync`; 기존 수동 업로드→`imports:apply` 4-eyes 경로는 불변) → `delistMissing`(신버전 external_ref 집합에 없는 이전 ACTIVE→`DELISTED`) → `pruneVersionsExcept`(최근 2버전만 보존) → 감사 → `ReconcileWatchlistUseCase`로 freshness 스냅샷 갱신.
+
+**스케줄·수동 트리거**: `SanctionsImportScheduler`(`adapter/in/scheduled`, `@Profile("!test")`, cron 기본 `0 20 3 * * *` UTC=마닐라 11:20, `aml.watchlist.sanctions.enabled` **기본 false**·데모 compose 만 env `true`, single-flight `AtomicBoolean`). 즉시 실행은 `POST .../watchlist-sources/{code}/sync`(API §2.4, scope `aml:admin:watchlist`) 수동 트리거.
+
+**장애 시 동작(fail-safe·fail-closed)**: 외부망/파싱/DB 실패는 **예외 미전파** — `SyncResult(FAILED)`로 흡수, ERROR 로그 + 감사(`WATCHLIST_IMPORT`·action `FETCH_FAILED`), 소스 무변경(`last_imported_at`·freshness **미갱신**). 이후 `aml_watchlist_sources.last_imported_at` 48h 초과 시 `WatchlistFreshnessGateAdapter`가 해당 적용 소스로의 스크리닝을 **fail-closed 차단**(설계 의도 — 우회 금지). 감사 action: `AUTO_APPLY_IMPORT`(성공)·`SKIP_UNCHANGED`(동일 버전)·`FETCH_FAILED`(실패), category `WATCHLIST_IMPORT`(가정 A2).
+
+**bo-api 위임**: `POST /api/v1/bo/aml/watchlist-sources/{code}/sync` → `AmlEngineClient` 순수 위임(운영자 감사 후 엔진 호출). 제재명단 수집은 엔진 전용 표면 → **비위임(stub) 모드 fail-closed 503 `AML.ENGINE_UNAVAILABLE`**(위조 성공 카운트가 48h 게이트 오갱신 방지, 4-eyes 계약 대상 아님·가정 A10).
+
 ---
 
 ## 8. 아웃박스·결재 상태머신(4-eyes)
