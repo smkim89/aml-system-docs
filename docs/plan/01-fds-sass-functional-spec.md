@@ -78,6 +78,8 @@
 
 좌측 NAV는 **운영(OPERATIONS) / 설정(CONFIGURATION)** 2영역으로 분리하며, 각 영역은 기능그룹 → 메뉴 3단으로 구성한다. 운영 영역이 위, 설정 영역이 아래. 운영자가 매일 쓰는 탐지·조사·케이스가 상단에 오고, 셋업·정책 화면은 설정 영역으로 내린다. 상세 화면은 NAV 항목이 아니라 목록 행/버튼 드릴다운으로 진입한다.
 
+> **상세 진입 방식(정본 · 20260704 재검수)**: 드릴다운 상세는 두 가지로 나뉜다. ① **전체 화면 라우트(딥링크·URL 직접 접근·뒤로가기 동작)** — 순수 조회(read) 상세 4종이 라우트로 전환 완료: 탐지 결정(`/fds/decisions/[decisionId]`)·이벤트 조회(`/fds/events/[eventId]`)·규제 보고(`/fds/reports/[reportId]`, SFDS-REG)·감사 로그(`/fds/audit/[logId]`, SFDS-AUDIT-001). ② **모달 유지** — 액션·폼(작성·상신·결재 처리) 성격의 상세는 모달로 둔다: 액션 운영(SFDS-ACT-001, Capability 변경 결재 상신)·결재함(SFDS-APPR-001, 승인/반려 결재 처리)·스키마 매핑(SFDS-MAP-002, 매핑 변경 상신). AML TM 알림 상세(`/aml/tm/alerts/[alertId]`)도 ① 전체 화면 라우트 정본이며, 상세 라우트 공통 헤더(뒤로가기·타이틀·화면 ID·식별자·상태 배지)는 bo-web `components/common/DetailPageHeader` 단일 primitive 로 조합한다(read 상세 4종 + AML TM 공유).
+
 | 영역 | 기능그룹 | 메뉴(화면 ID) |
 |---|---|---|
 | **운영** | 조사·모니터링 | 플랫폼 대시보드(SFDS-DASH-001/002) · 탐지 결정(SFDS-DEC-001/002/003) · 이벤트 조회(SFDS-EVT-001) · 룰 효과 통계(SFDS-STAT-001) |

@@ -132,6 +132,7 @@
 |---|---|---|---|---|---|
 | POST | `/api/v1/fds/decisions/evaluate` | 승인 전 실시간 FDS 판단. `fds_decisions`+`fds_decision_reasons` 생성 | API Key+HMAC/mTLS · `fds:decision:evaluate` | 필수 | — |
 | GET | `/api/v1/fds/decisions/{decisionId}` | decision 단건(증적: matched_rules·feature_snapshot 요약) | `fds:case:read` | — | — |
+| GET | `/api/v1/fds/decisions/{decisionId}/evidence-transactions?ruleId=&page=&size=` | **판정 발동 룰 근거 거래 전수 페이징**(요구2 — 판정 근거 거래 전수 표시). 발동 룰의 evidence 윈도우(dimension + rolling window + channel scope)를 해소해 근거 거래 **전체**를 페이징(캡된 `feature_snapshot` evidence 는 미절단). `ruleId` 미지정 시 대표 룰(최심각 outcome, A12) 사용. `size` 기본 50·어댑터 200 클램프(A8). 미지 decision 404. 응답 DTO §5.4a `DecisionEvidenceTransactionsResponse` | `fds:case:read` | — | — |
 | GET | `/api/v1/fds/decisions` | decision 목록(필터 11종: `transactionRef`,`subjectRef`(대상 토큰),`ruleNo`(적중 룰 번호),`decision`,`channelType`,`currency`,`amountMin`,`amountMax`,`sendCountry`,`receiveCountry`,`from`,`to` · 페이지네이션). 채널/통화/금액/corridor 축은 연결 canonical event LEFT JOIN 파생(DB §5.10·§5.5) | `fds:case:read` | — | — |
 
 > 장애 정책(D-14): `fds_source_systems.fail_policy`(`FAIL_CLOSED`/`FAIL_OPEN`/`CASE_ONLY`)에 따라 평가 불가 시 응답 `decision` 결정. `CASE_ONLY`는 `REVIEW`+case 후보.
@@ -301,6 +302,25 @@ FundingDto(△, 중립 WALLET_TOPUP §6.4 `funding` 블록): `fundingInstrumentT
 | createdAt | datetime | `created_at` |
 
 > `feature_snapshot`/`input_event_hash`는 증적용이며 기본 응답에서 요약/마스킹. Evidence API에서 전체 제공.
+
+### 5.4a DecisionEvidenceTransactionsResponse — `GET /api/v1/fds/decisions/{decisionId}/evidence-transactions` (요구2 — 판정 근거 거래 전수)
+
+발동 룰의 evidence 윈도우 메타(발동 룰 + dimension + rolling window + channel scope)와 근거 거래의 페이징 envelope 를 반환한다. 캡된 `feature_snapshot` evidence 는 이 뷰를 절단하지 않는다(전수 페이징). 응답 형상은 fds-svc `DecisionEvidenceTransactionsResponse`(port `QueryDecisionEvidenceUseCase.EvidenceResult`, `DecisionEvidenceQueryPort`)와 1:1:
+
+| 필드 | 타입 | 매핑 |
+|---|---|---|
+| `ruleId` | string(uuid)\|null | 설명 대상 발동 룰(미지정 시 대표 룰 A12) |
+| `ruleName` | string\|null | 발동 룰 이름 |
+| `outcome` | enum\|null | 발동 룰 outcome(decision severity) |
+| `dimension` | enum\|null | 집계 축(subject velocity / banking-day cash sum / single-transaction group) |
+| `dimensionRef` | string\|null | 집계 축 참조 키(주체/그룹 토큰) |
+| `window` | string\|null | rolling window(예 `PT6H`) |
+| `windowStart` | string(date-time)\|null | 윈도우 시작 시각 |
+| `asOf` | string(date-time)\|null | 집계 기준 시각 |
+| `channelFilter` | array<string>\|null | 채널 scope 필터 |
+| `transactions` | `PageResponse<EventViewResponse>` | 근거 거래 전수 페이지(정렬 `occurredAt,desc`) |
+
+`transactions.content` 원소 = `EventViewResponse`(canonical event 뷰 투영, §5.1 canonical event 필드 미러) — 테넌트 키 토큰만·raw PII 미포함(§16.1), `canonical_payload` 미노출. 주요 필드: `eventId`/`eventType`/`eventFamily`/`occurredAt`/`subjectRef`/`subjectCountry`/`transactionRef`/`transactionType`/`channelType`/`paymentRail`/`sendCountry`/`receiveCountry`/`amount`/`currency`/`amountBase`/`baseCurrency`/`counterpartyRef`/`deviceRef`/`payloadHash`. party 식별정보는 마스킹 토큰만 실리며 원문 PII 는 미포함(§16.1 마스킹/hash 정책).
 
 ### 5.5 CaseDto — `fds_cases`
 | 필드 | 타입 | 매핑 |
@@ -1395,6 +1415,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-04 | v3.1 | **(H1) 판정 발동 룰 근거 거래 조회 엔드포인트 역전파(코드=truth, fix/aml-fds-spec-backprop).** (1) **§4.2 Decision API 표에 행 추가** — `GET /api/v1/fds/decisions/{decisionId}/evidence-transactions?ruleId=&page=&size=`(scope `fds:case:read`) 판정 근거 거래 전수 페이징(요구2, 발동 룰 evidence 윈도우 해소·`feature_snapshot` 캡 미절단, `ruleId` 미지정 시 대표 룰 A12, size 기본 50·200 클램프 A8, 미지 decision 404). (2) **§5.4a `DecisionEvidenceTransactionsResponse` DTO 신설** — 코드 `DecisionEvidenceTransactionsResponse`(ruleId/ruleName/outcome/dimension/dimensionRef/window/windowStart/asOf/channelFilter/transactions=`PageResponse<EventViewResponse>`) 1:1 전사, rows=EventView 투영(토큰만·raw PII 미포함·canonical_payload 미노출). | aegis-spec. 코드=truth. 근거=fds-svc `adapter/in/rest/DecisionQueryController`(GET evidence-transactions)·`adapter/in/rest/dto/DecisionEvidenceTransactionsResponse`·`EventViewResponse`·port `QueryDecisionEvidenceUseCase`·`DecisionEvidenceQueryPort`. sass §01-fdsSvc 동기화. |
 | 2026-07-04 | v3.0 | **중립(canonical) 수집 블록 인입 확장 반영(코드=truth, feature/aml-neutral-canonical-ingest, additive).** §5.1 `IngestEventRequest` 표에 `card`/`balance`/`funding` 블록 행 추가 + `CardDto`(scheme·issuerCountry·domesticInternationalFlag)·`BalanceDto`(balanceBefore·balanceAfter)·`FundingDto`(fundingInstrumentType·isAutoTopup·isManualApproval) 서브-DTO 설명 신설 + `RiskSignalsDto`에 `accountHolderNameMatch`(차명계좌 §6.2)·`fundingSourceType` 가산. AML 중립 수집 API(02-aml §2.1a)의 5 product 신호를 FDS 판정 경로가 동일 feature 결선으로 소비하도록 확장(비-PII만, PAN/계좌/충전수단 masked 미수용·`instrument.instrumentRef` 토큰 참조 §16.1). 기존 룰팩 C1213 이 cmp/velocity 노드로 소비 "가능"까지가 목표(신규 룰팩 신설 없음). feature 카탈로그 등록=DB §feature catalog V6(01-fds-db.md). | aegis-java-implementer. 코드=truth. 근거=fds-svc `adapter/in/rest/dto/IngestEventRequest`(CardDto·BalanceDto·FundingDto·RiskSignalsDto.accountHolderNameMatch/fundingSourceType)·`domain/rule/DomainFeatureKeys`(§6.2~§6.5 blocks). |
 | 2026-06-28 | v2.9 | **Travel Rule(`TRAVEL_RULE_MISSING`) `reference`(MISSING_FIELD)를 수령방식별로 정합(코드=truth).** 해외송금 수령 방식(`payoutMethod`: ACCOUNT_TRANSFER/CASH_PICKUP/WALLET)에 따라 필수 수취인 정보가 달라, `RuleRef.reference`(type=MISSING_FIELD)가 `{payoutMethod, requiredFields[], missingFields[], corridor}`를 담는다. `requiredFields`=방식별 필수(계좌이체 이름·계좌·은행 / 캐시픽업 이름·전화·신분증 / 지갑 이름·지갑주소), `missingFields`⊆required(캐시픽업은 계좌번호 미보고). 필드 key·방식 코드만(원문 PII 미포함). AML VASP `completenessStatus`(§02-aml §3.14)와는 별개 모델. | aegis-spec. 코드=truth. 근거=bo-api `travelRuleReference`. |
 | 2026-06-28 | v2.8 | **`RuleRef`에 룰별 참조 데이터(`reference`) 추가 + 누적 드리프트(`ruleNo`/`displayName`) 정정(코드=truth).** OpenAPI `RuleRef` 스키마에 `reference`(object, nullable — 룰 종류별 드릴인 근거: `BLOCKLIST_MATCH` 대포통장 명단 계좌 / `VELOCITY_WINDOW` 기여 거래 리스트 / `GEO_ANOMALY`·`WALLET_RISK`·`MISSING_FIELD`, **마스킹 토큰만·raw PII 미포함**)와 기존 구현 필드 `ruleNo`·`displayName`을 명시(스키마-코드 누적 이격 해소). §5.4 `DecisionResponse.matchedRules` 가 본 RuleRef 사용. 가산 필드(비파괴). | aegis-spec. 코드=truth. 근거=bo-api `FdsDecisionCaseDtos.RuleRef`·`ruleReferenceFor`. |

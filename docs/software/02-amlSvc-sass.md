@@ -374,9 +374,11 @@ com.hanpass.aml
 │   │              #   ReviewStrCtrUseCase(STR/CTR 작성·검토·제출, API §2.7/§3.6),
 │   │              #   ManagePolicyUseCase(CDD checklist·periodic review 주기 정책 변경, API §2.7),
 │   │              #   ManageWatchlistUseCase(명단 import/diff/apply, API §2.7 watchlist-sources),
+│   │              #   QueryAlertRelatedTransactionsUseCase(알림 발동 근거 거래 전수 조회, API §2.4/§3.4d),
 │   │              #   RunApprovalUseCase(maker-checker 결재 상신/승인/실행, API §2.7 approval)
-│   └── port/out/  # CanonicalEventStorePort, WatchlistStorePort, ScreeningIndexPort,
-│                  #   RiskModelPort, ScenarioStorePort, FeatureStorePort,
+│   └── port/out/  # CanonicalEventStorePort, CanonicalEventWindowPort(근거 윈도우 페이징),
+│                  #   WatchlistStorePort, ScreeningIndexPort,
+│                  #   RiskModelPort, ScenarioStorePort, FeatureStorePort, BankingCalendarPort,
 │                  #   FdsCasePort(fds-svc), ReportSubmissionPort, AuditEvidencePort,
 │                  #   SchemaRegistryPort, PiiTokenizationPort
 ├── adapter/
@@ -2018,6 +2020,7 @@ SaaS AML Platform은 `23-amlSvc.md`의 WLF·RA·CDD/EDD·명단관리·감사 �
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-04 | **알림 발동 근거 거래 전수 조회 표면 역전파(코드=truth, fix/aml-fds-spec-backprop).** §6.2 헥사고날에 in-port `QueryAlertRelatedTransactionsUseCase`(알림 발동 근거 거래 전수 페이징, API §2.4/§3.4d) + out-port `CanonicalEventWindowPort`(근거 윈도우 페이징)·`BankingCalendarPort` 추가. `adapter/in/rest` 엔드포인트 전수·응답 스키마 정본은 API §2.4/§3.4d 위임(본 레이아웃은 그룹 요약). 엔진 domain 무변경 — read-only 조회 표면. | aegis-spec. 코드=truth. 근거=aml-svc `application/port/in/QueryAlertRelatedTransactionsUseCase`·`application/usecase/AlertRelatedTransactionsService`·`application/port/out/CanonicalEventWindowPort`·`adapter/in/rest/AlertController`(`GET /alerts/{alertId}/related-transactions`). API §2.4/§3.4d 동기화. |
 | 2026-06-21 | **코드 기준 outbox aggregate_type 정합(이격 리포트 AML).** §15.8 `aml_outbox.aggregate_type` 허용값 5종→**6종**(`IRA_REPORT` 추가 — 구현 V13, IRA 제출 폐루프 enqueue). DB §3.15·integration §8.1 동기화. | system-architect. 근거=`aml-svc/.../db/migration/V13`. 이격18 반영. |
 | 2026-06-11 | QA HIGH(L118) 해소: §8.1 cross-reference 구문 "연동 §3.1이 14종으로 표기한 것은 오기" → "연동 §3.1은 15종 정본과 동기화 완료"로 교체(연동 v1.6 `vendor.*` 등재 반영 직접 확인). | system-architect |
 | 2026-06-11 | QA HIGH 3건(L295·L307·L308) 해소: ① §6.2 패키지를 '설계 표기 `com.hanpass.aml` / 구현 `com.aegis.aml`' 이중 표기로 정정(FDS 설계서 §6.2 동일 패턴, target-architecture §5). ② §8.2에 FDS `workspaceId` ↔ AML `dataScope` 의도된 비대칭 교차 주석 추가(연동 §4.1 cross-service 정책 — `fds-aml-handoff` 어댑터 `workspaceId`→`dataScope` 변환). ③ §17.1에 'AML `failure_policy`(`MANUAL_REVIEW`/`FAIL_CLOSED`/`DELAY_ALLOWED`) ↔ FDS `fail_policy`(`FAIL_CLOSED`/`FAIL_OPEN`/`CASE_ONLY`) 별도 enum — 혼동 금지, bo-web 표시명 매핑=bo-api' 명문화. | system-architect |
