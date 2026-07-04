@@ -252,7 +252,20 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 |---|---|---|---|---|---|
 | GET | `/api/v1/admin/aml/screenings?status=POSSIBLE_MATCH` | `aml:case:read` | — | 검토 큐 조회 | `aml_screening_results` |
 | POST | `/api/v1/admin/aml/screenings/{screeningId}/decision` | `aml:case:update` | 🔒4-eyes(TRUE_MATCH/FP) | WLF 판정(true/false positive) | `aml_screening_results`,`aml_approvals` |
-| POST | `/api/v1/admin/aml/screenings/fp-whitelist` | `aml:admin:watchlist` | 🔒4-eyes | false positive whitelist 등록 | `aml_approvals` |
+| POST | `/api/v1/admin/aml/screenings/fp-whitelist` | `aml:admin:watchlist` | 🔒4-eyes | false positive whitelist 등록 | `aml_approvals`,`aml_fp_whitelist` |
+
+> **`FpWhitelistRegisterRequest`(FP whitelist 등록 요청, DB `aml_fp_whitelist` §3.8a — 코드=truth).** 4-eyes 상신 payload(bo-api `ScreeningDtos.FpWhitelistRegisterRequest`·aml-svc `WhitelistFalsePositiveUseCase.WhitelistCommand`=truth):
+> | 필드 | 타입 | 필수 | 설명 |
+> |---|---|---|---|
+> | `screeningId` | string(uuid) | Y | 면제를 촉발한 발원 스크리닝 결과 id(DB `screening_id`, **V14**, §3.8 추적성 — 아래 `matchedEntryId`(엔트리 id)와 **별개 슬롯**·discount 키 아님) |
+> | `targetRef` | string | Y | 면제 대상 ref(DB `target_ref`) |
+> | `matchedEntryId` | string | Y | **면제 대상 워치리스트 엔트리 id**(DB `matched_entry_id`, §3.7 `entry_id`) — **discount matchFeature 슬롯**. 반드시 워치리스트 `entry_id`(절대 `screeningId` 아님 — 과거 이 슬롯에 screeningId 를 넣어 `AUTO_DISCOUNTED` 미발동, run2 D2). 단건(요청당 엔트리 1개) |
+> | `targetType` | enum | N | 스크리닝 행의 대상 유형(DB `target_type` §5.23, `CUSTOMER`/`ENTITY`/`COUNTERPARTY`/`CRYPTO_ADDRESS`) — 수취인(COUNTERPARTY) 면제가 하드코딩 CUSTOMER 로 기록되지 않도록 승계 |
+> | `makerId` | string | Y | 상신자(4-eyes maker). checker≠maker 승인 필요 |
+> | `reason` | string | N | 면제 사유(DB `reason`, **V14**, maker 입력·운영 뷰 표시) |
+> | `expiresAt` | string(date-time)\|null | N | 면제 만료일(DB `expires_at`, **V14**, **null=무기한**). 응답·조회에서 `expiresAt < now()` ⇒ **EXPIRED 파생 상태**(DB §3.8a 가정 A5, 스케줄러 없음·조회/discount 판정 시점 파생) 표기 |
+>
+> **가정 C(정정)**: 직전 초안은 `entryIds` **배치** 배열을 가정했으나 코드=truth 재검증 결과 요청 계약은 **단건 `matchedEntryId`**(bo-api `FpWhitelistRegisterRequest`·aml-svc `WhitelistCommand` 모두 단수)다 — 배치 필드 없음. 본 표는 실제 DTO(단건) 기준으로 확정한다(추측 없음). 응답 `FpWhitelistRegisterResponse{ approvalId, approvalStatus(§ SUBMITTED/…), payloadHash }`, 조회 행 `FpWhitelistEntry{ whitelistId, screeningId, targetRef, status(ACTIVE/EXPIRED/REVOKED), registeredBy, reason, registeredAt, expiresAt, revokedAt }`(bo-api DTO=truth·PII 마스킹). checker 승인(EXECUTED) 시 `aml_fp_whitelist`(active=true) 등록 → 후속 동일 매치 `AUTO_DISCOUNTED` 즉시 적용(§10 예외 규칙).
 
 #### Risk Assessment 정책·override (§11.3)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
@@ -428,11 +441,12 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | `requiredActions` | array<string> | `MANUAL_REVIEW`/`EDD_REVIEW`/... |
 | `matchedEntries` | array<string> | 후보 entry_id(masked). **하위호환 유지** — `matchedCandidates`와 병존(기존 소비자 보존) |
 | `matchedCandidates` | array<object> | **가산(additive) 필드.** 매칭 후보 출처계보. 각 원소 `MatchedCandidate`(아래 표) — `matchedEntries`의 각 entry_id를 `aml_watchlist_entries`+`aml_watchlist_sources` 조인으로 enrich한 best-effort 파생값. **raw PII 미포함**(masked entryId·출처·버전·점수·토큰개수만) |
-| `matchedRules` | array<object> | 적용된 WLF 룰 참조 `{ ruleCode, threshold }`(파생값, DB `rule_version` 기준 투영). 단수 `ruleVersion`과 구분 |
+| `matchedRules` | array<object> | 적용된 WLF 룰 참조 `{ ruleCode, threshold, score }`(파생값, DB `rule_version` 기준 투영). `score`(number)는 해당 룰에 대해 산출된 실측 유사도 점수(threshold 대비 판정 근거·엔진 WLF 룰 score 투영, `ScreeningResponse.matchedRules[].score` 코드=truth). 단수 `ruleVersion`과 구분 |
 | `subjectIdentity` | object | **가산(additive) 필드(bo-api WLF 매치 상세 투영).** reveal 게이트 대상 식별정보 메타 `SubjectIdentity`(아래 표) — 대상 식별자(`targetRef`) + reveal 가능 필드 키 목록만. **raw PII(이름·국적·성별·생년 원문) 미포함** — 원문은 `aml:pii:reveal`+사유+`RAW_DATA_ACCESS` 경로(§1.6, `POST /internal/v1/aml/pii/reveal` §2.6)로만 노출. **CUSTOMER·counterparty 대상 모두 `[NAME, NATIONALITY, GENDER, DOB]` 4필드 균일**(주체 무관). 주체가 보유하지 않는 필드(예 수취자=상대방의 성별·생년월일)는 reveal stub 이 빈 값(`""`)을 반환한다(placeholder 아님) |
 | `ruleVersion` | string | 적용 WLF 룰/threshold 버전(DB `rule_version`) |
 | `decidedBy` | string | 판정자(분석가, DB `decided_by`, nullable) |
 | `decidedAt` | string(date-time) | 판정 시각(DB `decided_at`, nullable) |
+| `createdAt` | string(date-time) | 결과 행 생성 시각(DB `created_at`, `ScreeningResponse.createdAt` 코드=truth). review-queue/history 기간필터·SLA 기준. **미영속 결과(실시간 POST 비저장)는 null 가능** — `decidedAt`(판정 시각)와 병기·구분 |
 | `expiresAt` | string(date-time) | 실시간 결과 만료(§15.7) |
 
 > **`screeningHistory`(이전 판정 이력 배열)는 `ScreenResponse` 미포함.** 동일 `screeningId`의 이전 판정 이력은 `GET /api/v1/aml/screenings/{screeningId}` 상세 조회(§2.2) 응답에서 파생한다. PRD 화면파생 방향 채택 — bo-web/bo-api가 이력 상세가 필요할 경우 단건 조회 엔드포인트를 호출하며, 실시간 screening POST 응답(`ScreenResponse`)에는 이력 배열을 포함하지 않는다.
@@ -1172,12 +1186,15 @@ components:
           type: array
           items: { $ref: '#/components/schemas/RuleRef' }
         ruleVersion: { type: string }
+        decidedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time, nullable: true }
         expiresAt: { type: string, format: date-time }
     RuleRef:
       type: object
       properties:
         ruleCode: { type: string }
         threshold: { type: number }
+        score: { type: number }
     IngestEventResponse:
       type: object
       properties:
@@ -1948,6 +1965,11 @@ paths:
 | `POST .../source-systems`(secret 변경) | `SECRET_CHANGE` | source credential 변경 | `aml:admin:source-system` |
 
 > 본 표로 설계서 §13.4 4-eyes 대상 전수(16종)가 진입 엔드포인트와 1:1 매핑된다. `STR_SUBMIT`·`CTR_SUBMIT`은 동일 경로(`:submit`)이되 `reportType` 파라미터로 분기되며, COMPLIANCE(STR)/REPORTING_OFFICER(CTR) 전담 결재 라인이 구분된다(설계서 §14.1a·§19.2a 정본). 보고 기각·취소(`:reject`/`:cancel`)는 **신규 subjectType 없이** `STR_SUBMIT`/`CTR_SUBMIT` 결재 사이클을 재사용하며 전이 종류(REJECT/CANCEL)·사유 코드는 결재 payload(`payload_hash` 고정)에 포함된다(설계서 §14.1a) — 결재 라인은 두 전이 모두 `REPORTING_OFFICER`. `COUNTRY_RISK`/`POLICY_PACK`은 §3.7 enum 정본이며 §2.7 `country-risk:change`/`policy-packs:change`가 결재 생성 트리거다. `CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`는 §3.7 enum 정본(총 16종); DB §5.16 동기화 대상. PRD §11.1·설계서 §13.5 동기화 대상.
+>
+> **WLF 판정 폐루프 예외 규칙(코드=truth, `ScreeningOperationsService`/`ApprovalDispatchService`)** — `POST .../screenings/{id}/decision`·`POST .../screenings/fp-whitelist` 로 산출되는 판정 상태(§5.5)는 4-eyes 적용 시점이 판정별로 갈린다:
+> - **`ESCALATED`(상위승인) = staging(지연 적용).** 판정을 즉시 반영하지 않고 4-eyes 상신(`subjectType=WLF_DECISION`, SUBMITTED)한다. **checker 승인(EXECUTED) 시점에만** 실제 상태 전이가 반영된다(maker≠checker·`payload_hash` 고정). 상신·미승인 구간에는 원 판정 상태가 유지된다(성급한 상태 오염 방지).
+> - **`AUTO_DISCOUNTED`(자동 낮춤) = 즉시 적용(4-eyes 우회).** FP whitelist(`aml_fp_whitelist`, DB §3.8a) 등록으로 확정된 오탐 면제는 **등록 즉시 후속 동일 매치(matchFeature)를 자동 낮춤**한다 — 별도 승인 게이트를 거치지 않는다(FP whitelist 등록 자체는 `subjectType=FP_WHITELIST` 4-eyes 로 진입하되, 그 산출물인 discount 적용은 조회·판정 시점에 즉시 반영). 만료(`expires_at < now()` ⇒ EXPIRED, DB §3.8a 가정 A5) 후에는 discount 미적용.
+> - **§10 미정의 지점 — 가정 B**: 위 두 규칙의 승인 주체/subject_type 매핑은 코드상 approval `subjectType`(`WLF_DECISION`·`FP_WHITELIST`) 기준으로 기술한다. 상세 승인 라인 표현이 §10 표에 없는 부분은 코드 계약(`ApprovalDispatchService` 분기)만 기술하고 추측하지 않는다.
 
 ---
 
@@ -1991,6 +2013,7 @@ eAMLA 제출은 **raw PII 미전송** — 토큰화된 보고 참조만 전달�
 ## 변경 이력
 
 | 일자 | 변경 | 비고 |
+| 2026-07-05 | **FP whitelist 등록 메타(V14) 동반 API 정정 역전파(코드=truth, fix/aml-fds-spec-backprop-20260704).** DB §7 V14(`aml_fp_whitelist` reason·expires_at·screening_id, §3.8a)에 맞춰 동반 API 필드를 코드 정본으로 일치화: (1) **§3.2 `ScreenResponse.matchedRules`** — 스키마 `{ruleCode, threshold}`→`{ruleCode, threshold, score}`(엔진 WLF 룰 score 투영, `ScreeningResponse.matchedRules[].score` 코드=truth) + OpenAPI `RuleRef.score` 추가. (2) **§3.2 `ScreenResponse`에 `createdAt`(string(date-time), 미영속 결과 null 가능·`ScreeningController.ScreeningResponse.createdAt` 코드=truth) 행 추가** + OpenAPI `ScreenResponse.{decidedAt,createdAt}` 추가. (3) **§10 WLF 판정 폐루프 예외 규칙 명문화** — `ESCALATED`=staging(checker 승인 EXECUTED 시점 반영)·`AUTO_DISCOUNTED`=FP whitelist 등록 즉시 적용(4-eyes 우회, expires_at 만료 후 미적용). 미정의 승인 주체는 코드 `subjectType`(WLF_DECISION·FP_WHITELIST) 기준(가정 B). (4) **§2.3 Screening 검토 `POST .../screenings/fp-whitelist` `FpWhitelistRegisterRequest` 신설** — 단건 `matchedEntryId`(discount 슬롯·엔트리 id)·`screeningId`(발원 결과 id·별개 슬롯)·`targetRef`/`targetType`·`makerId`·`reason`·`expiresAt`(null=무기한, EXPIRED 파생) 필드(DB §3.8a V14 1:1). **가정 C 정정**: 초안의 `entryIds` **배치** 가정을 코드=truth(단건 `matchedEntryId`, bo-api `FpWhitelistRegisterRequest`·aml-svc `WhitelistCommand`) 로 철회 — 배치 필드 없음. | data-modeler. 코드=truth. 근거=aml-svc `adapter/in/rest/ScreeningController.ScreeningResponse`(score·createdAt)·`application/usecase/{ScreeningReviewService,FpWhitelistService}`·`application/port/in/WhitelistFalsePositiveUseCase.WhitelistCommand`(ESCALATED staging vs AUTO_DISCOUNTED 즉시·단건 matchedEntryId)·bo-api `aml/screening/dto/ScreeningDtos.{MatchedRule.score,FpWhitelistRegisterRequest,FpWhitelistStatus.EXPIRED}`·`db/migration/V14__fp_whitelist_registration_metadata.sql`. DB §3.8a/§7 V14 동기화. |
 | 2026-07-05 | **RA 4-eyes 작성자(maker) 서버 파생 전환 역전파(코드=truth, fix/aml-ra-4eyes-maker-trust-boundary).** RA write 3경로(draft·activate·override)가 작성자를 요청 본문 `makerId`(비신뢰 클라이언트 입력)로 신뢰하던 신뢰경계 결함을 형제 서비스(PEP 승인·CDD 재이행 주기)와 동형으로 정정: 작성자는 인증 principal(`principal.email()`)에서만 서버 파생하고(미인증 상신 거부), bo-api BFF 계약 `RaDtos.{DraftRequest, ActivateRequest, OverrideRequest}` 에서 `makerId` 필드·`@NotBlank` 제거. (1) **§2.7 `POST .../ra-models`(draft)·`.../versions/{v}:activate`** 행에 maker 서버 파생 註 추가. (2) **§3.3 `RiskOverrideRequest` 하단 註** 를 draft/activate/override 3경로 공통으로 일반화. 엔진 위임·감사 payload 의 maker 는 서버 파생값 유지(계약 필드명 불변). | aegis-java-implementer. 코드=truth. 근거=bo-api `aml/ra/service/AmlRaService.requireMaker(BackofficePrincipal)`(3 호출부 `principal` 전환)·`aml/ra/dto/RaDtos.{DraftRequest,ActivateRequest,OverrideRequest}`(makerId 제거). Flyway/DB 변경 없음. `:bo-api spotlessCheck·test(985)·bootJar` 그린. |
 | 2026-07-05 | **RA 근거 계약 정합·FE↔BE `listType` 통일 역전파(코드=truth, fix/aml-ra-flow-backprop).** FE↔BE 근거 필드 계약 단절(FE 오기대 `matchType`/`sourceCode` → 상세 탭 `undefined.toUpperCase()` 크래시) 해소를 코드=정본으로 문서 일치화: (1) **§3.3 `RiskScoreResponse`** — `forcedFloorEvidence[]`(당연고위험 강제 상향 근거, 원소 `{listType,screeningId,entryId,label}` masked 참조 토큰·raw PII 없음)·`operativeNextReviewDueAt`(운영 재심사일=회원 주기 수동조정 승인 반영, FE '재심사일' 우선·부재 시 `nextReviewDueAt` 폴백) 행 추가. (2) **`RiskOverrideRequest`** — `targetRef`(오버레이 폐루프 키·현재등급 산출 기준, 미전달 시 scoreId graceful fallback)·`currentGrade`(화면 표시 현재등급 대조 힌트) 행 추가. (3) **§3.15 `SimulationResponse`** — `baselineDistribution`(기준 분포·증감 기준선, nullable) 추가·`falsePositiveImpact` nullable 명시 + `RaSimulateRequest`=`{modelVersion,samplePopulation}` 로 확정하고 **구 `factorWeightOverrides`(dead 필드) 제거** 명문화. (4) **§2.7 RA 점수 목록** — `country` 필터 파라미터 추가. (5) **§2.3 명단 엔트리 브라우저 딥링크 계약 신설** — `/aml/watchlist?listType=<listType>&entry=<entryId>`(BE 제공 토큰만), 구 `?source=<sourceCode>` 폐기. | aegis-java-implementer. 코드=truth. 근거=bo-api `aml/ra/dto/RaDtos.{RiskScore.forcedFloorEvidence,ForcedFloorEvidence,RiskScore.operativeNextReviewDueAt,OverrideRequest.{targetRef,currentGrade},RaSimulateRequest,SimulationResponse.baselineDistribution}`·aml-svc `adapter/in/rest/RiskScoreAdminController`(country 필터)·bo-web `components/common/WatchlistMatchEvidencePanel`·`lib/aml-risk.AmlForcedFloorEvidence`(listType). DB §7 V13 동기화. |
 | 2026-07-04 | **2차 상시 RA(ONGOING) 모델 실환경화·응답 필드 역전파 — `parameters`·`reassessmentAlerts`·`reviewShortened`(코드=truth, V12).** 직전 행(ONGOING=DRAFT placeholder·다음 단계 예정)의 다음 단계를 반영: (1) **§2.7 `GET/POST .../ra-models`** — 응답 `RaModelSummary`·요청 `DraftRequest` 에 **`parameters`(JSON, DB §3.9 `aml_risk_models.parameters` 1:1)** 노출. ONGOING 모델은 트리거·룰 심각도 가중·lookback·최근성·1차 baseline 결합·주기 단축·EDD 임계 정의를 담고 ONBOARDING 은 `{}`. (2) **§3.3 `RiskScoreResponse` 필드 3종 신설** — `scenario`(ONBOARDING/ONGOING·graceful 기본 ONBOARDING)·`reassessmentAlerts[]`(2차 재평가 유발 STR/CTR 알림 계보, 엔진 `factorBreakdown.triggerAlerts` 파생, 1차는 빈 배열)·`reviewShortened`(재이행 주기 단축 from→to, 앞당기기만, 미단축 시 null). (3) **§507 후주 정정** — ONGOING 을 "DRAFT placeholder 자리만"→**실운영 `KR_ONGOING_RA v1 ACTIVE`, 정의는 모델 `parameters` 로 노출**. bo-api `RaDtos.{RaModel.parameters,RaModelVersion.parameters,RiskScore.{scenario,reassessmentAlerts,reviewShortened},ReassessmentAlert,ReviewShortened}` 1:1. | aegis-spec. 코드=truth. 근거=bo-api `aml/ra/dto/RaDtos`·`aml/ra/service/AmlRaService`(3필드 passthrough)·aml-svc `db/migration/V12__ra_ongoing_model_activation.sql`·`domain/risk/{OngoingRaParameters,OngoingRaFactorDeriver}`·`application/usecase/OngoingRaService`. DB §3.9/§7 V12·기능정의서 §6.1 BR-006 동기화. |
