@@ -148,7 +148,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 
 **CTR 순증(net) 규칙**(가정 G4, `NeutralTransactionEventService#signedBaseAmount` = truth): reversal eventType(CANCELLED/REFUNDED/REVERSED)은 `amountBase`/`phpEquivalent`를 **음수**로 저장해 동일 `(tenant, subject, bankingDay)` 일합산 윈도우가 원거래를 순증 차감한다. 별도 보정 레코드 없이 DRAFT 가 부호 합산을 누적하며, 임계 재하락 시에도 DRAFT 는 유지된다(자동 철회·삭제 없음, 감사추적 보존).
 
-**PII 토큰화 경계**(가정 G7/G9, §1.6 원칙 그대로): raw 이름·신분증번호·계좌번호·전화는 컨트롤러→usecase 수신 경계에서만 존재하고, 즉시 토큰화(`PiiTokenPort`)+가역 vault(`aml_pii_vault`) 적재 후 소멸한다. 엔진 payload·canonical event·로그·응답에는 `targetRef`/`counterpartyRef`(안정키 토큰)·`*Masked`만 실린다. subject 토큰=`originator.nationalIdentityKey` 기반, counterparty 안정키=이름+거주국+전화(기존 WLF 정본 재사용). 신분증번호(`idNumberToken`)는 vault 만, payload·응답 미포함.
+**PII 토큰화 경계**(가정 G7/G9, §1.6 원칙 그대로): raw 이름·신분증번호·계좌번호·전화는 컨트롤러→usecase 수신 경계에서만 존재하고, 즉시 토큰화(`PiiTokenPort`)+가역 vault(`aml_pii_vault`) 적재 후 소멸한다. 엔진 payload·canonical event·로그·응답에는 `targetRef`/`counterpartyRef`·`*Masked`만 실린다. **회원 주체 참조 키(`targetRef`, subject)는 회원 업무참조(`originator.partyReference`, 예 `M-1001`)를 토큰화하지 않고 그대로 쓴다**(비PII 업무참조 — integration §10.2a·§19.2): FDS `subject_ref`·CDD `customer_ref`·`aml_risk_scores.target_ref`와 동일 회원 키라 온보딩↔거래 RA 가 이어진다. PII 속성(이름·`nationalIdentityKey`·신분증·전화)만 토큰/vault 로 흐른다. counterparty(외부 수취인) 안정키=이름+거주국+전화(기존 WLF 정본 재사용). 신분증번호(`idNumberToken`)는 vault 만, payload·응답 미포함. 업무참조 부재 레거시 경로만 `originator.nationalIdentityKey` 기반 토큰으로 폴백(잔존 허용).
 
 **응답**(`NeutralIngestResponse` = truth, 가정 G6 — 동기 HOLD 오케스트레이션 미구현): `{ eventId, status(ACCEPTED/REPLAYED/DUPLICATE/REJECTED), accepted(boolean), violations(string[], REJECTED 시만), evaluation }`. `evaluation`(평가된 경우만)=`{ decision(PASS/REPORT — advisory 파생값), alertCount, firedRuleCodes[], screened(boolean) }`. WLF 실패는 인입 실패로 전파하지 않고 `screened=false`로만 표기(가정 G10, best-effort).
 
@@ -156,8 +156,8 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 
 | flat 키 | 타입 | 파생/설명 |
 |---|---|---|
-| `targetRef` | string | 주체 안정 토큰(`originator.nationalIdentityKey` 기반, subject_ref 동형) |
-| `memberRef` | string | 비PII 회원 업무참조(`originator.partyReference`, 예 `M-9903`) — 화면 회원번호 열, FDS `subject_ref` 동형. 부재 시 키 미기록 |
+| `targetRef` | string | **회원 주체 참조 키 = 회원 업무참조**(`originator.partyReference`, 예 `M-1001` — 비PII, 토큰화 안 함, integration §10.2a). subject_ref·`customer_ref`·`aml_risk_scores.target_ref`·`aml_alerts.target_ref`와 동일 값. 업무참조 부재 레거시 경로만 `nationalIdentityKey` 기반 토큰 폴백 |
+| `memberRef` | string | 비PII 회원 업무참조(`originator.partyReference`, 예 `M-1001`) — 화면 회원번호 열, FDS `subject_ref` 동형. 주체 키 통일 이후 `targetRef`와 동일 값이나 `payload->>'memberRef'` 직접 소비 하위호환 열로 유지. 부재 시 키 미기록 |
 | `transactionRef` | string | `transactionReference`(원천 거래 고유번호) |
 | `amountBase` | decimal | 정규화 base 금액. reversal(취소/환불/역거래)은 **음수**(가정 G4·일합산 순증 차감) |
 | `phpEquivalent` | decimal | PHP 환산액 = `amountBase`(baseCurrency=PHP 가정 G3) |

@@ -340,8 +340,8 @@ sequenceDiagram
         APP-->>REST: REJECTED
         REST-->>SRC: 422 { violations[] }
     else 유효
-        APP->>VAULT: tokenize(nationalIdentityKey)·upsert(NAME/DOC/…)
-        APP->>ING: ingest(flat canonical payload, targetRef/counterpartyRef)
+        APP->>VAULT: subjectRef=partyReference(업무참조)·vault upsert(NAME/DOC/…) — PII 속성만 토큰/암호문(§10.2a)
+        APP->>ING: ingest(flat canonical payload, targetRef=subjectRef(업무참조)/counterpartyRef=토큰)
         alt DUPLICATE(동일 키 다른 내용)
             ING-->>REST: 409
         else ACCEPTED/REPLAYED
@@ -474,7 +474,7 @@ sequenceDiagram
 
 | 원천 필드(hanpass-ph 서비스) | canonical 경로 | 변환 | DB 컬럼 |
 |---|---|---|---|
-| `member.member_id`(member-svc) | `payload.customer.customerRef` / FDS `subjectRef` | tenant-keyed HMAC token | `aml_customers.customer_ref` |
+| `member.member_id`(member-svc) | `payload.customer.customerRef` / FDS `subjectRef` / canonical `targetRef` | **회원 업무참조 그대로**(비PII 업무참조 예 `M-1001`, passthrough) — 회원 주체 키는 토큰화하지 않는다(§10.2a) | `aml_customers.customer_ref` / `aml_risk_scores.target_ref` / `aml_alerts.target_ref` |
 | `member.member_name` | `payload.customer.nameHash` | HMAC-SHA256(tenant key) | `aml_customers.name_hash` |
 | `member` rrn/passport/doc_no | `payload.customer.docHash` | HMAC, 원문 폐기 | `aml_customers.doc_hash` |
 | `member` corp_name(kyb) | `payload.entity.legalNameHash` | normalize→HMAC | `aml_entities.legal_name_hash` |
@@ -680,6 +680,14 @@ sequenceDiagram
 - WLF matching용 원문은 `PiiTokenizationPort`에서 일시 처리 후 폐기(`secret_ref`만 저장, D-05 tenant-managed tokenization).
 - `aml:pii:reveal` scope 보유 운영자만 원문 접근, 접근 시 `aml_audit_events`(category=`RAW_DATA_ACCESS`) 기록.
 - 외부 webhook/report 메시지는 ref/hash + 서명만. evidence 본문은 권한·사유·기간 제한 export(`aml_evidence_exports`)로만 반출.
+
+### 10.2a 회원 주체 참조 키 정책 (§19.2 — 업무참조 vs PII 토큰)
+
+- **회원(고객) 주체 참조 키 = 업무참조**: 회원(originator) 을 가리키는 주체 키는 원천 회원번호(`member.member_id` = `originator.partyReference`, 예 `M-1001`)를 **토큰화하지 않고 그대로** 쓴다. 이는 비PII 업무참조로, FDS `subject_ref`·AML CDD `aml_customers.customer_ref`·`aml_risk_scores.target_ref`·`aml_alerts.target_ref`·canonical `payload.targetRef`·velocity window·2차 상시 RA 가 **동일한 회원 키**를 공유하게 한다. 이로써 온보딩(CDD→1차 RA)과 거래(중립 인입→TM→2차 RA)가 같은 회원 id 로 이어진다(주체 키 단절 방지).
+- **PII 속성만 토큰화**: 실PII(성명·`nationalIdentityKey`(CI/동일인 해시)·신분증·전화)는 종전대로 tenant-keyed HMAC 토큰/`aml_pii_vault` 암호문으로만 흐른다(§10.2). 즉 "주체 **참조 키**"는 업무참조, "주체의 **PII 속성**"은 토큰 — 둘을 분리한다. vault upsert 키도 업무참조를 쓴다(reveal 이 같은 키로 해소).
+- **상대방(counterparty, 외부인)은 토큰 유지**: 외부인은 `member_id`(업무참조)가 없으므로 기존 안정키 토큰(이름+국가+전화 파생 HMAC)을 그대로 쓴다(`FalsePositiveWhitelist` 안정성 유지 — 거래 간 AUTO_DISCOUNTED 회귀 금지).
+- **업무참조 부재 fail-safe**: 레거시/타 인입 경로로 업무참조가 없는 회원 이벤트는 `tokenize(nationalIdentityKey)` 토큰으로 폴백한다(주체 유실 방지). 이 경로에서만 주체 키가 토큰 형태일 수 있다.
+- **구 토큰 주체 행 잔존 정책(데이터 이행)**: 과거 회원 주체를 `hmac-sha256:*` 토큰으로 적재한 기존 행은 **데이터 마이그레이션 없이 잔존**을 허용한다(정리 배치 없음, Flyway 신규 마이그레이션 없음 — 값 정책 변경이라 스키마 무변경). 데모/재적재 환경에서는 시뮬레이터 재실행으로 업무참조 키로 재적재된다. 조회 경로는 구 토큰 주체 행을 만나도 (값 비교이므로) 크래시 없이 표시하며, 구 vault 토큰 키 행은 orphan 으로 잔존 허용한다(신규 reveal 은 업무참조 키로 해소).
 
 ### 10.3 온보딩 프로비저닝 연동 흐름 (bo-api 소유, deployment_model 기준)
 

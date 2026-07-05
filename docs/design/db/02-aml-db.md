@@ -208,7 +208,7 @@ PK: `(tenant_id, source_system)`
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
 |---|---|---|---|---|---|
 | `tenant_id` | VARCHAR(64) | N | — | PK | |
-| `customer_ref` | VARCHAR(256) | N | — | PK | 원천 ref(토큰/HMAC, raw PII 아님) |
+| `customer_ref` | VARCHAR(256) | N | — | PK | 회원 주체 참조 키 = **회원 업무참조**(`member.member_id`=`originator.partyReference`, 예 `M-1001`, 비PII 업무참조 — 토큰화하지 않음, integration §10.2a). FDS `subject_ref`·canonical `payload.targetRef`·`aml_risk_scores.target_ref`·`aml_alerts.target_ref` 와 동일 값이라 온보딩(CDD→1차 RA)↔거래(TM→2차 RA)가 같은 회원 키로 이어진다. PII 속성(이름·CI·신분증)은 별도 토큰/vault. 업무참조 부재 레거시 경로만 `hmac(nationalIdentityKey)` 토큰 폴백(잔존 허용) |
 | `customer_type` | VARCHAR(32) | N | — | enum | §5.1 customer_type |
 | `name_hash` | VARCHAR(256) | Y | NULL | | 이름 HMAC(매칭용) |
 | `doc_hash` | VARCHAR(256) | Y | NULL | | 신분증번호 HMAC |
@@ -304,7 +304,7 @@ PK: `(tenant_id, entry_id)`
 |---|---|---|---|---|---|
 | `tenant_id` | VARCHAR(64) | N | — | PK | |
 | `screening_id` | UUID | N | — | PK | API `screeningId`(§15.7 응답) |
-| `target_ref` | VARCHAR(256) | N | — | | 대상 ref(customer/entity/counterparty/wallet) |
+| `target_ref` | VARCHAR(256) | N | — | | 대상 ref. CUSTOMER(회원 송금인)=회원 업무참조(integration §10.2a), COUNTERPARTY(외부 수취인)=안정키 토큰(이름+국가+전화 HMAC), ENTITY/wallet=원천 ref |
 | `target_type` | VARCHAR(64) | N | — | enum | §5.23 target_type(CUSTOMER/ENTITY/COUNTERPARTY/CRYPTO_ADDRESS) |
 | `status` | VARCHAR(32) | N | — | enum | §5.5 screening_status(NO_MATCH/POSSIBLE_MATCH/TRUE_MATCH/FALSE_POSITIVE/AUTO_DISCOUNTED/ESCALATED) |
 | `score` | NUMERIC(8,4) | Y | NULL | | 유사도 score |
@@ -381,7 +381,7 @@ PK: `(tenant_id, score_id)`
 | `alert_id` | UUID | N | — | PK | `alertId` |
 | `alert_type` | VARCHAR(64) | N | — | enum | §5.18 alert_type(TM_SCENARIO/SCREENING/RA/FDS_ESCALATION/VENDOR_ALERT). API `alertType` 정본 동기화 |
 | `scenario_code` | VARCHAR(80) | Y | NULL | enum | §5.6 tm_scenario(STRUCTURING/RAPID_MOVEMENT/...) |
-| `target_ref` | VARCHAR(256) | Y | NULL | | 대상 고객/법인(`member.member_id`→`customer_ref` keyed HMAC). **대상 360°(§3.16 뷰)·TM 알림 상세의 대상 링크 키** |
+| `target_ref` | VARCHAR(256) | Y | NULL | | 대상 고객/법인 = 회원 업무참조(`member.member_id`=`originator.partyReference`, 예 `M-1001` — 비PII, 토큰화 안 함, integration §10.2a). `aml_customers.customer_ref`·canonical `payload.targetRef` 와 동일 값. **대상 360°(§3.16 뷰)·TM 알림 상세의 대상 링크 키** |
 | `transaction_ref` | VARCHAR(256) | Y | NULL | | 관련 거래 ref. **hanpass-ph 정합**: `walletchg.charge_order_id`(충전)·`domestic.transaction_id`(국내)·`remit.transfer_number`(해외)·`*.wallet_transaction_id` 중 하나의 keyed token. TM 알림 상세 '관련 거래 목록'의 join 키 — 다건 거래는 `evidence.relatedTransactions[]`(아래)에 transaction_ref 배열로 보존 |
 | `severity` | VARCHAR(32) | N | — | enum | §5.19 alert_severity(LOW/MEDIUM/HIGH/CRITICAL) |
 | `status` | VARCHAR(32) | N | 'DETECTED' | enum,CHECK | §5.7 alert_status **6종 종결**(DETECTED/TRIAGED/CASE_OPENED/DISMISSED/ESCALATED/STR_RECOMMENDED, CHECK 6종). 이후 조사·보고·종결(INVESTIGATING/REPORTED/CLOSED)은 `aml_cases.status`(§5.9)가 인계 — alert enum에 미포함 |
@@ -1103,6 +1103,8 @@ stateDiagram-v2
 | V14 | `V14__fp_whitelist_registration_metadata.sql` | **FP whitelist 등록 메타데이터 영속**(run2 결함 D2/D7, §3.8a `aml_fp_whitelist`): `aml_fp_whitelist`에 컬럼 3종 추가(`ADD COLUMN`, 전부 nullable — 기존 행 NULL 하위호환·additive) — (1) `reason text`(면제 사유, 운영 뷰 표시 — 4-eyes 상신 시 maker 입력). (2) `expires_at timestamptz`(면제 만료일, nullable=무기한. `expires_at < now()` ⇒ **EXPIRED 파생 상태** — 스케줄러 신설 없음, 조회·discount 판정 시점 파생, **가정 A5**). (3) `screening_id uuid`(면제를 촉발한 발원 스크리닝 결과 id, §3.8 추적성 — `matched_entry_id`(워치리스트 엔트리 id)와 **별개 슬롯**. 과거 결함: `screening_id` 를 `matched_entry_id` 자리에 넣어 discount matchFeature 영구 불일치(run2 D2 회귀 방지)). 등록자(registered_by)는 기존 `created_by` 컬럼(V1 baseline, 4-eyes maker/checker) 재사용 — 신규 컬럼 없음. API §3.2(matchedRules.score·ScreenResponse.createdAt)·§10(ESCALATED staging / AUTO_DISCOUNTED 즉시적용)·FP 등록 §(reason·expiresAt·단건 matchedEntryId — 배치 아님, 코드=truth) 정합. additive·멱등 안전. | V1~V13 |
 | V15 | `V15__case_origin_screening.sql` | **케이스 발단(origin) 계보 — `origin_screening_id` 영속**(run3 결함 D5/D8, §3.11 `aml_cases`): `aml_cases`에 컬럼 1종 추가(`ADD COLUMN`, nullable — 기존 행 NULL 하위호환·additive) — `origin_screening_id character varying(96)`(RA→EDD 착수를 촉발한 발원 스크리닝/RA 스코어 id, 추적성 — `origin_alert_id`(TM 알림 발단)와 **별개 슬롯**). `origin_alert_id`·`edd_trigger`(EDD 착수 사유)는 **V1 baseline 기존 컬럼(추가 금지)**. 이 컬럼 부재로 `fromEngineDetail` 이 `originScreeningId=null` 로 하드코딩되어 위임(엔진) 경로에서 케이스 상세 '발단' 추적성이 유실되던 원천을 해소한다(알림→케이스 전환의 `originAlertId`, RA→EDD 착수의 `originScreeningId`·`eddTrigger` 계보가 생성→재조회에서 실값 보존). API §케이스 `CaseDetail.originScreeningId`·`CreateCaseRequest.{originAlertId,originScreeningId,eddTrigger}` 와 정합. additive·멱등 안전. | V1~V14 |
 
+> **회원 주체 키 통일(memberRef) — 마이그레이션 신규 없음(값 정책 변경)**: AML 회원 주체 참조 키를 업무참조(`M-xxxx`)로 통일(integration §10.2a)한 변경은 `payload->>'targetRef'`·`aml_risk_scores.target_ref`·`aml_alerts.target_ref`·`aml_customers.customer_ref` 등 **기존 컬럼의 값**을 hmac 토큰에서 업무참조로 바꾸는 것이라 **스키마 변경이 없다** — Flyway 신규 마이그레이션을 추가하지 않는다(V15 소진 상태 유지, 다음 필요 시 V16부터). 기존 `hmac-sha256:*` 주체 행은 데이터 마이그레이션 없이 잔존을 허용하고(정리 배치 없음), 데모/재적재 환경은 시뮬레이터 재실행으로 업무참조 키로 재적재한다(조회 경로는 구 토큰 행도 값 비교라 무크래시).
+>
 > **bo-api(스키마 `bo`) CTR/STR 마이그레이션(참고 — 데모 백오피스 소관, 코드=truth)**: bo-api 는 `services/bo-api/src/main/resources/db/migration/` 에 별도 체인(V1 baseline·V2 seed·V3 hanpass_demo_scope·V4 fds_hanpass_connector)을 두며, CTR/STR 모니터링은 다음 3개를 additive 로 얹는다 — **V5 `V5__ctr_str_rules_foundation.sql`**(`backoffice.aml_ctr_thresholds`·`backoffice.aml_ph_banking_calendar` 생성 + `platform`·`tenant_demo` CTR 임계 PHP 500,000/KRW 10,000,000 + 2026 PH 고정일 공휴일 7종 시드; 룰 카탈로그는 코드), **V6 `V6__ctr_str_monitoring_audit_events.sql`**(`backoffice.bo_audit_logs` `chk_bo_audit_logs_event` CHECK 에 P4 이벤트코드 3종 추가 — `CTR_THRESHOLD_CHANGE_SUBMITTED`·`REPORT_RULE_ACTIVATE_SUBMITTED`·`AMLC_SUBMISSION_DELEGATED`, 기존 allowlist 전량 보존 후 append), **V7 `V7__ph_banking_calendar_2026_movable_holidays.sql`**(aml-svc V6 대칭 — `platform`·`tenant_demo` 2026 이동 공휴일 11종씩 additive 시드). bo-api CTR/STR 4-eyes(`CTR_THRESHOLD`·`REPORT_RULE`)는 `AmlApprovalDtos.SubjectType`(21종) 애플리케이션 enum + 스텁 스토어(`AmlStubStore`)로 다루며 별도 approvals CHECK 컬럼 협소화 없음.
 
 > **구 누적 체인(구 V1~V25) → 통합(consolidate) 정리**: 통합 이전 §7 표가 기술하던 phase 단위 파일(`V1__baseline`·`V2__phase1_foundation`·`V3__phase2_wlf`·…·`V25__periodic_review_policy`)은 **더 이상 저장소에 존재하지 않는다**(2026-06-30 consolidate 로 삭제·통합). 그 DDL/데이터가 의도한 **모든 스키마·CHECK·시드는 통합 `V1__baseline.sql`(schema) + `V2__seed.sql`(data)에 최종 상태 그대로 흡수**되어 있다 — deployment_model/onboarding_status/infra_ref, source_systems status/data_scope, tenant status 4종, evidence_export status 4종·reason NOT NULL, 보고 FIU 폐루프 컬럼(fiu_ack_ref·submission_error_code·resubmit_count·ctr_exemption_code·closure_reason_code), IRA/HRR/PII vault(field 7종)/주기재확인정책, aml_approvals.subject_type 19종, aml_outbox.aggregate_type 6종, 데모 TM 시나리오 등. `institution_ref`(상위 기관 참조)는 통합 baseline 에도 부재 = **미구현(추후 예정)**.
