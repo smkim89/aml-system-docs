@@ -1,12 +1,12 @@
-# 백오피스 SaaS AML Platform 관리 - 기능정의서
+# hanpass-ph AML RegOps 백오피스 - 기능정의서
 
 ## 문서 정보
 
 | 항목 | 내용 |
 |------|------|
 | **문서 ID** | FS-AML-SAAS-001 |
-| **버전** | 9.0 |
-| **작성일** | 2026-06-19 |
+| **버전** | 9.5 |
+| **작성일** | 2026-06-30 |
 | **작성자** | Hanpass Global Team |
 | **상태** | 초안 |
 | **정본(아키텍처)** | `.claude/skills/_shared/target-architecture.md` (4서비스 모노레포 · Java 25 헥사고날 · Next.js · 멀티테넌시 · PII 마스킹 · 4-eyes · Policy Pack STR/CTR/Travel Rule) |
@@ -18,16 +18,23 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
-| **9.30** | **2026-07-06** | **Hanpass Global Team** | **§5.1 AML-RA-001 1차·2차 RA 내역 — 서버 필터 4종 전환·최근 30일 인입·처리필요 체크박스·회원별 최신 1건 중복 제거(코드=truth, feature/aml-ra-list-filters-dedupe).** v9.24 가 후속 과제로 남긴 "서버측 scenario 필터"를 해소하고 목록 의미론을 서버 정본으로 전환 — ① **1차 RA 내역** = 최근 30일 인입(온보딩, `aml_customers.created_at`) 회원의 1차(ONBOARDING) RA 회원별 최신 1건·전 등급(`scenario=ONBOARDING&latestPerTarget=true&registeredWithinDays=30`, 인입 필터는 기본 ON 체크박스로 해제 가능) + 서버 페이징(ListPager 총건수). ② **2차 RA 내역** = 최신 2차(ONGOING) 재평가 **회원(targetRef)별 최신 1건(중복 제거)**·전 등급(`scenario=ONGOING&latestPerTarget=true`) — STR/CTR 반복 발동으로 쌓인 재평가 이력 다행 노출 결함 해소, dedupe 먼저 선정 후 상태 필터 적용("현재 상태" 의미론, API §2.7). 기존 조회 페이지 내 클라이언트 `raScenarioStage` 파생 필터·`rowStageFilter` 재필터 폐기. ③ **처리필요(권고 조치) 체크박스 필터** 신설(1차·2차 공통, 공통 컴포넌트 `FilterCheckboxGroup`) — 조치 없음(`NONE`, 레거시 null 포섭)·CDD 갱신(`CDD_UPDATE`)·강화된 고객확인(`EDD`)·관계 검토(`RELATIONSHIP_REVIEW`) 다중 선택 → `requiredAction` 서버 필터. ④ 2차 탭 `최근 30일 인입 회원만` 체크박스(기본 off)·`재평가 대기/임박만 보기` 토글 유지. BR-008 개정·내역 데이터 표 갱신. | 근거=aml-svc `RiskScoreAdminController`(scenario·requiredAction·registeredWithinDays·latestPerTarget)·`AssessRiskUseCase.ScoreListQuery`·`RiskScoreJpaRepository`(scenario=모델 레지스트리 exists-join·NONE null 포섭·인입 exists-join·latestPerTarget max(evaluated_at) 상관 서브쿼리, count 동일 술어)·`RaListFilterDedupeIntegrationTest`(6케이스)·`RiskScoreAdminControllerTest`, bo-api `AmlRaService.RiskScoreListFilter`(4필드·위임 pass-through·stub 패리티)·`AmlRiskReadController`, bo-web `FilterBar.FilterCheckboxGroup`(공통)·`useAmlRisk.buildHighRiskQuery`·`AmlRiskMonitoring`(RaListFilterControls 공통 서브컴포넌트·서버 필터 전환·ListPager)·`AmlRiskMonitoring.ongoing.test.tsx`. API §2.7 동기화. 코드=truth. PPT 재빌드는 후속. |
-| **9.29** | **2026-07-05** | **Hanpass Global Team** | **§12-A.3·§12-A.4 — 국가위험 4등급/금지국가 기준선 및 RA 상세 입력 원장 노출 보강(코드=truth, fix/aml-country-risk-ra-evidence).** ① 국가위험 화면은 EU 집행위 자동 수집의 한계(단일 고위험 목록→HIGH)를 명확히 표시하고, 금지국가(`PROHIBITED`)는 FATF black/제재/수동 4-eyes 기준선으로 관리한다. 데모 기준선은 `KP`·`CU`·`IR` 을 `MANUAL/PROHIBITED` 로 보강하고 `LOW/MEDIUM/HIGH/PROHIBITED` 4등급 표본을 모두 제공한다(DB §3.22c/§7 V21). ② RA-003 요인분석 탭에 **평가 입력 원장**을 추가해 현재 RA 점수만이 아니라 CDD/KYC 입력(고객유형·국적/설립국·KYC 상태·마스킹 신원/대표자/UBO), RA 결과 대조(프로필 riskSummary vs 현재 score), 2차 활동 입력(스크리닝·케이스·관계·STR 건수)을 함께 표시한다. STR 건수는 tipping-off guard 를 유지하고 raw PII 는 노출하지 않는다. | 근거=bo-web `AmlCountryRisk`(등급 커버리지·금지국가 요약)·`AmlRiskDetail`(`RaInputEvidencePanel`, `useAmlCustomerProfile`)·`lib/aml-risk`(EU/FATF basis/provenance 라벨), bo-api `AmlCountryRiskService` fallback stub, aml-svc `V21__demo_country_risk_manual_baseline.sql`. DB §3.22c/§7 동기화. 코드=truth. PPT 재빌드는 후속. |
-| **9.28** | **2026-07-05** | **Hanpass Global Team** | **§5(RA 콜아웃) — 1차 온보딩 RA 국가위험 등급 기반 강제 floor 도입(V20, 코드=truth, 사용자 승인, feature/aml-onboarding-ra-country-risk-floor).** GEOGRAPHY 점수가 KR_DEFAULT_RA 가중치상 고위험을 만들지 못하는 경우(실측 M-9002 국적 IR=HIGH→총점 12→LOW)를 결정적으로 보정하기 위해, **국적/거주국 국가위험 ACTIVE 등급 → 최소 착지 등급 강제 floor**(`PROHIBITED→HIGH`·`HIGH→MEDIUM`, MEDIUM/LOW/미등재=floor 없음)를 §5.1 (b′) bullet 로 신설. 국적·거주국 **개별 판정** 후 `forcedFloorGrade = max(screening floor, 국적 floor, 거주국 floor)`(**상향만**), 사유 코드 **`HIGH_RISK_COUNTRY_NATIONALITY`/`HIGH_RISK_COUNTRY_RESIDENCE`** 2종 분리 병기. **명단 매치 floor(`screening.floorGrade`)·당연고위험(HRR) 레지스트리 floor 와 구분**(화면/breakdown 에서 "국가위험 floor" 라벨, HRR 아님). floor 상향 시 등급별 재이행 주기 재산정(§12-A.5). floor 매핑은 **모델 정본**(`aml_risk_models.parameters.countryFloor`, DB §3.9·§7 V20)에서 소비·엔진 상수 하드코딩 없음(`RaModelContractTest`). 국가위험 floor 는 evidence 원소 미추가(가정 A2 — `forcedFloorEvidence` 명단 전용)·reasons 코드로만 노출. | 근거=aml-svc `domain/risk/{OnboardingRaParameters#countryFloorFor,OnboardingRaFactorDeriver}`(REASON_HIGH_RISK_COUNTRY_NATIONALITY/RESIDENCE·max floor 결합)·`V20__ra_onboarding_country_floor_parameters.sql`(`parameters.countryFloor` additive 병합·멱등·ONGOING 무변경). API §3.3(`mandatoryHighRiskReasons` 값집합 2종 추가)·DB §3.9(§3.9 후주 countryFloor 스키마)/§7(V20 행) 동기화. bo-web 라벨 사전(`lib/aml-risk.ts`)·`MandatoryFloorReasonList` 공통 컴포넌트에서 한국어 라벨/국가위험 floor·HRR 구분 배지 매핑(A5). 코드=truth. PPT 재빌드는 후속. |
-| **9.27** | **2026-07-05** | **Hanpass Global Team** | **§5(RA 콜아웃)·§5.1 AML-RA-001 — 1차 RA를 엔진이 CDD 데이터로 직접 산출(SANCTION/PEP 명단 비교 + 국적별 리스크, 코드=truth, feature/aml-onboarding-ra-cdd-derivation).** v9.18 이 데모·시뮬레이터가 GEOGRAPHY/CUSTOMER sub-score 를 클라이언트에서 계산해 `POST /risk-assessments/evaluate` override 로 보내던 방식을, **엔진(`OnboardingRaDerivationService`)이 `customer.cdd.completed` 인입(API §2.1 step 7d) 시 CDD 데이터로부터 직접 파생**하도록 이관 — 별도 evaluate 호출·클라 계산 없음. 산출 규칙(ACTIVE ONBOARDING 모델 `KR_DEFAULT_RA` 의 `parameters` JSONB 정본=V19 소비, 엔진 상수 하드코딩 없음): **(a) SCREENING** = 회원 WLF 스크리닝(SANCTION/PEP·주체 키 `memberRef`) 매치(POSSIBLE/TRUE, 비 AUTO_DISCOUNTED) 시 100 + **위험등급 HIGH 강제 상향(floor)** + 사유(list_type SANCTION/PEP) + 근거 참조 토큰(screeningId/entryId/listType, 원문 미기록 §19.2), 무매치=0; **(b) GEOGRAPHY** = 국적/거주국 × 국가위험 정본(`LookupCountryRiskUseCase`) → PROHIBITED/HIGH=100·MEDIUM=60·LOW/미등재=15, nationality×residenceCountry **max 결합**(가정 A2); **(c) CUSTOMER** = `(sofRisk[sourceOfFunds]+kycLevelRisk[kycLevel])/2`(시뮬레이터 매핑 정본 이관·occupation 예약, 가정 A3). **fail-safe(스크리닝 미가용=stale/미수입)** = 1차 RA **평가 보류**(스코어 미생성)·CDD 인입 성공(§15.5·§20.2 fail-closed, 가정 A4). evaluate API 의 `factors`/`highRiskCountry`/`wlfTrueMatch` = **보조 입력 강등**(엔진 파생 factors 출처 `cdd:*` 정본·override 출처 `override`, 하위호환). 시뮬레이터 `ra_factors()`·`_HIGH_RISK_COUNTRIES`·`_SOF_RISK`·`_KYC_LEVEL_RISK`·온보딩 evaluate POST 제거(CDD 이벤트만 전송+RA read-back). | 근거=aml-svc `domain/risk/{OnboardingRaParameters,OnboardingRaFactorDeriver}`·`application/{port/in/DeriveOnboardingRaUseCase,usecase/OnboardingRaDerivationService}`·`AmlEventIngestService`(step 7d)·`RiskAssessmentService.materialize`(derivedFactors 정본·override 강등)·`AssessRiskUseCase.EvaluateCommand.derivedFactors`·`V19__ra_onboarding_derivation_parameters.sql`, `scripts/demo_ingest.py`(클라 계산 제거). 테스트 `OnboardingRaFactorDeriverTest`·`OnboardingRaDerivationServiceTest`·`OnboardingRaDerivationIntegrationTest`(①고위험국적→GEOGRAPHY②SANCTION매치→SCREENING+floor+근거③무매치저위험→LOW·+12개월④stale→보류). API §2.1(step 7d)/§3.3(factors 강등)·DB §3.9/§7(V19) 동기화. 코드=truth. PPT 재빌드는 후속. |
-| **9.26** | **2026-07-05** | **Hanpass Global Team** | **§12-A.3 AML-CTRY-001 — 국가위험 수집 소스 제공자화(EU 집행위 기본·FATF 대안, 코드=truth, fix/aml-country-risk-eu-source).** v9.25 로 도입한 FATF 일일 수집이 **FATF 페이지 HTTP 403(Akamai 봇 차단)으로 항상 FAILED**(fail-safe 는 정상)임을 실측 → 대체 정본 **EU 집행위 고위험 제3국 페이지**를 기본 제공자로 승격. **수집 소스 제공자 선택형(`aml.country-risk.feed.provider` 기본 `EU_COMMISSION`·대안 `FATF`, FATF 어댑터·파서·설정 보존)**: ① **BR-003 개정** — EU 단일 고위험 목록 → 전부 높음(`HIGH`, basis `EU_HIGH_RISK_THIRD_COUNTRY`, 출처 `EU_COMMISSION`), 국가명→ISO-2 결정적 매핑 26개국(DPRK→KP·Russian Federation→RU·Côte d'Ivoire→CI·DR Congo→CD·Trinidad and Tobago→TT·British Virgin Islands→VG 등), 미래 신규 미매핑 시 skip+run diff `unmapped`, 이탈 판정=동일 제공자 출처만 supersede(제공자 전환 안전). ② **① 등급표** provenance 배지에 `EU 집행위 자동 수집(EU_COMMISSION)` 추가, 근거에 EU 고위험 제3국. ③ **② 일일 수집 상태** — 활성 제공자(EU 기본/FATF 대안) 표기, **소스 URL 제공자별 분기**(EU=단일 고위험 URL(greyUrl)·blackUrl null / FATF=black·grey 쌍). ④ 부록 E v6.0-4 표기 유지(CPI 등 잔여 지표). | 근거=aml-svc `V18__country_risk_eu_commission_provenance.sql`·`domain/enums/CountryRiskProvenance`(EU_COMMISSION)·`adapter/out/feed/{EuCountryRiskFeedAdapter,EuHighRiskListHtmlParser,EuHighRiskCountryIso,CountryRiskFeedConfig,SanctionsHtmlHttpFetcher,FatfCountryRiskFeedAdapter}`·`application/usecase/CountryRiskIngestTransaction`(provenance-aware), bo-api `AmlCountryRiskService`(EU 기본 stub·provider EU_COMMISSION)·`CountryRiskDtos`(Provenance.EU_COMMISSION·FeedProvider·RiskBasisSource.EU_HIGH_RISK_THIRD_COUNTRY). DB §3.22c/§7 V18·API §2.7/§3.12 동기화. 코드=truth. bo-web 소스 URL 분기 표기·PPT 재빌드는 후속. |
-| **9.25** | **2026-07-05** | **Hanpass Global Team** | **§12-A.3 AML-CTRY-001 — 국가위험 FATF 일일 웹 자동 수집 도입(코드=truth, feature/aml-country-risk-daily-import).** v6.0 이후 오픈결정으로 남았던 "외부 지표 자동 갱신 후속" 중 **FATF blacklist/greylist 를 일일 자동 수집으로 해소**: ① **화면 2탭→3탭**(`① 국가위험 등급표`/`② 일일 수집 상태`(신설)/`③ 변경 상신·이력`) — ① 에 출처(provenance) 배지(`FATF 자동 수집(FATF_DAILY)`+`asOf` / `수동 조정(MANUAL)`), ② 에 소스 메타 카드(소스명·URL·최종 수집시각·적용 버전·최종 상태)+최근 run 변경 내역(신규/상향/하향/이탈/수동보존 diff)+**[지금 수집]** 수동 트리거(scope `aml:admin:policy`, 감사 `COUNTRY_RISK_IMPORT_TRIGGERED`, 실패 시 기존 등급 유지 fail-safe 안내). ② **BR-003 신설** — 일일 스케줄러(cron 기본 03:40·enabled 기본 off·single-flight), black→거래금지(`PROHIBITED`)/grey→높음(`HIGH`) 결정적 매핑, canonical SHA-256 버전·무변경 no-op·실패 fail-safe, **수동(MANUAL) 오버라이드 우선(자동 수집이 덮지 않음·suppressedManual)**. ③ API 표에 `GET .../country-risk/import-status`·`POST .../country-risk:import` 추가(자동 수집은 4-eyes 비대상 — 수동 변경만 🔒 COUNTRY_RISK 불변). ④ 부록 E v6.0-4 오픈결정 부분 해소 표기(CPI 등 잔여 지표만 잔존)·부록 B 매핑 갱신. | 근거=aml-svc `V16__country_risk_daily_import.sql`·`CountryRiskImportScheduler`·`FatfGradeMapping`·`CountryRiskProvenance`·`SyncCountryRiskUseCase`·`LookupCountryRiskUseCase`(1차 RA GEOGRAPHY 파생 소비 예정), bo-api `AmlCountryRiskController`(:import/import-status 위임)·`V8__country_risk_import_audit_event.sql`, bo-web `components/aml/AmlCountryRisk.tsx`(3탭·지금 수집). DB §3.22c/§7 V16·API §2.7/§3.12 동기화. 코드=truth. PPT 재빌드는 후속. |
-| **9.24** | **2026-07-05** | **Hanpass Global Team** | **§5.1 AML-RA-001 2차 RA 내역 탭 필터 의미 정정(코드=truth, feature/aml-ongoing-ra-tab-filter-fix).** 2차 RA 내역 테이블이 `reviewDueSoon=true`를 상시 고정 전송해 '재평가 대기/임박(30일 내)' 행만 조회하던 결함(탭 이름/설명='재평가 내역'과 데이터='임박 전용' 모순, STR 발동으로 방금 2차 재평가된 회원[예: MEDIUM·다음 재심사 2026-12-31]이 미노출)을 해소 — **§내역 데이터 표·BR-008 개정**: ① 2차 내역 기본 = **STR/CTR 발동 최신 2차(ONGOING) 재평가 전체**(`risk-scores?riskGrade=LOW,MEDIUM,HIGH,PROHIBITED`, 상시 `reviewDueSoon` 제거), ② `재평가 대기/임박만 보기` **명시적 토글(기본 off)** — on 시에만 `reviewDueSoon=true` 전송·상태 표기 `재평가 대기/임박`, ③ 조회 기준 패널에 `단계=2차(ONGOING)` 추가·상태 동적화. `risk-scores`는 `scenario` 서버 파라미터 미제공 → 2차 단계 한정은 조회 페이지(≤50건) 내 `scenario`(부재 시 재평가 계보·factor) 파생 **클라이언트 필터**(`raScenarioStage`), 서버측 scenario 필터는 후속 과제. bo-web 단독(bo-api `GET /risk-scores` 계약·Flyway 불변), 1차 RA·고위험 탭 회귀 없음. | 근거=bo-web `components/aml/AmlRiskMonitoring`(`OngoingRaTab` reviewDueSoon 상시 제거·`ReviewDueSoonToggle`·`RaStageHistoryTable.rowStageFilter`)·`lib/aml-risk`(`raScenarioStage` 기존재)·`AmlRiskMonitoring.ongoing.test.tsx`(임박 아닌 ONGOING 노출·토글 on 임박만·ONBOARDING 미노출·1차 filters 불변). API §5.1 동기화(계약 변경 없음). 코드=truth. PPT 재빌드는 후속. |
-| **9.23** | **2026-07-05** | **Hanpass Global Team** | **§12-A.4 AML-RA-003 BR-004 — RA 상세 설명가능성 3건 보강(코드=truth, feature/aml-ra-detail-evidence-run7).** ① **신원 대조 패널** — WLF 강제 상향 근거(`forcedFloorEvidence`) 존재 시 factor breakdown 탭에 2열 비교 그리드(좌=회원 신원 이름·국적·성별·생년월일 4필드 마스킹+reveal 게이트 `aml:pii:reveal`+`RAW_DATA_ACCESS`/우=대조 명단 엔트리 원본값 공개 plaintext, §API 2.7 `entryIds` 배치 조회), 스크리닝 상세 `matchedCandidates[].reasonCodes`로 일치 필드 뱃지 하이라이트. 회원 raw 신원 응답 평문 동봉 금지—reveal 전용, 명단 원본은 공개데이터 예외(§19.2·설계서 §1.6). ② **2차(ONGOING) 재평가 발동 알림별 근거 의심거래 목록** — `reassessmentAlerts` 각 행 확장 시 근거거래 페이징(거래번호·일시·상품·금액·상대 마스킹, 기존 `GET .../alerts/{alertId}/related-transactions` §API 2.4 재사용) + `[TM 알림 상세 ▶]`(`/aml/tm/alerts/{alertId}`) 딥링크·graceful. ③ **점수 표기 규약** — RA factor 기여도 0~100 스케일("45.22" 점수·% 아님), WLF 매치 점수 0~1 소수 % 유지(공용 점수 막대 `max` 계약 1/100 구분, 4522% 스케일 버그 해소). RA 응답 계약·Flyway 변경 없음(aml-svc V16 미사용). | 근거=bo-web `components/common/{ScoreBreakdownBars,WatchlistMatchEvidencePanel}`·`components/aml/{AmlRiskDetail,RaReassessmentLineage,AmlMatchCandidateList}`·`hooks/useAmlWatchlist`(`useAmlWatchlistEntriesByIds`)·`lib/{aml-screening,aml-watchlist,aml-risk}`, bo-api `aml/watchlist/{controller/AmlWatchlistController,service/AmlWatchlistService}`(`entryIds` passthrough), aml-svc `WatchlistAdminController`·`WatchlistEntryQueryService.listByIds`·`AlertController`(related-transactions)·`PiiField`(NAME/NATIONALITY/GENDER/DOB) 기존재. API §2.7·§2.4·§3.3 동기화. 코드=truth. PPT 재빌드는 후속. |
-| **9.22** | **2026-07-04** | **Hanpass Global Team** | **§6.1 AML-RA-002 BR-006 — 2차 상시 RA(ONGOING) 실환경 ACTIVE 정정(코드=truth, V12).** 9.21 이 2차 상시 `KR_ONGOING_RA` 를 DRAFT placeholder·"다음 단계 예정(§6.1 미정의)"로 명문화했으나, `V12__ra_ongoing_model_activation.sql` 로 **`DRAFT→APPROVED(ACTIVE)`** 실환경화되어 BR-006 을 정정: `KR_ONGOING_RA v1` 이 STR/CTR 발동 시 거래 가중 재평가→재이행 주기 단축(앞당기기만)→EDD 자동 개시(STR draft·심각도 HIGH·`UNUSUAL_TRANSACTION`)를 수행하는 실운영 모델이며, 정의는 모델 `parameters` JSONB(DB §3.9)에 자기서술(엔진 상수 하드코딩 없음)·화면은 2차 RA 탭에서 `reassessmentAlerts`·`reviewShortened`(API §3.3)로 표시. 1차 온보딩 정본(`KR_DEFAULT_RA`=ONBOARDING, §5.1)·`is_default=false` 기본 경로 불변. **문서 미정의 지점 없음**(§6.1 미정의 문구 제거). | 근거=aml-svc `db/migration/V12__ra_ongoing_model_activation.sql`(disk 검증)·`domain/risk/{OngoingRaParameters,OngoingRaFactorDeriver}`·`application/usecase/OngoingRaService`, bo-api `aml/ra/dto/RaDtos`(RaModel/RaModelVersion.parameters·RiskScore.{scenario,reassessmentAlerts,reviewShortened})·`aml/ra/service/AmlRaService`(passthrough). DB §3.9/§7 V12·API §2.7/§3.3 동기화. 코드=truth. PPT 재빌드는 후속. |
-| **9.21** | **2026-07-04** | **Hanpass Global Team** | **§6.1 AML-RA-002 RA 모델 시나리오 구분 역전파(코드=truth, feature/ra-onboarding-lifecycle).** RA 모델 정의(`aml_risk_models`)에 `scenario`(ONBOARDING/ONGOING) 컬럼(V11)이 도입돼 어느 모델이 어느 RA 흐름(1차 온보딩 / 2차 상시)에 소비되는지 자기서술함을 §6.1 **BR-006** 신설로 반영 — 기존 정본 `KR_DEFAULT_RA`=`ONBOARDING`(회원가입 CDD 완료 1회 평가, §5.1 정합), 2차 상시 `KR_ONGOING_RA`=`ONGOING` **DRAFT placeholder(is_default=false) 1행만 시딩·읽기 표시**. **활성화·거래가중 재평가·주기 단축·EDD 자동 개시 흐름은 §6.1 미정의 — 다음 단계 예정(추측 금지)** 임을 명문화. | 근거=aml-svc `V11__ra_model_scenario.sql`·`domain/enums/RaScenario`·`domain/risk/RiskModel.scenario`·`adapter/out/persistence/RiskModelJpaEntity`·`adapter/in/rest/RiskModelAdminController`(draft `scenario` default ONBOARDING), bo-api `aml/ra/dto/RaDtos`(RaScenario·RaModel/RaModelVersion.scenario). DB §3.9/§7 V11·API §2.7/§3.3 동기화. 코드=truth. PPT 재빌드는 후속. |
+| **9.37** | **2026-07-06** | **Hanpass Global Team** | **§5.1 AML-RA-001 1차·2차 RA 내역 — 서버 필터 4종 전환·최근 30일 인입·처리필요 체크박스·회원별 최신 1건 중복 제거(코드=truth, feature/aml-ra-list-filters-dedupe).** v9.31 가 후속 과제로 남긴 "서버측 scenario 필터"를 해소하고 목록 의미론을 서버 정본으로 전환 — ① **1차 RA 내역** = 최근 30일 인입(온보딩, `aml_customers.created_at`) 회원의 1차(ONBOARDING) RA 회원별 최신 1건·전 등급(`scenario=ONBOARDING&latestPerTarget=true&registeredWithinDays=30`, 인입 필터는 기본 ON 체크박스로 해제 가능) + 서버 페이징(ListPager 총건수). ② **2차 RA 내역** = 최신 2차(ONGOING) 재평가 **회원(targetRef)별 최신 1건(중복 제거)**·전 등급(`scenario=ONGOING&latestPerTarget=true`) — STR/CTR 반복 발동으로 쌓인 재평가 이력 다행 노출 결함 해소, dedupe 먼저 선정 후 상태 필터 적용("현재 상태" 의미론, API §2.7). 기존 조회 페이지 내 클라이언트 `raScenarioStage` 파생 필터·`rowStageFilter` 재필터 폐기. ③ **처리필요(권고 조치) 체크박스 필터** 신설(1차·2차 공통, 공통 컴포넌트 `FilterCheckboxGroup`) — 조치 없음(`NONE`, 레거시 null 포섭)·CDD 갱신(`CDD_UPDATE`)·강화된 고객확인(`EDD`)·관계 검토(`RELATIONSHIP_REVIEW`) 다중 선택 → `requiredAction` 서버 필터. ④ 2차 탭 `최근 30일 인입 회원만` 체크박스(기본 off)·`재평가 대기/임박만 보기` 토글 유지. BR-008 개정·내역 데이터 표 갱신. | 근거=aml-svc `RiskScoreAdminController`(scenario·requiredAction·registeredWithinDays·latestPerTarget)·`AssessRiskUseCase.ScoreListQuery`·`RiskScoreJpaRepository`(scenario=모델 레지스트리 exists-join·NONE null 포섭·인입 exists-join·latestPerTarget max(evaluated_at) 상관 서브쿼리, count 동일 술어)·`RaListFilterDedupeIntegrationTest`(6케이스)·`RiskScoreAdminControllerTest`, bo-api `AmlRaService.RiskScoreListFilter`(4필드·위임 pass-through·stub 패리티)·`AmlRiskReadController`, bo-web `FilterBar.FilterCheckboxGroup`(공통)·`useAmlRisk.buildHighRiskQuery`·`AmlRiskMonitoring`(RaListFilterControls 공통 서브컴포넌트·서버 필터 전환·ListPager)·`AmlRiskMonitoring.ongoing.test.tsx`. API §2.7 동기화. 코드=truth. PPT 재빌드는 후속. |
+| **9.36** | **2026-07-05** | **Hanpass Global Team** | **§12-A.3·§12-A.4 — 국가위험 4등급/금지국가 기준선 및 RA 상세 입력 원장 노출 보강(코드=truth, fix/aml-country-risk-ra-evidence).** ① 국가위험 화면은 EU 집행위 자동 수집의 한계(단일 고위험 목록→HIGH)를 명확히 표시하고, 금지국가(`PROHIBITED`)는 FATF black/제재/수동 4-eyes 기준선으로 관리한다. 데모 기준선은 `KP`·`CU`·`IR` 을 `MANUAL/PROHIBITED` 로 보강하고 `LOW/MEDIUM/HIGH/PROHIBITED` 4등급 표본을 모두 제공한다(DB §3.22c/§7 V21). ② RA-003 요인분석 탭에 **평가 입력 원장**을 추가해 현재 RA 점수만이 아니라 CDD/KYC 입력(고객유형·국적/설립국·KYC 상태·마스킹 신원/대표자/UBO), RA 결과 대조(프로필 riskSummary vs 현재 score), 2차 활동 입력(스크리닝·케이스·관계·STR 건수)을 함께 표시한다. STR 건수는 tipping-off guard 를 유지하고 raw PII 는 노출하지 않는다. | 근거=bo-web `AmlCountryRisk`(등급 커버리지·금지국가 요약)·`AmlRiskDetail`(`RaInputEvidencePanel`, `useAmlCustomerProfile`)·`lib/aml-risk`(EU/FATF basis/provenance 라벨), bo-api `AmlCountryRiskService` fallback stub, aml-svc `V21__demo_country_risk_manual_baseline.sql`. DB §3.22c/§7 동기화. 코드=truth. PPT 재빌드는 후속. |
+| **9.35** | **2026-07-05** | **Hanpass Global Team** | **§5(RA 콜아웃) — 1차 온보딩 RA 국가위험 등급 기반 강제 floor 도입(V20, 코드=truth, 사용자 승인, feature/aml-onboarding-ra-country-risk-floor).** GEOGRAPHY 점수가 KR_DEFAULT_RA 가중치상 고위험을 만들지 못하는 경우(실측 M-9002 국적 IR=HIGH→총점 12→LOW)를 결정적으로 보정하기 위해, **국적/거주국 국가위험 ACTIVE 등급 → 최소 착지 등급 강제 floor**(`PROHIBITED→HIGH`·`HIGH→MEDIUM`, MEDIUM/LOW/미등재=floor 없음)를 §5.1 (b′) bullet 로 신설. 국적·거주국 **개별 판정** 후 `forcedFloorGrade = max(screening floor, 국적 floor, 거주국 floor)`(**상향만**), 사유 코드 **`HIGH_RISK_COUNTRY_NATIONALITY`/`HIGH_RISK_COUNTRY_RESIDENCE`** 2종 분리 병기. **명단 매치 floor(`screening.floorGrade`)·당연고위험(HRR) 레지스트리 floor 와 구분**(화면/breakdown 에서 "국가위험 floor" 라벨, HRR 아님). floor 상향 시 등급별 재이행 주기 재산정(§12-A.5). floor 매핑은 **모델 정본**(`aml_risk_models.parameters.countryFloor`, DB §3.9·§7 V20)에서 소비·엔진 상수 하드코딩 없음(`RaModelContractTest`). 국가위험 floor 는 evidence 원소 미추가(가정 A2 — `forcedFloorEvidence` 명단 전용)·reasons 코드로만 노출. | 근거=aml-svc `domain/risk/{OnboardingRaParameters#countryFloorFor,OnboardingRaFactorDeriver}`(REASON_HIGH_RISK_COUNTRY_NATIONALITY/RESIDENCE·max floor 결합)·`V20__ra_onboarding_country_floor_parameters.sql`(`parameters.countryFloor` additive 병합·멱등·ONGOING 무변경). API §3.3(`mandatoryHighRiskReasons` 값집합 2종 추가)·DB §3.9(§3.9 후주 countryFloor 스키마)/§7(V20 행) 동기화. bo-web 라벨 사전(`lib/aml-risk.ts`)·`MandatoryFloorReasonList` 공통 컴포넌트에서 한국어 라벨/국가위험 floor·HRR 구분 배지 매핑(A5). 코드=truth. PPT 재빌드는 후속. |
+| **9.34** | **2026-07-05** | **Hanpass Global Team** | **§5(RA 콜아웃)·§5.1 AML-RA-001 — 1차 RA를 엔진이 CDD 데이터로 직접 산출(SANCTION/PEP 명단 비교 + 국적별 리스크, 코드=truth, feature/aml-onboarding-ra-cdd-derivation).** v9.18 이 데모·시뮬레이터가 GEOGRAPHY/CUSTOMER sub-score 를 클라이언트에서 계산해 `POST /risk-assessments/evaluate` override 로 보내던 방식을, **엔진(`OnboardingRaDerivationService`)이 `customer.cdd.completed` 인입(API §2.1 step 7d) 시 CDD 데이터로부터 직접 파생**하도록 이관 — 별도 evaluate 호출·클라 계산 없음. 산출 규칙(ACTIVE ONBOARDING 모델 `KR_DEFAULT_RA` 의 `parameters` JSONB 정본=V19 소비, 엔진 상수 하드코딩 없음): **(a) SCREENING** = 회원 WLF 스크리닝(SANCTION/PEP·주체 키 `memberRef`) 매치(POSSIBLE/TRUE, 비 AUTO_DISCOUNTED) 시 100 + **위험등급 HIGH 강제 상향(floor)** + 사유(list_type SANCTION/PEP) + 근거 참조 토큰(screeningId/entryId/listType, 원문 미기록 §19.2), 무매치=0; **(b) GEOGRAPHY** = 국적/거주국 × 국가위험 정본(`LookupCountryRiskUseCase`) → PROHIBITED/HIGH=100·MEDIUM=60·LOW/미등재=15, nationality×residenceCountry **max 결합**(가정 A2); **(c) CUSTOMER** = `(sofRisk[sourceOfFunds]+kycLevelRisk[kycLevel])/2`(시뮬레이터 매핑 정본 이관·occupation 예약, 가정 A3). **fail-safe(스크리닝 미가용=stale/미수입)** = 1차 RA **평가 보류**(스코어 미생성)·CDD 인입 성공(§15.5·§20.2 fail-closed, 가정 A4). evaluate API 의 `factors`/`highRiskCountry`/`wlfTrueMatch` = **보조 입력 강등**(엔진 파생 factors 출처 `cdd:*` 정본·override 출처 `override`, 하위호환). 시뮬레이터 `ra_factors()`·`_HIGH_RISK_COUNTRIES`·`_SOF_RISK`·`_KYC_LEVEL_RISK`·온보딩 evaluate POST 제거(CDD 이벤트만 전송+RA read-back). | 근거=aml-svc `domain/risk/{OnboardingRaParameters,OnboardingRaFactorDeriver}`·`application/{port/in/DeriveOnboardingRaUseCase,usecase/OnboardingRaDerivationService}`·`AmlEventIngestService`(step 7d)·`RiskAssessmentService.materialize`(derivedFactors 정본·override 강등)·`AssessRiskUseCase.EvaluateCommand.derivedFactors`·`V19__ra_onboarding_derivation_parameters.sql`, `scripts/demo_ingest.py`(클라 계산 제거). 테스트 `OnboardingRaFactorDeriverTest`·`OnboardingRaDerivationServiceTest`·`OnboardingRaDerivationIntegrationTest`(①고위험국적→GEOGRAPHY②SANCTION매치→SCREENING+floor+근거③무매치저위험→LOW·+12개월④stale→보류). API §2.1(step 7d)/§3.3(factors 강등)·DB §3.9/§7(V19) 동기화. 코드=truth. PPT 재빌드는 후속. |
+| **9.33** | **2026-07-05** | **Hanpass Global Team** | **§12-A.3 AML-CTRY-001 — 국가위험 수집 소스 제공자화(EU 집행위 기본·FATF 대안, 코드=truth, fix/aml-country-risk-eu-source).** v9.32 로 도입한 FATF 일일 수집이 **FATF 페이지 HTTP 403(Akamai 봇 차단)으로 항상 FAILED**(fail-safe 는 정상)임을 실측 → 대체 정본 **EU 집행위 고위험 제3국 페이지**를 기본 제공자로 승격. **수집 소스 제공자 선택형(`aml.country-risk.feed.provider` 기본 `EU_COMMISSION`·대안 `FATF`, FATF 어댑터·파서·설정 보존)**: ① **BR-003 개정** — EU 단일 고위험 목록 → 전부 높음(`HIGH`, basis `EU_HIGH_RISK_THIRD_COUNTRY`, 출처 `EU_COMMISSION`), 국가명→ISO-2 결정적 매핑 26개국(DPRK→KP·Russian Federation→RU·Côte d'Ivoire→CI·DR Congo→CD·Trinidad and Tobago→TT·British Virgin Islands→VG 등), 미래 신규 미매핑 시 skip+run diff `unmapped`, 이탈 판정=동일 제공자 출처만 supersede(제공자 전환 안전). ② **① 등급표** provenance 배지에 `EU 집행위 자동 수집(EU_COMMISSION)` 추가, 근거에 EU 고위험 제3국. ③ **② 일일 수집 상태** — 활성 제공자(EU 기본/FATF 대안) 표기, **소스 URL 제공자별 분기**(EU=단일 고위험 URL(greyUrl)·blackUrl null / FATF=black·grey 쌍). ④ 부록 E v6.0-4 표기 유지(CPI 등 잔여 지표). | 근거=aml-svc `V18__country_risk_eu_commission_provenance.sql`·`domain/enums/CountryRiskProvenance`(EU_COMMISSION)·`adapter/out/feed/{EuCountryRiskFeedAdapter,EuHighRiskListHtmlParser,EuHighRiskCountryIso,CountryRiskFeedConfig,SanctionsHtmlHttpFetcher,FatfCountryRiskFeedAdapter}`·`application/usecase/CountryRiskIngestTransaction`(provenance-aware), bo-api `AmlCountryRiskService`(EU 기본 stub·provider EU_COMMISSION)·`CountryRiskDtos`(Provenance.EU_COMMISSION·FeedProvider·RiskBasisSource.EU_HIGH_RISK_THIRD_COUNTRY). DB §3.22c/§7 V18·API §2.7/§3.12 동기화. 코드=truth. bo-web 소스 URL 분기 표기·PPT 재빌드는 후속. |
+| **9.32** | **2026-07-05** | **Hanpass Global Team** | **§12-A.3 AML-CTRY-001 — 국가위험 FATF 일일 웹 자동 수집 도입(코드=truth, feature/aml-country-risk-daily-import).** v6.0 이후 오픈결정으로 남았던 "외부 지표 자동 갱신 후속" 중 **FATF blacklist/greylist 를 일일 자동 수집으로 해소**: ① **화면 2탭→3탭**(`① 국가위험 등급표`/`② 일일 수집 상태`(신설)/`③ 변경 상신·이력`) — ① 에 출처(provenance) 배지(`FATF 자동 수집(FATF_DAILY)`+`asOf` / `수동 조정(MANUAL)`), ② 에 소스 메타 카드(소스명·URL·최종 수집시각·적용 버전·최종 상태)+최근 run 변경 내역(신규/상향/하향/이탈/수동보존 diff)+**[지금 수집]** 수동 트리거(scope `aml:admin:policy`, 감사 `COUNTRY_RISK_IMPORT_TRIGGERED`, 실패 시 기존 등급 유지 fail-safe 안내). ② **BR-003 신설** — 일일 스케줄러(cron 기본 03:40·enabled 기본 off·single-flight), black→거래금지(`PROHIBITED`)/grey→높음(`HIGH`) 결정적 매핑, canonical SHA-256 버전·무변경 no-op·실패 fail-safe, **수동(MANUAL) 오버라이드 우선(자동 수집이 덮지 않음·suppressedManual)**. ③ API 표에 `GET .../country-risk/import-status`·`POST .../country-risk:import` 추가(자동 수집은 4-eyes 비대상 — 수동 변경만 🔒 COUNTRY_RISK 불변). ④ 부록 E v6.0-4 오픈결정 부분 해소 표기(CPI 등 잔여 지표만 잔존)·부록 B 매핑 갱신. | 근거=aml-svc `V16__country_risk_daily_import.sql`·`CountryRiskImportScheduler`·`FatfGradeMapping`·`CountryRiskProvenance`·`SyncCountryRiskUseCase`·`LookupCountryRiskUseCase`(1차 RA GEOGRAPHY 파생 소비 예정), bo-api `AmlCountryRiskController`(:import/import-status 위임)·`V8__country_risk_import_audit_event.sql`, bo-web `components/aml/AmlCountryRisk.tsx`(3탭·지금 수집). DB §3.22c/§7 V16·API §2.7/§3.12 동기화. 코드=truth. PPT 재빌드는 후속. |
+| **9.31** | **2026-07-05** | **Hanpass Global Team** | **§5.1 AML-RA-001 2차 RA 내역 탭 필터 의미 정정(코드=truth, feature/aml-ongoing-ra-tab-filter-fix).** 2차 RA 내역 테이블이 `reviewDueSoon=true`를 상시 고정 전송해 '재평가 대기/임박(30일 내)' 행만 조회하던 결함(탭 이름/설명='재평가 내역'과 데이터='임박 전용' 모순, STR 발동으로 방금 2차 재평가된 회원[예: MEDIUM·다음 재심사 2026-12-31]이 미노출)을 해소 — **§내역 데이터 표·BR-008 개정**: ① 2차 내역 기본 = **STR/CTR 발동 최신 2차(ONGOING) 재평가 전체**(`risk-scores?riskGrade=LOW,MEDIUM,HIGH,PROHIBITED`, 상시 `reviewDueSoon` 제거), ② `재평가 대기/임박만 보기` **명시적 토글(기본 off)** — on 시에만 `reviewDueSoon=true` 전송·상태 표기 `재평가 대기/임박`, ③ 조회 기준 패널에 `단계=2차(ONGOING)` 추가·상태 동적화. `risk-scores`는 `scenario` 서버 파라미터 미제공 → 2차 단계 한정은 조회 페이지(≤50건) 내 `scenario`(부재 시 재평가 계보·factor) 파생 **클라이언트 필터**(`raScenarioStage`), 서버측 scenario 필터는 후속 과제. bo-web 단독(bo-api `GET /risk-scores` 계약·Flyway 불변), 1차 RA·고위험 탭 회귀 없음. | 근거=bo-web `components/aml/AmlRiskMonitoring`(`OngoingRaTab` reviewDueSoon 상시 제거·`ReviewDueSoonToggle`·`RaStageHistoryTable.rowStageFilter`)·`lib/aml-risk`(`raScenarioStage` 기존재)·`AmlRiskMonitoring.ongoing.test.tsx`(임박 아닌 ONGOING 노출·토글 on 임박만·ONBOARDING 미노출·1차 filters 불변). API §5.1 동기화(계약 변경 없음). 코드=truth. PPT 재빌드는 후속. |
+| **9.30** | **2026-07-05** | **Hanpass Global Team** | **§12-A.4 AML-RA-003 BR-004 — RA 상세 설명가능성 3건 보강(코드=truth, feature/aml-ra-detail-evidence-run7).** ① **신원 대조 패널** — WLF 강제 상향 근거(`forcedFloorEvidence`) 존재 시 factor breakdown 탭에 2열 비교 그리드(좌=회원 신원 이름·국적·성별·생년월일 4필드 마스킹+reveal 게이트 `aml:pii:reveal`+`RAW_DATA_ACCESS`/우=대조 명단 엔트리 원본값 공개 plaintext, §API 2.7 `entryIds` 배치 조회), 스크리닝 상세 `matchedCandidates[].reasonCodes`로 일치 필드 뱃지 하이라이트. 회원 raw 신원 응답 평문 동봉 금지—reveal 전용, 명단 원본은 공개데이터 예외(§19.2·설계서 §1.6). ② **2차(ONGOING) 재평가 발동 알림별 근거 의심거래 목록** — `reassessmentAlerts` 각 행 확장 시 근거거래 페이징(거래번호·일시·상품·금액·상대 마스킹, 기존 `GET .../alerts/{alertId}/related-transactions` §API 2.4 재사용) + `[TM 알림 상세 ▶]`(`/aml/tm/alerts/{alertId}`) 딥링크·graceful. ③ **점수 표기 규약** — RA factor 기여도 0~100 스케일("45.22" 점수·% 아님), WLF 매치 점수 0~1 소수 % 유지(공용 점수 막대 `max` 계약 1/100 구분, 4522% 스케일 버그 해소). RA 응답 계약·Flyway 변경 없음(aml-svc V16 미사용). | 근거=bo-web `components/common/{ScoreBreakdownBars,WatchlistMatchEvidencePanel}`·`components/aml/{AmlRiskDetail,RaReassessmentLineage,AmlMatchCandidateList}`·`hooks/useAmlWatchlist`(`useAmlWatchlistEntriesByIds`)·`lib/{aml-screening,aml-watchlist,aml-risk}`, bo-api `aml/watchlist/{controller/AmlWatchlistController,service/AmlWatchlistService}`(`entryIds` passthrough), aml-svc `WatchlistAdminController`·`WatchlistEntryQueryService.listByIds`·`AlertController`(related-transactions)·`PiiField`(NAME/NATIONALITY/GENDER/DOB) 기존재. API §2.7·§2.4·§3.3 동기화. 코드=truth. PPT 재빌드는 후속. |
+| **9.29** | **2026-07-04** | **Hanpass Global Team** | **§6.1 AML-RA-002 BR-006 — 2차 상시 RA(ONGOING) 실환경 ACTIVE 정정(코드=truth, V12).** 9.28 이 2차 상시 `KR_ONGOING_RA` 를 DRAFT placeholder·"다음 단계 예정(§6.1 미정의)"로 명문화했으나, `V12__ra_ongoing_model_activation.sql` 로 **`DRAFT→APPROVED(ACTIVE)`** 실환경화되어 BR-006 을 정정: `KR_ONGOING_RA v1` 이 STR/CTR 발동 시 거래 가중 재평가→재이행 주기 단축(앞당기기만)→EDD 자동 개시(STR draft·심각도 HIGH·`UNUSUAL_TRANSACTION`)를 수행하는 실운영 모델이며, 정의는 모델 `parameters` JSONB(DB §3.9)에 자기서술(엔진 상수 하드코딩 없음)·화면은 2차 RA 탭에서 `reassessmentAlerts`·`reviewShortened`(API §3.3)로 표시. 1차 온보딩 정본(`KR_DEFAULT_RA`=ONBOARDING, §5.1)·`is_default=false` 기본 경로 불변. **문서 미정의 지점 없음**(§6.1 미정의 문구 제거). | 근거=aml-svc `db/migration/V12__ra_ongoing_model_activation.sql`(disk 검증)·`domain/risk/{OngoingRaParameters,OngoingRaFactorDeriver}`·`application/usecase/OngoingRaService`, bo-api `aml/ra/dto/RaDtos`(RaModel/RaModelVersion.parameters·RiskScore.{scenario,reassessmentAlerts,reviewShortened})·`aml/ra/service/AmlRaService`(passthrough). DB §3.9/§7 V12·API §2.7/§3.3 동기화. 코드=truth. PPT 재빌드는 후속. |
+| **9.28** | **2026-07-04** | **Hanpass Global Team** | **§6.1 AML-RA-002 RA 모델 시나리오 구분 역전파(코드=truth, feature/ra-onboarding-lifecycle).** RA 모델 정의(`aml_risk_models`)에 `scenario`(ONBOARDING/ONGOING) 컬럼(V11)이 도입돼 어느 모델이 어느 RA 흐름(1차 온보딩 / 2차 상시)에 소비되는지 자기서술함을 §6.1 **BR-006** 신설로 반영 — 기존 정본 `KR_DEFAULT_RA`=`ONBOARDING`(회원가입 CDD 완료 1회 평가, §5.1 정합), 2차 상시 `KR_ONGOING_RA`=`ONGOING` **DRAFT placeholder(is_default=false) 1행만 시딩·읽기 표시**. **활성화·거래가중 재평가·주기 단축·EDD 자동 개시 흐름은 §6.1 미정의 — 다음 단계 예정(추측 금지)** 임을 명문화. | 근거=aml-svc `V11__ra_model_scenario.sql`·`domain/enums/RaScenario`·`domain/risk/RiskModel.scenario`·`adapter/out/persistence/RiskModelJpaEntity`·`adapter/in/rest/RiskModelAdminController`(draft `scenario` default ONBOARDING), bo-api `aml/ra/dto/RaDtos`(RaScenario·RaModel/RaModelVersion.scenario). DB §3.9/§7 V11·API §2.7/§3.3 동기화. 코드=truth. PPT 재빌드는 후속. |
+| **9.27** | **2026-07-02** | **Hanpass Global Team** | **데모 데이터 정직화 — 사건·판정·식별 데이터를 REST 인입 원천으로 한정 역전파(코드=truth, feature/aml-demo-data-honesty).** §1.11 **BR-DEMO-HONESTY 신설**(데모 stub 의 사건/판정/식별 데이터는 REST 인입 이벤트만 원천, hash 파생·즉석 시드·seed% 가공 합성 금지; 참조/설정 정본[워치리스트 엔트리·CTR/STR 룰 카탈로그·영업일 캘린더·TM-002 템플릿]만 시드 유지). ① 회원 등록 인입 이벤트(`{eventType:"member", member:{…declaredIncomePhp}}`)→인메모리 member vault(회원 identity·신고소득 유일 원천, 미등록 회원 거래는 identity 의존 판정 skip). ② **§3.2 WLF 스크리닝=실 인입 레코드**(송금 인입당 sender CUSTOMER+receiver COUNTERPARTY 2건·transactionRef 쌍 그룹·인메모리 상한·랜덤 UUID screeningId; 데모 멤버 즉석 행·hash 인코딩 id 폐기; **부분 식별[이름+국가] 수취인은 overall 상한 0.65 로 자동 NO_MATCH — 엔진 FuzzyMatchEngine[전체 가중치 합 정규화] 동형, TM 명단 룰 nameScore 축과의 비대칭은 의도된 정직 동작·후속 매처 재정규화 검토**; FP 화이트리스트 시드 폐기[등록 액션만]·벌크런=업로드 행 실매칭 카운트). ③ **§7.1 TM 알림·§9.1 규제 보고 DRAFT=라이브 인입만**(백로그 시드·stub id·합성 evidence·비-TM 4종 시드 폐기, 미지 id not-found), STR 신호 실데이터화(`STR_KYC_INCOME_MISMATCH`=거래액>신고소득×5·`STR_THIRD_PARTY`=senderHolderName 명의 불일치, hash 합성 폐기). ④ **§12.2 인입 헬스=실 트래픽만**(가공 fixture 폐기, 없으면 0/―). ⑤ 빈 목록 정직 문구("합성 데이터를 표시하지 않습니다 — 실 인입 대기"). raw PII 미탑재·reveal 감사·prod fail-closed·(거래·룰)당 1건·멱등 불변. | 근거=bo-api `AmlDemoMemberVault`(회원 vault)·`AmlScreeningRecordStore`(실 인입 스크리닝 레코드·엔진 동형 밴딩)·`AmlScreeningService`(스토어 기반 큐/상세·FP 시드/벌크런 실카운트)·`AmlTmService`(라이브 인입 결선·STR 실신호)·`AmlStrLiveReportStore`·`AmlReportService`(라이브 보고만)·`IngestTestController`(member 이벤트), 시뮬레이터(회원 등록 선행·senderHolderName). API §3.2·integration §4 동기화. DB 불변. PPT 재빌드는 후속. |
+| **9.26** | **2026-07-02** | **Hanpass Global Team** | **명단 룰(STR_PEP·STR_SANCTION) 발동을 실명 매칭으로 전환 + 송금 수취인 정보 규격 명문화 역전파(코드=truth, feature/aml-tm-real-watchlist-matching).** §7.1 AML-TM-001: **BR-011 개정**(발동 자체가 실명 매칭 — 당사자 이름[+해외 수취 국가 보조]을 WLF 데모 매처 `StubNameMatcher` 로 ACTIVE 명단 엔트리와 매칭, `nameScore ≥ 0.92`[WLF TRUE 임계값을 이름 축에 적용]일 때만 발동; hash 합성 발동·임의 엔트리·가공 점수 폐기; 계보=실매칭 엔트리·실 복합점수(matchScore)+nameScore+matchReasonCodes; 데모 자동 발동은 [스크리닝 매칭→분석가 4-eyes 확정→STR] 폐루프의 압축 근사임을 명시 — 실엔진 라이브는 0.66 POSSIBLE 캡·TRUE_MATCH=분석가 확정·회원 발동은 pep_flag). **BR-013 개정**(수취인 정보 규격 — 국내송금=이름만/해외송금=이름+수취 국가, 성별·생년월일 규격상 미제공; 인입 payload `receiverName`·`receiverCountry` 가산·수취인 참조=`sha256(name|country)` 파생 안정키·수취인 가용 필드 국내 [NAME]/해외 [NAME,NATIONALITY]; 화면 비교 표 "제공 안 됨(국내송금: 이름만)"/"제공 안 됨(송금 수취인 정보 규격)" 표기; 비-prod 라이브 인입=nested transaction→ingestLiveTransaction). | 근거=aml-svc `StrEvaluationService`·`FuzzyMatchEngine`·`MatchRuleSet`(nameScore·0.92)·`WlfScreeningService`(0.66 POSSIBLE 캡·TRUE_MATCH 분석가 확정), bo-api `AmlStrLiveReportStore`(실명 매칭 발동)·`AmlWatchlistMatchLineage`(실매칭 lineage)·`AmlDemoPiiCatalog`(회원/수취인 신원 정본)·`HanpassPhTransactionPayload`(receiverName·receiverCountry), 시뮬레이터 수취인 풀(진양성 동명 소수+깨끗 다수). API §3.4a/§3.4·integration §4.2 동기화. DB 불변. PPT 재빌드는 후속. |
+| **9.25** | **2026-07-02** | **Hanpass Global Team** | **송금 거래(국내/해외) STR_PEP·STR_SANCTION 을 회원+수취인 당사자별 동시 평가 — 매칭 당사자 구분 역전파(코드=truth, feature/aml-tm-receiver-screening).** §7.1 AML-TM-001: **BR-013 신설**(송금 채널 DOMESTIC_REMIT·CROSS_BORDER_REMIT 만 수취인 COUNTERPARTY 스크리닝 계보(transactionRef 그룹·TRUE_MATCH 우선)로 STR_PEP·STR_SANCTION 동시 평가, 계보 부재 시 skip·합성 금지; 알림 (거래·룰)당 1건 유지 + `evidence.watchlistMatch.matchedParty`·`partyRef`·`additionalMatches[]`(대표=회원 우선)·bo-api `partyIdentity` projection; STR_SANCTION RESTRICT·심각도 수취인 동일; 보고 payload 당사자 구분; 인입 `receiverRef` 가산). BR-012 자동 표시(v9.24 — 진입 시 reveal·감사) 명문화. ①-b ASCII 에 당사자 배지·수취인 비교 열·additionalMatches 반복 반영. | 근거=aml-svc `StrEvaluationService`(당사자별 평가·`findCounterpartyScreenings`·TRUE_MATCH 우선)·`AlertEvidence.WatchlistMatch`(matchedParty·additionalMatches), bo-api `AmlTmService`(partyIdentity read-time projection)·`AmlStrLiveReportStore`·`HanpassPhTransactionPayload`(receiverRef), bo-web `AmlTmAlertDetailSections`(당사자 배지·수취인 열). API §3.4a/§3.6·integration(receiverRef) 동기화. DB 불변. PPT 재빌드는 후속. |
+| **9.24** | **2026-07-02** | **Hanpass Global Team** | **명단 룰(STR_PEP·STR_SANCTION) 알림 상세에 WLF 동형 식별정보 비교(참고) 역전파(코드=truth, feature/aml-tm-watchlist-identity-compare).** §7.1 AML-TM-001 ①-b 명단 매칭 근거에 **"식별정보 비교(참고)" 표**(4행 이름·국적·성별·생년월일 × 2열 원거래 대상(회원)/명단 엔트리) 신설 — 데이터 원천 AlertDetail `subjectIdentity`(공용 `SubjectIdentity` 타입) + `evidence.watchlistMatch.entryIdentity`, `fields ⊆ {NAME,NATIONALITY,GENDER,DOB}` 중 서버 가용 필드만, 셀별 마스킹+원문 열람은 기존 `POST /bo/aml/pii/reveal`(§2.6, RAW_DATA_ACCESS 감사) 재사용(신규 엔드포인트 없음), 본문 raw PII 미탑재, bo-api read-time projection(엔진 API 무변경), 명단 룰 한정·identity 부재 시 숨김. **BR-012 신설**. | 근거=bo-api `AmlTmService`(subjectIdentity·entryIdentity read-time projection)·`ScreeningDtos.SubjectIdentity`(공용)·`PiiRevealService`, bo-web `AmlTmAlertDetailPanel`(식별정보 비교 표). API §3.4a 동기화. DB 불변. PPT 재빌드는 후속. |
+| **9.23** | **2026-07-02** | **Hanpass Global Team** | **AML-TM-001 알림 상세를 전용 페이지로 전환 + 룰 특성별 구성 역전파(코드=truth, feature/aml-tm-alert-detail-page).** §7.1 AML-TM-001: (1) 목록 행 클릭 동작을 인라인/모달 → **전용 상세 페이지 `/aml/tm/alerts/{alertId}`** 이동으로 갱신(딥링크·새로고침·404 목록 안내, 목록 액션은 목록 유지, **백엔드 API 무변경** = 기존 `GET /aml/alerts/{alertId}` 재사용). (2) 상세 화면 레이아웃 블록 신설 — 룰 특성별: **명단 룰(STR_PEP·STR_SANCTION)은 ①-b 명단 매칭 근거 상단 배치·② 집계 근거(임계/기준치) 숨김**(의미 불일치 해소, 데이터 무변경·표시 구성만), 집계·임계형은 ② 유지, SIGNAL 계열은 탐지 신호, ③ 관련 거래 풀폭·비-truncate(회원번호·거래번호 전체 노출·표 내부 가로 스크롤), ④ 대상 360°, ⑤ 자금그래프. BR-007 개정. | 근거=bo-web `app/aml/tm/alerts/[alertId]/page.tsx`(전용 페이지·404)·`AmlTmAlerts`(행→라우팅)·`AmlTmAlertDetailPanel`(룰 특성별 섹션·풀폭 관련거래). API/DB 무변경. PPT 재빌드는 후속. |
+| **9.22** | **2026-07-02** | **Hanpass Global Team** | **STR_PEP·STR_SANCTION 알림에 WLF 동형 명단 매칭 근거(watchlistMatch) 가산 역전파(코드=truth, feature/aml-tm-pep-match-evidence).** §7.1 AML-TM-001 알림 상세 데이터 모델 ⑤ `evidence.watchlistMatch`(명단종류·엔트리·마스킹 이름·소스코드·제공처·점수·연계 WLF 판정·origin) 신설 + **BR-011 신설**(WLF 동형 lineage — 엔진은 대상 최신 스크리닝 매칭 엔트리 중 룰 listType 일치 항목 resolve, 계보 부재 시 `origin=KYC_PEP_FLAG` 정직 fallback·조작 금지, STR 보고 payload `watchlistMatches[]` 동반, 비-명단 룰 미표시, 발동 로직 불변). 알림 상세 ASCII 에 STR_PEP "명단 매칭 근거" 패널 예시 추가. 스키마 변경 없음(evidence JSONB 확장). | 근거=aml-svc `application/usecase/StrEvaluationService`(resolveWatchlistMatch·screening lineage·KYC_PEP_FLAG fallback)·`domain/tm/AlertEvidence.WatchlistMatch`·`application/port/out/WatchlistEntryStorePort.findByEntryId`, bo-api `AmlStrLiveReportStore`·`AmlTmService`(데모 워치리스트 결정적 매칭), bo-web `lib/aml-tm.ts`·`AmlTmAlertDetailPanel`(명단 매칭 근거 섹션). API §3.4a 동기화. DB 스키마 불변. PPT 재빌드는 후속. |
+| **9.21** | **2026-07-02** | **Hanpass Global Team** | **TM 알림 발동을 CTR/STR 룰 카탈로그로 한정 — 레거시 시나리오 발동 폐기 역전파(코드=truth, fix/aml-tm-ctr-str-rule-scope).** (1) **§7.1 AML-TM-001 BR-010** — v9.20 의 "모니터링 = TM + CTR + STR 동시 평가"를 **"TM 알림 = CTR/STR 룰 발동의 산출물"**로 개정: 엔진(`TmEvaluationService`)의 ACTIVE 시나리오→`TM_SCENARIO` 알림 영속 제거, CtrEvaluationService·StrEvaluationService 가 발동 룰마다 TM 알림을 보고 DRAFT 와 원자적 멱등 영속(`scenario_code` 칼럼=룰 코드, 기존 `ux_alert_tm` 재사용). 레거시 `ScenarioCode`(구조화거래·고위험 회랑 등 10종) 발동 폐기. 알림 목록/상세 컬럼·필터를 시나리오→룰(사유코드)로, 심각도 매핑(제재매칭=매우높음·그 외 STR=높음·CTR=중간) 명문화. (2) **§7.2/§12-A.6 AML-TM-002** — 시나리오 빌더는 **설정 전용**(발동과 분리) 콜아웃. (3) **§12-B.3 AML-STAT-001** — ② 효과성 행 코드 값=룰 코드(필드명 `scenarioCode` 유지)·라벨=룰 라벨, TM-002 드릴다운 제거(규제 보고 룰 관리로 안내). | 근거=aml-svc `application/usecase/{TmEvaluationService,CtrEvaluationService,StrEvaluationService,TransactionReportSideEffectRunner}`·`domain/report/AmlReportRule`(alertSeverity)·`domain/tm/AlertEvidence`(rule trigger)·`adapter/in/rest/AlertController`(ruleCode·rule 필터)·`db/migration/V7__tm_alert_rule_codes.sql`, bo-api `AmlTmService`·`TmDtos`·stats, bo-web `lib/aml-tm.ts`·`AmlTmAlerts`·상세 패널·`lib/aml-stats.ts`. API §3.4/§3.4a·DB §3.10/§마이그레이션(V7) 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **9.20** | **2026-07-01** | **Hanpass Global Team** | **CTR/STR 모니터링 통합 역전파(코드=truth, feature/aml-ctr-str-monitoring).** (1) **§9.1 AML-REP-001** — CTR/STR 룰 카탈로그(BR-009: CTR 2종 + STR 8종, `AmlReportRuleCatalog`)·멱등 보고 DRAFT/사유코드 UPSERT(BR-010: `ux_aml_ctr_draft`/`ux_aml_str_draft`, `str_reason_codes` fold, TEMP_FREEZE>STR>CTR)·보고 기한 PH_AMLC 5영업일+PII sha256(BR-011: CTR 거래일+5BD 17:00 PHT·STR 의심확정+5BD, eAMLA `amlc_submission_ref`, KR default 옵션 보존) 3개 BR 신설. (2) **§7.1 AML-TM-001** — 모니터링 = TM + CTR + STR 동시 평가(BR-010) 명문화(단일 인입 파이프라인의 서로 다른 산출물·우선순위 표기). (3) **§12-B.3 AML-STAT-001** — API 에 `GET /stats/report-rules?family=CTR|STR` 추가 + CTR/STR 메뉴별 룰 개요(BR-005) 신설. | 근거=aml-svc `domain/report/{AmlReportRuleCatalog,BankingCalendar}`·`domain/enums/{AmlReportRuleCode,StrReasonCode}`·`application/usecase/{CtrEvaluationService,StrEvaluationService,TransactionReportSideEffectRunner}`·`adapter/out/submission/MockAmlcSubmissionAdapter`, bo-api `AmlReportRuleController`·`AmlCtrThresholdController`·`AmlStatsService`. API §2.7/§3.6/§3.6a/§11·DB §3.12/§3.22a/§3.22b·integration §3.4 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **9.19** | **2026-07-01** | **Hanpass Global Team** | **§7.1 AML-TM-001 라이브 인입을 FDS처럼 룰베이스로 정합(코드 정합) — 채널→시나리오 하드매핑 폐기.** 데모(비-prod) 시뮬레이터 거래가 인입될 때 "채널→시나리오 단순 매핑으로 무조건 HIGH 알림 1건(집계 count=1·기준초과 true·관련거래 1건)"을 만들던 결함 해소. 이제 bo-api 라이브 인입(`IngestTestController`→`AmlTmService.ingestLiveTransaction`)이 **주체(회원)별 rolling 윈도우**에 거래를 누적해 **ACTIVE THRESHOLD 시나리오(STRUCTURING/RAPID_MOVEMENT/MULE_NETWORK/HIGH_RISK_CORRIDOR/ROUND_TRIPPING)의 설정 임계(금액 합산·건수·윈도우·다상대)로 실제 집계 평가** → **임계 충족 시에만** `TM_SCENARIO` 알림 발동/멱등 갱신((tenant,subject,scenario) upsert), 미충족 거래는 미발동(FDS ALLOW 대응). DRAFT(REFUND_LAUNDERING/TRADE_MISPRICING)·SIGNAL 계열 미발동 불변. 상세 ② 집계 근거에 **건수 기준·거래상대(다상대) 기준** 행 추가(순환거래=다수 상대방이 관련거래 다건으로 노출), ③ 관련 거래는 집계를 구성한 **윈도우 형제거래 다건**. 시뮬레이터는 회원 풀을 소수로 제한해 velocity 누적. 시나리오 임계=`ScenarioTemplates`(룰 관리) 단일 정본, raw PII 불변. | 근거=bo-api `AmlTmService`(appendLiveTxn·evaluateLiveScenario·upsertLiveAlert·windowFor·effectiveSeverity)·`IngestTestController`, aml-svc `TmEvaluationService.addRelatedTransactions`(windowPort 형제거래), bo-web `lib/aml-tm.ts`·`AmlTmAlertDetailPanel`(건수/다상대 임계 행), `tools/aml-ingest-simulator`(MEMBER_POOL). API §3.4a 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **9.18** | **2026-06-30** | **Hanpass Global Team** | **데모·시뮬레이터를 hanpass-ph 6 거래유형 기준으로 정렬 — WLF sender+receiver 양방향·RA 회원가입 기준 명문화(전체 그림 보강, 코드 정합) — 엔진 도메인 무변경.** v9.16/9.17(WLF 매치 알고리즘·식별정보)이 매치 상세 측면만 반영한 것을 보강 — ① **§3 WLF 절 콜아웃 신설**: WLF 스크리닝이 **해외송금(`remit-svc` cross-border)의 sender(회원, `CUSTOMER`) + receiver(상대방, `COUNTERPARTY`) 양방향**임을 명문화(수취국 PH/VN/ID 제재 = 진양성, aml-svc `V26` receiver 워치리스트 엔트리·bo-api 스텁 sender+receiver). 비-cross-border 거래는 sender만. ② **§5 RA 절 콜아웃 신설**: 데모·시뮬레이터의 1차 RA = **회원가입(`member-svc`) 시점 1회**·factor=`nationality`/`occupation`/`sourceOfFunds`/`kycLevel`(거래 기준 factor 1차 제거, 화면 ① 1차 RA와 1:1). ③ 시뮬레이터(`scripts/demo_ingest.py`·`demo_stream.py`)가 6 거래유형 생성·sender/receiver WLF·회원 온보딩 RA를 구동함을 명시. 엔진 도메인/enum/규제(CTR/STR) 불변 — 6유형 정렬은 데모/시뮬레이터/시드 한정. | 근거=`scripts/demo_ingest.py`·`demo_stream.py`(6유형·sender/receiver·회원 RA), aml-svc `V26`(STRUCTURING v2·HIGH_RISK_CORRIDOR v3·receiver 워치리스트), bo-api `AmlScreeningService`(sender+receiver)·`AmlRaService`(회원 KYC factor)·`AmlTmService.channelFor`. API §2.2/§3.2(WLF sender+receiver·COUNTERPARTY) 동기화. 코드=truth. PPT 재빌드는 후속. |
@@ -44,6 +51,7 @@
 | **9.7** | **2026-06-27** | **Hanpass Global Team** | **TM 알림 evidence 임계가 시나리오 설정값으로 구동(코드 정합) + 시나리오 금액 임계 기본값 PHP·PH_AMLC 정렬.** §7.1 AML-TM-001 알림 상세 `aggregationSummary.threshold` 를 **하드코딩(₱500,000) 제거하고 시나리오의 설정 기준필드(편집 폐루프 = executed override→pending overlay→template)에서 파생**하도록 명문화 — 1차 금액 임계(STRUCTURING `singleAmountCeiling`·RAPID `minAmount`·HIGH_RISK_CORRIDOR `corridorAmountThreshold`·REFUND `minRefundAmount`·ROUND `cycleAmountThreshold`), 금액 임계 없는 시나리오(MULE 건수기반·SIGNAL 4종)는 `threshold=null`(AggregationSummary 전 필드 nullable, API §3.4a), `thresholdMet` 은 정직 파생(합산≥임계 / 건수≥임계 / 신호형 true). 시나리오 카탈로그 금액 임계 **기본값 통화 KRW→PHP** 정렬 + 값 PH_AMLC 정렬(STRUCTURING 단건 상한 = CTR **₱500,000**, BR-009 PH_AMLC). ACTIVE 시나리오만 발동(불변). 엔진 무변경·비-prod stub 가시화·prod fail-closed. | 근거=bo-api `AmlTmService.configuredThreshold`/`effectiveFields`/`ScenarioTemplates`. DB §3.10 evidence(PHP) 불변. |
 | **9.6** | **2026-06-24** | **Hanpass Global Team** | **§5.1 AML-RA-001에 CDD·RA 처리 현황 통계(kycStatus 분포·RA 처리 상태·인입·기간별 처리량) 신설, `customers/pipeline-stats` 엔드포인트 코드 정합. 부록 H KYC 통계 backlog 해소.** RA-001을 기존 `점수 분포`·`고위험 목록` 2탭에 더해 **`CDD·RA 처리 현황`** 통계 섹션으로 확장(BR-001 갱신) — ① **kycStatus 분포**(PENDING/VERIFIED/INCOMPLETE/EXPIRED/REJECTED — `aml_customers.kyc_status`), ② **RA 처리 상태**(평가완료=`evaluated_at` 존재 / 재평가대기=`next_review_due_at≤now` target별 최신 score / 미평가=customer 있으나 score 없음), ③ **인입 회원**(24h/7d/30d — 등록 시각 `aml_customers.onboarding_at` coalesce `created_at`), ④ **기간별 처리량**(`aml_risk_scores.evaluated_at` 일별 histogram). bo-api 소유 `GET /api/v1/bo/aml/ra/pipeline-stats?histogramDays=`(엔진 위임 `GET /api/v1/admin/aml/customers/pipeline-stats`, scope `aml:case:read`, 응답 `CddRaPipeline`)·집계 출처(`aml_customers`·`aml_risk_scores`)·tenant 스코프·PII 집계만·read-only·비-prod stub/prod fail-closed·tipping-off 무관 명시. DB: aml-svc V21(`aml_customers.onboarding_at` DEFAULT now() + null 백필, additive). | 근거=aml-svc `CddRaPipelineController`·bo-api `RaPipelineStatsController`·V21. PPT 재빌드는 후속. |
 | **9.5** | **2026-06-24** | **Hanpass Global Team** | **STAT-001 시나리오 효과성에 STR 전환·보고/케이스 전환율·관련 거래건수/총액 추가(코드 정합, TM `aggregationSummary` 파생).** §12-B.3 ② 룰 효과성 표에 `reportCount`(STR 전환 B)·`conversionRate`(보고 전환율 B/A)·`caseConversionRate`(케이스 전환율 a/A)·`relatedTxnCount`(관련 거래건수)·`relatedTxnAmount`(관련 거래총액) 항목 가산 + BR-004 신설(bo-api `GET /api/v1/bo/aml/stats/scenarios` ScenarioRow read-only 파생 — 관련 거래건수/총액=TM alert evidence `aggregationSummary`(relatedCount/relatedAmount), STR 전환=`status=STR_RECOMMENDED` 집계, 엔진 무변경·비-prod stub 가시화·prod fail-closed). TM-002(`scenarioCode`) 드릴다운·tipping-off(① 전담) 불변. | 근거=bo-api ScenarioRow·TM alert aggregationSummary. |
+| **9.5-hpg** | **2026-06-30** | **Hanpass Global Team** | **hanpass-ph 재그라운딩 — 코드 truth(`EventFamily`·`TmScenario`·`CaseType`·`AmlWlfTransactionGroups`·Flyway V19/V22/V26/V27/V28) 기준 hanpass-ph AML 기능정의서로 한정(origin/main 병합, 동일자 v9.20/v9.18 그라운딩과 병존).** ① **제목·§1.1**: "SaaS AML Platform"→**hanpass-ph AML RegOps 백오피스**, 운영 대상=거래 5유형(remit/domestic/wallet), 운영 테넌트=hanpass-ph 단일(`tenant_demo`). 멀티테넌시 기제는 코드 정본 유지하되 일반화(은행·핀테크·PG·가상자산·무역/B2B·이커머스·다서비스) 제거. ② **§3 WLF**: 해외송금 **거래당 sender(`CUSTOMER`)·receiver(`COUNTERPARTY`) 2회 스크리닝**(거래번호 그룹)·**FP 화이트리스트(receiver 키 기준 거래간 유효)** 명문화(BR-011·소스 주석). ③ **§7 TM**: hanpass-ph ACTIVE 6종(STRUCTURING·HIGH_RISK_CORRIDOR·RAPID_MOVEMENT·MULE_NETWORK·REFUND_LAUNDERING·ROUND_TRIPPING) **phpEquivalent 임계 표** 추가, advanced-domain 4종(SHELL_MERCHANT·TRADE_MISPRICING·CRYPTO_OFF_RAMP·INTERNAL_OVERRIDE_ABUSE)은 미발화 표기. ④ **§1.5·§1.10**: enum 1:1 보존하되 비-hanpass(가맹점·셀러·무역증빙·VASP·TBML·B2B·이커머스 등)을 **플랫폼 멀티테넌시 capacity(hanpass-ph 비운영)** 로 분리. ⑤ **§10 Travel Rule**: 가상자산 VASP=hanpass-ph 비운영 범위 주석(화면은 코드 정본 보존). ⑥ 화면 mock 서비스 selector(은행 A/핀테크 B/거래소 C)→hanpass-ph 단일. **enum/엔드포인트/필드 삭제 없음(코드 1:1 유지) — 운영 scope 한정만.** 주: 이후 v9.21~v9.25(TM 룰 한정·상세 페이지·watchlistMatch·식별정보 비교·수취인 스크리닝)가 §7.1 을 최신화한다. | 근거=`aml-svc`·`bo-web/components/aml`·`lib/aml-screening.ts`·Flyway 시드. PPT 재빌드는 후속. |
 | **9.4** | **2026-06-21** | **Hanpass Global Team** | **메뉴 IA leaf 추가(코드 정합, bo-web `lib/nav.ts`=정본) — WLF 시뮬·대상360조회·TM시나리오 설정분리·내부명단·소스시스템.** §1.0 메뉴 IA 표에 신규 leaf 등재·라벨 변경: ① **운영›조사·모니터링** — `WLF 시뮬레이션`(AML-WLF-004, `/aml/wlf/simulation`) leaf 노출, `거래 모니터링(TM)`→**`거래 경보(TM)`**(AML-TM-001), `STR·룰 효과성 통계`→**`STR·탐지 효과성 통계`**(AML-STAT-001). ② **운영›고객위험·심사** — **`대상 360 조회`**(AML-SUBJ-001, `/aml/subjects`, scope `aml:case:read` — 검색 entry, customerRef/transactionRef/walletRef 입력→대상360°/CDD/RA 이동) leaf 신규. ③ **설정›연동·데이터** — **`소스 시스템 관리`**(AML-AUD-001 ③ 소스탭 진입점, `/aml/audit?tab=source-systems`)·**`내부 명단·오탐 면제`**(AML-WL-003, `/aml/watchlist/internal`) leaf 신규. ④ **설정›탐지·심사 정책** — **`TM 시나리오 관리`**(AML-TM-002, `/aml/tm/scenarios`) leaf 신규(TM-001 운영 ↔ TM-002 설정 분리). ⑤ **설정›감사·증적·내부통제** — `감사·증적 Export`→**`감사 로그·증적 Export`**. 부록 A에 AML-SUBJ-001 행 신규, 부록 B 권한에 AML-SUBJ-001(`aml:case:read`) 신규. 화면 콘텐츠·기존 ID 불변(WLF-004·WL-003·TM-002·AUD-001 파생을 메뉴 leaf로 노출만). | 근거=`bo-web` `lib/nav.ts`·`AmlSubjectSearch.tsx`(AML-SUBJ-001). PPT 재빌드는 후속. |
 | **9.3** | **2026-06-21** | **Hanpass Global Team** | **코드 기준 RA 등급 조정·점수 목록 정합화(이격 리포트 AML, 구현=정본).** ① **§6.1 AML-RA-002 등급 수동 조정** — 블라인드 `scoreId` 직접 입력 방식을 폐기하고 **위험점수 목록 조회(등급 필터+`targetRef`)→행 선택→현재 등급 기준 하향 가능 등급만 select→사유→4-eyes 상신** 흐름으로 BR-002a 신설(`POST .../risk-scores/{scoreId}/override`, body `RiskOverrideRequest{ targetGrade(하향만)·reason 필수·makerId }`, 서버가 하향 아니면 거부). ② **§5.1 AML-RA-001** — 엔진 직접 집계 "`GET /admin/aml/risk-scores` 미신설" 단언 폐기, 실제 구현(목록 `GET .../risk-scores` + 분포 `GET .../risk-scores/distribution`, `RiskScoreAdminController`, scope `aml:case:read`) 반영. bo-api dashboard 집계와 공존. | 근거=`aml-svc` RiskModelAdminController·RiskScoreAdminController. API §2.7/§3.3 동기화. PPT 재빌드는 후속. |
 | **9.2** | **2026-06-19** | **Hanpass Global Team** | **테넌트 개념 재정의 — 고객사→서비스(테넌트), 상위 기관 신설(기관→서비스→워크스페이스), 부록 F 용어사전·§1.3/§1.5/§0-B(§13)/§1.0 재기술.** 운영 계층을 **기관(institution, 신설 상위 — 시스템을 납품받은 회사/금융기관, 배포·계약 주체) → 서비스(=테넌트, `tenant_id`, 테넌트 격리 경계) → 워크스페이스(`workspace_id`)** 3단으로 재정의(1 기관 : N 서비스(테넌트)). 화면 라벨 '고객사'→'서비스', workspace 라벨 '서비스'→'워크스페이스', 상단 컨텍스트 2단('고객사·서비스')→3단('기관·서비스·워크스페이스'). §1.0 IA·§1.3 운영 주체·§1.5 `aml_tenants`(서비스 마스터+기관 참조 필드 신설 명시)·§13 서비스 관리(AML-TNT-001/002/003 명칭)·부록 F 용어사전(기관/서비스=tenant_id/워크스페이스=workspace_id) 재기술. **내부 코드·식별자 불변**(`tenant_id`·`Tenant-Id`·`workspace_id`·RLS `app.current_tenant`·scope·`AML.TENANT_*`는 그대로, 의미만 '서비스'). 개인 고객(`aml_customers`·`customer_ref`·고객 프로필)·규제 임계·STR/CTR 분류 불변. DB 정합(기관 참조 필드)은 별도 처리. |
@@ -125,7 +133,11 @@
 
 ### 1.1 문서 목적
 
-본 문서는 **SaaS AML Platform** 백오피스(준법감시실 운영 콘솔)의 관리·운영 기능에 대한 기능정의서(PRD)입니다. SaaS AML Platform 은 한국 금융시장에서 기관(institution, 시스템을 납품받은 회사/금융기관)이 운영하는 여러 금융서비스(국내송금·해외송금·월렛충전·회원 등 — 은행·핀테크·PG·VAN·가상자산사업자·무역/B2B 결제·이커머스 플랫폼)가 각각 **독립 서비스(=테넌트, `tenant_id`)** 로 연동하여(1 기관 : N 서비스), 자기 고객·법인·실소유자·거래·증빙·명단 데이터를 가지고 **고객확인(CDD)·강화된 고객확인(EDD)·요주의 명단 필터링(WLF)·고객위험평가(RA)·거래 모니터링(TM)·규제 보고(STR/CTR/Travel Rule)** 를 사람이 백오피스에서 검토·판정·결재·모니터링할 수 있도록 화면 단위로 정의합니다.
+본 문서는 **hanpass-ph AML RegOps 백오피스**(준법감시실 운영 콘솔)의 관리·운영 기능에 대한 기능정의서(PRD)입니다. 운영 시스템은 **hanpass-ph**(필리핀 송금·월렛 사업)의 AML 백오피스이며, hanpass-ph 가 영위하는 **결제 거래 5유형 — 해외송금(remit) · 국내송금(domestic) · 월렛충전·월렛결제·ATM출금(wallet)** 을 대상으로, 자기 회원(개인)·수취인·거래·증빙·명단 데이터를 가지고 **고객확인(CDD)·강화된 고객확인(EDD)·요주의 명단 필터링(WLF)·고객위험평가(RA)·거래 모니터링(TM)·규제 보고(STR/CTR/Travel Rule)** 를 사람이 백오피스에서 검토·판정·결재·모니터링할 수 있도록 화면 단위로 정의합니다.
+
+> **거래 taxonomy(코드 정본 — `EventFamily`)**: AML 캐논 이벤트의 거래-운반 family 는 **`REMIT`(해외송금)·`DOMESTIC`(국내송금)·`WALLET`(월렛충전·결제·ATM출금)** 3종이다(`com.aegis.aml.domain.enums.EventFamily`, Flyway V27). 채널 5유형은 `CASH_IN`(월렛충전)·`DOMESTIC_REMIT`(국내송금)·`CROSS_BORDER_REMIT`(해외송금)·`WALLET_PAYMENT`(월렛결제)·`WALLET_WITHDRAWAL`(ATM출금)이며 모두 위 3 family 로 귀속된다(V26). 카드결제(`CARD_NOT_PRESENT`)는 FDS 채널로 AML 결제 family 범위 밖이다.
+
+> **멀티테넌시 · 운영 테넌트(코드 정본 유지)**: 플랫폼은 `tenant_id` 행 격리 멀티테넌시를 코드 사실로 보유하나(RLS `app.current_tenant`·`Tenant-Id` 헤더), **본 PRD가 정의하는 운영 테넌트는 hanpass-ph 단일**(`tenant_demo`, display_name 'Demo Tenant', region KR, policy_pack `KR_DEFAULT` — `aml-svc` V2 시드)이다. 멀티테넌시 기제는 유지하되, 화면·시나리오·임계는 hanpass-ph 운영으로 한정한다. 타 도메인(은행·핀테크·PG·가상자산·무역/B2B·이커머스)·다서비스 일반화는 본 hanpass-ph 기능정의서의 대상이 아니며, 코드에 enum/필드로 존재하는 비-hanpass 값은 **플랫폼 멀티테넌시 capacity(hanpass-ph 비운영)** 로만 표기한다.
 
 본 백오피스는 **`bo-web`(Next.js)** 화면이며, **`bo-api`(백오피스 백엔드)** 를 경유합니다. bo-web 은 AML 엔진을 직접 호출하지 않습니다(정본 §3·§4, API §0). 호출 대상은 화면 성격에 따라 둘로 나뉩니다(API §9 소유 경계).
 
@@ -150,7 +162,7 @@ AML 엔진 자체의 ingest·screening·RA·TM 평가는 서비스(테넌트) �
 | — | WLF 검토 — ③ 처리 이력 (AML-WLF-003) | T-10 | (엔진) `GET .../screenings?status=TRUE_MATCH,FALSE_POSITIVE,AUTO_DISCOUNTED` |
 | 3 | 명단 소스·임포트 승인 (AML-WL-001) | T-08 | (엔진) `admin/aml/watchlist-sources`, `imports/{version}:apply` 🔒, `watchlist-entries` |
 | — | **내부 요주의 명단·오탐 면제 생명주기 (AML-WL-003, 벤치마크 2차 보강 — §12-B.5)** | T-08·T-10 | (엔진) `POST .../watchlist-sources/{code}/entries:draft`(수기 등록→diff 초안) · `GET .../screenings/fp-whitelist` · `POST .../fp-whitelist/{id}:revoke` 🔒 **(제안 — 후속 API 정합, 부록 E v7.0)** |
-| — | **국가위험(고위험 국가) 관리 (AML-CTRY-001, 앞단 정책 — §12-A.3, v9.25 FATF 일일 자동 수집)** | T-11 | (엔진) `GET .../country-risk` · `GET .../country-risk/import-status` · `POST .../country-risk:import`(수동 수집 트리거 — 결재 없음) · `POST .../country-risk:change` 🔒(subjectType=`COUNTRY_RISK`) |
+| — | **국가위험(고위험 국가) 관리 (AML-CTRY-001, 앞단 정책 — §12-A.3, v9.32 FATF 일일 자동 수집)** | T-11 | (엔진) `GET .../country-risk` · `GET .../country-risk/import-status` · `POST .../country-risk:import`(수동 수집 트리거 — 결재 없음) · `POST .../country-risk:change` 🔒(subjectType=`COUNTRY_RISK`) |
 | 4 | RA 분포·고위험 현황 (AML-RA-001, 2탭·모니터링) | T-11 | **bo-api** `GET /api/v1/bo/aml/dashboard`(분포 집계); (엔진) `ra-models`·`/aml/customers/{ref}/risk` |
 | 5 | RA 모델 관리·시뮬레이션·등급 조정 (AML-RA-002, 4탭) | T-11 | `ra-models/{code}/simulate`(③ 시뮬레이션), `ra-models/versions/{v}:activate` 🔒, `risk-scores/{id}/override` 🔒 |
 | — | **당연고위험 레지스트리 (AML-HRR-001, 벤치마크 2차 보강 — §12-B.6)** | T-11 | (엔진) `GET .../high-risk-registry` · `PUT .../high-risk-registry/reference-lists/{listType}` 🔒(subjectType=`HIGH_RISK_REGISTRY`, scope `aml:admin:high-risk-registry`) **(확정 — T2 AML-ENG-02 aml-svc 엔진 구축, 부록 E v7.0 해소. bo-api 실위임은 후속 T13)** |
@@ -220,8 +232,8 @@ DB 설계서 §3 기준 **확정 도메인 테이블 14종 + 지원 인프라 4�
 |--------|------|------------|
 | `aml_tenants` | 서비스 마스터(테넌트=서비스 — 표시명·배포 유형·온보딩 상태·운영 상태·기본 리전·인프라 참조·정책팩 코드). v5.0: `deployment_model`(3종)·`onboarding_status`(8종)·`infra_ref` 추가, `isolation_mode` 폐기(DB V17a/V17b). **상위 기관(institution) 참조 필드(예 `institution_ref`/`org_id`) 신설 — 1 기관 : N 서비스(테넌트)** (DB 정합은 별도 처리) | `tenant_id` (+ 기관 참조) |
 | `aml_source_systems` | 원천 시스템 (연동 방식·스키마 버전·인증 모드·장애 정책·secret 참조). **hanpass-ph 실서비스 카탈로그(REST sync, DB §3.2 정본)**: `member-svc`(회원/KYC/CDD/제재·PEP zoloz)·`walletchg-svc`(월렛충전)·`domestic-svc`(국내송금 PHP)·`remit-svc`(해외송금, `sanction_screening_event`·`str_indicators` 보유)·`wallet-svc`(월렛 원장 `transfer_links` 자금그래프)·`tx-history-svc`(통합 이력 read model — 대상 360° 피드)·`inbound-svc`(파트너 인바운드) | `tenant_id`, `source_system` |
-| `aml_customers` | 개인 고객 (유형·국가·KYC 상태·위험등급, 이름 hash) | `tenant_id`, `customer_ref` |
-| `aml_entities` | 법인·사업자·가맹점·셀러·공급업체 (유형·법인명 hash·업종·상태) | `tenant_id`, `entity_ref` |
+| `aml_customers` | hanpass-ph 회원(개인) (유형·국가·KYC 상태·위험등급, 이름 hash) | `tenant_id`, `customer_ref` |
+| `aml_entities` | 법인·사업자 (유형·법인명 hash·업종·상태). hanpass-ph 운영은 개인 회원 중심이며, 가맹점·셀러·공급업체 유형은 **플랫폼 멀티테넌시 capacity(hanpass-ph 비운영)** | `tenant_id`, `entity_ref` |
 | `aml_relationships` | 관계 그래프 (소유/지배/대표/운영/계좌사용/반복수취/관련/고용·지분율) | `tenant_id`, `relationship_id` |
 | `aml_watchlist_sources` | 명단 소스 (소스 종류·상태·활성 버전 포인터) | `tenant_id`, `source_code` |
 | `aml_watchlist_entries` | 명단 엔트리 (명단 종류·정규화 토큰·버전·상태, 이름 hash) | `tenant_id`, `entry_id` |
@@ -230,8 +242,8 @@ DB 설계서 §3 기준 **확정 도메인 테이블 14종 + 지원 인프라 4�
 | `aml_alerts` | TM/FDS 알림 (시나리오·대상·거래·심각도·상태·근거·발생 출처) | `tenant_id`, `alert_id` |
 | `aml_cases` | 케이스 (케이스 타입·대상·상태·우선순위·담당·EDD 트리거·기한·종결) | `tenant_id`, `case_id` |
 | `aml_regulatory_reports` | 규제 보고 증적 (보고 종류·케이스·상태·payload·제출 참조·manifest hash) | `tenant_id`, `report_id` |
-| `aml_business_documents` | 상업 증빙 (invoice/PO/B-L/order·금액·국가·doc hash) | `tenant_id`, `document_ref` |
-| `aml_travel_rule_transfers` | Travel Rule 이전 (송신/수취 VASP·자산·완전성·위험·지갑주소 hash) | `tenant_id`, `transfer_ref` |
+| `aml_business_documents` | 상업 증빙 (invoice/PO/B-L/order·금액·국가·doc hash). 무역/B2B 증빙 기반이며 hanpass-ph(송금·월렛) 운영 비대상 — **플랫폼 멀티테넌시 capacity(hanpass-ph 비운영)** | `tenant_id`, `document_ref` |
+| `aml_travel_rule_transfers` | Travel Rule 이전 (송신/수취 VASP·자산·완전성·위험·지갑주소 hash). 가상자산 VASP 간 이전 대상이며 hanpass-ph(법정통화 송금) 운영 비대상 — **플랫폼 멀티테넌시 capacity(hanpass-ph 비운영)** | `tenant_id`, `transfer_ref` |
 | `aml_canonical_events` | 정규화 이벤트 (event_type·payload·payload_hash·멱등키) | `tenant_id`, `event_id` |
 | `aml_approvals` | 4-eyes 결재 (subjectType·라인·상태·maker≠checker·payload_hash·실행시각) | `tenant_id`, `approval_id` |
 | `aml_audit_events` | append-only 감사 (카테고리·작업자·hash chain) | `tenant_id`, `audit_id` |
@@ -390,20 +402,22 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 > *(구 §1.8, v5.0에서 §1.10으로 번호 변경)*
 
-| 표시(한국어) | 내부 코드 | 주요 발생 도메인 |
-|------|------|------|
-| 제재 검토 | `SANCTIONS_REVIEW` | 전 도메인 |
-| 요주의 인물 검토 | `PEP_REVIEW` | 전 도메인 |
-| 강화된 고객확인 | `EDD_REVIEW` | 전 도메인 |
-| 의심거래보고 검토 | `STR_REVIEW` | 전 도메인 |
-| 고액현금거래 검토 | `CTR_REVIEW` | 송금·월렛·ATM·은행 |
-| 무역기반 자금세탁 검토 | `TBML_REVIEW` | 무역대금·B2B |
-| Travel Rule·지갑주소 검토 | `VASP_TRAVEL_RULE_REVIEW` | 코인거래소 |
-| 가맹점·셀러 AML 검토 | `MERCHANT_AML_REVIEW` | 카드/PG·이커머스·마켓플레이스 |
-| 대포통장·뮬계좌 검토 | `MULE_ACCOUNT_REVIEW` | 국내송금·월렛 |
-| B2B 인보이스 검토 | `B2B_INVOICE_REVIEW` | B2B 인보이스 |
-| 이커머스 정산 검토 | `ECOMMERCE_SETTLEMENT_REVIEW` | 이커머스 해외정산 |
-| 내부통제·직원 행위 검토 | `INTERNAL_CONTROL_REVIEW` | 은행 내부감사 |
+`aml_cases.case_type` enum 은 코드 정본 12종(`com.aegis.aml.domain.enums.CaseType`)이다. **hanpass-ph 운영이 실제 생성하는 케이스 타입은 아래 ‘hanpass-ph 운영’ 6종**이며, 나머지 6종은 enum 1:1 정합을 위해 보존하는 **플랫폼 멀티테넌시 capacity(hanpass-ph 비운영)** 다.
+
+| 표시(한국어) | 내부 코드 | hanpass-ph 발생 거래유형 | 범위 |
+|------|------|------|------|
+| 제재 검토 | `SANCTIONS_REVIEW` | 해외송금·국내송금·월렛(WLF 확정) | hanpass-ph 운영 |
+| 요주의 인물 검토 | `PEP_REVIEW` | 해외송금·국내송금·월렛(WLF PEP) | hanpass-ph 운영 |
+| 강화된 고객확인 | `EDD_REVIEW` | 회원(고위험·재이행) | hanpass-ph 운영 |
+| 의심거래보고 검토 | `STR_REVIEW` | 전 거래유형 | hanpass-ph 운영 |
+| 고액현금거래 검토 | `CTR_REVIEW` | 해외송금·월렛충전·ATM출금 | hanpass-ph 운영 |
+| 대포통장·뮬계좌 검토 | `MULE_ACCOUNT_REVIEW` | 국내송금·월렛 | hanpass-ph 운영 |
+| 무역기반 자금세탁 검토 | `TBML_REVIEW` | (무역대금·B2B) | 멀티테넌시 capacity — hanpass-ph 비운영 |
+| Travel Rule·지갑주소 검토 | `VASP_TRAVEL_RULE_REVIEW` | (가상자산 VASP) | 멀티테넌시 capacity — hanpass-ph 비운영 |
+| 가맹점·셀러 AML 검토 | `MERCHANT_AML_REVIEW` | (카드/PG·이커머스·마켓플레이스) | 멀티테넌시 capacity — hanpass-ph 비운영 |
+| B2B 인보이스 검토 | `B2B_INVOICE_REVIEW` | (B2B 인보이스) | 멀티테넌시 capacity — hanpass-ph 비운영 |
+| 이커머스 정산 검토 | `ECOMMERCE_SETTLEMENT_REVIEW` | (이커머스 해외정산) | 멀티테넌시 capacity — hanpass-ph 비운영 |
+| 내부통제·직원 행위 검토 | `INTERNAL_CONTROL_REVIEW` | (내부감사) | 멀티테넌시 capacity — hanpass-ph 비운영 |
 
 ### 1.11 데이터 인입 유형 (확정 — v8.0)
 
@@ -412,6 +426,8 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 **① 연동 방식(`ingest_mode` 6종 — 부록 F·API §5.14 정본) × 화면 표시 신호**
 
 > **REST 전용 운영(2026-06-26 확정).** bo-web/bo-api 인입 화면(AML-ING-001 ② 라이브·AML-TNT-002 ③ 소스 시스템)과 stub/엔진 위임 표시 레이어는 **`REST_PUSH`만 노출**합니다 — 실제 수신 API 구성(§1.11 ② 4종)이 모두 REST(HTTP) 기반이고, FDS 커넥터 REST 전용화(SFDS-CONN-004)와 동일 규격으로 맞춥니다. 엔진 레지스트리에 비-REST 소스가 있어도 표시에서 제외됩니다. 나머지 5종(`QUEUE`/`POLLING`/`CDC`/`SNAPSHOT`/`VENDOR_BRIDGE`)은 **enum·표준 신호 정의로는 유지(미사용·예정)**하되 현재 화면에 노출하지 않습니다. 큐 메트릭(`aml-ingest`·`.fifo`·`-dlq`)은 REST 푸시 이벤트의 내부 SQS 인입 파이프라인 가시성으로 **유지**합니다(integration §2.1).
+
+> **BR-DEMO-HONESTY (데모 데이터 정직화 — 코드=truth v9.27, feature/aml-demo-data-honesty).** 데모(비-prod stub)의 **사건·판정·식별 데이터는 REST 인입 이벤트만을 원천**으로 한다 — hash 파생·즉석 시드·seed% 가공 등 **합성 생성은 전면 금지**한다. 참조/설정 정본(**워치리스트 명단 엔트리·CTR/STR 룰 카탈로그·영업일 캘린더·TM-002 시나리오 템플릿**)만 시드로 유지한다. 파생 규칙: ① **회원 identity·신고소득**은 회원 등록 인입 이벤트(`{eventType:"member", member:{memberRef,name,nationality,gender,dob,declaredIncomePhp}}`)로 적재되는 **인메모리 member vault**(상한·eviction·전송값=열람값 reveal)가 유일 원천이며, 미등록 회원의 거래 인입은 identity 의존 판정(명단 매칭·소득 룰)을 **skip**한다(데이터 없으면 미평가가 정직). ② **WLF 스크리닝**은 송금 거래 인입마다 sender(CUSTOMER, 회원 vault 이름)+receiver(COUNTERPARTY, payload 이름/국가) **2건의 실매칭 레코드**(인메모리·상한·`transactionRef` 쌍 그룹)로 생성되며, 데모 멤버 즉석 행·hash 인코딩 screeningId 은 폐기된다(§3.2). ③ **TM 알림·규제 보고 DRAFT**는 **라이브 인입 산출물만** 존재하고, 백로그 대표 시드·자기서술 stub id·합성 evidence·비-TM 4종(SCREENING/RA/VENDOR/FDS 에스컬레이션) 시드는 폐기된다 — **미지의 알림/보고 id 는 not-found**(§7.1·§9.1). ④ **FP 화이트리스트**는 등록 액션(4-eyes)으로만 생성되며 시드 폐기, **벌크런 결과 카운트는 업로드 행 실매칭**(transient, 파일 미보존)으로 산출한다(§3.2·§12-B.1). ⑤ **인입 헬스**는 실 시뮬레이터 트래픽만 반영하고 가공 지표는 폐기(없으면 0/―, §12.2). ⑥ **빈 상태 정직 문구**: 인입 전 빈 목록에는 "합성 데이터를 표시하지 않습니다 — 실 인입 대기" 관성 문구를 노출한다(공통 EmptyState). raw PII 미탑재·reveal 감사·prod fail-closed·(거래·룰)당 1건·멱등은 불변.
 
 | 연동 방식(표시) | 내부 코드 | 화면 표시 신호(확정) |
 |---|---|---|
@@ -451,7 +467,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ AML 종합 현황       서비스 [은행 A ▼]   기간 [최근 7일 ▼]   관리자 admin ▼ │
+│ AML 종합 현황       서비스 [hanpass-ph ▼]   기간 [최근 7일 ▼]   관리자 admin ▼ │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ ┌─ 명단 필터링(WLF) ─┐ ┌─ 위험등급(RA) ────┐ ┌─ 거래 모니터링(TM) ──┐  │
 │ │ 검토 필요   18     │ │ 높음   1,204 (3%)  │ │ 미처리 알림   126     │  │
@@ -515,7 +531,11 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 > **WLF 스크리닝 대상 = 해외송금 sender + receiver 양방향(hanpass-ph 6 거래유형 기준, 코드 정합, v9.18)**: WLF/제재 스크리닝은 **해외송금(`remit-svc` cross-border)** 거래의 **송금인(sender = 회원 본인, `targetType=CUSTOMER`)** 과 **수취인(receiver = 상대방, `targetType=COUNTERPARTY`)** 을 **둘 다** 스크리닝한다(수취국 PH/VN/ID 제재 대상 = 진양성 시연). 이전에 sender만 보던 단일 주체 인상을 보강 — receiver 스크리닝은 워치리스트 receiver 엔트리(aml-svc Flyway `V26` PH/VN/ID 엔트리)와 매칭하며, sender·receiver 매칭 후보·식별정보(§3.1 reveal 게이트)는 동일 `subjectIdentity` 4필드(NAME/NATIONALITY/GENDER/DOB) 균일 구조로 노출된다(주체 무관, COUNTERPARTY 미보유 필드는 공백). 데모(비위임)에서도 bo-api 스텁 스크리닝이 sender + receiver를 모두 평가한다. 회원가입(member-svc)·국내송금·월렛 등 비-cross-border 거래는 sender(회원)만 스크리닝. **명단군·임계·reveal 게이트 불변** — 6유형 정렬은 데모/시뮬레이터/시드 한정(엔진 도메인 비변경).
 
+> **WLF 거래당 sender·receiver 2회 스크리닝(hanpass-ph 해외송금 정본 — 코드 `AmlWlfTransactionGroups`·`lib/aml-screening`·`ScreeningController.transactionRef`)**: hanpass-ph 해외송금은 **거래번호(`transactionRef`)당 WLF 스크리닝이 2회** 발생한다 — **송금인(sender, `targetType=CUSTOMER`, 회원 UUID 키)** 과 **수취인(receiver, `targetType=COUNTERPARTY`, 이름+국가+전화로 합성한 거래간 안정 키)**. 검토 큐는 거래번호 단위로 송금인·수취인 2건을 한 그룹으로 묶어 표시한다(그룹 헤더 = 거래번호, `N건 (송금인·수취인)`). **FP 화이트리스트(오탐 면제)** 는 receiver 키 기준으로 거래간 유효하다 — 동일 키의 후속 거래 스크리닝에서 자동 낮춤(`FalsePositiveWhitelist`·`FpWhitelistStorePort`, 현 룰버전 일치 시에만, §13.5). 데모 진양성 명단: 송금인 매치(JUAN/MARIA, V19) + 수취국 PH/VN/ID receiver 매치(V26). 국내송금·월렛 거래는 회원(sender) 단건 스크리닝. 이 receiver COUNTERPARTY 스크리닝 계보는 TM STR_PEP·STR_SANCTION 수취인 명단 평가(§7.1 BR-013)에도 재사용된다.
+
 > **데모(비위임) 스크리닝 = 엔진 매칭 알고리즘 미러(코드 정합, v9.16)**: localhost 데모(aml-svc 엔진 미가동·비위임)에서는 더 이상 스크리닝ID 해시 기반의 **고정 후보·고정 점수**(예 일률 81%)를 만들지 않는다. bo-api 스텁(`StubNameMatcher`)이 aml-svc 엔진의 결정적 매칭 1차요소(`TextNormalizer`·`NameSimilarity`·`FuzzyMatchEngine`·`MatchRuleSet`)를 **충실히 미러**하여 **회원 본인 실제 이름을 워치리스트 엔트리와 정규화·유사도 계산**하고, **검토 임계(0.66) 이상인 후보만** 매칭으로 부착한다. ① **정규화**: 유니코드 NFKD 분해 → 발음부호(결합문자) 제거 → 소문자 → 영숫자 외 문자=공백 → 토큰화 → 순서보존 중복제거(엔진 `TextNormalizer`와 동일). **한글 이름은 라틴 명단과 토큰 교집합 0**(한국 회원명은 라틴 제재명과 결코 퍼지 매칭되지 않음 — 의도적). ② **유사도**: exact(토큰집합 동일 1.0) / tokenSet(Jaccard) / editDistance(`1 − Levenshtein/max`), `nameScore = exact≥1 ? 1 : max(tokenSet, edit)`. ③ **가중합**: name 0.55·date 0.10·country 0.10·document 0.15·address 0.05·relationship 0.05의 가중치를 두되 **분모는 항상 전체 가중치 합(1.0)** — 스텁이 제공하지 않는 document/address/relationship 컴포넌트는 분자 기여 0이고 분모에는 그대로 남아 엔진(`FuzzyMatchEngine`이 `sumOfWeights()`로 나눔)과 **1:1** 일치한다(이름만 완전일치 = 0.55, 부풀린 0.733 아님). 임계 `possibleThreshold 0.66`·`trueThreshold 0.92`는 `MatchRuleSet.defaultRuleSet()` 미러다. **검증**: 김민준(한국)→0.0 NO_MATCH; IVANOV 완전일치+생년·국적 일치→0.75 POSSIBLE(`NAME_EXACT_MATCH`); IVANOV/Sergey(1글자 변형)+생년·국적→≈0.708 POSSIBLE(`SANCTIONS_NAME_SIMILARITY`); 생년·국적 미제공 name-only 완전일치→0.55 NO_MATCH(엔진과 동일하게 보강신호 없으면 검토 밴드 미만). 즉 **닮은 회원만 POSSIBLE_MATCH, 비유사(한국 이름 등)는 NO_MATCH**다. **BR-007 유지** — 미러 계산은 마스킹 토큰·파생 속성으로만 수행하며(원문 PII 보유·영속 없음), 응답은 마스킹 토큰·점수·reason code만 노출한다.
+
+> **스크리닝 큐 = 실 인입 레코드(데이터 정직화, 코드=truth v9.27, BR-DEMO-HONESTY)**: 데모 스크리닝 큐/상세는 **더 이상 데모 멤버 집합을 즉석 생성하지 않는다**. 송금 거래 인입마다 sender(CUSTOMER, 회원 vault 이름)+receiver(COUNTERPARTY, payload 이름/국가) **2건의 실매칭 레코드**를 인메모리 스토어(상한·eviction·`transactionRef` 쌍 그룹)에 적재하고, 큐/상세는 그 레코드만 읽는다 — **인입 전이면 큐가 비어 있다**(합성 행 0, 정직 문구 노출). `screeningId` 은 인입 시 부여한 **랜덤 UUID** 이며(자기서술적 hash 인코딩 폐기), 레코드가 targetRef/targetType/매처 결과를 보관하므로 상세 복원에 hash 재유도가 없다. 밴딩은 엔진 동형(≥0.66 POSSIBLE_MATCH·<0.66 NO_MATCH·`TRUE_MATCH`=분석가 4-eyes만). **부분 식별(이름+국가) 수취인은 overall 상한 0.65(name 0.55 + country 0.10, 생년월일 미제공)로 자동 밴딩이 NO_MATCH — 엔진 `FuzzyMatchEngine`(전체 가중치 합 정규화) 동형이다.** 즉 수취인 COUNTERPARTY 행은 큐엔 뜨지만 자동 POSSIBLE 승격은 불가하고 확정은 분석가 4-eyes 로만 이뤄진다. **TM 명단 룰(nameScore 축 발동, §7.1 BR-011)과의 비대칭은 의도된 정직 동작**이다(제품 후속: 매처 재정규화 검토). **FP 화이트리스트 시드(3행)는 폐기**되어 등록 액션(4-eyes 폐루프)으로만 생성되고, **벌크런 결과 카운트는 업로드 행을 실매처로 대조한 실제 카운트**(transient·파일 미보존)다.
 
 ---
 
@@ -533,7 +553,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ WLF 검토           서비스 [은행 A ▼]                       관리자 admin ▼  │
+│ WLF 검토           서비스 [hanpass-ph ▼]                       관리자 admin ▼  │
 ├─ 탭: [검토 필요 ●] [상위승인] [처리 이력] ────────────────────────────────┤
 │ [명단군 ▼] [대상 유형 ▼] [점수 ▼] [기간 ▼]              🔍 대상 식별자    │
 ├──────────────────────────────────────────────────────────────────────────┤
@@ -586,6 +606,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-008**: 상태 전이 위반은 `AML.INVALID_STATE_TRANSITION`. 결재 후 payload 변경 시 `AML.APPROVAL_PAYLOAD_CHANGED`로 무효화.
 - **BR-009**: **WLF 매칭 임계값 변경 통제** — 유사도 임계값(예: 자동낮춤 0.66 미만 / 검토필요 0.66~0.92 / 고신뢰 0.92 이상)과 적용 룰버전(WLF-KR v12)은 본 화면이 아니라 **정책팩(Policy Pack) 파라미터**로 관리되며, 변경은 정책팩 4-eyes(`POLICY_PACK`) 결재를 따릅니다(설계서 §5.3·§5.5, AML-PP-001 연계). 본 화면에는 읽기 전용으로만 표시.
 - **BR-010 (v7.0 — QA 정합)**: 화면 상단(헤더 우측)에 **`[시뮬레이션]` 버튼 → AML-WLF-004** 아웃바운드 트리거를 둔다(§12-B.1 진입 경로의 소스 측 명시) — 단건 퍼지 매칭 사전 테스트·임의 수행(일괄) 도구 화면으로 이동.
+- **BR-011 (hanpass-ph 거래당 sender·receiver 그룹 — 코드 정본 `AmlWlfTransactionGroups`)**: 해외송금 건은 검토 큐를 **거래번호(`transactionRef`) 단위 그룹**으로 묶어 표시한다 — 그룹 헤더(거래번호) 아래 **송금인(`CUSTOMER`)·수취인(`COUNTERPARTY`) 각 1건**(거래당 2회 스크리닝)을 나열하고, 각 행에서 상세 열람·`[오탐 면제]`(FP 화이트리스트, 4-eyes `FP_WHITELIST`)를 수행한다. `transactionRef` 없는 건(국내송금·월렛 단건)은 평면 행으로 폴백한다. 역할 라벨은 송금인/수취인(`wlfRoleLabel`), 대상유형 미정의 시 일반 대상유형 라벨로 폴백.
 
 ---
 
@@ -606,7 +627,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ WLF 검토           서비스 [은행 A ▼]                       관리자 admin ▼  │
+│ WLF 검토           서비스 [hanpass-ph ▼]                       관리자 admin ▼  │
 ├─ 탭: [검토 필요] [상위승인 ●] [처리 이력] ────────────────────────────────┤
 │ [명단군 ▼] [상신자 ▼] [기간 ▼]                           🔍 대상 식별자   │
 ├──────────────────────────────────────────────────────────────────────────┤
@@ -667,7 +688,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ WLF 검토           서비스 [은행 A ▼]   기간 [최근 30일 ▼]   admin ▼       │
+│ WLF 검토           서비스 [hanpass-ph ▼]   기간 [최근 30일 ▼]   admin ▼       │
 ├─ 탭: [검토 필요] [상위승인] [처리 이력 ●] ────────────────────────────────┤
 │ ┌─ 요약 카드 ────────────────────────────────────────────────────────┐   │
 │ │  확정 매칭  12  │  오탐  48  │  자동낮춤  126  │  면제(FP_WHITELIST)  9  │  평균 처리 SLA  2.3일 │   │
@@ -726,7 +747,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ 명단 소스 / 임포트     서비스 [은행 A ▼]                     [+ 새 소스]   │
+│ 명단 소스 / 임포트     서비스 [hanpass-ph ▼]                     [+ 새 소스]   │
 ├─ 탭: [소스 목록] [임포트 이력] [명단 엔트리 조회] ────────────────────────┤
 │ [명단 종류 ▼] [상태 ▼]                                      🔍 소스명     │
 ├──────────────────────────────────────────────────────────────────────────┤
@@ -777,7 +798,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 > **RA 평가 기준 = 회원가입(member-svc) 시점 KYC factor(hanpass-ph 6 거래유형 기준, 코드 정합, v9.18)**: 데모·시뮬레이터에서 1차 RA는 **회원가입(`member-svc` 온보딩) 시점 1회** 수행하며, factor는 **회원 속성** — `nationality`(고위험국)·`occupation`(직업)·`sourceOfFunds`(자금원천)·`kycLevel`(KYC 단계)이다(거래 기준 factor는 1차에서 제거 — 거래 기반 신호는 2차 활동 재평가·TM 소관). 시뮬레이터(`scripts/demo_ingest.py`·`demo_stream.py`)는 거래 생성과 별개로 회원 온보딩마다 RA를 1회 트리거하며, 회원 마스터를 위 `member-svc` 필드로 채운다. 엔진 RA 모델/factor catalog/등급 산식은 비변경 — 6유형 정렬은 데모/시뮬레이터/시드가 사용하는 factor 입력의 정합일 뿐이다(화면 ① 1차 RA = KYC/국적/직업/고객속성과 1:1).
 
-> **1차 RA는 엔진이 CDD 데이터로부터 직접 산출한다(코드=truth, v9.26)**: v9.18 이 데모·시뮬레이터가 factor sub-score 를 클라이언트에서 계산해 `POST /risk-assessments/evaluate` override 로 보내던 방식을, **엔진(`OnboardingRaDerivationService`)이 `customer.cdd.completed` 인입(API §2.1 step 7d) 시 CDD 데이터로부터 직접 파생**하도록 이관했다(별도 evaluate 호출·클라 계산 없음). 산출 규칙(모두 ACTIVE ONBOARDING 모델 `KR_DEFAULT_RA` 의 `parameters` JSONB 정본=V19 이 소비, 엔진 상수 하드코딩 없음):
+> **1차 RA는 엔진이 CDD 데이터로부터 직접 산출한다(코드=truth, v9.34)**: v9.18 이 데모·시뮬레이터가 factor sub-score 를 클라이언트에서 계산해 `POST /risk-assessments/evaluate` override 로 보내던 방식을, **엔진(`OnboardingRaDerivationService`)이 `customer.cdd.completed` 인입(API §2.1 step 7d) 시 CDD 데이터로부터 직접 파생**하도록 이관했다(별도 evaluate 호출·클라 계산 없음). 산출 규칙(모두 ACTIVE ONBOARDING 모델 `KR_DEFAULT_RA` 의 `parameters` JSONB 정본=V19 이 소비, 엔진 상수 하드코딩 없음):
 > - **(a) SCREENING = 회원 WLF 스크리닝(SANCTION/PEP)** — 주체 키=`memberRef`, 인입 시점 이름(vault·transient)·국적·생년으로 명단 매치. `POSSIBLE_MATCH`/`TRUE_MATCH`(비 `AUTO_DISCOUNTED`) 시 SCREENING=100 + **RA 위험등급 HIGH 강제 상향(floor)** + 사유 `SANCTION`/`PEP`(매치 엔트리 `list_type`) + 근거 참조(`screeningId`/`entryId`/`listType`, 참조 토큰만·원문 미기록 §19.2). 무매치=0·floor 없음.
 > - **(b) GEOGRAPHY = 국적/거주국 × 국가위험 정본** — `LookupCountryRiskUseCase` ACTIVE 등급과 대조해 결정적 산출: **PROHIBITED/HIGH=100 · MEDIUM=60 · LOW/미등재=15**. nationality × residenceCountry 는 **max 등급** 결합(가정 A2, residenceCountry 부재 시 `country` 폴백).
 > - **(b′) 국가위험 등급 기반 강제 floor(V20, 코드=truth, 사용자 승인)** — GEOGRAPHY 점수가 KR_DEFAULT_RA 가중치상 총점을 고위험으로 끌어올리지 못하는 경우(실측 M-9002, 국적 IR=HIGH → 총점 12 → LOW 착지)를 결정적으로 보정하기 위해, **국적/거주국의 국가위험 ACTIVE 등급을 최소 착지 등급으로 승격**한다: **PROHIBITED → HIGH · HIGH → MEDIUM**(MEDIUM/LOW/미등재 → floor 없음). 국적·거주국을 **개별 판정**한 뒤 최종 강제 등급은 `forcedFloorGrade = max(screening floor, 국적 floor, 거주국 floor)`(**상향만**)이며, 사유 코드는 **`HIGH_RISK_COUNTRY_NATIONALITY`**(고위험 국적)·**`HIGH_RISK_COUNTRY_RESIDENCE`**(고위험 거주국) 2종으로 **분리 병기**한다(해당하는 것만·중복 제거). 이 국가위험 floor 는 **(a) 명단 매치 floor(`screening.floorGrade`)·당연고위험(HRR) 레지스트리 floor 와 구분**된다 — factor breakdown/화면에서 "국가위험 floor" 로 라벨하며 HRR 사유(§12-B.6)로 표기하지 않는다. floor 로 등급이 상향되면 등급별 재이행 주기가 재산정된다(§12-A.5 cadence 적용). floor 매핑(`PROHIBITED→HIGH`·`HIGH→MEDIUM`)은 **모델 정본**(`aml_risk_models.parameters.countryFloor`, DB §3.9·§7 V20)에서 소비하며 엔진(`OnboardingRaFactorDeriver`)은 상수를 하드코딩하지 않는다(엔진 흔들림 금지, `RaModelContractTest`). 국가위험 floor 는 **evidence 원소를 추가하지 않고**(가정 A2 — `forcedFloorEvidence` 는 명단 매치 전용) reasons 코드로만 노출된다.
@@ -798,7 +819,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ 고객 위험평가(RA) 2단계 운영   서비스 [은행 A ▼] 모델 [RA-KR v4 ▼] admin ▼│
+│ 고객 위험평가(RA) 2단계 운영   서비스 [hanpass-ph ▼] 모델 [RA-KR v4 ▼] admin ▼│
 ├─ 탭: [전체 요약] [1차 RA] [2차 RA] [고위험·EDD] ─────────────────────────┤
 │ 1차 고객 위험평가(KYC/국적/직업·고객속성/이름 스크리닝/이용서비스)        │
 │   → 2차 활동 기반 재평가(거래/FDS 위임/TM 반복 적중/관계·UBO) → EDD/케이스 │
@@ -876,7 +897,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 - **BR-001**: 탭은 `전체 요약` / `1차 RA` / `2차 RA` / `고위험·EDD` **4탭(순수 모니터링·read-only)**. 상단에는 **1차 고객 위험평가(KYC 완료 시 국적·직업/고객속성·이름 스크리닝[제재·PEP]·이용 서비스/채널 기반)** → **2차 활동 기반 재평가(거래내역·FDS 위임/에스컬레이션·TM 반복 적중·관계/UBO·crypto/trade 신호 기반)** → **EDD/케이스 후속 조치** 흐름을 고정 표시한다. `전체 요약`은 1차/2차 KPI와 등급 분포를 함께 보여주고, `1차 RA`는 KYC·인입·최초평가 처리와 **1차 RA 내역 테이블**, `2차 RA`는 재평가 대기·기간별 처리량·거래/FDS/TM 기반 재평가 대상과 **2차 RA 내역 테이블**, `고위험·EDD`는 높음/거래금지 목록과 EDD 진입을 담당한다. 모델 버전 필터로 분포 조회. **모델 초안 시뮬레이션은 AML-RA-002 ③ 시뮬레이션 탭으로 이동**(모델 저작 활동·권한 `aml:admin:policy`이 모니터링 `aml:case:read`과 분리). 본 화면은 분포·통계 조회만, 변경 동작 없음.
 - **BR-007 (v9.6 CDD·RA 처리 현황 통계)**: `pipeline-stats` 응답은 화면에서 **1차 RA 탭과 2차 RA 탭으로 분리 표시**한다. `1차 RA`는 ① KYC 상태 분포(`kycStatusCounts`) ② **1차 평가완료**=`evaluated` ③ **1차 미평가**=`notEvaluated` ④ 인입 회원(24h/7d/30d, `registrationWindow`)을 표시한다. `2차 RA`는 ① **2차 재평가대기**=`pendingReview` ② 기간별 처리량(일별 평가 건수 histogram, `periodHistogram`) ③ 재평가 대기/고위험 대상 목록을 표시한다. **API = bo-api 소유** `GET /api/v1/bo/aml/ra/pipeline-stats?histogramDays=`(엔진 위임 `GET /api/v1/admin/aml/customers/pipeline-stats`, scope `aml:case:read`, 응답 `CddRaPipeline`). **집계 출처 = `aml_customers`(`kyc_status`·`onboarding_at`) + `aml_risk_scores`(`evaluated_at`·`next_review_due_at`)**, **tenant 스코프·PII 집계만**(raw 식별자 미노출). **비-prod stub / prod fail-closed**(엔진 미가용 시 운영 환경은 빈/오류 반환). **tipping-off 무관**(케이스·STR 미연계 순수 처리량 지표). DB: aml-svc V21 — `aml_customers.onboarding_at` DEFAULT now() + 기존 null 백필(additive). 부록 H **KYC 통계 상세 backlog 해소**.
-- **BR-008 (내역 조회 기준 가시성·서버 필터 정본, v9.30 개정)**: `1차 RA 내역`과 `2차 RA 내역` 테이블은 통계와 별도로 **조회 기준 패널**을 먼저 표시하고, 표시 조건은 실제 전송 필터와 동적으로 정합한다. **1차 기본 기준 = `기간=최근 30일 인입`(체크박스 기본 ON, 해제 시 `제한 없음`), `등급=전체`, `단계=1차(ONBOARDING)`, `상태=회원별 최신 1건`** — 최근 인입 회원의 RA 상태가 전부 보이도록 서버 `scenario=ONBOARDING&latestPerTarget=true&registeredWithinDays=30` 을 전송한다. **2차 기본 기준 = `기간=제한 없음`, `등급=전체`, `단계=2차(ONGOING)`, `상태=회원별 최신 1건(중복 제거)`** — STR/CTR 반복 발동으로 같은 회원의 재평가 이력이 여러 건 쌓여도 **회원(targetRef)별 최신 1건만** 노출한다(서버 `latestPerTarget=true`, dedupe 먼저 선정 후 등급/조치 상태 필터 적용 — API §2.7). `재평가 대기/임박(30일 내)만 보기` **명시적 토글(기본 off)** → `reviewDueSoon=true`·상태 표기 `재평가 대기/임박`. `최근 30일 인입 회원만` 체크박스(2차 기본 off) → `registeredWithinDays=30`. **처리필요(권고 조치) 체크박스 필터**(NONE·CDD_UPDATE·EDD·RELATIONSHIP_REVIEW, 다중 선택) → `requiredAction` 서버 필터. 기간별 추이는 `periodHistogram` 통계로 확인한다. (v9.24 의 "조회 페이지 내 클라이언트 scenario 파생 필터·서버측 scenario 필터 후속 과제"는 본 개정으로 **해소** — 서버 필터가 정본, `rowStageFilter` 클라 재필터 제거.)
+- **BR-008 (내역 조회 기준 가시성·서버 필터 정본, v9.37 개정)**: `1차 RA 내역`과 `2차 RA 내역` 테이블은 통계와 별도로 **조회 기준 패널**을 먼저 표시하고, 표시 조건은 실제 전송 필터와 동적으로 정합한다. **1차 기본 기준 = `기간=최근 30일 인입`(체크박스 기본 ON, 해제 시 `제한 없음`), `등급=전체`, `단계=1차(ONBOARDING)`, `상태=회원별 최신 1건`** — 최근 인입 회원의 RA 상태가 전부 보이도록 서버 `scenario=ONBOARDING&latestPerTarget=true&registeredWithinDays=30` 을 전송한다. **2차 기본 기준 = `기간=제한 없음`, `등급=전체`, `단계=2차(ONGOING)`, `상태=회원별 최신 1건(중복 제거)`** — STR/CTR 반복 발동으로 같은 회원의 재평가 이력이 여러 건 쌓여도 **회원(targetRef)별 최신 1건만** 노출한다(서버 `latestPerTarget=true`, dedupe 먼저 선정 후 등급/조치 상태 필터 적용 — API §2.7). `재평가 대기/임박(30일 내)만 보기` **명시적 토글(기본 off)** → `reviewDueSoon=true`·상태 표기 `재평가 대기/임박`. `최근 30일 인입 회원만` 체크박스(2차 기본 off) → `registeredWithinDays=30`. **처리필요(권고 조치) 체크박스 필터**(NONE·CDD_UPDATE·EDD·RELATIONSHIP_REVIEW, 다중 선택) → `requiredAction` 서버 필터. 기간별 추이는 `periodHistogram` 통계로 확인한다. (v9.31 의 "조회 페이지 내 클라이언트 scenario 파생 필터·서버측 scenario 필터 후속 과제"는 본 개정으로 **해소** — 서버 필터가 정본, `rowStageFilter` 클라 재필터 제거.)
 - **BR-002**: 고위험 목록 행 클릭 → AML-RA-003(대상 상세·EDD 착수) 드릴다운. 본 화면은 분포·조회 중심, 등급 변경 동작 없음.
 - **BR-003**: 재심사 기한 임박/초과는 ⚠ + 케이스 화면(EDD 재심사) 딥링크. 본 화면은 분포·조회 중심, 등급 변경 동작 없음.
 - **BR-004**: 점수·factor는 설명가능성 원칙(설계서 §5.2)에 따라 factor별 점수·근거를 분해 표시. raw PII 미노출.
@@ -901,7 +922,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ RA 모델 관리      서비스 [은행 A ▼]   모델 [RA-KR ▼]          admin ▼     │
+│ RA 모델 관리      서비스 [hanpass-ph ▼]   모델 [RA-KR ▼]          admin ▼     │
 ├─ 탭: [버전 목록] [factor 편집] [시뮬레이션] [등급 조정 이력] ─────────────┤
 │ 버전 │ 상태       │ factor 수 │ 작성자 │ 작성일   │ 동작                  │
 │ ─────┼────────────┼───────────┼────────┼──────────┼───────────────────────┤
@@ -982,37 +1003,66 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | **기능 ID** | AML-TM-001 |
 | **태스크** | T-14 (TM 엔진·scenario·alert lifecycle) |
 | **권한** | 조회 `aml:case:read` / 케이스 전환 `aml:case:update` / 시나리오 정책 `aml:admin:policy`(🔒 활성화) |
-| **API** | `GET /api/v1/aml/alerts/{alertId}`(상세 데이터모델 §3.4a evidence·relatedTransactions·subject360Ref) · `GET /api/v1/bo/aml/subjects/{customerRef}/360`(대상 360° §2.5a) · `GET /api/v1/admin/aml/tm-scenarios` · `POST .../tm-scenarios/{scenarioCode}/simulate` · `POST .../tm-scenarios/{scenarioCode}:activate`(🔒) |
+| **API** | `GET /api/v1/aml/alerts/{alertId}`(상세 데이터모델 §3.4a evidence·relatedTransactions·subject360Ref — **전용 상세 페이지 `/aml/tm/alerts/{alertId}` 가 재사용, API 무변경**) · `GET /api/v1/bo/aml/subjects/{customerRef}/360`(대상 360° §2.5a) · `GET /api/v1/admin/aml/tm-scenarios` · `POST .../tm-scenarios/{scenarioCode}/simulate` · `POST .../tm-scenarios/{scenarioCode}:activate`(🔒) |
 
 #### 화면 레이아웃 — 알림 적체
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ TM 알림(분석가 트리아지)   서비스 [은행 A ▼]                  admin ▼      │
+│ TM 알림(분석가 트리아지)   서비스 [hanpass-ph ▼]                  admin ▼      │
 ├─ 탭: [알림 적체] [시나리오 관리] ─────────────────────────────────────────┤
-│ [시나리오 ▼] [발생 출처 ▼] [심각도 ▼] [상태 ▼] [기간 ▼] [채널 ▼][corridor ▼]│
+│ [룰 ▼] [발생 출처 ▼] [심각도 ▼] [상태 ▼] [기간 ▼] [채널 ▼][corridor ▼]     │
 │                                                       🔍 대상 식별자(customerRef)│
 ├──────────────────────────────────────────────────────────────────────────┤
-│ 알림ID   │ 시나리오     │ 대상(식별자)│ 발생 출처        │심각도 │ 상태   │동작│
+│ 알림ID   │ 룰           │ 대상(식별자)│ 발생 출처        │심각도 │ 상태   │동작│
 │ ─────────┼──────────────┼─────────────┼──────────────────┼───────┼────────┼────┤
-│ alt-3301 │ 구조화거래   │ cust_…12    │ AML 모니터링     │ 높음  │ 탐지   │[케이스]│
-│ alt-3290 │ 뮬 네트워크  │ ent_…77     │ AML 모니터링     │매우높음│ 1차분류│[케이스]│
-│ alt-3277 │ 급속이동     │ cust_…90    │ FDS 에스컬레이션 │ 높음  │케이스생성│ ▶ │
-├──────────────────────────────────────────────────────────────────────────┤
-│ ▼ alt-3301 알림 상세                                  [대상 360° ▶]        │
-│ ┌─ 트리거 ─────────────────────────────────────────────────────────────┐ │
-│ │ 시나리오: 구조화거래(STRUCTURING) · 데이터 신호: STR_003(분할거래)     │ │
-│ ├─ 근거(evidence) ─────────────────────────────────────────────────────┤ │
-│ │ 측정: 분할충전 합계 · 기간: 5영업일 · 충족: 9건 합계 ₱480,000(기준 충족)│ │
-│ ├─ 관련 거래 ──────────────────────────────────────────────────────────┤ │
-│ │ txRef     │채널  │금액·통화   │corridor │상대     │시각   │FDS판정 │ │
-│ │ chg_…01   │충전  │₱60,000     │PH→PH    │self     │09:12  │허용 ▶ │ │
-│ │ rmt_…07   │해외  │₱120,000    │PH→VN    │bene_…9  │11:40  │보류 ▶ │ │
-│ ├─ 자금그래프(funnel) ─────────────────────────────────────────────────┤ │
-│ │ [충전 9건]→[월렛]→[해외송금 2건] (transfer_links 미니뷰)               │ │
-│ └──────────────────────────────────────────────────────────────────────┘ │
-│   [케이스 생성(STR_REVIEW)] [기각(사유)] [상위 escalation]                 │
+│ alt-3301 │ CTR 단건보고 │ cust_…12    │ AML 모니터링     │ 중간  │ 탐지   │[케이스]│
+│ alt-3290 │ STR 제재매칭 │ ent_…77     │ AML 모니터링     │매우높음│ 1차분류│[케이스]│
+│ alt-3277 │ STR PEP      │ cust_…90    │ FDS 에스컬레이션 │ 높음  │케이스생성│ ▶ │
+│                                                                            │
+│ ※ 알림ID/룰 등 행 클릭 → 전용 상세 페이지 `/aml/tm/alerts/{alertId}` 이동    │
+│   (동작 열 [케이스] 등 목록 액션은 목록에서 처리, 페이지 이동 없음)         │
 └──────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 화면 레이아웃 — 알림 상세 (전용 페이지 `/aml/tm/alerts/{alertId}`)
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ← 목록   알림 alt-3277 · 룰 STR PEP(STR_PEP) · 심각도 높음 · 상태 케이스생성 │
+│                                                        [대상 360° ▶]       │
+├─ ① 탐지 조건 ──────────────────────────────────────────────────────────────┤
+│  사유코드: PEP · 설명: PEP 관련 거래 STR 검토 플래그                        │
+├─ ①-b 명단 매칭 근거 (STR_PEP·STR_SANCTION 상단 배치) ──────────────────────┤
+│  [수취인 매칭] 명단종류: SANCTIONS · 소스: OFAC_SDN · 제공처: US Treasury OFAC │
+│  매칭 이름(자동표시): Juan D**a C**z · 이름점수: 0.94 · 점수: 0.65 · 판정 scr…b2 ▶│
+│  ┌─ 식별정보 비교(참고) ────────────────────────────────────────────────┐ │
+│  │ 항목    │ 원거래 수취인            │ 명단 엔트리                    │ │
+│  │ 이름    │ Juan D**a C**z           │ Juan D**a C**z                 │ │
+│  │ 국적    │ PH                       │ PH                             │ │
+│  │ 성별    │ 제공 안 됨(수취인 규격)  │ (명단에 없음)                  │ │
+│  │ 생년월일│ 제공 안 됨(수취인 규격)  │ 1975-**-**                     │ │
+│  └──────────────────────────────────────────────────────────────────────┘ │
+│  ※ 당사자 배지 "회원(송금인) 매칭"/"수취인 매칭" — RECEIVER 면 좌측 열=수취인 │
+│  ※ 수취인 정보 규격: 국내송금=이름만 / 해외송금=이름+국적(성별·생년월일 미제공)│
+│  ※ 발동=실명 매칭(이름점수≥0.92, WLF 데모 매처) — 데모는 4-eyes 폐루프 압축 근사│
+│  ※ 양당사자 동시 매칭이면 매칭 카드를 당사자별로 반복(additionalMatches)     │
+│  ※ 셀 원문 자동 표시(v9.24 — 진입 시 reveal·RAW_DATA_ACCESS 감사, 클릭 불필요)│
+│    · 규격상 없는 필드 "제공 안 됨(수취인 규격)" · 명단 미보유 "명단에 없음"    │
+│  ※ 계보 없으면 "명단 매칭 계보 없음(KYC PEP 플래그 기반)" 표기              │
+│  ※ 명단 룰은 ② 집계 근거(임계/기준치)를 숨김 — 의미 불일치 해소            │
+├─ ③ 관련 거래 (풀폭·비-truncate, 회원번호·거래번호 전체 노출) ──────────────┤
+│  회원번호        │ 거래번호       │채널│금액·통화 │corridor│상대    │시각 │FDS│
+│  cust_1003       │ amltm-RMT-1003 │해외│₱120,000  │PH→VN   │bene_…9 │11:40│보류▶│
+│  (표 내부 가로 스크롤 — 식별자 말줄임 없음)                                 │
+├─ ④ 대상 360° ─────────────────────────────────────────────────────────────┤
+│  대상 통합 뷰 링크(subject360Ref)                                          │
+├─ ⑤ 자금그래프(funnel) ────────────────────────────────────────────────────┤
+│  [충전 9건]→[월렛]→[해외송금 2건] (transfer_links 미니뷰)                   │
+└──────────────────────────────────────────────────────────────────────────┘
+
+  ▶ 집계·임계형 룰(CTR·STR_STRUCTURED·STR_VELOCITY_CASH 등) 상세는 ①-b 대신
+    ② 집계 근거(측정/기간/임계/충족)를 유지 · SIGNAL 계열은 ② 탐지 신호(Signals)
 ```
 
 #### 화면 레이아웃 — 시나리오 관리 (스키마 주도 빌더)
@@ -1035,15 +1085,31 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 | 항목(표시) | 설명 (괄호=내부 코드) |
 |------|------|
-| 시나리오 | 구조화거래(`STRUCTURING`)/급속이동(`RAPID_MOVEMENT`)/뮬 네트워크(`MULE_NETWORK`)/고위험 corridor(`HIGH_RISK_CORRIDOR`)/허위가맹점(`SHELL_MERCHANT`)/환불세탁(`REFUND_LAUNDERING`)/무역가격조작(`TRADE_MISPRICING`)/순환거래(`ROUND_TRIPPING`)/가상자산 현금화(`CRYPTO_OFF_RAMP`)/내부승인 남용(`INTERNAL_OVERRIDE_ABUSE`) (DB §5.6) |
-| 데이터 신호 | `StrIndicator`(STR_001~015, `remit.str_indicators` 매핑) — 시나리오 카탈로그의 **데이터 신호** 코드. 규제 STR 분류(KoFIU)는 보고 단계에서 별도 유지(BR-007) |
-| 심각도 | 낮음/중간/높음/매우높음 (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`, API §3.4) |
+| 룰 | **CTR/STR 보고 룰 카탈로그(`AmlReportRuleCatalog`)** 코드 — CTR 2종(CTR 단건보고 `CTR_SINGLE`·CTR 일합산보고 `CTR_DAILY`) + STR 8종(STR PEP `STR_PEP`·STR 제재매칭 `STR_SANCTION`·STR KYC소득불일치 `STR_KYC_INCOME_MISMATCH`·STR 구조화 `STR_STRUCTURED`·STR 목적부재 `STR_NO_PURPOSE`·STR 제3자명의 `STR_THIRD_PARTY`·STR 현금속도 `STR_VELOCITY_CASH`·STR 수동 `STR_MANUAL`). TM 알림의 발동 룰 코드는 `aml_alerts.scenario_code` 칼럼에 저장(DB §5.6, v9.21 CHECK 확장). 레거시 시나리오 코드(구조화거래 `STRUCTURING`·고위험 회랑 `HIGH_RISK_CORRIDOR` 등 10종)는 **발동 정본에서 폐기**되고 TM 시나리오 관리(AML-TM-002) 설정 화면에만 남는다 |
+| 사유코드(STR 전용) | `StrReasonCode`(PEP/SANCTION/KYC_MISMATCH/STRUCTURED/NO_PURPOSE/THIRD_PARTY/UNUSUAL_PATTERN/MANUAL) — STR 룰 발동 시 `evidence.trigger.strReasonCode` 로 노출. CTR 룰은 사유코드 없음. 규제 STR 분류(KoFIU 의심유형)는 보고 단계에서 별도 유지 |
+| 심각도 | 낮음/중간/높음/매우높음 (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`, API §3.4) — 룰 actions 기반: 제재매칭(`STR_SANCTION`, RESTRICT 차단)=매우높음(`CRITICAL`), 그 외 STR=높음(`HIGH`), CTR=중간(`MEDIUM`) |
+| 레거시 시나리오(설정 전용) | `TmScenario` enum 10종(DB §5.6)은 **알림 발동에서 폐기**(BR-010)되고 TM 시나리오 관리(AML-TM-002) 설정·시뮬레이션에만 남는다. hanpass-ph 설정 ACTIVE 6종(STRUCTURING·RAPID_MOVEMENT·MULE_NETWORK·HIGH_RISK_CORRIDOR·REFUND_LAUNDERING·ROUND_TRIPPING) + advanced-domain 4종(SHELL_MERCHANT·TRADE_MISPRICING·CRYPTO_OFF_RAMP·INTERNAL_OVERRIDE_ABUSE, 송금·월렛 미발화) — 아래 'phpEquivalent 임계' 표 참조 |
 | 상태 | 탐지(`DETECTED`)/1차분류(`TRIAGED`)/케이스생성(`CASE_OPENED`)/기각(`DISMISSED`)/escalation(`ESCALATED`)/STR권고(`STR_RECOMMENDED`) (DB §5.7) |
 | 발생 출처 | **AML 모니터링**(`source_origin=AML`) / **FDS 에스컬레이션**(`source_origin=FDS`, alert_type=`FDS_ESCALATION`) / 벤더 경보(`VENDOR`) — 목록 컬럼·필터로 제공(DB §5.20, 부록 F) |
 | 채널 | 충전(walletchg)/국내(domestic)/해외(remit)/인바운드(inbound) (hanpass-ph, 관련 거래·필터) |
 | corridor | cross-border 거래의 송신/수취 국가·통화(remit `send/receive_country·currency`) — 필터·관련 거래 표시 |
-| 근거(evidence) | **TM 알림 상세 데이터모델**(DB §3.10·API §3.4a `evidence`): ① 트리거(시나리오·`strIndicator`·설명), ② 집계 패턴(측정값/기간/기준 충족 — 예 "5영업일 9건 분할충전 합계 ₱480,000"), ③ 관련 거래 목록(`transactionRef`→충전/국내/해외·금액·통화·corridor·상대·시각·FDS decision 링크), ④ 자금그래프(funnel, `wallet.transfer_links`) |
+| 근거(evidence) | **TM 알림 상세 데이터모델**(DB §3.10·API §3.4a `evidence`): ① 트리거(`ruleCode`·STR 전용 `strReasonCode`·룰 자연어 `description`), ② 집계 패턴(측정값/기간/기준 충족 — CTR 은 예 "1영업일 현금거래 합산 ₱600,000", STR 은 주체 rolling 윈도우), ③ 관련 거래 목록(`transactionRef`→충전/국내/해외·금액·통화·corridor·상대·시각·FDS decision 링크), ④ 자금그래프(funnel, `wallet.transfer_links`), ⑤ **명단 매칭 근거 `watchlistMatch`**(STR_PEP·STR_SANCTION 전용 — WLF 판정 동형: `listType`(PEP/SANCTIONS)·`entryId`(마스킹 토큰)·`entryName`(마스킹 이름)·`sourceCode`·`provider`(소스 제공처 이름)·`matchScore`(있으면)·`screeningRef`(연계 WLF 판정, 있으면)·`origin`(WATCHLIST_MATCH/KYC_PEP_FLAG)). 계보 부재 시 `origin=KYC_PEP_FLAG`(엔트리·제공처 생략) 정직 표기, 다른 룰 알림은 미포함 |
 | 대상 360° | 대상 통합 뷰 링크(`subject360Ref` → `GET /api/v1/bo/aml/subjects/{customerRef}/360`, DB §3.16·API §2.5a·§3.4b) |
+
+#### hanpass-ph 운영 시나리오 임계 (구현 정본 — phpEquivalent, tenant_demo)
+
+`TmEvaluationService.buildSnapshot` 가 `transaction.phpEquivalent`(hanpass-ph PHP 환산액)를 subject 의 최신 transaction-bearing 캐논 payload(`payload->>'phpEquivalent'`)에서 노출하며, 금액 기반 시나리오는 PHP 임계로 발화한다(Flyway V19/V22/V26/V28, 부재 시 미발화 fail-safe). 아래는 tenant_demo ACTIVE 시나리오 6종의 임계·윈도우 정본이다.
+
+| 시나리오(코드) | 활성 버전 | DSL 임계(코드 정본) | 심각도 |
+|---|---|---|---|
+| 구조화거래(`STRUCTURING`) | v2(V26) | AND( velocity count subject 24h ≥ 5, channelType ∈ {`DOMESTIC_REMIT`,`CASH_IN`} ) | 높음(`HIGH`) |
+| 고위험 corridor(`HIGH_RISK_CORRIDOR`) | v3(V26·V28) | AND( `transaction.phpEquivalent` ≥ 280,000(PHP), channelType = `CROSS_BORDER_REMIT` ) | 중간(`MEDIUM`) |
+| 급속이동(`RAPID_MOVEMENT`) | v1(V22·V28) | AND( velocity count subject 2h ≥ 3, `transaction.phpEquivalent` ≥ 56,000(PHP) ) | 높음(`HIGH`) |
+| 뮬 네트워크(`MULE_NETWORK`) | v1(V22) | velocity count subject 7d ≥ 8 (거래상대 분산 임계 10 = parameters 가이드값) | 높음(`HIGH`) |
+| 환불세탁(`REFUND_LAUNDERING`) | v1(V22·V28) | AND( velocity count subject 7d ≥ 6, `transaction.phpEquivalent` ≥ 28,000(PHP) ) | 중간(`MEDIUM`) |
+| 순환거래(`ROUND_TRIPPING`) | v1(V22·V28) | AND( velocity count subject 14d ≥ 4, `transaction.phpEquivalent` ≥ 112,000(PHP) ) | 중간(`MEDIUM`) |
+
+> PHP 임계는 데모 동등 유지 환산(기존 USD 임계 × 56, V28). velocity count 는 항상 subject(=`targetRef`) 기준 윈도우 집계다. 거래상대 분산·환불 전용·순환 hop feature 는 미-materialize 상태로 가용 feature(velocity count/sum subject + phpEquivalent)로 근사하며, 미가용 차원은 `parameters`(가이드 폼 정본)로 표현한다(V22 주석). **advanced-domain 4종은 위 임계 표에 없으며 hanpass-ph 운영에서 미발화** — bo-api 데모 스텁도 `DEFAULT_DRAFT_SCENARIOS`(`REFUND_LAUNDERING`·`TRADE_MISPRICING`)·ACTIVE 시나리오만 알림을 발동한다(`AmlTmService.scenarioActive`).
 
 #### 비즈니스 규칙
 
@@ -1052,11 +1118,14 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-003**: **시나리오 변경 적용 = 4-eyes**(`:activate`, subjectType=`TM_SCENARIO`로 결재, `aml:admin:policy`). 적용 전 시뮬레이션 권장(결재 불필요).
 - **BR-004 (시나리오 카탈로그 데이터화)**: 시나리오는 하드코딩 enum이 아니라 **`StrIndicator`(데이터 신호, STR_001~015) 기반 카탈로그**에 측정/기간/기준/소스필드(`remit.str_indicators`·corridor·channel)/evidence 를 매핑한다. UI 는 bo-api `ScenarioDefinition{family, fields[]}` 기반의 **스키마 주도 가이드 폼 + 자연어 미리보기**로 노출한다(내부 scenario DSL 비노출). 예: `HIGH_RISK_CORRIDOR`는 방향·고위험 국가·회랑 윈도우·건수/금액 임계, `STRUCTURING`은 윈도우·거래건수·단건 상한, SIGNAL 계열은 시그널 토글로 서로 다른 필드를 표시한다. **규제 STR 분류(KoFIU 의심유형)는 보고 단계(AML-REP-002)에서 별도 유지** — 본 카탈로그의 데이터 신호와 분리.
 - **BR-005**: FDS escalation 알림(`source_origin=FDS`)은 fds-svc Internal API(`/internal/v1/aml/fds-escalations`)로 수신된 결과만 표시(연동은 BE, T-15). 본 화면은 결과 검토만. 관련 거래 목록의 FDS decision 링크는 거래별 fds 판정(`fdsDecisionRef`) 역참조.
-- **BR-007 (알림 상세 데이터모델)**: 알림 행 클릭 시 **하단 상세**에 ① 트리거(시나리오·`strIndicator`·설명), ② evidence 집계 패턴(측정값/기간/기준 충족 — "거래·근거가 보이는" 정합 해소), ③ **관련 거래 목록**(transactionRef→충전/국내/해외·금액·통화·corridor·상대·시각·FDS decision), ④ **대상 360° 링크**(`subject360Ref`), ⑤ **자금그래프(funnel) 미니뷰**(`wallet.transfer_links`)를 표시한다(DB §3.10·API §3.4a). 회원번호/거래번호는 업무 식별자로 노출하고, 이름·계좌·지갑 등 원문 대조는 `aml:pii:reveal`+감사(`RAW_DATA_ACCESS`).
+- **BR-007 (알림 상세 데이터모델 · 전용 페이지, v9.23)**: 알림 목록 행(알림ID/룰 등) 클릭 시 **전용 상세 페이지 `/aml/tm/alerts/{alertId}`** 로 이동한다(기존 인라인/모달 팝업 폐기 — 딥링크·새로고침 지원, 미존재 alertId 는 404 후 목록 안내). 동작 열의 케이스 전환 등 **목록 액션은 목록에서 처리**(페이지 이동 없음). 백엔드 API 무변경(기존 `GET /aml/alerts/{alertId}` 재사용). 상세는 **룰 특성별 구성**: 헤더(알림 id·발동 룰·심각도·상태) → ① 탐지 조건 → (**명단 룰 STR_PEP·STR_SANCTION 은 ①-b 명단 매칭 근거(BR-011)를 상단 배치하고 ② 집계 근거(임계/기준치 행)를 숨김** — 임계 기반이 아닌 룰에 집계 임계를 보이던 의미 불일치 해소, **evidence 데이터 무변경 — 표시 구성만**) / 집계·임계형 룰(CTR·STR_STRUCTURED·STR_VELOCITY_CASH 등)은 **② 집계 근거 유지** / SIGNAL 계열은 **② 탐지 신호(Signals)**) → ③ **관련 거래**(풀폭·비-truncate — 회원번호·거래번호 전체 노출, 표 내부 가로 스크롤) → ④ **대상 360° 링크**(`subject360Ref`) → ⑤ **자금그래프(funnel) 미니뷰**(`wallet.transfer_links`). 회원번호/거래번호는 업무 식별자로 노출하고, 이름·계좌·지갑 등 원문 대조는 `aml:pii:reveal`+감사(`RAW_DATA_ACCESS`).
+- **BR-011 (명단 룰 발동 = 실명 매칭 + 매칭 근거 lineage, 코드=truth v9.26)**: **STR_PEP·STR_SANCTION** 알림(명단 기반 룰)은 **발동 자체가 실명 매칭**이다 — 데모 정본(비-prod stub)은 당사자 **이름(+해외송금은 수취 국가(국적) 보조 신호)** 을 WLF 데모 매처(`StubNameMatcher`)로 ACTIVE 명단(룰 `listType` 일치)의 엔트리들과 매칭하고, **이름 sub-score(`nameScore`) ≥ 0.92**(WLF TRUE 임계값을 이름 축에 적용)일 때만 발동한다. 회원(송금인)도 동일하게 데모 프로필 이름으로 실매칭하며(수취인은 BR-013), 복합(overall) 점수는 가중치 구조상(이름 축 0.55·수취인 생년월일 부재) 0.92 도달이 불가하므로 발동 기준은 nameScore 다. 기존 hash 합성 발동(`isPep=hash%17`·`sanctionHit=hash%50`)·임의 엔트리 선정(`hash%size`)·가공 점수(`0.90+hash%10`)는 전면 폐기한다. 상세의 **"명단 매칭 근거" 섹션**(`evidence.watchlistMatch`)은 WLF 판정 화면(§3.2)과 동형으로 **명단종류(`listType` PEP/SANCTIONS)·소스코드(`sourceCode`)·제공처(`provider`)·매칭 엔트리(`entryId` 마스킹 토큰)·매칭 이름(`entryName`, WLF 동일 마스킹 — 전체 이름은 기존 PII reveal 범위)·매칭 점수(`matchScore` = 실제 overall)·이름 점수(`nameScore`)·매칭 사유(`matchReasonCodes`)·연계 WLF 판정(`screeningRef`, 딥링크는 후속)** 을 **실제 매칭된 엔트리·실 점수**로 채운다(비교 화면 양쪽이 유사 신원으로 정합). 실엔진(aml-svc)은 대상의 **최신 WLF 스크리닝 매칭 엔트리 중 룰 `listType` 일치** 항목을 계보로 삼는다(`origin=WATCHLIST_MATCH`). 계보를 찾지 못하면 조작 없이 `origin=KYC_PEP_FLAG`(엔트리·제공처 생략)로 "명단 매칭 계보 없음(KYC PEP 플래그 기반)"을 정직하게 표기한다. STR 보고 DRAFT payload `watchlistMatches[]` 에도 동일 lineage(nameScore·matchReasonCodes 포함)가 실려 알림-보고 근거가 일치한다. **비-명단 룰(CTR·STR_STRUCTURED 등)·구 알림은 본 섹션 미표시**(evidence JSONB 확장, 스키마 무변경). **데모의 자동 발동은 [WLF 스크리닝 매칭 → 분석가 4-eyes 확정 → STR] 폐루프를 압축한 근사**임을 명시한다 — 실엔진 라이브는 스크리닝을 score ≥ 0.66 `POSSIBLE_MATCH` 까지만 자동 판정하고 **`TRUE_MATCH` 는 분석가 확정 산물(자동 승격 없음)**, 회원 발동은 KYC `pep_flag` 기반, 점수 산식도 엔진 `FuzzyMatchEngine` 과 비동형(데모 근사)이다.
+- **BR-012 (식별정보 비교(참고) — WLF 동형, 코드=truth v9.24)**: 명단 룰(STR_PEP·STR_SANCTION) 상세의 ①-b "명단 매칭 근거"에 **"식별정보 비교(참고)" 표**를 함께 노출한다 — **4행(이름·국적·성별·생년월일) × 2열(원거래 대상(회원) / 명단 엔트리)**. 데이터 원천은 AlertDetail `subjectIdentity {targetRef, fields[]}`(원거래 대상 회원 — WLF 매치 상세와 **공용 `SubjectIdentity` 타입**) + `evidence.watchlistMatch.entryIdentity {entryRef, fields[]}`(명단 엔트리). `fields ⊆ {NAME, NATIONALITY, GENDER, DOB}` 중 **서버가 실제 보유한 필드만**(부분 식별 엔트리는 축소, 명단 미보유 필드는 "명단에 없음" 표시). **본문 raw PII 미탑재**(키/토큰만) — 셀별 마스킹 표시 + 원문 열람은 기존 `POST /api/v1/bo/aml/pii/reveal`(`aml:pii:reveal`+사유+`RAW_DATA_ACCESS` 감사, §2.6·§1.6) **재사용**(신규 엔드포인트 없음). bo-api read-time projection 으로 조립(**엔진 API 무변경**), 명단 룰 알림에만 포함하며 identity 부재(구 알림·`origin=KYC_PEP_FLAG` fallback) 시 비교 블록을 숨긴다. **식별정보 비교 셀은 원문을 자동 표시**(v9.24 — reveal 을 화면 진입 시 자동 수행·감사 기록, 클릭 열람 불필요; scope·`RAW_DATA_ACCESS` 감사 불변).
+- **BR-013 (송금 수취인 동시 명단 평가 + 수취인 정보 규격, 코드=truth v9.26)**: **송금 채널**(국내송금 `DOMESTIC_REMIT`·해외송금 `CROSS_BORDER_REMIT`) 거래는 STR_PEP·STR_SANCTION 을 **회원(송금인)+수취인 당사자별로 동시 평가**한다. **수취인 정보 규격**(인입 payload·시뮬레이터·화면·매칭 공통): **국내송금은 수취인 이름만**(`receiverName`), **해외송금은 이름 + 수취 국가(국적)**(`receiverName` + `receiverCountry` ISO) — **성별·생년월일은 규격상 제공되지 않는다**. 인입 payload(`HanpassPhTransactionPayload`)에 비-PII `receiverName`·`receiverCountry`(nullable, additive)가 가산되고, 수취인 참조는 WLF 수취인 안정키 동형으로 **서버가 `sha256(name|country)` 파생 토큰**으로 만든다(payload 의 기존 `receiverRef` 가 오면 우선). 원문 이름·국가는 영속하지 않으며(매칭은 transient), reveal 용 수취인 identity 는 안정키→identity 로 upsert — **수취인 가용 필드 = 국내 [NAME] / 해외 [NAME, NATIONALITY]**(GENDER/DOB 없음). 수취인 신호는 **그 거래(transactionRef 그룹)의 수취인 COUNTERPARTY WLF 스크리닝 계보(TRUE_MATCH 우선·룰 `listType` 일치)만** 사용하며(합성 조작 금지), 계보 부재 시 수취인 평가를 **skip**(데이터 없으면 미발동이 정직). **비송금 채널은 회원만**(현행). 알림은 **(거래·룰)당 1건 유지**(기존 `ux_alert_tm` 멱등 불변)하고 `evidence.watchlistMatch` 에 **`matchedParty`(MEMBER/RECEIVER)·`partyRef`** 를 가산, 양당사자 동시 매칭은 **`additionalMatches[]`(동일 스키마)** 로 나머지 당사자를 수록한다(대표=회원 우선). bo-api 는 read-time 으로 **`partyIdentity {targetRef, fields[]}`**(매칭 당사자 — `matchedParty=RECEIVER` 면 수취인, 채널별 가용 필드만)를 projection 한다. **STR_SANCTION RESTRICT(차단)·심각도 매핑은 수취인 매칭에도 동일** 적용. STR 보고 DRAFT payload `watchlistMatches[]` 에도 당사자 구분(matchedParty·partyRef)이 실린다. 상세 화면(①-b)은 당사자 배지("회원(송금인) 매칭"/"수취인 매칭")로 구분하고, RECEIVER 매칭이면 식별정보 비교 좌측 열이 원거래 수취인이며 규격상 없는 필드는 **"제공 안 됨(국내송금 수취인은 이름만)"**·해외 성별·생년월일 **"제공 안 됨(송금 수취인 정보 규격)"** 으로 명시한다(명단 열의 "명단에 없음"과 구분). **비-prod 라이브 인입**은 인입 테스트 이벤트의 `transaction`(nested) 객체가 TM 라이브 평가(`ingestLiveTransaction`)를 구동한다(카운터 유지, prod 프로파일 미노출).
 - **BR-008 (역할 분리 명문화)**: **TM 알림(본 화면 ① 알림 적체 = 분석가 트리아지, 운영)** 과 **TM 시나리오 빌더(② → AML-TM-002, 준법감시 4-eyes 설정)** 의 책임을 분리한다 — 메뉴 IA 상 이미 분리(§1.0, TM-001↔TM-002). 알림 적체는 `aml:case:read`/`aml:case:update`(분석가), 시나리오 변경은 `aml:admin:policy` 4-eyes(준법감시).
 - **BR-009 (Policy Pack 병기·규제 불변)**: 임계·기한·의심유형은 규제 레이어(Policy Pack) 정본이며 **불변**이다. 기본팩 `KR_DEFAULT`(CTR ₩10,000,000·STR 3영업일·KoFIU 의심유형) 위에 PH 운영은 **`PH_AMLC` 옵션**(CTR ₱500,000·Travel Rule ₱50,000·구조화 5BD·STR 5BD·near 0.90, `StrIndicator` STR_001~015)으로 **1줄 병기만** 한다. **임계/기한 숫자를 화면에서 교체하지 않는다** — 화면 측정/기간/기준 값은 활성 정책팩 파라미터의 읽기 표시.
 - **BR-006 (v6.0 벤치마크 보강)**: ② 시나리오 관리 목록에 **효과성 요약 컬럼(최근 30일 알림 건수·케이스 전환율 %)** 을 표시한다 — **화면 파생값**(알림 집계에서 파생, 별도 저장 없음). 시나리오 행 `▶` 클릭 시 효과성 상세는 **AML-STAT-001 ② 룰 효과성 통계**로 드릴다운(시나리오 코드 컨텍스트). 전환율이 비정상(과소·과다 추출)인 시나리오는 튜닝 후보 배지 ⚠ 표시 — 실계 운영 시스템의 룰 라이프사이클(정의→임계값→시뮬레이션→효과성 평가) 벤치마크 반영(부록 H).
-- **BR-010 (모니터링 = TM + CTR + STR 동시 평가, CTR/STR 모니터링 통합 — 코드=truth)**: 거래 인입 시 엔진은 **TM 시나리오 알림 + CTR 보고 룰 + STR 보고 룰을 동시에 평가**한다(단일 파이프라인). TM 시나리오는 이 화면(AML-TM-001)의 알림 적체로, CTR/STR 발동은 규제 보고 후보(AML-REP-001 §9.1 BR-009~011)로 각각 귀결된다 — 한 거래가 여러 의무를 유발하면 **TEMP_FREEZE > STR > CTR** 우선순위로 표기(BR-403). `STR_SANCTION` 만 차단(RESTRICT), 나머지 STR/CTR 은 플래그·보고 후보(거래 허용). 즉 이 화면의 알림과 §9.1 의 CTR/STR 후보는 같은 인입 이벤트의 서로 다른 산출물이며, 룰 개요는 STAT-001(§12-B.3)에서 룰군(CTR/STR/시나리오)별로 조회한다.
+- **BR-010 (TM 알림 = CTR/STR 룰 발동의 산출물 — 레거시 시나리오 발동 폐기, 코드=truth v9.21)**: 거래 인입 시 엔진은 **CTR 보고 룰 + STR 보고 룰만 평가**하며, **TM 알림은 발동한 CTR/STR 룰마다 하나씩 산출**된다(보고 DRAFT 와 원자적으로 멱등 영속) — 이 화면(AML-TM-001)의 알림 적체는 곧 CTR/STR 룰 발동의 목록이다. **레거시 TM 시나리오(`ScenarioCode`: `STRUCTURING`·`HIGH_RISK_CORRIDOR`(고위험 회랑) 등 10종)의 알림 발동은 전면 폐기**되었다 — 엔진(`TmEvaluationService`)의 ACTIVE 시나리오→`TM_SCENARIO` 알림 영속 경로 제거, 발동 정본은 CTR/STR 룰 카탈로그(§9.1 BR-009)로 일원화. 알림의 발동 룰 코드는 `aml_alerts.scenario_code` 칼럼에 저장하고 기존 `ux_alert_tm(tenant_id, transaction_ref, scenario_code)` 부분 UNIQUE 로 **(transactionRef, ruleCode) 단위 멱등** 보장(DB §3.10, V7 CHECK 확장). 한 거래가 여러 의무를 유발하면 **TEMP_FREEZE > STR > CTR** 우선순위로 표기(BR-403). `STR_SANCTION` 만 차단(RESTRICT)=매우높음(`CRITICAL`), 그 외 STR=높음(`HIGH`), CTR=중간(`MEDIUM`). `STR_MANUAL`(수동 전용)·비활성(DRAFT) 룰은 자동 발동하지 않으며, 룰 활성화는 4-eyes EXECUTED 시 반영(§9.1 BR-009). 룰 개요는 STAT-001(§12-B.3)에서 룰군(CTR/STR)별로 조회한다. **TM 시나리오 관리(AML-TM-002, 빌더·시뮬레이션·4-eyes)는 화면으로 유지되나 설정 전용 — 알림 발동과 분리**(발동 정본은 CTR/STR 룰 카탈로그이며, 시나리오 정의의 발동 재활성 여부는 후속 오픈 결정, 부록 E). **데이터 정직화(코드=truth v9.27, BR-DEMO-HONESTY)**: 데모 TM 알림은 **라이브 인입 산출물만** 존재한다 — 백로그 대표 시드·자기서술 stub 알림 id·합성 evidence·비-TM 4종(SCREENING/RA/VENDOR/FDS 에스컬레이션) 시드는 폐기되어 **미지의 알림 id 는 not-found**다. STR 실데이터 신호도 hash 합성이 폐기되고 실인입 값으로 판정한다 — **`STR_KYC_INCOME_MISMATCH`** = 거래 PHP환산액 > 회원 vault 등록 신고소득 × 5(소득 미등록 시 미발동), **`STR_THIRD_PARTY`** = 거래 payload `senderHolderName`(가산 필드)이 회원 실명과 실명 매처상 불일치일 때 발동(없으면 미발동). 미등록 회원의 거래는 identity 의존 룰(명단·소득·명의)을 skip 한다.
 
 ---
 
@@ -1075,7 +1144,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ 케이스 관리       서비스 [은행 A ▼]                          [+ 케이스]    │
+│ 케이스 관리       서비스 [hanpass-ph ▼]                          [+ 케이스]    │
 ├─ 탭: [내 케이스] [전체] [기한 임박] [종결] ───────────────────────────────┤
 │ [케이스 타입 ▼] [상태 ▼] [우선순위 ▼] [담당자 ▼]          🔍 대상 식별자  │
 ├──────────────────────────────────────────────────────────────────────────┤
@@ -1136,7 +1205,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ 규제 보고       서비스 [은행 A ▼]                            [+ 보고 초안] │
+│ 규제 보고       서비스 [hanpass-ph ▼]                            [+ 보고 초안] │
 │ ⚠ 본 화면 정보의 외부 누설은 특정금융정보법 제4조의2 위반입니다 (상시 배너)│
 ├─ 탭: [STR 후보] [CTR 데이터] [제출 이력] ─────────────────────────────────┤
 │ [보고 종류 ▼] [상태 ▼] [기간 ▼]                            🔍 대상 식별자 │
@@ -1180,7 +1249,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 #### 비즈니스 규칙
 
-- **BR-001 (검색조건 보강)**: 탭은 `STR 후보` / `CTR 데이터` / `제출 이력`. 필터는 `보고 종류 / 상태 / 기간 / 채널 / corridor` + `대상 식별자(customerRef)`. STR 후보는 WLF 확정·EDD 거절·TM 고위험·FDS escalation·무역 증빙 불일치·crypto 고위험·내부 의심행위·분석가 수동 등에서 생성(설계서 §14.2). 채널(충전/국내/해외/인바운드)·corridor(remit cross-border)는 hanpass-ph 거래 데이터 필드.
+- **BR-001 (검색조건 보강)**: 탭은 `STR 후보` / `CTR 데이터` / `제출 이력`. 필터는 `보고 종류 / 상태 / 기간 / 채널 / corridor` + `대상 식별자(customerRef)`. STR 후보는 hanpass-ph 운영 흐름 — WLF 확정·EDD 거절·TM 고위험(구조화·급속이동·뮬·고위험 corridor·환불세탁·순환거래)·FDS escalation·분석가 수동 — 에서 생성(설계서 §14.2). 채널(충전/국내/해외/인바운드)·corridor(remit cross-border)는 hanpass-ph 거래 데이터 필드.
 - **BR-002**: 초안 생성(`POST reports`)·본문 편집은 결재 불필요. **제출 = 4-eyes**(`:submit`, subjectType=`STR_SUBMIT`/`CTR_SUBMIT`, approval_line=`REPORTING_OFFICER`). 상신(maker)→승인(checker, maker≠checker)→외부 제출(EXECUTED). **STR 후보 기각/보고 취소(`REJECTED`/`CANCELLED`)는 전용 엔드포인트 `POST .../reports/{reportId}:reject`(화면 [기각] 버튼)·`POST .../reports/{reportId}:cancel`(API §2.7)로 수행 — 사유 코드(`reasonCode`) 필수 + 보고 책임자 결재(4-eyes, `REPORTING_OFFICER`, 자기승인 금지)** (설계서 §14.1a).
 - **BR-003**: 제출 방식은 서비스별 어댑터(SaaS 직접/서비스 시스템/파일 export, D-04). 제출 결과는 `submittedRef`·제출 시각·증빙 manifest hash를 별도 evidence로 저장(설계서 §13.5).
 - **BR-004**: CTR 기준은 **"1거래 1천만원 이상 현금거래(정책팩 정본 기준)"** 으로 표기 통일 — 기준금액·보고 대상은 한국 policy pack effective version(설계서 §14.3). 본문 PII는 hash/token으로만 보존(원문 미저장). **규제 레이어 불변** — 기본팩 `KR_DEFAULT`(CTR ₩10,000,000·STR 3영업일·KoFIU 의심유형)이 정본이며, PH 운영은 **`PH_AMLC` 옵션**(CTR ₱500,000·Travel Rule ₱50,000·구조화 5BD·STR 5BD)으로 정책팩에 **1줄 병기만** 한다(임계/기한 숫자 교체 금지). `StrIndicator`(STR_001~015)·`sanction_screening_event`는 데이터 신호로 매핑하되 규제 STR 분류는 KoFIU 정본 유지.
@@ -1188,13 +1257,15 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-006**: **법정 보고 기한 SLA(설계서 §14.4)** — 목록에 '보고 기한' 컬럼을 표시하고 **D-3 임박 / 초과 ⚠ 배지**를 렌더링. 대시보드(AML-DASH-001) '기한 임박 보고' 카드와 동일 기준(STR=제출 결재 승인 후 3영업일, CTR=거래일+30일).
 - **BR-007**: **CTR 제외(면제)대상 관리(설계서 §14.3)** — ② CTR 데이터 탭의 **[제외 처리]** 는 법정 제외대상(국가·지자체와의 거래, 금융회사 간 거래 등)에 한해 **제외 사유 코드(드롭다운) 필수 + 책임자 승인(4-eyes, REPORTING_OFFICER)** 으로 처리(보고 취소 전이 재사용)하고 제외 이력(사유 코드·증적·처리자·승인자)을 표시·감사 보존.
 - **BR-008**: **정보누설금지(tipping-off, 특정금융정보법 §4의2)** — 본 화면(STR 후보·보고)은 **준법감시 전담 role(COMPLIANCE scope)만 조회**하며, 화면 상단에 상시 경고 배너를 표시하고 열람을 감사 기록합니다. STR 진행 사실은 일반 상담/운영 화면에 노출 금지(설계서 §19.2a).
-- **BR-009 (CTR/STR 룰 카탈로그·자동 후보 생성, CTR/STR 모니터링 통합 — 코드=truth)**: STR/CTR 후보는 코드 소유 **보고 룰 카탈로그(`AmlReportRuleCatalog` 10종)**가 거래 평가로 자동 생성한다 — **CTR 2종**(`CTR_SINGLE` 단건 임계·`CTR_DAILY` 동일 영업일 합산 보완재) + **STR 8종**(`STR_PEP`·`STR_SANCTION`(유일 차단)·`STR_KYC_INCOME_MISMATCH`·`STR_STRUCTURED`·`STR_NO_PURPOSE`·`STR_THIRD_PARTY`·`STR_VELOCITY_CASH`·`STR_MANUAL`(컴플라이언스 수동 전용·기본 DRAFT)). 룰 활성화(DRAFT→ACTIVE)·CTR 통화 임계 변경은 관리 콘솔 4-eyes(`REPORT_RULE`/`CTR_THRESHOLD`, API §2.7 CTR/STR 룰·임계 관리), CTR 임계는 **hot-reload 우회 불가**(결재 EXECUTED 시 반영). 룰 개요는 STAT-001(§12-B.3)에서 룰군별 조회.
+- **BR-009 (CTR/STR 룰 카탈로그·자동 후보 생성, CTR/STR 모니터링 통합 — 코드=truth)**: STR/CTR 후보는 코드 소유 **보고 룰 카탈로그(`AmlReportRuleCatalog` 10종)**가 거래 평가로 자동 생성한다 — **CTR 2종**(`CTR_SINGLE` 단건 임계·`CTR_DAILY` 동일 영업일 합산 보완재) + **STR 8종**(`STR_PEP`·`STR_SANCTION`(유일 차단)·`STR_KYC_INCOME_MISMATCH`·`STR_STRUCTURED`·`STR_NO_PURPOSE`·`STR_THIRD_PARTY`·`STR_VELOCITY_CASH`·`STR_MANUAL`(컴플라이언스 수동 전용·기본 DRAFT)). 룰 활성화(DRAFT→ACTIVE)·CTR 통화 임계 변경은 관리 콘솔 4-eyes(`REPORT_RULE`/`CTR_THRESHOLD`, API §2.7 CTR/STR 룰·임계 관리), CTR 임계는 **hot-reload 우회 불가**(결재 EXECUTED 시 반영). 룰 개요는 STAT-001(§12-B.3)에서 룰군별 조회. **데이터 정직화(코드=truth v9.27, BR-DEMO-HONESTY)**: 데모 규제 보고 후보(CTR/STR DRAFT)는 **라이브 인입 산출물만** 존재한다 — hash 시드 보고(페이지당 8건 등)는 폐기되어 **미지의 보고 id 는 not-found**이며, 인입 전이면 목록이 비어 있다(정직 문구). 룰 카탈로그·CTR 임계 테이블·영업일 캘린더 등 참조/설정 정본만 시드로 유지한다.
 - **BR-010 (멱등 보고 DRAFT·사유코드 UPSERT, 코드=truth)**: CTR 후보는 **(테넌트,주체,영업일)당 CTR DRAFT 정확히 1건**(부분 UNIQUE `ux_aml_ctr_draft`), 동일 영업일 후속 현금거래는 새 DRAFT 대신 합산액(`report_amount`)에 1회 누적. STR 후보는 **(테넌트,트리거)당 STR DRAFT 정확히 1건**(부분 UNIQUE `ux_aml_str_draft`), 동일 트리거에서 여러 STR 룰 발화 시 제2 DRAFT 를 만들지 않고 각 사유코드(`StrReasonCode`: PEP/SANCTION/KYC_MISMATCH/STRUCTURED/NO_PURPOSE/THIRD_PARTY/UNUSUAL_PATTERN/MANUAL)를 `str_reason_codes` 집합에 fold(UPSERT). 보고 의무 우선순위 표기 = **TEMP_FREEZE > STR > CTR**(BR-403, API §11.1).
 - **BR-011 (보고 기한 = PH_AMLC 5영업일·PII sha256, 코드=truth)**: hanpass-ph 정본(`PH_AMLC` policy pack)에서 **CTR 기한 = 거래일 +5영업일 17:00 PHT**, **STR 기한 = 의심확정 +5영업일**(필리핀 영업일 캘린더 `BankingCalendar`, DB §3.22b, 공휴일·주말 제외). CTR 발동 시 서버가 freeze 된 PHP환산 합계·기한(`due_at`)을 고정(재계산 금지, BR-501). KR default pack(CTR+30일·STR+3영업일, BR-006)은 policy pack 옵션으로 보존(상호 배타). eAMLA(AMLC) 제출은 **raw PII 미전송** — 토큰화된 보고 참조 `amlc_submission_ref = AMLC-{sha256(tenant|reportId|reportType)[..12]}`(BR-601)만 전달하며 위임 이벤트를 감사(연동 §3.4). 본문 PII 는 hash/token 유지(원문 미저장).
 
 ---
 
 ## 10. Travel Rule 예외 처리
+
+> **hanpass-ph 범위 주석**: Travel Rule(가상자산 VASP 간 이전·지갑주소)은 가상자산사업자 도메인 기능으로, **hanpass-ph(법정통화 송금·월렛) 운영에서는 발생하지 않는다 — 플랫폼 멀티테넌시 capacity(hanpass-ph 비운영)**. 본 화면(AML-TR-001)은 nav·엔드포인트·컴포넌트로 코드 정본에 존재하므로 명세를 보존하나, hanpass-ph 운영 테넌트(`tenant_demo`)에서는 데이터가 인입되지 않아 빈 큐로 표시된다.
 
 ### 10.1 AML-TR-001 · Travel Rule 이전 / 예외 처리 (4-eyes)
 
@@ -1209,7 +1280,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ Travel Rule 예외   서비스 [거래소 C ▼]                       admin ▼      │
+│ Travel Rule 예외   서비스 [hanpass-ph ▼]                       admin ▼      │
 ├─ 탭: [예외 큐] [전체 이전] [처리 이력] ───────────────────────────────────┤
 │ [완전성 ▼] [위험 ▼] [기간 ▼]                              🔍 이전 식별자  │
 ├──────────────────────────────────────────────────────────────────────────┤
@@ -1262,7 +1333,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ 결재 대기함       서비스 [은행 A ▼]                          admin ▼      │
+│ 결재 대기함       서비스 [hanpass-ph ▼]                          admin ▼      │
 ├─ 탭: [대기] [내가 상신] [처리 완료] ──────────────────────────────────────┤
 │ [결재 종류 ▼] [결재 라인 ▼] [기간 ▼]                       🔍 상신자/대상 │
 ├──────────────────────────────────────────────────────────────────────────┤
@@ -1318,7 +1389,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ 감사 · 증적 Export · 소스   서비스 [은행 A ▼]                admin ▼      │
+│ 감사 · 증적 Export · 소스   서비스 [hanpass-ph ▼]                admin ▼      │
 ├─ 탭: [감사 로그] [증적 Export] [소스 시스템] ─────────────────────────────┤
 │ [감사 카테고리 ▼] [기간 ▼]                                🔍 작업자/대상  │
 ├──────────────────────────────────────────────────────────────────────────┤
@@ -1381,7 +1452,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
   - **③ 라이브 소스(APM 카드)**: 소스별 카드 — 소스명·연동방식·신호(●/⚠/✕)·마지막 수신(상대시간)·LIVE 펄스. 카드 클릭 → AML-AUD-001 ③(소스 시스템 관리·장애 정책).
   - **④ 큐 메트릭**: `aml-ingest`·`.fifo`·`-dlq` depth·lag·DLQ(REST 푸시 이벤트의 내부 SQS 인입 파이프라인, **유지**).
   - **⑤ 연동 방식 × 표시 신호 확정표(§1.11 ①)**: 상시 표시·편집 불가 파생 표시. **REST 전용 운영(2026-06-26, §1.11 ① 참조)** — 노출 소스는 모두 `REST_PUSH`, 비-REST 5종은 §1.11 표준 정의로만 유지(미노출·예정).
-- **BR-001**: 전 항목 **read-only 집계 파생값**(bo-api 소유, 5초 자동 새로고침 토글·raw PII 미포함 — DASH-001과 동일 원칙). 신호 상태는 §1.11 ③ 확정 3종만 사용. 카드 LIVE 펄스는 최근 60초 내 수신 기준 파생.
+- **BR-001**: 전 항목 **read-only 집계 파생값**(bo-api 소유, 5초 자동 새로고침 토글·raw PII 미포함 — DASH-001과 동일 원칙). 신호 상태는 §1.11 ③ 확정 3종만 사용. 카드 LIVE 펄스는 최근 60초 내 수신 기준 파생. **데이터 정직화(코드=truth v9.27, BR-DEMO-HONESTY)**: 인입 헬스·콜카운트·큐 depth 등은 **실 시뮬레이터 트래픽만** 반영한다 — seed 파생 가공 지표(fixture)는 폐기되어 실 트래픽이 없으면 **0/― 로 정직 표시**한다(합성 오버레이 없음).
 - **BR-002**: ⚠/✕ 행은 색상 강조 + AML-DASH-001 운영 알림과 동일 이벤트 소스(소스 신선도 알림 클릭 → 본 화면 ② 탭 딥링크). 운영 조치(소스 비활성·secret 변경 🔒)는 AML-AUD-001 ③ 소관(본 화면은 모니터링 전용).
 - **BR-003**: ① 카탈로그의 호출량·마지막 호출은 게이트웨이 집계 파생값. API 정의 자체(경로·인증)는 §1.11 ② 확정 표가 정본이며 화면에서 편집 불가. screening 장애 정책(D-14 fail-closed/manual-review) 상태는 소스별 배지로 병기.
 
@@ -1417,10 +1488,10 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | **권한** | 조회·변경 상신·수동 수집 트리거 `aml:admin:policy`🔒(변경) |
 | **API** | `GET .../country-risk` · `GET .../country-risk/import-status` · `POST .../country-risk:import`(수동 수집 트리거 — 결재 없음) · `POST .../country-risk:change`🔒(subjectType=`COUNTRY_RISK`) |
 
-- **구성**: 탭 3개 — `① 국가위험 등급표`/`② 일일 수집 상태`/`③ 변경 상신·이력`(v9.25 — 일일 자동 수집 도입으로 ② 신설). ① 등급표 — 컬럼 국가(ISO)·위험 등급(낮음/중간/높음/거래금지)·근거(EU 고위험 제3국·FATF blacklist/greylist·제재·고위험 corridor)·버전·적용 시점 + **출처(provenance) 배지**: `EU 집행위 자동 수집(EU_COMMISSION)` / `FATF 자동 수집(FATF_DAILY)`(수집 관측 시점 `asOf` 병기) / `수동 조정(MANUAL)`(4-eyes 승인분). 등급표 상단에는 **4등급 커버리지 요약(LOW/MEDIUM/HIGH/PROHIBITED 건수)과 거래금지 ISO 목록**을 표시해 금지국가가 HIGH 에 섞여 보이지 않도록 한다. **(v6.0 벤치마크 보강 → v9.25/v9.26 부분 해소)** 근거 컬럼의 산정 근거 소스 분해 중 **고위험 국가 목록은 일일 웹 자동 수집으로 실데이터 갱신**되며(더 이상 파생 표시 아님), UN/OFAC/EU 제재·부패인식지수(TI CPI) 등 잔여 외부 지표는 파생 표시·후속 오픈결정 유지(부록 E v6.0-4). ② 일일 수집 상태 — **소스 메타 카드**(활성 제공자(EU 집행위 기본/FATF 대안)·원천 URL·최종 수집시각·현재 적용 버전·최종 상태 성공/무변경/실패+오류) + **최근 수집 run 변경 내역**(수집 시각·상태·신규/상향/하향/이탈/수동보존 diff) + **[지금 수집]** 수동 트리거 버튼(scope `aml:admin:policy` 보유 시 활성, 동기 실행 결과 표시. 감사 `COUNTRY_RISK_IMPORT_TRIGGERED`). **소스 URL 표기는 제공자별 분기** — EU 는 단일 고위험 제3국 URL(`greyUrl`, `blackUrl` null), FATF 는 black/grey 쌍. 수집 실패 시 "기존 등급 데이터는 그대로 유지(fail-safe)" 안내. ③ 변경 상신·이력 — 수동 등급 변경 4-eyes 상신(COUNTRY_RISK)·결재 이력.
+- **구성**: 탭 3개 — `① 국가위험 등급표`/`② 일일 수집 상태`/`③ 변경 상신·이력`(v9.32 — 일일 자동 수집 도입으로 ② 신설). ① 등급표 — 컬럼 국가(ISO)·위험 등급(낮음/중간/높음/거래금지)·근거(EU 고위험 제3국·FATF blacklist/greylist·제재·고위험 corridor)·버전·적용 시점 + **출처(provenance) 배지**: `EU 집행위 자동 수집(EU_COMMISSION)` / `FATF 자동 수집(FATF_DAILY)`(수집 관측 시점 `asOf` 병기) / `수동 조정(MANUAL)`(4-eyes 승인분). 등급표 상단에는 **4등급 커버리지 요약(LOW/MEDIUM/HIGH/PROHIBITED 건수)과 거래금지 ISO 목록**을 표시해 금지국가가 HIGH 에 섞여 보이지 않도록 한다. **(v6.0 벤치마크 보강 → v9.32/v9.33 부분 해소)** 근거 컬럼의 산정 근거 소스 분해 중 **고위험 국가 목록은 일일 웹 자동 수집으로 실데이터 갱신**되며(더 이상 파생 표시 아님), UN/OFAC/EU 제재·부패인식지수(TI CPI) 등 잔여 외부 지표는 파생 표시·후속 오픈결정 유지(부록 E v6.0-4). ② 일일 수집 상태 — **소스 메타 카드**(활성 제공자(EU 집행위 기본/FATF 대안)·원천 URL·최종 수집시각·현재 적용 버전·최종 상태 성공/무변경/실패+오류) + **최근 수집 run 변경 내역**(수집 시각·상태·신규/상향/하향/이탈/수동보존 diff) + **[지금 수집]** 수동 트리거 버튼(scope `aml:admin:policy` 보유 시 활성, 동기 실행 결과 표시. 감사 `COUNTRY_RISK_IMPORT_TRIGGERED`). **소스 URL 표기는 제공자별 분기** — EU 는 단일 고위험 제3국 URL(`greyUrl`, `blackUrl` null), FATF 는 black/grey 쌍. 수집 실패 시 "기존 등급 데이터는 그대로 유지(fail-safe)" 안내. ③ 변경 상신·이력 — 수동 등급 변경 4-eyes 상신(COUNTRY_RISK)·결재 이력.
 - **BR-001**: 수동 변경 = 4-eyes(`COUNTRY_RISK`). 상신 → 승인 → 정책 store(versioned artifact) 반영(EXECUTED). 실행 후 **변경 국가 관련 대상 RA 재평가 트리거**. RA factor '고위험 국가 거주'(AML-RA-002 ② 측정)에 연동 — RA GEOGRAPHY 파생은 조회 포트(`LookupCountryRiskUseCase.gradeFor()/isHighRisk()`)로 최신 유효(ACTIVE) 등급만 소비(출처 무관).
 - **BR-002**: 정책 store(versioned, `aml_country_risk` + 수집 소스/run 이력 DB §3.22c V16). 모든 변경 상신·승인·적용·수집 run 감사 보존.
-- **BR-003 (v9.25 — 일일 자동 수집 / v9.26 — 제공자 선택형)**: 일일 스케줄러(cron 기본 03:40 UTC — 제재명단 03:20 과 시차, `aml.country-risk.import.enabled` 기본 off·데모 compose 에서 활성, single-flight)가 활성 제공자 목록을 수집해 시스템 출처 유효 버전을 **결재 없이 즉시 적용**한다(수집 diff 감사). **수집 소스는 제공자 선택형(`aml.country-risk.feed.provider`) — 기본 `EU_COMMISSION`(EU 집행위 고위험 제3국 페이지, 봇 차단 없음), 대안 `FATF`(현재 HTTP 403 Akamai 봇 차단으로 수집 항상 실패라 대안으로 강등)**:
+- **BR-003 (v9.32 — 일일 자동 수집 / v9.33 — 제공자 선택형)**: 일일 스케줄러(cron 기본 03:40 UTC — 제재명단 03:20 과 시차, `aml.country-risk.import.enabled` 기본 off·데모 compose 에서 활성, single-flight)가 활성 제공자 목록을 수집해 시스템 출처 유효 버전을 **결재 없이 즉시 적용**한다(수집 diff 감사). **수집 소스는 제공자 선택형(`aml.country-risk.feed.provider`) — 기본 `EU_COMMISSION`(EU 집행위 고위험 제3국 페이지, 봇 차단 없음), 대안 `FATF`(현재 HTTP 403 Akamai 봇 차단으로 수집 항상 실패라 대안으로 강등)**:
   - **EU 집행위(기본)** — 단일 고위험 목록 → **전부 높음(`HIGH`)**(EU 목록만으로는 거래금지(`PROHIBITED`) 구분 불가), 출처 `EU_COMMISSION`, 근거 `EU_HIGH_RISK_THIRD_COUNTRY`, 국가명→ISO-2 결정적 매핑 26개국(미래 신규 미매핑 시 건너뛰고 run diff `unmapped` 기록). 금지국가 판정은 FATF black/제재/수동 4-eyes 기준선이 담당한다.
   - **FATF(대안)** — black(Call for Action)→거래금지(`PROHIBITED`) / grey(Increased Monitoring)→높음(`HIGH`), 출처 `FATF_DAILY`.
 
@@ -1462,6 +1533,8 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | **진입** | AML-TM-001 시나리오 목록 클릭(시나리오 코드 컨텍스트) |
 | **권한** | 시나리오 정책 `aml:admin:policy`🔒(적용) |
 | **API** | `GET /api/v1/bo/aml/tm-scenarios/{code}`(정의 read model) · `POST .../tm-scenarios/{code}/simulate` · `POST .../tm-scenarios/{code}:activate`🔒(TM_SCENARIO) |
+
+> **설정 전용(v9.21 — 발동과 분리)**: TM 시나리오 빌더는 시나리오 정의의 CRUD·시뮬레이션·4-eyes 를 유지하는 **설정 화면**이다. 단, TM 알림 발동 정본은 **CTR/STR 룰 카탈로그**로 일원화되었고(§7.1 BR-010, §9.1 BR-009) 레거시 시나리오(`STRUCTURING`·`HIGH_RISK_CORRIDOR` 등)의 알림 발동은 폐기되었으므로, 본 화면에서 활성화한 시나리오는 현재 알림을 발동시키지 않는다(정의 관리·백테스트 용도). 시나리오 정의의 발동 재활성 여부는 후속 오픈 결정(부록 E).
 
 - **구성**: bo-api가 내려준 `ScenarioDefinition{family, severity, fields[]}`를 단일 공통 폼으로 렌더하는 **스키마 주도 빌더**. THRESHOLD 계열은 윈도우·건수·금액·국가·방향 등 수치/선택 필드, SIGNAL 계열은 시그널 토글을 표시한다. `HIGH_RISK_CORRIDOR`는 방향·고위험 국가·회랑 윈도우·회랑 건수·회랑 합산금액 임계를 직접 확인·수정한다. **수치 임계 필드(NUMBER/AMOUNT)는 위험등급별 차등 임계 입력**(기본값 + LOW/MEDIUM/HIGH/PROHIBITED 등급별 오버라이드, 접을 수 있는 영역, **미입력 등급=기본값 적용**)을 제공한다 — 고위험 고객을 더 엄격한(보통 낮은) 임계로 강화 발동시키기 위함. 자연어 미리보기(등급별 차등이 있으면 등급별 강화 임계를 문장으로 함께 표시).
 - **BR-001**: 시나리오 변경 적용 = 4-eyes(`TM_SCENARIO`·준법감시 책임자). 적용 전 시뮬레이션(과거기간 백테스트) 권장(결재 불필요).
@@ -1549,14 +1622,14 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | 항목 | 내용 |
 |------|------|
 | **기능 ID** | AML-STAT-001 |
-| **진입** | NAV `통계·내부통제` / STR 명시 경로 `/aml/stats/str`(호환 alias `/aml/stats`) / CTR 경로 `/aml/stats/ctr` / 룰 개요 행 `▶` → `/aml/stats/rules/{ruleCode}` |
+| **진입** | NAV `통계·내부통제`(② 룰 효과성 = CTR/STR 룰 코드 기준) — STR `/aml/stats` · CTR `/aml/stats/ctr` |
 | **권한** | `aml:case:read` — **STR 통계 탭은 준법감시 전담 role 한정(tipping-off §19.2a)** |
 | **API** | **bo-api** `GET /api/v1/bo/aml/stats/str` · `GET /api/v1/bo/aml/stats/ctr` · `GET /api/v1/bo/aml/stats/scenarios` · **`GET /api/v1/bo/aml/stats/report-rules?family=CTR\|STR`(룰군별 룰 개요)** · `GET /api/v1/bo/aml/report-rules/{ruleCode}` · `GET /api/v1/bo/aml/ctr-thresholds`(통화별 CTR effective/pending 임계) · `POST /api/v1/bo/aml/report-rules/{ruleCode}:activate`🔒(`REPORT_RULE`) — **집계 소유=bo-api(API §9 경계 준수)** |
 
-- **구성**: STR 메뉴(`/aml/stats/str`, 기존 `/aml/stats`는 호환 alias)와 CTR 메뉴(`/aml/stats/ctr`) 모두 탭 `① 보고 현황 통계`/`② 룰 효과성` 동일 규격. ① 기간별 보고 퍼널(추출→검토→결재→제출) KPI 카드 + **지연 보고 일수 분포(법정 SLA 대비)** + 미보고(기각·취소) 사유 코드 분포 표. STR은 지연/미보고 원천(`str-delay`/`unreported-reasons`)을 표시하고, CTR은 동일 DTO 규격으로 퍼널을 우선 표시한다. ② 시나리오(룰)별 효과성 표 — 알림 건수(A)·케이스 전환(a)·**보고 전환(B, `reportCount`)**·**보고 전환율(B/A=`conversionRate`)**·**케이스 전환율(a/A=`caseConversionRate`)**·**관련 거래건수(`relatedTxnCount`)·관련 거래총액(`relatedTxnAmount`)**(BR-004 read-only 집계 파생값 — TM alert evidence `aggregationSummary` 출처)·전월 대비 변동·튜닝 권고 배지 ⚠. CTR/STR 룰 개요 행 `▶` → **report-rule 상세(`/aml/stats/rules/{ruleCode}`)** 로 이동해 정의·상태·pending 결재·적용 방식(입력 신호/판정 기준/집계 키/산출물/기한)을 확인하고, CTR 룰 및 STR_STRUCTURED는 `ctr-thresholds` effective 임계와 STR 구조화 90~99% 구간을 함께 표시한다. DRAFT 룰은 기존 `REPORT_RULE` 4-eyes 활성화 상신을 수행한다. 레거시 TM 시나리오 튜닝(AML-TM-002, `TM_SCENARIO`)은 CTR/STR 룰 카탈로그 수정과 분리한다. tipping-off 보호(① STR 통계 전담 한정)는 본 ② 효과성 표 확장과 무관하게 불변.
+- **구성**: STR 메뉴(`/aml/stats`)와 CTR 메뉴(`/aml/stats/ctr`) 모두 탭 `① 보고 현황 통계`/`② 룰 효과성` 동일 규격. ① 기간별 보고 퍼널(추출→검토→결재→제출) KPI 카드 + **지연 보고 일수 분포(법정 SLA 대비)** + 미보고(기각·취소) 사유 코드 분포 표. STR은 지연/미보고 원천(`str-delay`/`unreported-reasons`)을 표시하고, CTR은 동일 DTO 규격으로 퍼널을 우선 표시한다. ② 룰별 효과성 표 — 각 행의 **코드 값은 CTR/STR 룰 코드**(`ScenarioRow.scenarioCode` 필드명은 유지하되 값=`AmlReportRuleCode`, 화면 라벨=룰 라벨), 알림 건수(A)·케이스 전환(a)·**보고 전환(B, `reportCount`)**·**보고 전환율(B/A=`conversionRate`)**·**케이스 전환율(a/A=`caseConversionRate`)**·**관련 거래건수(`relatedTxnCount`)·관련 거래총액(`relatedTxnAmount`)**(BR-004 read-only 집계 파생값 — TM alert evidence `aggregationSummary` 출처)·전월 대비 변동·튜닝 권고 배지 ⚠. **AML-TM-002 시나리오 빌더 드릴다운은 제거**되었고(레거시 시나리오 발동 폐기, v9.21), 룰 튜닝은 규제 보고 룰 관리(§9.1 BR-009 `REPORT_RULE`/`CTR_THRESHOLD` 4-eyes)로 안내한다. tipping-off 보호(① STR 통계 전담 한정)는 본 ② 효과성 표와 무관하게 불변.
 - **BR-001**: 전 항목 **read-only 집계 파생값**(bo-api 소유, 30~60초 캐시·raw PII 미포함 — DASH-001과 동일 원칙). 개별 건 드릴다운은 AML-REP-001/AML-TM-001로 연결.
 - **BR-002**: ① STR 통계는 준법감시 전담 role에만 노출(비전담 메뉴 미노출·tipping-off). 지연 보고 일수는 법정 기한 SLA(STR 3영업일·CTR 30일, §9.1 BR) 기준 산출.
-- **BR-003**: ② 효과성 지표는 룰 튜닝 거버넌스 입력 — 전환율 비정상 시나리오의 임계 조정·중단은 AML-TM-002 4-eyes(`TM_SCENARIO`) 경유(본 화면은 판단 근거만 제공).
+- **BR-003**: ② 효과성 지표는 룰 튜닝 거버넌스 입력 — 전환율 비정상 룰의 활성화/중단·CTR 임계 조정은 규제 보고 룰 관리 4-eyes(`REPORT_RULE`/`CTR_THRESHOLD`, §9.1 BR-009) 경유(본 화면은 판단 근거만 제공). 레거시 TM 시나리오 빌더(AML-TM-002)는 설정 전용이며 발동과 분리(v9.21).
 - **BR-004 (코드 정합)**: ② 효과성 표의 STR 전환(`reportCount`)·보고 전환율(`conversionRate`=B/A)·케이스 전환율(`caseConversionRate`=a/A)·관련 거래건수(`relatedTxnCount`)·관련 거래총액(`relatedTxnAmount`)은 **bo-api가 read-only로 파생**한다(`GET /api/v1/bo/aml/stats/scenarios` ScenarioRow). 관련 거래건수·총액은 **TM alert evidence `aggregationSummary`(relatedCount/relatedAmount)** 에서, STR 전환은 alert `status=STR_RECOMMENDED` 집계에서 산출하며 엔진은 무변경(read-only 집계 파생). 비-prod stub 환경에서 가시화하되 **prod는 fail-closed**(소스 부재 시 노출 없음) 원칙을 DASH-001과 동일하게 따른다.
 - **BR-005 (CTR/STR 메뉴별 룰 개요, CTR/STR 모니터링 통합 — 코드=truth)**: ② 룰 효과성 탭은 **메뉴별로 룰군을 분리 조회**한다 — **CTR·탐지 효과성 통계 메뉴는 `family=CTR`(CTR 룰 개요 CTR_SINGLE·CTR_DAILY)**, **STR·탐지 효과성 통계 메뉴는 `family=STR`(STR 룰 개요 8종)**. `GET /api/v1/bo/aml/stats/report-rules?family=CTR|STR`(응답 `ReportRuleOverviewRow[]`, API §3.6a) 는 룰코드·family·reportType·reasonCode·evaluationMode·actions·status(ACTIVE/DRAFT — EXECUTED 활성화 반영)·자연어 설명·발동/DRAFT 카운트(라이브 DRAFT store `firedRules` 실집계·소스 없으면 0, seed 없음)·최근 발동 시각·튜닝 권고를 카탈로그 순서로 제공한다. `family=STR`은 STR 퍼널과 동일한 tipping-off 전담(COMPLIANCE) 게이트 — 비전담 `403`, CTR은 열림. 룰 개요 행은 report-rule 상세로 drilldown 하며, 상세 화면은 `GET /api/v1/bo/aml/report-rules/{ruleCode}` 를 표시하고 CTR 룰(CTR_SINGLE·CTR_DAILY) 및 STR_STRUCTURED는 `GET /api/v1/bo/aml/ctr-thresholds`의 통화별 effective 임계를 병기한다. CTR_SINGLE은 단건 `amountPhpEq >= effectiveAmount`, CTR_DAILY는 동일 영업일 누계 `>= effectiveAmount`, STR_STRUCTURED는 effective 임계의 90~99% 구간 반복(3영업일 연속)을 화면에 명시한다. DRAFT 룰 활성화만 `POST .../{ruleCode}:activate`🔒(`REPORT_RULE`)로 상신한다. 룰 조건·액션 자체 편집은 코드 카탈로그 정본 밖의 별도 룰 파라미터 관리 워크플로우에서 다룬다.
 
@@ -1622,7 +1695,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ## 13. 서비스 관리 (배포 유형·온보딩 신청·상태)
 
-> **v5.0 신설, v5.4 재편, v9.2 테넌트=서비스 재정의**. **TNT=tenant=서비스**(테넌트 격리 경계). 상위 **기관(institution)**이 여러 **서비스(테넌트)**를 운영한다(1 기관 : N 서비스). 격리 방식(`isolation_mode`) 라디오 컴포넌트 완전 폐기. 서비스 등록은 **배포 유형 선택 + 온보딩 신청**이며, 격리는 온보딩 프로비저닝의 산출입니다(§1.8·§1.9·target-architecture §4.1). 모든 화면 호출 대상은 **bo-api 소유 `/api/v1/bo/aml/tenants/**`** + **`/onboarding/**`** (aml-svc 엔진 API에 온보딩 엔드포인트 미추가 — API §9·§3.16). 권한 scope는 API §1.1 확정 13종 중 **`aml:admin:policy`**(서비스·온보딩 bo-api 소유 엔드포인트 보호, `aml:admin:tenant` 없음). **v5.4부터 3화면 구조**: AML-TNT-001(목록) · AML-TNT-002(상세, 4탭: 기본 정보/배포·온보딩/소스 시스템/정책팩) · AML-TNT-003(등록, 별도 생성 화면). 행 클릭 → AML-TNT-002 상세(4탭) / `[+ 새 서비스]` → AML-TNT-003 등록.
+> **v5.0 신설, v5.4 재편, v9.2 테넌트=서비스 재정의**. **TNT=tenant=서비스**(테넌트 격리 경계). 멀티테넌시 기제(`tenant_id` 행 격리)는 코드 정본으로 유지하나, **본 PRD 운영 테넌트는 hanpass-ph 단일**(`tenant_demo`)이다 — 서비스 목록은 hanpass-ph 1건을 표시한다(추가 서비스 등록은 플랫폼 멀티테넌시 capacity). 격리 방식(`isolation_mode`) 라디오 컴포넌트 완전 폐기. 서비스 등록은 **배포 유형 선택 + 온보딩 신청**이며, 격리는 온보딩 프로비저닝의 산출입니다(§1.8·§1.9·target-architecture §4.1). 모든 화면 호출 대상은 **bo-api 소유 `/api/v1/bo/aml/tenants/**`** + **`/onboarding/**`** (aml-svc 엔진 API에 온보딩 엔드포인트 미추가 — API §9·§3.16). 권한 scope는 API §1.1 확정 13종 중 **`aml:admin:policy`**(서비스·온보딩 bo-api 소유 엔드포인트 보호, `aml:admin:tenant` 없음). **v5.4부터 3화면 구조**: AML-TNT-001(목록) · AML-TNT-002(상세, 4탭: 기본 정보/배포·온보딩/소스 시스템/정책팩) · AML-TNT-003(등록, 별도 생성 화면). 행 클릭 → AML-TNT-002 상세(4탭) / `[+ 새 서비스]` → AML-TNT-003 등록.
 
 ### 13.1 AML-TNT-001 · 서비스 목록
 
@@ -1643,11 +1716,9 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 ├──────────────────────────────────────────────────────────────────────────┤
 │ 서비스 ID   │ 표시명      │ 배포 유형       │ 온보딩 상태  │ 리전 │ 상태 │
 │ ────────────┼─────────────┼─────────────────┼──────────────┼──────┼──────┤
-│ tnnt-001    │ 은행 A      │ 매니지드 전용   │ 활성         │ KR   │ 운영중│▶
-│ tnnt-002    │ 핀테크 B    │ 자체 인프라 설치형│ 고객배포완료 │ KR   │ 운영중│▶
-│ tnnt-003    │ 소규모 C    │ 소규모 공유     │ 활성         │ KR   │ 운영중│▶
+│ tenant_demo │ hanpass-ph  │ 매니지드 전용   │ 활성         │ KR   │ 운영중│▶
 ├──────────────────────────────────────────────────────────────────────────┤
-│ 총 3 서비스 (매니지드 전용 2 · 자체 인프라 설치형 1 · 소규모 공유 1)       │
+│ 총 1 서비스 (hanpass-ph · 매니지드 전용 · KR · KR_DEFAULT) — 운영 테넌트   │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1686,10 +1757,10 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ 서비스 상세         서비스 관리 > 은행 A                     admin ▼      │
+│ 서비스 상세         서비스 관리 > hanpass-ph                     admin ▼      │
 ├─ [기본 정보*] [배포·온보딩] [소스 시스템] [정책팩] ──────────────────────┤
 │  서비스 ID       tnnt-001                          (등록 후 불변)         │
-│  표시명          은행 A                             [편집]                │
+│  표시명          hanpass-ph                             [편집]                │
 │  리전            KR                                (온보딩 후 읽기 전용)  │
 │  운영 상태       운영중 (ACTIVE)                    [변경]                │
 │  생성일          2026-06-08                                               │
@@ -1701,7 +1772,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 │  정책팩      한국 기본팩 (KR_DEFAULT)               [→ 정책팩 탭]         │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  보고기관 정보 (KoFIU 보고 헤더 — v7.0 보강)                    [편집]    │
-│  보고기관 코드  LR0160        보고기관명  은행 A 준법감시실               │
+│  보고기관 코드  LR0160        보고기관명  hanpass-ph 준법감시실               │
 │  보고 책임자    김책임 (compliance.lead)   담당자  이담당 (02-1234-5678)  │
 │  ※ STR/CTR 보고 본문 헤더(AML-REP-002 ①)에 파생 결합                    │
 │                                          [다음: 배포·온보딩 →]           │
@@ -1733,7 +1804,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ 서비스 상세         서비스 관리 > 은행 A                     admin ▼      │
+│ 서비스 상세         서비스 관리 > hanpass-ph                     admin ▼      │
 ├─ [기본 정보] [배포·온보딩*] [소스 시스템] [정책팩] ──────────────────────┤
 │  배포 유형      매니지드 전용 (MANAGED_DEDICATED)                         │
 │                 ※ 읽기 전용 — 변경 시 재배포·마이그레이션 절차           │
@@ -1786,7 +1857,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ 서비스 상세         서비스 관리 > 은행 A                     admin ▼      │
+│ 서비스 상세         서비스 관리 > hanpass-ph                     admin ▼      │
 ├─ [기본 정보] [배포·온보딩] [소스 시스템*] [정책팩] ──────────────────────┤
 │  이 서비스(tnnt-001)에 연결된 소스 시스템            [인입 모니터링 ▶]    │
 │  소스 ID  │ 종류        │ 연동 방식 │ 연결 상태 │ 마지막 수신  │ 신호 │   │
@@ -1824,7 +1895,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ 서비스 상세         서비스 관리 > 은행 A                     admin ▼      │
+│ 서비스 상세         서비스 관리 > hanpass-ph                     admin ▼      │
 ├─ [기본 정보] [배포·온보딩] [소스 시스템] [정책팩*] ──────────────────────┤
 │  ─ 기본 Policy Pack — 필수 baseline · 잠금 ─────────────────────────────── │
 │  정책팩 코드      한국 기본팩 (KR_DEFAULT)   ● 기본 적용 (필수·끄기 불가) │
@@ -1852,7 +1923,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | 기본 정책팩 코드 | `policy_pack_code` | 한국 기본팩(`KR_DEFAULT`) — **필수 baseline·잠금(끄기 불가)**, AML 최소 요건 일괄 적용 |
 | 버전 | `policyPackVersion` | 현재 적용(effective) 버전 — AML-PP-001과 동일 값(v12) |
 | CTR 기준금액 / RA 위험 임계 | `ctrThreshold` / `raHighThreshold` | 기본팩 **파라미터**(1거래 1천만원 이상 현금거래 / 0.75) — effective 버전 종속·4-eyes 변경, CTR 표기는 "1거래 1천만원 이상 현금거래(정책팩 정본 기준)"로 통일 |
-| 확장 plugin | — | **국가(jurisdiction)·업권 확장 plugin** — 기본팩 위에 **토글로 추가 활성화**(현재 은행 A: KR 단일·확장 없음) |
+| 확장 plugin | — | **국가(jurisdiction)·업권 확장 plugin** — 기본팩 위에 **토글로 추가 활성화**(현재 hanpass-ph: KR 단일·확장 없음) |
 | 기본팩 구성 미리보기 | — | KR_DEFAULT 영역별 기본 반영(CDD·STR/CTR·Sanctions/PEP·RCA/VASP·RA임계·Privacy/Audit) — **일괄 적용(개별 토글 아님)** + `[→ AML-PP-001]` 드릴다운 |
 
 **비즈니스 규칙**

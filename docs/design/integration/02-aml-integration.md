@@ -1,10 +1,13 @@
-# AML 이벤트·연동 명세서 (aml-svc Integration)
+# AML 이벤트·연동 명세서 (aml-svc Integration) — hanpass-ph
 
-> 정본: `.claude/skills/_shared/target-architecture.md`(4서비스 모노레포·비동기 SQS·멀티테넌시·PII 마스킹·4-eyes·Policy Pack STR/CTR/Travel Rule).
-> 입력 진실: `docs/software/02-amlSvc-sass.md`(§8 Canonical Event Taxonomy·§12 TM·§13 결재·§14 Reporting·§15 외부연동·§19 감사).
+> **시스템 그라운딩**: 본 명세는 **hanpass-ph AML RegOps** 의 AML 엔진(aml-svc) 연동 정본이다. 단일 운영 테넌트는 **`tenant_demo`(= hanpass-ph)** 이며, 단일 원천 시스템은 **`core-banking`**(스키마 버전 `core-banking.v1`, 커넥터 `REST_PUSH`)이다(코드 truth: `V2__phase1_foundation.sql` seed). 멀티테넌트 인프라 키(`tenant_id`·`data_scope`·아웃박스)는 **코드 truth 로 유지**하되 실제 운영 행은 hanpass-ph 단일 테넌트뿐이다. 거래 이벤트는 **hanpass eventType taxonomy**(`remit.*`(해외송금) · `domestic.*`(국내송금) · `wallet.*`(월렛충전/결제/출금) · 호환 `transaction.*`)로 인입되며, 거래 채널은 hanpass-ph 6유형 — `CASH_IN`(월렛충전) · `DOMESTIC_REMIT`(국내송금) · `CROSS_BORDER_REMIT`(해외송금) · `WALLET_PAYMENT`(월렛결제) · `WALLET_WITHDRAWAL`(월렛/ATM출금) · `CARD_NOT_PRESENT`(카드결제) — 이다(코드 truth: `V26__demo_six_types_aml.sql`).
+> **닫힌 enum 보존**: `EventFamily`(코드 truth: `domain/enums/EventFamily.java`)의 비-hanpass 멤버 — Phase 8 Advanced Domain Pack 패밀리(`trade`·`invoice`·`crypto`·`travel-rule`·`settlement`·`order`·`seller`·`market`·`internal`·`audit`) 및 Legacy Vendor Bridge(`vendor`) — 는 **삭제하지 않고 코드/스키마에 보존**하되 **hanpass-ph 미사용**(확장 슬롯)임을 명시한다. 본 연동 명세는 hanpass-ph 가 실제로 발행·소비하는 흐름만 정본으로 다루며, Phase 8 Advanced Domain 연동은 §13(스키마 잔존 노트)으로만 남긴다.
+>
+> 정본: `.claude/skills/_shared/aegis-stack.md`(4서비스 모노레포·비동기 SQS·멀티테넌시·PII 마스킹·4-eyes·Policy Pack STR/CTR/Travel Rule).
+> 입력 설계서: `docs/software/02-amlSvc-sass.md`(§8 Canonical Event Taxonomy·§12 TM·§13 결재·§14 Reporting·§15 외부연동·§19 감사).
 > 동기화 대상: `docs/design/db/02-aml-db.md`(테이블·컬럼·enum), `docs/design/api/02-aml-api.md`(엔드포인트·DTO·scope·에러).
-> 참조 구현: `hanpass-ph/services/fds-svc/adapter/in/sqs/FdsEventsConsumer`(SQS consumer 패턴), `adapter/out/external`(외부 어댑터).
-> 본 문서는 부트스트랩 신규 작성이다. 명칭·필드·타입·enum·엔드포인트는 위 정본·DB·API와 100% 동기화하며, 충돌 시 정본 > 설계서 > DB/API 순으로 우선한다.
+> 참조 구현(코드 truth, 책임 서비스 `services/aml-svc`, 실제 패키지 `com.aegis.aml`): `adapter/in/rest/AmlEventController`(REST ingest)·`adapter/in/sqs/FdsDecisionConsumer`(`@SqsListener` FDS 결정 소비)·`adapter/in/sqs/ReportSubmissionCallbackConsumer`(FIU 회신)·`adapter/out/messaging`(outbox relay 라우터·SQS publisher)·`adapter/out/webhook`(서명 webhook relay)·`adapter/out/submission`(규제 제출 어댑터)·`adapter/out/feed`·`adapter/in/scheduled`(watchlist reconciliation).
+> 명칭·필드·타입·enum·엔드포인트는 위 코드·정본·DB·API 와 일치한다. 충돌 시 **코드(truth) > 정본 > 설계서 > DB/API** 순으로 우선하며, 추측 명칭은 도입하지 않는다.
 
 ## 목차
 
@@ -20,104 +23,88 @@
 10. [멀티테넌시 라우팅·PII 미전파](#10-멀티테넌시-라우팅pii-미전파)
 11. [관측성·운영](#11-관측성운영)
 12. [Capability 매트릭스](#12-capability-매트릭스)
-13. [변경 이력](#13-변경-이력)
+13. [Phase 8 Advanced Domain — 스키마 잔존 노트(hanpass-ph 미사용)](#13-phase-8-advanced-domain--스키마-잔존-노트hanpass-ph-미사용)
+14. [변경 이력](#14-변경-이력)
 
 ---
 
 ## 1. 범위·경계·전제
 
-본 문서는 `aml-svc`(`com.hanpass.aml`)의 **인바운드(이벤트 수신)·아웃바운드(외부 제출·서비스 간 연동)** 비동기 연동을 정의한다. 동기 REST 계약은 `02-aml-api.md`가 정본이며, 본 문서는 그 위에서 **큐·이벤트·커넥터·아웃박스**만 다룬다.
+본 문서는 `aml-svc`(`com.aegis.aml`)의 **인바운드(이벤트 수신)·아웃바운드(외부 제출·서비스 간 연동)** 연동을 정의한다. 동기 REST 계약은 `02-aml-api.md`가 정본이며, 본 문서는 그 위에서 **이벤트·커넥터·아웃박스·큐**만 다룬다.
 
-### 1.1 서비스 경계 (정본 §3·§6.1)
+### 1.1 서비스 경계 (hanpass-ph 단일 테넌트)
 
 ```mermaid
 flowchart LR
-    Ext["hanpass-ph source services<br/>(member-svc / walletchg-svc / domestic-svc / remit-svc / wallet-svc / tx-history-svc / inbound-svc)"]
-    Ext -->|REST sync push| AMLIN["aml-svc adapter/in/rest"]
-    Ext -->|queue / CDC| SQSIN[["SQS: aml-ingest"]]
-    SQSIN --> AMLSQS["aml-svc adapter/in/sqs"]
+    CB["core-banking (hanpass-ph)<br/>회원/KYC·해외송금·국내송금·월렛"]
+    CB -->|REST sync push<br/>POST /api/v1/aml/events| AMLIN["aml-svc adapter/in/rest"]
+    AMLIN --> AMLAPP["aml-svc application/usecase"]
     FDS["fds-svc"] -->|fraud decision / escalation| SQSFDS[["SQS: aml-fds-decision"]]
-    SQSFDS --> AMLSQS
-    AMLSQS --> AMLAPP["aml-svc application/usecase"]
-    AMLIN --> AMLAPP
-    AMLAPP -->|WLF true match / high-risk 전파| SQSOUT[["SQS: aml-fds-feedback"]]
-    SQSOUT --> FDS
-    AMLAPP -->|report submission adapter| Ext
-    AMLAPP -->|webhook callback| Ext
+    SQSFDS --> AMLSQS["aml-svc adapter/in/sqs<br/>FdsDecisionConsumer"]
+    AMLSQS --> AMLAPP
+    AMLAPP -->|outbox: WLF true_match / high_risk / str_recommended| SQSFB[["SQS: aml-fds-feedback"]]
+    SQSFB --> FDS
+    AMLAPP -->|outbox: report.submitted| SUB["adapter/out/submission<br/>(mock KoFIU / 규제기관 adapter)"]
+    SUB -->|회신 acked/failed| CBQ["aml-report-callbacks<br/>(또는 sync-close)"]
+    CBQ --> AMLSQS
+    AMLAPP -->|outbox: WEBHOOK| WH["adapter/out/webhook<br/>(서명 HTTP relay)"]
     BOAPI["bo-api"] -->|admin REST only| AMLAPP
     BOWEB["bo-web (Next.js)"] -->|REST only| BOAPI
 ```
 
 규칙:
-- 엔진 간(`fds-svc`↔`aml-svc`) 연동은 **event 연동 우선**(오픈결정 D-07), 직접 DB 공유 금지. 동기가 불가피하면 Internal API(`/internal/v1/aml/*`, mTLS+`X-Internal-Service`).
-- `bo-web`은 `bo-api` 경유만(엔진 직접 호출 금지). 결재·감사·evidence export는 `bo-api`→`aml-svc` Admin API.
-- 모든 메시지·커넥터·아웃박스는 `tenantId`·`dataScope`·`traceId`를 전파한다(정본 §4 관측성·멀티테넌시).
-- raw PII는 큐·이벤트·외부 제출 어디에도 평문 전파 금지. ref(token)/hash/`payloadHash`만 흐른다(§10).
-- **직렬화 규약**: 모든 큐·webhook 메시지 키는 **camelCase**로 직렬화하고 DB 컬럼(snake_case)과 1:1 매핑한다(예 `errorCode`↔`error_code`, `payloadHash`↔`payload_hash`, `sourceSchemaVersion`↔`schema_version`). enum 코드값은 DB §5·API §3와 동일하며 도메인 verb·별칭은 정본 enum으로 환원해 전파한다(예 WLF `POTENTIAL_MATCH`→`POSSIBLE_MATCH`, Travel Rule `REVIEW`→`HIGH_RISK`).
-- **`eventFamily`는 입력 필드가 아니다(서버 파생)**: consumer가 `eventType` 접두(`<family>`)에서 도출하는 **읽기전용 파생값**이며 발신측·ingest 본문(API §3.1 `IngestEventRequest`)에 싣지 않는다. aml-svc는 별도 `event_family` 컬럼을 두지 않고 `aml_canonical_events.event_type`(VARCHAR(80))에 `<family>.<verb>` 전체를 저장하므로, `eventFamily`는 라우팅·관측성·webhook envelope(API §8.2)용 투영(projection)으로만 쓴다.
-- **운영자 집계 API 경계**: 대시보드(플랫폼·서비스별)·서비스 관리·운영자 감사 조회는 **bo-api**가 소유·집약·인증한다(API §9 정본 결정). aml-svc(엔진)는 저수준 데이터 API·비동기 큐만 제공하며, 본 연동 명세는 운영자 집계 엔드포인트를 정의하지 않는다. PRD/PPT의 해당 화면은 호출 대상을 bo-api(`/api/v1/bo/aml/**`)로 명시한다.
-- **hanpass-ph REST 업무 분류(2026-07-01 코드 정합)**: FDS 탐지 결정과 AML TM은 같은 실시간 거래 payload(`memberRef`,`transactionRef`,`channel`,`amount`,`currency`,`counterpartyRef`,`corridor`)를 기준으로 한다. 여기 나열 키는 AML 엔진 저장 flat canonical payload(정본 표 = API §2.1a "엔진 저장 flat canonical payload")의 부분집합이며, `corridor` 는 서버 파생 문자열(`{reg}-{dest}`, 예 `PH-PH`), `counterpartyRef` 는 단일 canonical 상대방 토큰(flat payload·WLF screen key·vault 공유)이다 — 키 전수·파생 규칙 정본은 §2.1a flat payload 표를 참조한다. FDS는 룰 기반 실시간 차단/보류/허용 결정, AML TM은 동일 거래 feed를 CTR/STR 사후 모니터링 evidence로 사용한다. AML REST 수신 카탈로그는 거래 TM 1종(`/transactions/evaluate`) + 고객 라이프사이클 4종(CDD 승인·정보수정·KYC/CDD 재이행·EDD) + RA 1종 + WLF 1종으로 운영 화면에 분류한다(API §2.1 주석).
+- **이벤트 인입은 동기 REST 가 정본 경로다(코드 truth)**. hanpass-ph core-banking 은 `POST /api/v1/aml/events`(`AmlEventController`, scope `aml:event:write`)로 canonical 이벤트를 멱등 전송한다. 별도 `@SqsListener` ingest consumer 는 **현재 구현되어 있지 않다**(`aml-canonical-events` 큐는 config 선언만 존재, consumer 미구현 — §2.1 주석).
+- 엔진 간(`fds-svc`→`aml-svc`) 연동은 **event(SQS) 연동**이다(코드 truth: `FdsDecisionConsumer` `@SqsListener("aml-fds-decision")`). 동기 fallback 은 Internal API(`/internal/v1/aml/fds-escalations`, `FdsEscalationInternalController`).
+- `bo-web`은 `bo-api` 경유만(엔진 직접 호출 금지). 결재·감사·evidence export 는 `bo-api`→`aml-svc` Admin/Internal API.
+- 모든 메시지·커넥터·아웃박스는 `tenantId`(=`tenant_demo`)·`dataScope`·`traceId`를 전파한다.
+- raw PII 는 큐·이벤트·외부 제출 어디에도 평문 전파 금지. ref(token)/hash/`payloadHash`만 흐른다(§10).
+- **직렬화 규약**: 모든 큐·webhook 메시지 키는 **camelCase**로 직렬화하고 DB 컬럼(snake_case)과 1:1 매핑한다(예 `submissionErrorCode`↔`submission_error_code`, `payloadHash`↔`payload_hash`, `schemaVersion`↔`schema_version`). enum 코드값은 DB §5·API §3와 동일하며 도메인 verb·별칭은 정본 enum 으로 환원해 전파한다(예 WLF `POTENTIAL_MATCH`→`POSSIBLE_MATCH`, Travel Rule `REVIEW`→`HIGH_RISK`).
+- **`eventFamily`는 입력 필드가 아니다(서버 파생)**: consumer 가 `eventType` 접두(`<family>`)에서 도출하는 **읽기전용 파생값**이다(코드 truth: `EventFamily.fromEventType`). aml-svc 는 별도 `event_family` 컬럼을 두지 않고 `aml_canonical_events.event_type`(VARCHAR(80))에 `<family>.<verb>` 전체를 저장하므로, `eventFamily`는 라우팅·관측성·webhook envelope(API §8.2)용 투영(projection)으로만 쓴다.
+- **운영자 집계 API 경계**: 대시보드·서비스 관리·운영자 감사 조회는 **bo-api**가 소유·집약·인증한다(API §9 정본). aml-svc(엔진)는 저수준 데이터 API·비동기 큐만 제공하며, 본 연동 명세는 운영자 집계 엔드포인트를 정의하지 않는다.
+- **hanpass-ph REST 업무 분류(2026-07-01 코드 정합)**: FDS 탐지 결정과 AML TM은 같은 실시간 거래 payload(`memberRef`,`transactionRef`,`channel`,`amount`,`currency`,`counterpartyRef`,`corridor`)를 기준으로 한다. 여기 나열 키는 AML 엔진 저장 flat canonical payload(정본 표 = API §2.1a "엔진 저장 flat canonical payload")의 부분집합이며, `corridor` 는 서버 파생 문자열(`{reg}-{dest}`, 예 `PH-PH`), `counterpartyRef` 는 단일 canonical 상대방 토큰(flat payload·WLF screen key·vault 공유)이다 — 키 전수·파생 규칙 정본은 API §2.1a flat payload 표를 참조한다. FDS는 룰 기반 실시간 차단/보류/허용 결정, AML TM은 동일 거래 feed를 CTR/STR 사후 모니터링 evidence로 사용한다. AML REST 수신 카탈로그는 거래 TM 1종(`/transactions/evaluate`) + 고객 라이프사이클 4종(CDD 승인·정보수정·KYC/CDD 재이행·EDD) + RA 1종 + WLF 1종으로 운영 화면에 분류한다(API §2.1 주석).
 
-### 1.2 어댑터 매핑 (헥사고날, 설계서 §6.2)
+### 1.2 어댑터 매핑 (헥사고날, 코드 truth)
 
 | 방향 | 어댑터 패키지 | 책임 | port |
 |---|---|---|---|
-| in | `adapter/in/rest` | 동기 ingest/screen/RA/TM/evidence (02-aml-api) | `IngestEventUseCase`·`ScreenUseCase`·`EvaluateRiskUseCase`·`EvaluateTransactionUseCase` |
-| in | `adapter/in/sqs` | 대량 거래·정산·crypto·order·employee·FDS decision consumer | `IngestEventUseCase`·`EvaluateTransactionUseCase` |
-| in | `adapter/in/scheduled` | polling/CDC/snapshot import, periodic review, watchlist freshness | `IngestEventUseCase`·`ManageWatchlistUseCase` |
-| out | `adapter/out/external` | report submission adapter, fds-svc client, legacy vendor bridge, watchlist source importer, adverse-media/blockchain intel, webhook | `ReportSubmissionPort`·`FdsCasePort`·`AuditEvidencePort` |
-| out | `adapter/out/persistence` | `aml_canonical_events`·`aml_approvals`·아웃박스 테이블 | `CanonicalEventStorePort` 등 |
+| in | `adapter/in/rest` | 동기 ingest(`AmlEventController`)·screen·RA·TM·evidence·내부(`FdsEscalationInternalController`·`ScreenInternalController`·`CustomerRiskInternalController`·`PiiRevealInternalController`)·watchlist admin·travel-rule·audit | `IngestAmlEventUseCase`·`ScreenSubjectUseCase`·`EvaluateRiskUseCase`·`EvaluateTransactionUseCase` 등 |
+| in | `adapter/in/sqs` | `FdsDecisionConsumer`(`@SqsListener aml-fds-decision`)·`ReportSubmissionCallbackConsumer`(FIU 회신, 직접 호출/REST callback 시드) | `ConsumeFdsDecisionUseCase`·`AcknowledgeReportUseCase` |
+| in | `adapter/in/scheduled` | `OutboxRelayScheduler`(아웃박스 drain)·`WatchlistReconciliationScheduler`(명단 freshness) | `RelayOutboxUseCase`·`ReconcileWatchlistUseCase` |
+| out | `adapter/out/messaging` | `OutboxRelayRouter`(WEBHOOK→relay / 그 외→SQS)·`SqsOutboxRelayPublisher`(aws)·`InMemoryOutboxRelayPublisher`(local)·`HighRiskOutboxAdapter` | `OutboxRelayPort`·`OutboxMessagingPort`·`HighRiskEventPort` |
+| out | `adapter/out/webhook` | `HttpWebhookRelayAdapter`(서명 customer callback) | `WebhookSenderPort` |
+| out | `adapter/out/submission` | `MockRegulatorSubmissionAdapter`(mock KoFIU, 운영시 규제기관 어댑터) | `ReportSubmissionPort` |
+| out | `adapter/out/feed` | `MockWatchlistFeedAdapter`(명단 import) | `WatchlistFeedPort` |
+| out | `adapter/out/persistence` | `aml_canonical_events`·`aml_approvals`·`aml_outbox`(`OutboxJpaAdapter`)·watchlist·vendor-migration 등 | `CanonicalEventStorePort`·`OutboxStorePort` 등 |
 
 ---
 
 ## 2. 메시징 토폴로지(SQS)
 
-정본은 비동기 메시징을 **SQS**로 고정한다(`target-architecture.md` §3). 참조 구현 `FdsEventsConsumer`와 동일하게 `io.awspring.cloud.sqs.annotation.SqsListener` 기반, `@ConditionalOnProperty(hanpass.aml-events.consumer-enabled)`로 토글한다.
+정본은 비동기 메시징을 **SQS**로 고정한다(`aegis-stack.md`). 참조 구현은 `io.awspring.cloud.sqs.annotation.SqsListener` 기반이며, AWS SQS auto-config 는 **`aws` 프로파일에서만 활성**(코드 truth: `application.yml` `spring.autoconfigure.exclude: SqsAutoConfiguration`)이다 — 로컬/CI 는 브로커 없이 구동하고 FDS-decision consumer 는 휴면, 아웃박스 relay 는 `InMemoryOutboxRelayPublisher`로 동작한다.
 
-### 2.1 큐 카탈로그
+### 2.1 큐 카탈로그 (코드 truth)
 
-| 큐 논리명 | 방향 | 발행자 | 구독자 | 페이로드 family | DLQ | 비고 |
+| 큐 논리명 | 방향 | 발행자 | 구독자 | 페이로드 | DLQ | 비고 |
 |---|---|---|---|---|---|---|
-| `aml-ingest` | in | 외부 source system / connector | `aml-svc` IngestEventConsumer | `customer.*`·`entity.*`·`beneficial-owner.*`·`account.*`·`instrument.*`·`transaction.*`·`settlement.*`·`trade.*`·`invoice.*`·`order.*`·`crypto.*`·`employee.*` | `aml-ingest-dlq` | 대량 비동기 ingest. SW §8.1 IN 방향 15종 family 중 비동기 수신 대상(screening.*·case.*·vendor.*·fds.* 제외) |
-| `aml-ingest.fifo` | in | core-banking / 정산 | `aml-svc` IngestEventConsumer(FIFO) | 동일 customer/account 순서보장 필요 이벤트 | `aml-ingest-dlq` | `MessageGroupId=tenantId:subjectRef` |
-| `aml-fds-decision` | in | `fds-svc` | `aml-svc` FdsDecisionConsumer | `fds.decision.*`·`fds.case.escalated` | `aml-fds-decision-dlq` | D-07 event 연동 |
-| `aml-screening-async` | internal | `aml-svc` ScreenUseCase | `aml-svc` ScreeningWorker | `screening.requested` | `aml-screening-dlq` | 대량 재screening·watchlist 재적용 |
-| `aml-fds-feedback` | out | `aml-svc` | `fds-svc` | `aml.screening.true_match`·`aml.customer.high_risk`·`aml.case.str_recommended` | (구독자 DLQ) | WLF true match / high-risk 전파·STR 후보 전파 |
-| `aml-outbox-dispatch` | out | `aml-svc` outbox poller | `aml-svc` OutboxDispatcher | report submit·webhook·fds-feedback dispatch | `aml-outbox-dlq` | 트랜잭셔널 아웃박스 |
-| `aml-report-callback` | in | 외부 보고기관 / 제출 adapter | `aml-svc` ReportCallbackConsumer | `report.submission.acked`·`report.submission.failed` | `aml-report-callback-dlq` | 제출 결과 수신 |
+| `aml-fds-decision` | in | `fds-svc` | `FdsDecisionConsumer`(`@SqsListener`) | `fds.case.escalated`·`fds.decision.applied` | `aml-fds-decision-dlq` | **구현됨**. config `aegis.aml.queue.fds-decisions`(기본 `aml-fds-decision`) |
+| `aml-fds-feedback` | out | `aml-svc` outbox relay(`SqsOutboxRelayPublisher`, aws) | `fds-svc` | `aml.screening.true_match`·`aml.customer.high_risk`(aggregate `FDS_FEEDBACK`) | (구독자 DLQ) | aws 프로파일에서 `aggregate_type=FDS_FEEDBACK` 행만 라우팅. config `aegis.aml.queue.fds-feedback` |
+| `aml-outbox-dispatch` | out | `aml-svc` outbox relay(`SqsOutboxRelayPublisher`, aws) | 외부/하위 소비자 | `aml.report.submitted`(REGULATORY_REPORT)·`aml.case.str_recommended`(CASE)·IRA·SCREENING 등 비-WEBHOOK·비-FDS_FEEDBACK 행 | `aml-outbox-dlq` | aws 프로파일 fallback 큐. config `aegis.aml.queue.outbox-dispatch` |
+| `aml-report-callbacks` | in | 규제기관/제출 adapter | `ReportSubmissionCallbackConsumer.onCallback` | `report.submission.acked`·`report.submission.failed` | `aml-report-callback-dlq` | **`@SqsListener` 미선언** — sync-close(`sync-close=true`, mock KoFIU) 또는 REST callback/test seam 으로 직접 호출. 운영 KoFIU 비동기 회신 시 큐 바인딩 추가 |
+| `aml-canonical-events` | (예정) | core-banking | (consumer 미구현) | canonical event | — | config `aegis.aml.queue.canonical-events` 선언만 존재. **현재 ingest 는 REST 전용**(§1.1). 대량 비동기 ingest consumer 는 net-new 후속 |
 
-- 큐 물리명은 `deployment_model`(DB `aml_tenants.deployment_model`, §10.1)에 따라 결정된다. `MANAGED_DEDICATED`/`SELF_HOSTED`(전용 배포): 서비스별 전용 큐 `aml-ingest-{tenantId}-{env}` (배포 단위 격리, 큐 자체가 서비스 경계). `SHARED`(공유 배포): 공용 큐 `aml-ingest-{env}` + 메시지 attribute `tenantId`로 행 라우팅·RLS. 구 `isolation_mode(SCHEMA/DB)` 기준 큐 분리 폐기 — `deployment_model` 기준으로 통일(V17a/V17b 마이그레이션 완료 후 적용). 라우팅은 §10.
-- 모든 큐 메시지 attribute: `tenantId`, `idempotencyKey`, `traceparent`(W3C trace context), `dataScope`, `schemaVersion`(참조 구현 `FdsEventsConsumer.stringHeaders` 확장).
+- **WEBHOOK 아웃박스 행은 SQS 가 아니라 HTTP relay 로 전송된다**(코드 truth: `OutboxRelayRouter` — `aggregate_type=WEBHOOK` → `WebhookSenderPort.send`, 그 외 → `OutboxMessagingPort.publish`). 즉 webhook 은 큐를 거치지 않고 `adapter/out/webhook/HttpWebhookRelayAdapter`(서명 callback)로 직접 발송한다.
+- 큐 물리명은 `deployment_model`(DB `aml_tenants.deployment_model`, §10.1)에 따라 결정된다. `MANAGED_DEDICATED`(hanpass-ph 기본)/`SELF_HOSTED`(전용 배포): 배포 단위 전용 큐(배포 엔드포인트가 서비스 경계). `SHARED`(공유 배포): 공용 큐 + 메시지 attribute `tenantId` 행 라우팅·RLS. 라우팅은 §10.
+- 메시지 attribute(코드 truth `SqsOutboxRelayPublisher.publish`): `tenantId`, `eventType`, `aggregateType`, `aggregateRef`, `idempotencyKey`(=`payloadHash`). consumer 측은 `traceId`·`dataScope`를 envelope 본문에서 전파한다.
 
 ---
 
 ## 3. 이벤트 카탈로그
 
-이벤트명은 `<domain>.<verb>` 소문자. `eventType`은 `aml_canonical_events.event_type`(VARCHAR(80))에 그대로 저장되며 API `IngestEventRequest.eventType`(§02-aml-api 3.1)와 1:1.
+이벤트명은 `<family>.<verb>` 소문자. `eventType`은 `aml_canonical_events.event_type`(VARCHAR(80))에 그대로 저장되며 API `IngestEventRequest.eventType`(§02-aml-api 3.1)와 1:1. 인입 시 `EventFamily.fromEventType`이 **strict gate**로 동작해 미등재 패밀리는 `REJECTED`(코드 truth: `AmlEventIngestService` step 3, DB family CHECK `V27`와 이중 방어).
 
-### 3.1 인바운드 — 외부 source → aml-svc (`aml-ingest`)
+### 3.1 인바운드 — core-banking → aml-svc (REST `POST /api/v1/aml/events`)
 
-| eventType | 발행자(source_system 예) | 트리거 | 핵심 페이로드 키(ref/hash) | 후속 usecase | 산출 |
-|---|---|---|---|---|---|
-| `customer.created` | member-svc | 개인 고객 생성 | `customer.customerRef`(←`member.member_id`)·`customerType`·`country` | IngestEvent→ScreenSubject | `aml_customers`, `aml_screening_results` |
-| `customer.kyc-updated` | member-svc | KYC/CDD 갱신·zoloz 스크리닝 | `customer.customerRef`·`kycStatus`·`docHash` | IngestEvent→EvaluateRisk | `aml_customers`, `aml_risk_scores` |
-| `customer.status-changed` | member-svc | 상태 변경 | `customer.customerRef`·`status` | IngestEvent | `aml_customers` |
-| `entity.created` | member-svc(kyb) | 법인/merchant/seller 생성 | `entity.entityRef`·`entityType`·`legalNameHash` | IngestEvent→ScreenSubject | `aml_entities` |
-| `entity.updated` | member-svc(kyb) | 법인 정보 변경 | `entity.entityRef`·`industryCode` | IngestEvent | `aml_entities` |
-| `beneficial-owner.changed` | member-svc(kyb) | UBO/대표자 변경 | `relationship.fromRef`·`toRef`·`relationshipType`·`ownershipPercent` | IngestEvent→ScreenSubject(UBO) | `aml_relationships`, `aml_screening_results` |
-| `account.created` / `account.closed` | wallet-svc | 월렛/계좌 개설·폐쇄(`transfer_links` 자금그래프) | `account.accountHash`·`customerRef` | IngestEvent | (graph 보강) |
-| `instrument.registered` | wallet-svc·member-svc | 지갑/가상계좌 등록 | `instrument.walletAddressHash`·`chain` | IngestEvent→ScreenSubject(crypto) | `aml_screening_results` |
-| `transaction.requested` | walletchg-svc(충전)·domestic-svc(국내)·remit-svc(해외)·inbound-svc(인바운드) | 자금 이동 요청 | `transaction.transactionRef`(←`charge_order_id`/`transaction_id`/`transfer_number`/`wallet_transaction_id`)·`amount`·`amountMinor`·`currency`·`direction`·`corridor` | IngestEvent→EvaluateTransaction | `aml_canonical_events` |
-| `transaction.completed` | walletchg/domestic/remit/inbound-svc | 거래 완료 | `transaction.transactionRef`·`counterparty.counterpartyRef`·`channelType` | EvaluateTransaction(TM) | `aml_alerts` |
-| `transaction.cancelled` / `transaction.refunded` | card·pg | 취소/환불 | `transaction.transactionRef`·`originalTransactionRef` | EvaluateTransaction(refund_laundering) | `aml_alerts` |
-| `settlement.executed` / `settlement.posted` | remit-svc·wallet-svc | 해외송금 정산·월렛 원장 정산 | `entity.entityRef`·`amountMinor`·`payoutAccountHash`(←`remit.account_hash`) | EvaluateTransaction·EvaluateRisk | `aml_alerts` |
-| `trade.invoiced` / `trade.shipped` | trade·b2b | 무역대금·선적·통관 | `document.documentRef`·`amount`·`countryFrom`·`countryTo` | EvaluateTransaction(trade_mispricing) | `aml_business_documents`, `aml_alerts` |
-| `invoice.issued` | b2b | B2B 인보이스 | `document.documentRef`·`subjectRef`·`counterpartyRef` | EvaluateTransaction | `aml_business_documents` |
-| `order.placed` / `order.refunded` | ecommerce | 주문·반품 | `document.documentRef`·`sellerRef` | EvaluateTransaction(round_tripping) | `aml_business_documents` |
-| `crypto.deposit` / `crypto.withdrawal` | crypto-exchange | 가상자산 입출금 | `transfer.transferRef`·`assetCode`·`walletAddressHash` | EvaluateTransaction(crypto_off_ramp)·TravelRule | `aml_travel_rule_transfers`, `aml_alerts` |
-| `crypto.travel-rule-submitted` | crypto-exchange·vasp | Travel Rule 정보 전달 | `transfer.transferRef`·`originatorRef`·`beneficiaryRef`·`originatorVasp`·`beneficiaryVasp` | ManageTravelRule | `aml_travel_rule_transfers` |
-| `employee.operation` | audit·iam·hr | 내부자 작업/override | `employeeRef`·`operationType`·`targetRef` | EvaluateTransaction(internal_override_abuse) | `aml_alerts` |
-| `vendor.alert-ingested` | legacy-vendor-bridge | 기존 벤더 alert/case 수신 | `externalAlertRef`·`vendorVerdict`·`targetRef` | IngestEvent(source_origin=`VENDOR`) | `aml_alerts`(source_origin=`VENDOR`) |
+> 발행자(`source_system`)는 hanpass-ph 단일 원천 **`core-banking`**(`core-banking.v1`)이다. ingest 는 동기 REST 전용(§1.1·§2.1).
 
 > **hanpass-ph 소스 재그라운딩 주석(REST sync)**: 발행자 열의 source_system 은 hanpass-ph 7실서비스(DB §3.2 카탈로그 정본)다 — `member-svc`(회원/KYC/CDD/제재·PEP zoloz → customer.*/entity.*/beneficial-owner.*), `walletchg-svc`(월렛충전 cash-in), `domestic-svc`(국내송금 PHP), `remit-svc`(해외송금 cross-border, `sanction_screening_event`·`str_indicators` 보유 → transaction.requested·settlement.posted), `wallet-svc`(월렛 원장 `transfer_links` 자금그래프 → account.*·settlement.posted), `inbound-svc`(파트너 인바운드). `tx-history-svc`(회원 통합 이력 read model)는 ingest 발행자가 아니라 **대상 360°(DB §3.16)** 피드 소스다. card/pg/crypto-exchange/trade/ecommerce 등 잔존 generic 발행자는 hanpass-ph 실서비스의 예시 추상이며, 운영 등록값은 위 7코드다. corridor(remit `send/receive_country·currency`·USD `usd_amount/report_amount`→`amountBase`)는 transaction payload 에 보존(§4.2)된다.
 
@@ -125,7 +112,7 @@ flowchart LR
 
 ### 3.1a 인바운드 — 중립(canonical) 동기 수집 (`POST /aml/v1/transaction-events`, 코드=truth)
 
-위 §3.1 은 큐(`aml-ingest`) 기반 비동기 인입이다. 이와 **병존**하는 **동기 REST 단일 수집 표면**이 소스 중립(canonical) 수집 API 다(API 02-aml §2.1a). 원천 시스템은 5 product(해외송금·국내송금·카드결제·월렛충전·월렛결제)를 단일 Envelope(`docs/aml-data.md` §3~§7)로 **하나의 POST** 로 보내고, aml-svc 는 그 요청 안에서 WLF + CTR/STR 을 동기 팬아웃한다(별도 큐 왕복 없음). 시뮬레이터·데모·경량 원천은 이 경로를 사용하고, 대량/배치 원천은 §3.1 큐 경로를 사용한다.
+위 §3.1 의 `POST /api/v1/aml/events` REST ingest 가 canonical 이벤트 정본 경로다. 이와 **병존**하는 **동기 REST 단일 수집 표면**이 소스 중립(canonical) 수집 API 다(API 02-aml §2.1a). 원천 시스템은 5 product(해외송금·국내송금·카드결제·월렛충전·월렛결제)를 단일 Envelope(`docs/aml-data.md` §3~§7)로 **하나의 POST** 로 보내고, aml-svc 는 그 요청 안에서 WLF + CTR/STR 을 동기 팬아웃한다(별도 큐 왕복 없음). 시뮬레이터·데모·경량 원천은 이 경로를 사용한다. 대량 비동기 ingest 는 `aml-canonical-events` consumer 가 아직 없어 net-new 후속이다(§2.1).
 
 | product(중립) | canonical eventType | EventFamily | engine channelType | 후속 usecase(동기 팬아웃) | 산출 |
 |---|---|---|---|---|---|
@@ -142,182 +129,181 @@ flowchart LR
 
 ### 3.2 인바운드 — fds-svc → aml-svc (`aml-fds-decision`, D-07)
 
-| eventType | 트리거 | 핵심 키 | 후속 | 산출 |
+| eventType(family) | 트리거 | 핵심 페이로드 키(ref/hash) | 후속 처리 | 산출 |
 |---|---|---|---|---|
-| `fds.case.escalated` | FDS fraud case → STR 후보 위임 | `fraudCaseRef`·`targetRef`·`transactionRef`·`severity`·`suggestedCaseType` | ManageCase(`STR_REVIEW`) | `aml_alerts`(alert_type=`FDS_ESCALATION`, source_origin=`FDS`) → `aml_cases` |
-| `fds.decision.applied` | FDS hold/block 결정 → AML EDD 트리거 | `transactionRef`·`decision`·`targetRef` | EvaluateRisk·ManageCase(`EDD_REVIEW`) | `aml_alerts`, `aml_cases` |
+| `customer.created`(CUSTOMER) | 개인 회원 생성 | `customer.customerRef`·`customerType`·`country` | identity projection → ScreenSubject | `aml_customers`, `aml_screening_results` |
+| `customer.kyc-updated`(CUSTOMER) | KYC/CDD 갱신(zoloz 스크리닝 결과 반영) | `customer.customerRef`·`kycStatus`·`docHash` | identity projection → EvaluateRisk | `aml_customers`, `aml_risk_scores` |
+| `customer.status-changed`(CUSTOMER) | 회원 상태 변경 | `customer.customerRef`·`status` | identity projection | `aml_customers` |
+| `entity.created`/`entity.updated`(ENTITY) | 법인/파트너 생성·변경(KYB) | `entity.entityRef`·`entityType`·`legalNameHash`·`industryCode` | identity projection → ScreenSubject | `aml_entities` |
+| `beneficial-owner.changed`(BENEFICIAL_OWNER) | UBO/대표자 변경 | `relationship.fromRef`·`toRef`·`relationshipType`·`ownershipPercent` | identity projection(UBO) → ScreenSubject | `aml_relationships`, `aml_screening_results` |
+| `remit.transfer.requested`/`remit.transfer.completed`(REMIT) | 해외송금(cross-border) 요청·완료 | `transaction.transactionRef`(←`remit.transfer_number`)·`amount`·`amountMinor`·`currency`·`corridor`·`amountBase`·`channelType=CROSS_BORDER_REMIT` | EvaluateTransaction(TM) | `aml_canonical_events`, `aml_alerts` |
+| `domestic.transfer.requested`/`domestic.transfer.completed`(DOMESTIC) | 국내송금(PHP) 요청·완료 | `transaction.transactionRef`(←`domestic.transaction_id`)·`amount`·`channelType=DOMESTIC_REMIT` | EvaluateTransaction(TM) | `aml_canonical_events`, `aml_alerts` |
+| `wallet.charge.requested`(WALLET) | 월렛충전(cash-in) | `transaction.transactionRef`(←`wallet.charge_order_id`)·`amount`·`channelType=CASH_IN` | EvaluateTransaction(TM) | `aml_canonical_events`, `aml_alerts` |
+| `wallet.pay.requested`(WALLET) | 월렛결제 | `transaction.transactionRef`·`amount`·`channelType=WALLET_PAYMENT` | EvaluateTransaction(TM) | `aml_canonical_events`, `aml_alerts` |
+| `wallet.withdraw.requested`(WALLET) | 월렛/ATM 출금 | `transaction.transactionRef`(←`wallet.wallet_transaction_id`)·`amount`·`channelType=WALLET_WITHDRAWAL` | EvaluateTransaction(TM) | `aml_canonical_events`, `aml_alerts` |
+| `transaction.requested`/`transaction.completed`(TRANSACTION) | 호환 일반 거래 패밀리(채널 무관 canonical) | `transaction.transactionRef`·`amount`·`direction`·`channelType` | EvaluateTransaction(TM) | `aml_canonical_events`, `aml_alerts` |
 
-> `fds.case.escalated`의 동기 fallback 경로는 `POST /internal/v1/aml/fds-escalations`(`FdsEscalationRequest`, 02-aml-api §3.10)이며 큐 경로는 동일 payload를 비동기로 수신한다(둘 다 `idempotencyKey=fraudCaseRef`로 멱등). `fds.decision.applied`는 **비동기 큐(`aml-fds-decision`) 전용**으로 대응 동기 REST 계약이 없다(`fds-escalations`는 escalated 전용). 동기 fallback이 필요해지면 API §2.6/§3.10에 `decision` 수신 DTO를 신설한 뒤 본 표를 갱신한다.
+> **TM velocity·fund-graph 참여 패밀리(코드 truth `EventFamily.isTransactionBearing`)**: `TRANSACTION`·`REMIT`·`DOMESTIC`·`WALLET`. hanpass-ph 6채널은 이 4패밀리로 인입되어 velocity window·자금그래프 funnel 에 집계된다.
+> **corridor·amountBase(해외송금)**: `corridor`(`sendCountry`/`receiveCountry`/`sendCurrency`/`receiveCurrency` ← `remit.send_country/receive_country/send_currency/receive_currency`)와 USD 정규화 `amountBase`(← `remit.usd_amount/report_amount`)는 cross-border(`remit.*`)에 한해 채운다(국내 `domestic`/`wallet` 은 corridor 동일국·생략 가능). TM corridor 시나리오(`HIGH_RISK_CORRIDOR` v3, `V26`)·canonical event payload 에 보존. 임계·기준금액은 규제 레이어(Policy Pack) 정본 — 본 필드는 데이터 신호일 뿐 임계 교체 아님.
+> **zoloz/str_indicators(데이터 신호)**: `customer.kyc-updated` 의 zoloz 스크리닝 결과(decision/risk_level/total_hits/hit_results)와 해외송금 `str_indicators`는 screening/evidence 데이터 신호로만 매핑하며, 규제 STR 분류는 KR Policy Pack 정본을 따른다(§7.2).
 
-### 3.3 아웃바운드 — aml-svc → fds-svc (`aml-fds-feedback`)
+### 3.2 인바운드 — fds-svc → aml-svc (`aml-fds-decision`, SQS)
+
+코드 truth: `FdsDecisionConsumer`(`@SqsListener`) → `FdsDecisionService`(`ConsumeFdsDecisionUseCase`).
+
+| eventType | 트리거 | 핵심 키 | 후속(case type 매핑) | 산출 |
+|---|---|---|---|---|
+| `fds.case.escalated` | FDS fraud case → AML 후보 위임 | `tenantId`·`eventId`(=`fdsEventId`)·`fdsCaseRef`·`targetRef`·`transactionRef`·`action`·`severity`·`dataScope` | `REGULATORY_REPORT`→`STR_REVIEW`, `REQUEST_TRAVEL_RULE_INFO`→`VASP_TRAVEL_RULE_REVIEW`, `OPEN_AML_CASE`→`EDD_REVIEW`, 기타/legacy→`STR_REVIEW` | `aml_alerts`(alert_type=`FDS_ESCALATION`, source_origin=`FDS`) → `aml_cases` |
+| `fds.decision.applied` | FDS hold/block 결정 → AML EDD 트리거 | `tenantId`·`eventType`·`targetRef`·`transactionRef`·`action`·`severity` | `EDD_REVIEW`(edd_trigger=`UNUSUAL_TRANSACTION`) | `aml_alerts`, `aml_cases` |
+
+> 멱등: 두 이벤트 모두 부분 UNIQUE `(tenant_id, origin_fds_case_ref, fds_event_id) WHERE source_origin='FDS'` 기반 `INSERT … ON CONFLICT DO NOTHING`(코드 truth `FdsDecisionService` 주석)으로 재전달 시 단일 alert·단일 case 만 생성된다. `eventId` 미제공 시 `fdsCaseRef` fallback.
+> `severity`는 FDS 라우팅 힌트로 AML alert severity 를 결정하되, 미상/비정상 값은 eventType 기본값(escalated→`HIGH`, applied→`MEDIUM`)으로 안전 fallback. aml-svc 는 FDS `action_type` 을 소유·재현하지 않고 **AML case trigger 로만 해석**한다(action ownership 경계).
+> `fds.case.escalated`의 동기 fallback 경로는 `POST /internal/v1/aml/fds-escalations`(`FdsEscalationInternalController`)다. `fds.decision.applied`는 **비동기 큐 전용**(대응 동기 REST 계약 없음).
+
+### 3.3 아웃바운드 — aml-svc → fds-svc (`aml-fds-feedback`, aggregate `FDS_FEEDBACK`)
+
+코드 truth: `FdsFeedbackOutboxEmitter`·`HighRiskOutboxAdapter` → outbox `FDS_FEEDBACK` → aws 프로파일에서 `SqsOutboxRelayPublisher`가 `aml-fds-feedback`로 라우팅.
 
 | eventType | 트리거 | 핵심 키 | 구독자 처리 |
 |---|---|---|---|
-| `aml.screening.true_match` | WLF `TRUE_MATCH` 결재(EXECUTED) | `targetRef`·`screeningId`·`watchlistSourceType` | fds-svc block/watchlist 반영 |
+| `aml.screening.true_match` | WLF `TRUE_MATCH` 결재(EXECUTED) | `screeningId`·`targetRef`·`targetType`·`watchlistSourceType`·`reasonCodes` | fds-svc block/watchlist 반영 |
 | `aml.customer.high_risk` | RA `risk_grade` HIGH/PROHIBITED 확정 | `targetRef`·`scoreId`·`riskGrade` | fds-svc risk group 전파 |
-| `aml.case.str_recommended` | alert `STR_RECOMMENDED` | `caseId`·`targetRef` | fds-svc evidence cross-ref |
 
-### 3.4 아웃박스 dispatch (`aml-outbox-dispatch`) / 제출 콜백 (`aml-report-callback`)
+### 3.4 아웃바운드 — 아웃박스 dispatch(`aml-outbox-dispatch`) / STR 후보 / 제출 회신
 
-| eventType | 트리거 | 키 | 외부 대상 |
+| eventType | 트리거 | 키 | 외부 대상 / 비고 |
 |---|---|---|---|
-| `report.submission.requested` | STR/CTR/Travel Rule 결재 EXECUTED | `reportId`·`reportType`·`submittedRef`·`evidenceHash`·`amlcSubmissionRef`(eAMLA 포털 접수번호) | 실제 포털(eAMLA/AMLC) 제출은 **`AmlcSubmissionPort` → ProviderSvc AMLC adapter 위임**(FDS/aml-svc 직접 포털 제출 안 함, 설계서 §14.1a·§5.4). ProviderSvc가 반환한 `amlcSubmissionRef`(lodgement 영수)는 dispatch payload·감사(`APPROVE_SUBMIT_REPORT`)에 provenance 로 기록. FIU 접수/실패 결과는 `ReportSubmissionPort`(acked/failed)로 폐루프. dispatch 시 status=`SUBMITTED`(전송 완료·회신 대기) |
-| `report.submission.acked` | FIU/보고기관 접수 회신 | `reportId`·`fiuAckRef`(FIU 접수번호) | → `aml_regulatory_reports.fiu_ack_ref` 저장, status=`ACKNOWLEDGED`(종단 — 폐루프 완성, 설계서 §14.1a) |
-| `report.submission.failed` | 전송 실패·FIU 오류 반려 | `reportId`·`submissionErrorCode`(API §3.6·§8.1 정본) | → `submission_error_code` 저장, status=`SUBMISSION_FAILED` → 운영자 정정 후 재제출(§6.2) |
-| `webhook.callback.requested` | screening/case/report 상태 변경 | `subjectRef`·`eventName`(API §8.1) | 고객 webhook URL(서명) — **콜백 URL 원천 = `aml_api_credentials`(`credential_type=WEBHOOK` `enabled=true`).`webhook_url`(DB §3.15, 구현 V17)**. 공유 secret = 동일 행 `secret_ciphertext`(서명 시점만 복호). **`aml_source_systems` 에는 webhook URL 컬럼 없음**(fds-svc `fds_api_credentials.webhook_url` 미러) |
+| `aml.case.str_recommended` | alert `STR_RECOMMENDED`(case open) | `caseId`·`targetRef`(aggregate `CASE`) | fds-svc evidence cross-ref(코드 truth `AlertTriageService`) |
+| `aml.report.submitted` | STR/CTR 결재 EXECUTED → 제출 dispatch | `reportId`·`reportType`·`approvalId`·`submittedRef`·`evidenceHash`·`amlcSubmissionRef`(eAMLA 포털 접수번호)(aggregate `REGULATORY_REPORT`) | `ReportSubmissionPort` → 규제기관 adapter. dispatch 시 status=`SUBMITTED`(전송 완료·회신 대기, 코드 truth `RegulatoryReportService`). 실제 포털(eAMLA/AMLC) 제출은 **`AmlcSubmissionPort` → ProviderSvc AMLC adapter 위임**(FDS/aml-svc 직접 포털 제출 안 함, 설계서 §14.1a·§5.4); ProviderSvc 반환 `amlcSubmissionRef`(lodgement 영수)는 dispatch payload·감사(`APPROVE_SUBMIT_REPORT`)에 provenance 로 기록 |
+| `report.submission.acked` | FIU/규제기관 접수 회신 | `tenantId`·`submittedRef`·`fiuAckRef` | `ReportSubmissionCallbackConsumer.onCallback` → status=`ACKNOWLEDGED`(종단, `fiu_ack_ref` 저장, 폐루프 완성 설계서 §14.1a) |
+| `report.submission.failed` | 전송 실패·FIU 오류 반려 | `tenantId`·`submittedRef`·`submissionErrorCode`(API §3.6·§8.1 정본) | → status=`SUBMISSION_FAILED`(`submission_error_code` 저장) → 운영자 정정 후 재제출(§6.2) |
+| `webhook.callback.requested` | screening/case/report 상태 변경 | `subjectRef`·`eventName`(API §8.1, aggregate `WEBHOOK`) | **SQS 미경유** — `OutboxRelayRouter`가 `WebhookSenderPort`로 서명 HTTP 전송. 콜백 URL 원천 = `aml_api_credentials`(`credential_type=WEBHOOK enabled`).`webhook_url`(DB §3.15, 구현 `V17`). 공유 secret = 동일 행 `secret_ciphertext`(서명 시점만 복호). **`aml_source_systems` 에는 webhook URL 컬럼 없음**(fds-svc `fds_api_credentials.webhook_url` 미러) |
 
-> webhook 아웃박스 row는 서비스 콜백 envelope(API §8.2 정본)을 발행한다. envelope 키: `schemaVersion`(`aml.webhook.v1`)·`eventName`(`AmlScreeningResolved`/`AmlCaseStatusChanged`/`AmlReportSubmitted`)·`eventFamily`(`screening`/`case`/`report`, **`eventName` 접두에서 서버 파생** — 입력 아님)·`eventId`·`tenantId`·`dataScope`·`occurredAt`·`traceId`·`data`. 모든 키 camelCase, payload는 token/hash·마스킹만(원문 미포함). 서명·재시도·멱등은 API §8.3/§8.4 정본.
+> webhook 아웃박스 row 는 서비스 콜백 envelope(API §8.2 정본)을 발행한다(코드 truth `WebhookOutboxEmitter`). envelope 키: `schemaVersion`(`aml.webhook.v1`)·`eventName`(`AmlScreeningResolved`/`AmlCaseStatusChanged`/`AmlReportSubmitted`)·`eventFamily`(`screening`/`case`/`report`, **`eventName` 접두에서 서버 파생** — 입력 아님)·`eventId`·`tenantId`·`dataScope`·`occurredAt`·`traceId`·`data`. 모든 키 camelCase, `data`는 token/hash·마스킹만(원문 미포함). 서명·재시도·멱등은 API §8.3/§8.4 정본.
 
 ---
 
 ## 4. 메시지 envelope·스키마(JSON)
 
-### 4.1 공통 envelope (모든 큐 메시지)
+### 4.1 공통 envelope (ingest REST body + canonical event)
 
-API `IngestEventRequest`(02-aml-api §3.1)·`aml_canonical_events` 컬럼과 1:1. raw PII 없음.
+API `IngestEventRequest`(02-aml-api §3.1)·`aml_canonical_events` 컬럼과 1:1(코드 truth `AmlEventController.IngestEventRequest`·`AmlEventIngestService`). raw PII 없음.
 
 ```json
 {
-  "schemaVersion": "aml.event.v1",
-  "tenantId": "tenant_bank_a",
+  "tenantId": "tenant_demo",
   "dataScope": "default",
   "sourceSystem": "core-banking",
-  "sourceSchemaVersion": "core-banking.v1",
+  "schemaVersion": "core-banking.v1",
   "eventId": "evt-001",
   "idempotencyKey": "core-banking:evt-001",
-  "eventType": "transaction.completed",
+  "eventType": "remit.transfer.completed",
   "occurredAt": "2026-06-06T10:00:00Z",
-  "traceId": "00-4bf92f...-01",
   "payloadHash": "sha256:...",
   "payload": { }
 }
 ```
 
-> `eventFamily`(`transaction`)는 **본문에 싣지 않는다** — consumer가 `eventType` 접두에서 파생한다(§1 규칙). `schemaVersion`(envelope 버전 `aml.event.v1`, DB 매핑 없음)과 `sourceSchemaVersion`(원천 스키마 버전 = DB `aml_canonical_events.schema_version` = API §3.1 `schemaVersion` 필드)을 **2축으로 분리**하며, 동일 키 의미 충돌이 없도록 webhook envelope(API §8.2, `schemaVersion=aml.webhook.v1`·`eventFamily` 파생)와 키 의미를 정합한다. `payloadHash`는 **최상위 필드**로 위치하며 API §3.1 `IngestEventRequest.payloadHash`(R=— 선택, 서버 자동계산)와 경로·필수 여부를 일치시킨다(구 `rawPayload.payloadHash` 중첩 구조 폐기).
+> REST ingest 는 `Tenant-Id`·`Idempotency-Key` 헤더가 권위(authoritative)이며, body 의 `idempotencyKey`/`sourceSystem`은 헤더와 일치해야 한다(불일치 ⇒ `REJECTED`, 코드 truth `AmlEventIngestService` step 0). `X-Trace-Id` 헤더 ↔ canonical `trace_id` 매핑. `eventFamily`는 **본문에 싣지 않는다** — `eventType` 접두에서 파생한다(§1 규칙).
 
 | 필드 | 타입 | 필수 | DB 매핑 | 규칙 |
 |---|---|---|---|---|
-| `schemaVersion` | string | Y | — | 메시지 envelope 버전(`aml.event.v1`). breaking은 `.v2` |
-| `tenantId` | string | Y | `tenant_id` | 라우팅·RLS 키(§10) |
-| `dataScope` | string | N | `data_scope` | 운영자 row-level 권한 필터(영업점·법인그룹 하위 격리, **NULL=tenant 전역**, §10.1 정본·DB §2.1·API §1.1 정본=선택). 미제공 시 tenant 전역 접근 권한 적용 |
-| `sourceSystem` | string | Y | `source_system` | 미등록 시 `AML.UNKNOWN_SOURCE_SYSTEM` |
-| `sourceSchemaVersion` | string | Y | `schema_version` | source 스키마 버전(Schema Registry 조회 키) |
+| `tenantId` | string | Y(헤더 `Tenant-Id`) | `tenant_id` | 라우팅·RLS 키(§10). 운영값 `tenant_demo` |
+| `dataScope` | string | N | `data_scope` | 운영자 row-level 권한 필터(**NULL=tenant 전역**, §10.1·DB §2.1·API §1.1). 미제공 시 tenant 전역 |
+| `sourceSystem` | string | Y | `source_system` | 미등록 시 REJECTED(`SCHEMA_UNKNOWN`). 운영값 `core-banking` |
+| `schemaVersion` | string | Y | `schema_version` | source 스키마 버전. 등록 버전과 불일치 시 REJECTED(`SCHEMA_UNKNOWN`). 운영값 `core-banking.v1` |
 | `eventId` | string | Y | `event_id`(PK) | 원천 식별자 |
-| `idempotencyKey` | string | Y | `idempotency_key`(UNIQUE) | `<source>:<eventId>` 권장 |
-| `eventType` | string | Y | `event_type` | §3 카탈로그 `<family>.<verb>`(API §3.1 `IngestEventRequest.eventType` 1:1) |
-| `eventFamily` | string | (서버 파생) | — | **입력 아님** — consumer가 `eventType` 접두(`<family>`)에서 도출하는 읽기전용 파생값. aml-svc는 `event_family` 컬럼 미보유(§1 규칙)이므로 라우팅·관측성·webhook envelope(API §8.2)용 투영. 발신측 미전송 |
-| `occurredAt` | string(date-time) | Y | `occurred_at` | 원천 발생 시각 |
-| `traceId` | string | N | `trace_id` | 없으면 consumer가 생성. REST=`X-Trace-Id` 헤더 ↔ 큐=envelope `traceId` 본문(API §1.1 매핑) |
-| `payloadHash` | string | N | `payload_hash`(NOT NULL) | raw payload sha256. **선택(미제공 시 aml-svc ingest 어댑터가 수신 payload의 sha256을 자동 계산하여 INSERT — 서버 자동계산 방식 확정, API §3.1 정본)**. 호출자가 직접 계산해 제공해도 무방(서버 값 우선). 구 `rawPayload.payloadHash` 중첩 경로 폐기 — 최상위 키로 통일(API §3.1·DB `payload_hash` NOT NULL 1:1) |
-| `payload` | object | Y | `payload`(JSONB) | 정규화 payload(ref/hash만) |
+| `idempotencyKey` | string | Y(헤더 `Idempotency-Key`) | `idempotency_key`(UNIQUE) | `<source>:<eventId>` 권장. body 값은 헤더와 일치 필수 |
+| `eventType` | string | Y | `event_type` | §3 카탈로그 `<family>.<verb>`. `EventFamily` strict gate(미등재 ⇒ REJECTED) |
+| `occurredAt` | string(date-time) | N | `occurred_at` | 원천 발생 시각. 미제공 시 수신 시각. 파싱 실패 ⇒ REJECTED(500 아님) |
+| `payloadHash` | string | N | `payload_hash`(NOT NULL) | raw payload sha256. **선택 — 미제공 시 ingest 어댑터가 payload sha256 자동 계산 INSERT**(코드 truth `AmlEventIngestService.sha256`). 호출자 제공 시 그 값 사용 |
+| `payload` | object/string | N | `payload`(JSONB) | 정규화 payload(ref/hash만). 미제공 시 `{}` |
 
-> **Cross-service envelope 정책(`workspaceId` ↔ `dataScope`) — 정본**: AML envelope는 **`dataScope` 최상위(선택)**(`workspaceId` 미탑재 — AML `workspace_id` 미적용·보류, SW §16.2.1)이고, FDS envelope(`01-fds-integration.md` §4.1)는 **`workspaceId` 최상위 필수**(`dataScope` 미탑재)다. 이는 **의도된 비대칭**이며, **FDS→AML 핸드오프(`fds-aml-handoff`, §9) 시 핸드오프 어댑터(aml-svc 소비 측)가 FDS `workspaceId`→AML `dataScope`로 변환**한다(`default`→`default` 매핑 포함). 교차 주석: AML 설계서 §8.2 ↔ FDS 설계서 §8.2/§8.3.
+> **Cross-service envelope 정책(`dataScope`) — AML**: AML envelope 는 `dataScope` 최상위(선택)이며 `workspaceId`는 미탑재(AML `workspace_id` 미적용·보류). FDS envelope(`01-fds-integration.md` §4.1)는 `workspaceId` 최상위다 — 의도된 비대칭. FDS→AML 핸드오프(`fds.case.escalated` 소비) 시 핸드오프 어댑터가 FDS `workspaceId`→AML `dataScope`로 변환(`default`→`default` 포함).
 
-### 4.2 transaction payload (canonical, 설계서 §8.2)
+> **비-prod 라이브 인입·시뮬레이터 계약(v9.26)**: 데모/시뮬레이터 인입 테스트 이벤트는 payload 안에 `transaction`(nested) 객체를 실어 TM 라이브 평가(`AmlTmService.ingestLiveTransaction`)를 구동한다(주체별 rolling 윈도우 카운터 유지, prod 프로파일 미노출). 시뮬레이터(`tools/aml-ingest-simulator`)는 §4.2 규격으로 수취인 풀을 구성한다 — **국내송금 이벤트는 `receiverName` 만**, **해외송금 이벤트는 `receiverName`+`receiverCountry`**, 풀에 **진양성(데모 명단 동명 합성 인물) 소수 + 깨끗한 이름 다수**를 섞어 실전 흐름(인입→실명 매칭→알림→식별정보 비교 정합)을 재현한다(깨끗한 이름은 미발동). FDS 인입과 대칭 필드.
+
+> **데모 회원 등록 선행 이벤트(데이터 정직화 v9.27, 기능정의서 §1.11 BR-DEMO-HONESTY)**: 데모(비-prod) 데이터는 REST 인입 원천만 존재하므로, 시뮬레이터는 거래 인입에 **앞서 회원 등록 이벤트**를 인입한다 — `{eventType:"member", member:{memberRef, name, nationality, gender, dob, declaredIncomePhp}}`. bo-api 는 이를 **인메모리 member vault**(상한·eviction·전송값=열람값 reveal)에 upsert 하며 이것이 회원 identity·신고소득의 유일 원천이다(hash 파생 회원 프로필 폐기). 미등록 회원의 거래 인입은 처리하되 identity 의존 판정(명단 매칭·소득 룰)은 skip 한다(데이터 없으면 미평가가 정직). 회원 풀에는 진양성(명단 동명) 소수 + 소득 불일치 유발용 저소득 회원을 포함하고, 거래 payload 에 가끔 명의 불일치용 `senderHolderName`(회원 실명 ≠ 명의인)을 실어 `STR_THIRD_PARTY` 실신호를 재현한다. WLF 스크리닝(§4.2 송금 인입)은 sender=member vault 이름·receiver=payload 이름/국가로 실매칭 레코드 2건을 만든다.
+
+### 4.2 transaction payload (canonical, hanpass-ph)
 
 ```json
 {
   "customer": { "customerRef": "cust_hmac_123", "customerType": "PERSON", "country": "KR", "riskGrade": "MEDIUM" },
-  "counterparty": { "counterpartyRef": "bene_hmac_999", "counterpartyType": "PERSON", "country": "VN" },
+  "counterparty": { "counterpartyRef": "bene_hmac_999", "counterpartyType": "PERSON", "country": "PH" },
   "transaction": {
-    "transactionRef": "tx_123", "direction": "OUTBOUND",
+    "transactionRef": "remit_tx_123", "direction": "OUTBOUND",
     "amount": "9500000.00000000", "amountMinor": 9500000, "currency": "KRW",
-    "purpose": "REMITTANCE", "channelType": "BANK_TRANSFER",
+    "purpose": "REMITTANCE", "channelType": "CROSS_BORDER_REMIT",
     "corridor": { "sendCountry": "KR", "receiveCountry": "PH", "sendCurrency": "KRW", "receiveCurrency": "PHP" },
-    "amountBase": "7000.00"
+    "amountBase": "7000.00", "receiverRef": "RCPT-24010042"
   },
-  "screeningContext": { "requiresSanctionsScreening": true, "requiresTravelRule": false }
+  "screeningContext": { "requiresSanctionsScreening": true }
 }
 ```
 
-> 금액은 `amount`(NUMERIC(24,8) 문자열, 외화/crypto 소수 수용) + `amountMinor`(BIGINT 정수 최소단위) 병행(DB §3 규약과 일치).
+> 금액은 `amount`(NUMERIC(24,8) 문자열, 외화/crypto 소수 수용) + `amountMinor`(BIGINT 정수 최소단위) 병행(DB §3 규약과 일치). `channelType`은 hanpass-ph 6유형(`CASH_IN`/`DOMESTIC_REMIT`/`CROSS_BORDER_REMIT`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`/`CARD_NOT_PRESENT`)이며 TM DSL feature `transaction.channelType`·`transaction.amountBase`로 평가된다(코드 truth `V26`). 해외송금 receiver(수취인) 스크리닝은 `counterparty`/recipientInfo 정규화 토큰으로 수행한다(WLF receiver 매치, `V26` 데모 엔트리).
+> **`receiverRef`(v9.25, nullable)**: 송금 거래(`DOMESTIC_REMIT`·`CROSS_BORDER_REMIT`)의 **비-PII 운영 수취인 식별자**(`RCPT-2401NNNN`, FDS/AML 공용 시뮬레이터 계약 — `HanpassPhTransactionPayload` 마지막 필드로 additive 가산). 송금 수취인의 STR_PEP·STR_SANCTION 동시 명단 평가(기능정의서 §7.1 BR-013)에서 수취인 COUNTERPARTY WLF 스크리닝(transactionRef 그룹)의 대상 키로 쓰인다. 수취인 이름·국적 등 원문은 reveal 체계로만(raw PII 미탑재). 비송금 채널·부재 시 수취인 평가 없음.
+> **수취인 정보 규격 `receiverName`·`receiverCountry`(v9.26, nullable, additive)**: 송금 수취인의 실명 매칭 발동(기능정의서 §7.1 BR-011/BR-013)을 위해 인입 payload 에 수취인 이름·수취 국가가 가산된다 — **국내송금(`DOMESTIC_REMIT`)은 `receiverName` 만**, **해외송금(`CROSS_BORDER_REMIT`)은 `receiverName` + `receiverCountry`**(ISO 수취 국가=국적). **성별·생년월일은 규격상 제공되지 않는다**(수취인 가용 필드 = 국내 `[NAME]`/해외 `[NAME, NATIONALITY]`). `receiverRef` 는 서버가 `sha256(receiverName|receiverCountry)` 로 파생(payload 의 기존 `receiverRef` 우선). 원문 이름·국가는 영속 금지(매칭은 transient), reveal 용 수취인 identity 는 안정키→identity upsert. 매칭은 WLF 데모 매처 실명 대조로 수행하며 이름 sub-score `nameScore ≥ 0.92` 일 때만 발동(합성 조작 금지).
 > **corridor·amountBase(hanpass-ph cross-border, remit-svc)**: `corridor`(`sendCountry`/`receiveCountry` ← `remit.send_country/receive_country`, `sendCurrency`/`receiveCurrency` ← `remit.send_currency/receive_currency`)와 USD 정규화 `amountBase`(← `remit.usd_amount/report_amount`)는 cross-border 거래에 한해 채운다(국내 walletchg/domestic 은 corridor 동일국·생략 가능). TM corridor 시나리오·대상 360° 거래 표시·canonical event payload(DB §3.15)에 보존. 임계·기준금액은 규제 레이어(Policy Pack) 정본 — 본 필드는 데이터 신호일 뿐 임계 교체 아님.
 
-### 4.3 crypto / Travel Rule payload (`aml_travel_rule_transfers`)
+### 4.3 fds-decision payload (`aml-fds-decision`, `FdsEscalationRequest` 호환)
+
+코드 truth `FdsDecisionConsumer.parse`가 읽는 키:
 
 ```json
 {
-  "transfer": {
-    "transferRef": "trt_001", "assetCode": "BTC",
-    "amount": "0.50000000", "amountMinor": 50000000,
-    "originatorRef": "orig_hmac", "beneficiaryRef": "bene_hmac",
-    "originatorVasp": "vasp-a", "beneficiaryVasp": "vasp-b",
-    "walletAddressHash": "hmac:...", "chain": "BTC",
-    "completenessStatus": "INCOMPLETE", "riskStatus": "HIGH_RISK",
-    "exceptionReason": null
-  }
+  "tenantId": "tenant_demo",
+  "eventType": "fds.case.escalated",
+  "eventId": "action:uuid",
+  "fdsCaseRef": "fds_case_777",
+  "targetRef": "cust_hmac_123",
+  "transactionRef": "remit_tx_123",
+  "action": "OPEN_AML_CASE",
+  "severity": "HIGH",
+  "dataScope": "default"
 }
 ```
 
-> `riskStatus`는 DB §5.15 정본 enum 4종(`CLEAR`/`SANCTIONED_ADDRESS`/`MIXER_EXPOSURE`/`HIGH_RISK`)만 사용한다(`aml_travel_rule_transfers.risk_status` CHECK). 외부/구 페이로드의 비정본 `REVIEW`는 consumer가 **`HIGH_RISK`로 정규화**(DB §5.15 주석)한 뒤 저장하며, exception 큐 트리거(§9.3)도 `HIGH_RISK` 기준이다.
->
-> `exceptionReason`은 DB `aml_travel_rule_transfers.exception_reason VARCHAR(256) NULL`(DB §3.14)에 매핑된다. exception 확정 시 결재(4-eyes `TRAVEL_RULE_EXCEPTION`) 사유를 여기에 채워 전달하며, `TRAVEL_RULE_EXCEPTION` 결재 EXECUTED 이후 아웃박스(§9.3) dispatch payload에도 포함시킨다. `completenessStatus`가 `MISSING_ORIGINATOR`·`MISSING_BENEFICIARY`·`INCOMPLETE` 중 하나이거나 `riskStatus`가 고위험일 때 exception 큐 트리거 대상이 되며, exception 확정 사유를 이 필드에 명시한다.
+### 4.4 outbox row → dispatch payload (코드 truth `aml_outbox`)
 
-### 4.4 fds-decision payload (`FdsEscalationRequest` 호환)
+아웃박스 행은 `payload`(JSONB) 본문을 그대로 publish 한다. FDS feedback / report submission 예:
 
 ```json
-{
-  "fraudCaseRef": "fds_case_777", "targetRef": "cust_hmac_123",
-  "transactionRef": "tx_123", "severity": "HIGH",
-  "suggestedCaseType": "STR_REVIEW", "evidence": { "ruleHits": ["RAPID_MOVEMENT"] }
-}
+{ "screeningId": "scr_...", "targetRef": "cust_hmac_123", "targetType": "CUSTOMER",
+  "watchlistSourceType": "DEMO_SANCTIONS", "reasonCodes": ["NAME_MATCH"] }
 ```
 
-### 4.5 outbox dispatch payload (report submission)
-
-```json
-{
-  "outboxId": "ob_...", "tenantId": "tenant_bank_a", "dataScope": "default",
-  "aggregateType": "REGULATORY_REPORT", "aggregateRef": "report_id_uuid",
-  "eventType": "report.submission.requested",
-  "reportType": "STR", "approvalId": "appr_uuid",
-  "payloadHash": "sha256:...", "traceId": "00-...", "attempt": 1
-}
-```
-
-Travel Rule exception 확정(`TRAVEL_RULE_EXCEPTION` 결재 EXECUTED) 시 `reportType=TRAVEL_RULE`이며 `exceptionReason` 필드를 추가로 포함한다:
-
-```json
-{
-  "outboxId": "ob_...", "tenantId": "tenant_bank_a", "dataScope": "default",
-  "aggregateType": "REGULATORY_REPORT", "aggregateRef": "transfer_rule_id_uuid",
-  "eventType": "report.submission.requested",
-  "reportType": "TRAVEL_RULE", "approvalId": "appr_uuid",
-  "exceptionReason": "MISSING_ORIGINATOR: 송신자 정보 제출 불가(고객 거부)",
-  "payloadHash": "sha256:...", "traceId": "00-...", "attempt": 1
-}
-```
-
-> 외부 제출 payload 본문은 `aml_regulatory_reports.report_payload`(JSONB)를 참조하며 메시지에는 ref·hash만 싣는다(PII·증적 본문 미전파). `exceptionReason`은 DB `aml_travel_rule_transfers.exception_reason`(DB §3.14) 값을 passthrough하며 원문 PII를 포함하지 않는다.
+> 외부 제출(`aml.report.submitted`) payload 본문은 `aml_regulatory_reports.report_payload`(JSONB)를 참조하며 메시지에는 ref·hash·코드만 싣는다(PII·증적 본문 미전파). SQS 헤더(코드 truth `SqsOutboxRelayPublisher`): `tenantId`·`eventType`·`aggregateType`·`aggregateRef`·`idempotencyKey`(=`payloadHash`).
 
 ---
 
 ## 5. 비동기 흐름 시퀀스(Mermaid)
 
-### 5.1 Ingest → 정규화 → TM (멱등·재시도)
+### 5.1 REST Ingest → 정규화 → TM (멱등·strict gate)
 
 ```mermaid
 sequenceDiagram
-    participant SRC as Source System
-    participant Q as SQS aml-ingest
-    participant C as aml-svc in/sqs Consumer
-    participant APP as application/usecase
+    participant CB as core-banking
+    participant REST as aml-svc in/rest POST /api/v1/aml/events
+    participant APP as AmlEventIngestService
     participant DB as aml_canonical_events
     participant TM as EvaluateTransaction
-    SRC->>Q: send(envelope, attr: tenantId,idempotencyKey,traceparent)
-    Q->>C: deliver
-    C->>C: resolve tenant/dataScope, propagate traceId
-    C->>DB: INSERT (tenant_id,event_id) ON CONFLICT(idempotency_key) DO NOTHING
-    alt 중복(idempotencyKey 존재)
-        DB-->>C: 0 rows
-        C-->>Q: ACK(delete) — 멱등 skip
+    CB->>REST: ingest(Tenant-Id, Idempotency-Key, body)
+    REST->>APP: ingest(command)
+    APP->>APP: header/body 일치 → tenant active → source/schema 검증
+    APP->>APP: EventFamily.fromEventType (strict gate; 미등재 ⇒ REJECTED)
+    APP->>DB: existsByIdempotencyKey? / existsByEventId? → 신규면 forced INSERT
+    alt 중복 idempotencyKey
+        DB-->>REST: REPLAYED (200)
+    else event_id 충돌
+        DB-->>REST: DUPLICATE (409)
     else 신규
-        DB-->>APP: stored
-        APP->>TM: evaluate(window aggregate)
-        TM->>DB: INSERT aml_alerts (if scenario hit)
-        APP-->>Q: ACK(delete)
+        DB-->>APP: STORED → identity projection
+        APP->>TM: evaluate(velocity window)
+        TM->>DB: INSERT aml_alerts (scenario hit 시)
+        APP-->>REST: ACCEPTED (202)
     end
-    Note over C,Q: 예외 → ACK 안 함 → visibilityTimeout 후 재전달<br/>maxReceiveCount 초과 → DLQ
 ```
 
 ### 5.1a 중립 동기 수집 → 검증 → 토큰화 → WLF + CTR/STR (단일 POST, 코드=truth)
@@ -358,67 +344,67 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant SYS as Onboarding System
+    participant SYS as core-banking onboarding
     participant REST as aml-svc in/rest POST /api/v1/aml/screen
     participant WLF as ScreenSubject UseCase
-    participant IDX as ScreeningIndexPort
     participant DB as aml_screening_results
     SYS->>REST: ScreenRequest (Idempotency-Key, X-Signature)
-    REST->>WLF: screen(subject ref/hash)
-    WLF->>IDX: match(normalized_tokens)
+    REST->>WLF: screen(subject ref/hash, recipientInfo)
     alt 엔진 정상
-        IDX-->>WLF: candidates + score
         WLF->>DB: INSERT screening_results(status=NO_MATCH|POSSIBLE_MATCH|TRUE_MATCH)
         WLF-->>REST: ScreenResponse(POSSIBLE_MATCH 정규화: POTENTIAL→POSSIBLE)
-    else 엔진 장애 (D-14)
+    else 엔진 장애
         WLF-->>REST: AML.SCREENING_REQUIRES_REVIEW(422) 또는 AML.SCREENING_UNAVAILABLE(503)
-        Note over REST,SYS: source_systems.failure_policy=MANUAL_REVIEW|FAIL_CLOSED (DB §3.2 컬럼; DTO=failurePolicy API §3.9)
+        Note over REST,SYS: source_systems.failure_policy=MANUAL_REVIEW|FAIL_CLOSED (DB §3.2; DTO failurePolicy)
     end
 ```
 
-### 5.3 FDS escalation → STR 후보 (event 연동 D-07)
+### 5.3 FDS escalation → STR 후보 (event 연동)
 
 ```mermaid
 sequenceDiagram
     participant FDS as fds-svc
     participant Q as SQS aml-fds-decision
-    participant C as aml-svc FdsDecisionConsumer
+    participant C as FdsDecisionConsumer/Service
     participant DB as aml_alerts / aml_cases
-    FDS->>Q: fds.case.escalated(fraudCaseRef, traceparent)
+    FDS->>Q: fds.case.escalated(fdsCaseRef, eventId, action, severity)
     Q->>C: deliver
-    C->>DB: upsert aml_alerts(idempotencyKey=fraudCaseRef, source_origin=FDS)
-    C->>DB: open aml_cases(case_type=STR_REVIEW)
+    C->>DB: INSERT aml_alerts ON CONFLICT DO NOTHING (source_origin=FDS, fds_event_id)
+    alt insert win
+        C->>DB: triage → action 매핑 case open (STR_REVIEW/VASP_.../EDD_REVIEW)
+    else replay
+        C-->>Q: 기존 alert 반환 (no duplicate case)
+    end
     C-->>Q: ACK
-    Note over C: 동일 fraudCaseRef 재수신 → idempotent upsert (중복 case 방지)
 ```
 
-### 5.4 결재(4-eyes) → 아웃박스 → 외부 제출 → 콜백
+### 5.4 결재(4-eyes) → 아웃박스 → 외부 제출 → 회신
 
 ```mermaid
 sequenceDiagram
     participant BO as bo-api (admin)
-    participant APP as aml-svc usecase
+    participant APP as RegulatoryReportService
     participant APR as aml_approvals
-    participant OB as outbox
-    participant DSP as OutboxDispatcher (aml-outbox-dispatch)
-    participant SUB as ReportSubmissionPort (adapter/out/external)
-    participant EXT as 보고기관 adapter
+    participant OB as aml_outbox
+    participant RLY as OutboxRelayScheduler/Router
+    participant SUB as ReportSubmissionPort (mock KoFIU / 규제기관 adapter)
     participant RPT as aml_regulatory_reports
-    BO->>APP: submit (maker) :submit
-    APP->>APR: INSERT status=SUBMITTED, payload_hash 고정, maker_id
+    participant CB as ReportSubmissionCallbackConsumer
+    BO->>APP: submit (maker)
+    APP->>APR: status=SUBMITTED, payload_hash 고정, maker_id
     BO->>APP: approve (checker, maker≠checker)
-    APP->>APR: status=APPROVED (CHECK maker_id<>checker_id)
-    APP->>APP: payload_hash 재검증 (변경 시 AML.APPROVAL_PAYLOAD_CHANGED)
-    APP->>OB: INSERT outbox(eventType=report.submission.requested) [same tx as EXECUTED]
-    APP->>APR: status=EXECUTED, executed_at
-    DSP->>OB: poll PENDING → publish aml-outbox-dispatch
-    DSP->>SUB: submit(reportId, payload ref)
-    SUB->>EXT: 제출 (tenant adapter, D-04)
-    SUB->>RPT: status=SUBMITTED, submitted_ref, submitted_at (전송 완료·회신 대기)
-    EXT-->>SUB: FIU 회신 via aml-report-callback (acked | failed)
-    SUB->>RPT: acked → status=ACKNOWLEDGED, fiu_ack_ref(FIU 접수번호) — 종단
-    SUB->>RPT: failed → status=SUBMISSION_FAILED, submission_error_code → 정정 후 재제출(:submit 재사용, resubmit_count+1)
-    Note over RPT: 제출·회신 결과·식별자 별도 evidence 저장(설계서 §13.5·§14.1a 폐루프)
+    APP->>APR: status=APPROVED (CHECK maker_id<>checker_id) → payload_hash 재검증
+    APP->>OB: INSERT outbox(aml.report.submitted, REGULATORY_REPORT) [same tx as EXECUTED]
+    APP->>RPT: status=SUBMITTED (전송 완료·회신 대기)
+    RLY->>OB: poll PENDING → publish (aml-outbox-dispatch / in-memory)
+    RLY->>SUB: submit(reportId, payload ref)
+    alt sync-close=true (mock KoFIU)
+        SUB->>RPT: acked → ACKNOWLEDGED(fiu_ack_ref) | failed → SUBMISSION_FAILED(submission_error_code)
+    else 비동기 회신 (운영 KoFIU)
+        SUB-->>CB: report.submission.acked|failed
+        CB->>RPT: ACKNOWLEDGED(fiu_ack_ref) | SUBMISSION_FAILED(submission_error_code)
+    end
+    Note over RPT: 제출·회신·식별자 별도 evidence 저장(폐루프). 실패 시 정정 후 재제출(resubmit_count+1)
 ```
 
 ---
@@ -427,29 +413,23 @@ sequenceDiagram
 
 ### 6.1 멱등성
 
-- **저장 멱등**: `aml_canonical_events` UNIQUE `(tenant_id, idempotency_key)` + `INSERT ... ON CONFLICT DO NOTHING`. 중복 메시지는 0 rows → 즉시 ACK(`AML.IDEMPOTENCY_CONFLICT`는 동기 API에서만 노출, 큐는 silent skip).
-- **처리 멱등**: alert/case upsert는 자연키(`fraudCaseRef`, `transactionRef`, `scenario_code`+window)로 dedupe. report 제출은 `approvalId`로 1회만 dispatch.
-- **헤더 키**: 메시지 attribute `idempotencyKey`(참조 구현 `FdsEventsConsumer`와 동일 헤더명).
+- **저장 멱등(코드 truth)**: `aml_canonical_events` UNIQUE `(tenant_id, idempotency_key)` + pre-check(`existsByIdempotencyKey`/`existsByEventId`) + forced INSERT 의 동시성 race 분류(REPLAYED/DUPLICATE). 동기 API 는 REPLAYED=200·DUPLICATE=409·REJECTED=422·ACCEPTED=202 로 응답.
+- **처리 멱등**: FDS escalation alert 는 부분 UNIQUE `(tenant_id, origin_fds_case_ref, fds_event_id) WHERE source_origin='FDS'` 로 dedupe(§3.2). 아웃박스 발행은 UNIQUE `(tenant_id, aggregate_type, aggregate_ref, event_type, payload_hash)` 로 1회만 dispatch. report 회신은 `submittedRef`로 멱등(중복 callback 안전).
 
 ### 6.2 재처리(retry)
 
 | 단계 | 정책 |
 |---|---|
-| 일시 오류(DB lock, 외부 timeout) | ACK 안 함 → SQS `visibilityTimeout` 후 재전달, exponential backoff(redrive policy) |
-| `maxReceiveCount` | 5회(기본). 초과 시 DLQ 이동 |
-| 결정적 오류(스키마 위반·미등록 source) | 재시도 무의미 → 즉시 DLQ + `aml_audit_events`(category=`POLICY_CHANGE`/ingest reject) 기록 |
-| report 제출 실패(`report.submission.failed`) | `aml_regulatory_reports.status=SUBMISSION_FAILED`(`submission_error_code` 저장, 설계서 §14.1a) → 운영자 정정 후 재제출(RESUBMIT: 기존 `:submit` 4-eyes 신규 결재 사이클 재사용, `resubmit_count` 증가·회차별 재제출 evidence 별도 보존) |
+| 일시 오류(DB lock·외부 timeout) | consumer 예외 → SQS redrive(`FdsDecisionConsumer`·`ReportSubmissionCallbackConsumer`는 예외 재던짐). 아웃박스 relay 는 `FAILED`+`next_attempt_at` 백오프(§8.1) |
+| `maxReceiveCount` 초과 | DLQ 이동 |
+| 결정적 오류(스키마 위반·미등록 source·미등재 family) | REST ingest 는 즉시 `REJECTED`(저장 안 함). 큐는 DLQ + audit |
+| report 제출 실패(`report.submission.failed`) | `aml_regulatory_reports.status=SUBMISSION_FAILED`(`submission_error_code`) → 정정 후 **기존 `:submit` 4-eyes 재사용**, `resubmit_count` 증가·회차별 evidence 보존 |
 
-### 6.3 DLQ 운영
+### 6.3 DLQ·순서보장
 
-- 큐별 전용 DLQ(§2.1). DLQ 메시지는 원본 attribute + `failureReason`·`failedAt` 부가.
-- DLQ replay: 운영자 트리거 → 원본 큐 재투입(멱등키로 중복 무해). replay 이력은 `aml_audit_events`.
-- DLQ depth는 `aml.ingest.dlq.depth` metric·alert(§11).
-
-### 6.4 순서보장
-
-- 기본 큐는 at-least-once·순서 미보장. 순서가 의미 있는 경우(동일 customer/account의 `customer.created`→`customer.kyc-updated`, `transaction.requested`→`completed`)는 `aml-ingest.fifo`(`MessageGroupId = tenantId + ":" + subjectRef`, `MessageDeduplicationId = idempotencyKey`).
-- 순서 역전 내성: usecase는 `occurredAt` 기준 last-writer-wins로 상태 머지(out-of-order 이벤트가 최신 상태 덮어쓰지 않도록 가드).
+- 큐별 전용 DLQ(§2.1). DLQ replay 는 운영자 트리거 → 원본 큐 재투입(멱등키로 중복 무해). replay 이력은 `aml_audit_events`.
+- DLQ depth 는 `aml.ingest.dlq.depth`/`aml.outbox.dlq.depth` metric·alert(§11).
+- 순서 역전 내성: usecase 는 `occurredAt` 기준 last-writer-wins 로 상태 머지(out-of-order 이벤트가 최신 상태 덮어쓰지 않도록 가드).
 
 ---
 
@@ -457,22 +437,20 @@ sequenceDiagram
 
 ### 7.1 커넥터(ingest mode) — `aml_source_systems.ingest_mode` enum과 1:1
 
-| 커넥터 | ingest_mode | 어댑터 | 동작 | 멱등 키 |
-|---|---|---|---|---|
-| REST Push | `REST_PUSH` | in/rest | 외부가 `POST /api/v1/aml/events` 동기 전송 | `Idempotency-Key` |
-| Queue | `QUEUE` | in/sqs | SQS consumer(§2) | attr `idempotencyKey` |
-| Polling | `POLLING` | in/scheduled | 주기적 read(API/DB replica) | `<source>:<cursor>` |
-| CDC | `CDC` | in/scheduled | change stream → canonical | `<source>:<lsn>` |
-| Snapshot | `SNAPSHOT` | in/scheduled | 전체/증분 file import | `<source>:<snapshotId>:<row>` |
-| Vendor Bridge | `VENDOR_BRIDGE` | out/external→in(설계서 §8.1 기준 IN방향: 외부 벤더가 데이터를 내보내고 aml-svc가 수신·정규화) | 벤더 export/replica → canonical event(`source_origin=VENDOR`) — 물리 흐름은 벤더→adapter/out/external pull→aml-svc ingest | `<vendor>:<alertId>` |
+hanpass-ph 운영 원천은 `core-banking`(ingest_mode=`REST_PUSH`) 단일이다. 닫힌 enum 나머지 모드는 코드/스키마 보존(미사용 슬롯).
 
-> 모든 커넥터는 **Schema Registry**(`SchemaRegistryPort`)로 `sourceSchemaVersion`을 검증하고, **PII Tokenization**(`PiiTokenizationPort`)을 통과시킨 뒤 canonical event로 정규화한다. 어느 커넥터도 raw PII를 `aml_*`에 저장하지 않는다.
+| 커넥터 | ingest_mode | 어댑터 | 동작 | 멱등 키 | hanpass-ph |
+|---|---|---|---|---|---|
+| REST Push | `REST_PUSH` | in/rest `AmlEventController` | core-banking 동기 전송 `POST /api/v1/aml/events` | `Idempotency-Key` | **운영(core-banking)** |
+| Queue | `QUEUE` | (consumer 미구현) | 대량 비동기 ingest | attr `idempotencyKey` | 미사용(`aml-canonical-events` 큐 net-new 후속) |
+| Polling/CDC/Snapshot | `POLLING`/`CDC`/`SNAPSHOT` | in/scheduled | 주기 read / change stream / file import | `<source>:<cursor|lsn|snapshotId>` | 미사용 |
+| Vendor Bridge | `VENDOR_BRIDGE` | out/external→in | legacy 벤더 export → canonical(`source_origin=VENDOR`) | `<vendor>:<alertId>` | 미사용(Vendor Bridge 슬롯, §13) |
 
 ### 7.2 필드매핑 (원천 → canonical, PII는 ref/hash)
 
-> 원천 필드는 **hanpass-ph 실서비스 컬럼**(DB §3.2 카탈로그). 식별자 원문은 절대 저장하지 않고 keyed HMAC token / hash 로만 흐른다. **주의**: `member_id` 가 `domestic-svc`만 varchar(36) 이므로 통합뷰 join 전 문자열 정규화(trim·case)한다.
+> 원천 필드는 hanpass-ph core-banking 통합 모델 컬럼이다. 식별자 원문은 절대 저장하지 않고 tenant-keyed HMAC token / hash 로만 흐른다(코드 truth: `aegis.aml.pii.hmac-key` 기반 토큰화).
 
-| 원천 필드(hanpass-ph 서비스) | canonical 경로 | 변환 | DB 컬럼 |
+| 원천 필드(hanpass-ph) | canonical 경로 | 변환 | DB 컬럼 |
 |---|---|---|---|
 | `member.member_id`(member-svc) | `payload.customer.customerRef` / FDS `subjectRef` / canonical `targetRef` | **회원 업무참조 그대로**(비PII 업무참조 예 `M-1001`, passthrough) — 회원 주체 키는 토큰화하지 않는다(§10.2a) | `aml_customers.customer_ref` / `aml_risk_scores.target_ref` / `aml_alerts.target_ref` |
 | `member.member_name` | `payload.customer.nameHash` | HMAC-SHA256(tenant key) | `aml_customers.name_hash` |
@@ -483,22 +461,16 @@ sequenceDiagram
 | `wallet_address`(wallet-svc) | `payload.transfer.walletAddressHash` | HMAC | `aml_*.wallet_address_hash` |
 | `amount` + `currency` | `payload.transaction.amount`+`amountMinor` | NUMERIC(24,8)+BIGINT(minor) | `amount`/`amount_minor` |
 | `remit.usd_amount`/`report_amount` | `payload.transaction.amountBase` | USD 정규화 | (canonical payload) |
-| `wallet_transaction_id` / `remit.transfer_number` / `walletchg.charge_order_id` / `domestic.transaction_id` | `payload.transaction.transactionRef` | passthrough/token | `transaction_ref` |
+| `remit.transfer_number`/`domestic.transaction_id`/`wallet.charge_order_id`/`wallet.wallet_transaction_id` | `payload.transaction.transactionRef` | passthrough/token | `transaction_ref` |
 | `remit.send_country/receive_country`·`send_currency/receive_currency` | `payload.transaction.corridor.*` | passthrough(ISO) | (canonical payload) |
-| `member.zoloz_aml_screening`(decision/risk_level/total_hits/hit_results) | `payload`·screening 정규화 | zoloz→§5.5 status·§5.2 risk_grade·score_breakdown | `aml_screening_results` |
-| `remit.str_indicators`(STR_001~015) | `evidence.strIndicator`(데이터 신호) | 데이터 신호 매핑(규제 STR 분류는 KR 정본) | `aml_alerts.evidence` |
-| `counterparty_*` | `payload.counterparty.*Ref/*Hash` | HMAC/token | — |
-| `country`/`nationality` | `payload.*.country` | ISO-3166 alpha-2 | `country` |
+| (거래 채널) | `payload.transaction.channelType` | hanpass-ph 6유형 코드 | (canonical payload) |
+| `zoloz_aml_screening`(decision/risk_level/total_hits/hit_results) | `payload`·screening 정규화 | zoloz→screening status·risk_grade·score_breakdown(데이터 신호) | `aml_screening_results` |
+| `remit.str_indicators`(STR_001~015) | `evidence.strIndicator` | 데이터 신호 매핑(규제 STR 분류는 KR Policy Pack 정본) | `aml_alerts.evidence` |
+| `nationality`/`country` | `payload.*.country` | ISO-3166 alpha-2 | `country` |
 | `event_ts` | `occurredAt` | ISO-8601 UTC | `occurred_at` |
 | (원천 전체) | `payloadHash` | sha256, 서버 자동계산(미제공 시 ingest 어댑터 INSERT) | `payload_hash` |
 
-### 7.3 Legacy Vendor Bridge 매핑 (설계서 §15.5)
-
-| 벤더 export 필드 | canonical | 비고 |
-|---|---|---|
-| `vendor_alert_id` | `aml_alerts.external_alert_ref` | DB §3.10 정식 컬럼(VARCHAR(256) NULL, `ix_alert_ext_ref`). SaaS alert와 dual-run 구분 저장, `source_origin=VENDOR`일 때 채움 |
-| `vendor_verdict` | `aml_alerts.evidence.vendorVerdict` | 표준 evidence field로 변환(벤더 schema 원문 미노출) |
-| (dual-run) | `aml_alerts.source_origin=VENDOR` | analyst final decision은 별도 저장 |
+> 모든 커넥터는 `sourceSchemaVersion`(=`core-banking.v1`) 검증과 PII 토큰화를 통과한 뒤 canonical event 로 정규화한다. 어느 경로도 raw PII 를 `aml_*`에 저장하지 않는다.
 
 ### 7.4 외부 제재 명단 수집 — OFAC SDN · UN Consolidated (real-sanctions-daily-import, 코드=truth)
 
@@ -526,28 +498,30 @@ sequenceDiagram
 
 ## 8. 아웃박스·결재 상태머신(4-eyes)
 
-### 8.1 트랜잭셔널 아웃박스
+### 8.1 트랜잭셔널 아웃박스 (코드 truth `aml_outbox`)
 
-외부 부작용(report 제출·webhook·fds-feedback)은 **도메인 변경과 같은 트랜잭션**으로 `outbox`에 기록 후, `OutboxDispatcher`가 poll→publish→mark. at-least-once + 소비자 멱등으로 정확히 한 번 효과.
+외부 부작용(report 제출·fds-feedback·webhook·STR 후보)은 **도메인 변경과 같은 트랜잭션**으로 `aml_outbox`에 기록 후, `OutboxRelayScheduler`가 poll→publish→mark. at-least-once + 소비자 멱등으로 정확히 한 번 효과.
 
-물리 테이블은 **`aml_outbox`(DB §3.15, 구현 Flyway V4 생성)** 가 정본이다. 핵심 컬럼: `tenant_id`·`outbox_id`(PK), `data_scope`, `aggregate_type`(**6종** `REGULATORY_REPORT`/`CASE`/`SCREENING`/`FDS_FEEDBACK`/`WEBHOOK`/`IRA_REPORT` — `IRA_REPORT`는 V13에서 추가, IRA 제출 폐루프 enqueue), `aggregate_ref`, `event_type`(`report.submission.requested`/`webhook.callback.requested`/`fds.feedback.applied` 등 §3.4), `payload`(JSONB, ref/hash), `payload_hash`, `status`(§5.17 outbox_status: PENDING/DISPATCHING/DISPATCHED/FAILED), `attempt`, `next_attempt_at`, `published_at`, `trace_id`, **`created_at`·`created_by`**(공통 감사 컬럼, append 중심 — DB §3.15 정본). 발행 멱등 UNIQUE `(tenant_id, aggregate_type, aggregate_ref, event_type, payload_hash)`, dispatch 인덱스 `ix_outbox_dispatch (tenant_id, status, next_attempt_at)`.
+물리 테이블 **`aml_outbox`(DB §3.15, 구현 Flyway `V4` 생성)**. 핵심 컬럼: `tenant_id`·`outbox_id`(PK), `data_scope`, `aggregate_type`(**6종** `REGULATORY_REPORT`/`CASE`/`SCREENING`/`FDS_FEEDBACK`/`WEBHOOK`/`IRA_REPORT` — `IRA_REPORT`는 `V13`에서 추가, CHECK `aml_outbox_aggregate_type_check`), `aggregate_ref`, `event_type`(`aml.report.submitted`/`aml.screening.true_match`/`aml.customer.high_risk`/`aml.case.str_recommended`/`webhook.callback.requested` 등 §3), `payload`(JSONB, ref/hash), `payload_hash`, `status`(outbox_status: PENDING/DISPATCHING/DISPATCHED/FAILED), `attempt`, `next_attempt_at`, `published_at`, `trace_id`, `created_at`·`created_by`. 발행 멱등 UNIQUE `(tenant_id, aggregate_type, aggregate_ref, event_type, payload_hash)`, dispatch 인덱스 `(tenant_id, status, next_attempt_at)`.
+
+라우팅(코드 truth `OutboxRelayRouter`): `aggregate_type=WEBHOOK` → `WebhookSenderPort`(HTTP), 그 외 → `OutboxMessagingPort`(aws=`SqsOutboxRelayPublisher`: `FDS_FEEDBACK`→`aml-fds-feedback`, 나머지→`aml-outbox-dispatch` / local=`InMemoryOutboxRelayPublisher`).
 
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING : 도메인 tx commit과 함께 INSERT
-    PENDING --> DISPATCHING : poller claim (SELECT FOR UPDATE SKIP LOCKED)
-    DISPATCHING --> DISPATCHED : 외부 ack
-    DISPATCHING --> FAILED : 오류 (attempt++ )
+    PENDING --> DISPATCHING : relay claim (SELECT FOR UPDATE SKIP LOCKED)
+    DISPATCHING --> DISPATCHED : 전송 성공
+    DISPATCHING --> FAILED : 오류 (attempt++)
     FAILED --> PENDING : next_attempt_at backoff 재시도
     FAILED --> [*] : maxAttempt 초과 → DLQ + audit
     DISPATCHED --> [*]
 ```
 
-### 8.2 결재(approval) 상태머신 — `aml_approvals` (설계서 §13.5, DB §3)
+### 8.2 결재(approval) 상태머신 — `aml_approvals`
 
-`status` enum(approval_status): `DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED`. 🔒 Admin 엔드포인트(`:apply`/`:activate`/`:close`/`:submit`/`:approve` 등, 02-aml-api §2.7)는 모두 이 머신을 통과.
+`status` enum(approval_status): `DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED`. 🔒 Admin 엔드포인트(`:submit`/`:approve`/`:apply`/`:activate`/`:close` 등, 02-aml-api §2.7)는 모두 이 머신을 통과.
 
-> **`DRAFT`는 내부 전이 상태로 API 미노출.** `DRAFT`는 결재 객체의 내부 초기화 단계이며 외부 호출자(bo-api/bo-web)에게 노출되지 않는다. API 표면 첫 관찰 가능 상태는 `SUBMITTED`(상신 완료, 202 응답)이다(API §1.5 정본). PRD/화면은 `DRAFT` 배지 표시 불필요.
+> **`DRAFT`는 내부 전이 상태로 API 미노출.** API 표면 첫 관찰 가능 상태는 `SUBMITTED`(202).
 
 ```mermaid
 stateDiagram-v2
@@ -567,33 +541,31 @@ stateDiagram-v2
 ```
 
 불변식:
-- `maker_id ≠ checker_id` — DB CHECK 제약명 `SELF_APPROVAL_DISABLED`(DB §3.15·§5.12), 위반 시 API 에러코드 **`AML.SELF_APPROVAL_FORBIDDEN`**(API §3·§7 정본, 409). 제약명(DB)과 errorCode(API)는 역할이 다른 동일 4-eyes 불변식의 두 표현이다.
-- `payload_hash` 고정. APPROVED 후 대상 payload 변경 시 `AML.APPROVAL_PAYLOAD_CHANGED`로 무효화.
-- 결재 완료(`APPROVED`)와 실행(`EXECUTED`, `executed_at`) 분리 저장.
-- AI agent는 `SUBMITTED`까지만 가능, `APPROVED` 불가(설계서 §13.5).
+- `maker_id ≠ checker_id` — DB CHECK 제약명 `SELF_APPROVAL_DISABLED`, 위반 시 API 에러코드 `AML.SELF_APPROVAL_FORBIDDEN`(409).
+- `payload_hash` 고정. APPROVED 후 대상 payload 변경 시 `AML.APPROVAL_PAYLOAD_CHANGED` 무효화(코드 truth `ApprovalPayloadRecomputer`).
+- 결재 완료(`APPROVED`)와 실행(`EXECUTED`, `executed_at`) 분리. AI agent 는 `SUBMITTED`까지만, `APPROVED` 불가.
 - 모든 전이는 `aml_audit_events`(category=`CASE_APPROVAL`/`REPORT_LIFECYCLE` 등) append-only 기록.
 
 ### 8.3 결재 대상(subject_type) ↔ 아웃박스 효과
 
-| subject_type | 결재 후 EXECUTED 부작용 | 아웃박스 event |
+| subject_type | 결재 후 EXECUTED 부작용 | 아웃박스 event(aggregate) |
 |---|---|---|
-| `STR_SUBMIT`/`CTR_SUBMIT` | 외부 보고기관 제출 | `report.submission.requested` |
-| `TRAVEL_RULE_EXCEPTION` | exception 확정·증적 보존 | `report.submission.requested`(TRAVEL_RULE) |
-| `WLF_DECISION`(TRUE_MATCH) | fds 전파 | `aml.screening.true_match` |
-| `RISK_OVERRIDE`(→HIGH) | fds risk group 전파 | `aml.customer.high_risk` |
+| `STR_SUBMIT`/`CTR_SUBMIT`/`IRA_SUBMIT` | 외부 보고기관 제출 | `aml.report.submitted`(REGULATORY_REPORT/IRA_REPORT) |
+| `WLF_DECISION`(TRUE_MATCH) | fds 전파 | `aml.screening.true_match`(FDS_FEEDBACK) |
+| `RISK_OVERRIDE`(→HIGH) | fds risk group 전파 | `aml.customer.high_risk`(FDS_FEEDBACK) |
 | `WATCHLIST_IMPORT` | 명단 version apply | (내부, audit) |
 | `RA_MODEL`/`TM_SCENARIO`/`COUNTRY_RISK`/`POLICY_PACK` | 모델·정책 활성화 | (내부, audit) |
-| `FP_WHITELIST`/`EDD_CLOSE`/`RELATIONSHIP_REJECT`/`SECRET_CHANGE` | 상태 확정 | (내부, audit) |
-| `CHECKLIST_CHANGE` | CDD/EDD checklist 정책 버전 활성화(정책 store 갱신) | (내부, audit) |
-| `PERIODIC_REVIEW_CHANGE` | periodic review 주기 설정 갱신(등급별 재확인 주기 policy store 반영) | (내부, audit) |
+| `FP_WHITELIST`/`EDD_CLOSE`/`RELATIONSHIP_REJECT`/`SECRET_CHANGE`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`/`TRAVEL_RULE_EXCEPTION` | 상태 확정/정책 버전 활성화 | (내부, audit) |
 
-> 본 표는 API §3.7 `ApprovalDto.subjectType` 16종 정본 전수를 커버한다(v1.5 `CHECKLIST_CHANGE`·`PERIODIC_REVIEW_CHANGE` 2종 추가로 16종 완비). API §3.7 추가·변경 시 본 표와 동기화 필수.
+> 본 표는 API §3.7 `ApprovalDto.subjectType` 정본 전수를 커버한다. API §3.7 변경 시 동기화 필수.
 
 ---
 
 ## 9. 규제 제출 연동(STR/CTR/Travel Rule)
 
-### 9.1 STR 제출 흐름 (설계서 §14.2·§14.1a, 4-eyes)
+### 9.1 STR 제출 흐름 (4-eyes, FIU 폐루프)
+
+코드 truth: `RegulatoryReportService`(`ManageRegulatoryReportUseCase`+`AcknowledgeReportUseCase`), outbox `aml.report.submitted`, `MockRegulatorSubmissionAdapter`(mock KoFIU, `sync-close=true` 기본).
 
 ```mermaid
 sequenceDiagram
@@ -601,85 +573,68 @@ sequenceDiagram
     participant CASE as aml_cases (STR_REVIEW)
     participant RPT as aml_regulatory_reports (DRAFT)
     participant BO as bo-api 결재
-    participant OB as outbox
-    participant ADP as ReportSubmissionPort (D-04 tenant adapter)
-    participant FIU as 보고기관
-    participant CB as aml-report-callback
-    ALERT->>CASE: case open
+    participant OB as aml_outbox
+    participant ADP as ReportSubmissionPort (mock KoFIU)
+    participant FIU as 규제기관(KoFIU)
+    ALERT->>CASE: case open + outbox aml.case.str_recommended
     CASE->>RPT: report_type=STR, status=DRAFT, report_payload(masked evidence ref)
     RPT->>BO: :submit (REPORTING_OFFICER 결재)
     BO->>RPT: status=UNDER_REVIEW→APPROVED
-    BO->>OB: report.submission.requested (EXECUTED)
-    OB->>ADP: dispatch
-    ADP->>FIU: 제출
-    ADP->>RPT: status=SUBMITTED, submitted_ref, submitted_at (전송 완료·회신 대기)
-    FIU-->>CB: acked|failed (aml-report-callback)
+    BO->>OB: aml.report.submitted (EXECUTED)
+    OB->>ADP: dispatch → status=SUBMITTED (전송 완료·회신 대기)
     alt FIU 접수 성공
-        CB->>RPT: status=ACKNOWLEDGED, fiu_ack_ref(FIU 접수번호) — 종단(폐루프 완성)
+        ADP->>RPT: status=ACKNOWLEDGED, fiu_ack_ref — 종단(폐루프)
     else FIU 오류/반려
-        CB->>RPT: status=SUBMISSION_FAILED, submission_error_code — 정정 후 재제출
-        Note over RPT,BO: SUBMISSION_FAILED → 정정 후 :submit 4-eyes 재사용(resubmit_count 증가, §6.2)
+        ADP->>RPT: status=SUBMISSION_FAILED, submission_error_code
+        Note over RPT,BO: 정정 후 :submit 4-eyes 재사용(resubmit_count 증가, §6.2)
     end
 ```
 
 - report_type enum(DB §5.10): `STR/CTR/TRAVEL_RULE/EDD_REGISTER/WLF_REGISTER/RA_REPORT/AUDIT_EXPORT`.
-- **report_status(8종 정본, 설계서 §14.1a·DB §5.11)**: `DRAFT`/`UNDER_REVIEW`/`APPROVED`/`SUBMITTED`/`REJECTED`/`CANCELLED`/`ACKNOWLEDGED`/`SUBMISSION_FAILED`. `SUBMITTED`=외부 전송 완료(FIU 회신 대기). `ACKNOWLEDGED`=FIU 접수 확정(`fiu_ack_ref` 저장, 종단). `SUBMISSION_FAILED`=전송 실패/FIU 오류 반려(`submission_error_code` 저장). `REJECTED`/`CANCELLED`=4-eyes 기각/취소(사유 코드 필수·REPORTING_OFFICER 결재, 설계서 §14.1a).
-- 제출 식별자(`submitted_ref`)·FIU 접수번호(`fiu_ack_ref`)·결과는 결재 완료와 별도 evidence로 보존(설계서 §13.5·§14.1a 폐루프). **재제출 전략**: `SUBMISSION_FAILED` 건은 보고 본문 정정 후 **기존 `:submit` 4-eyes 결재 절차 재사용**(`resubmit_count` 증가·회차별 이력 보존, §6.2). 신규 report 생성·`supersedesReportId` 방식은 사용하지 않는다.
+- **report_status(8종 정본, DB §5.11)**: `DRAFT`/`UNDER_REVIEW`/`APPROVED`/`SUBMITTED`/`REJECTED`/`CANCELLED`/`ACKNOWLEDGED`/`SUBMISSION_FAILED`. `SUBMITTED`=외부 전송 완료(회신 대기). `ACKNOWLEDGED`=FIU 접수 확정(`fiu_ack_ref` 저장, 종단). `SUBMISSION_FAILED`=전송 실패/FIU 오류 반려(`submission_error_code`).
+- **데모 폐루프**: `sync-close=true`(mock KoFIU)일 때 approve-submit 단계에서 제출 어댑터가 FIU 회신을 동기 결정(`mock.reject-demo`로 ~1/16 SUBMISSION_FAILED 데모). 운영 KoFIU 비동기 회신 시 `ReportSubmissionCallbackConsumer`가 `aml-report-callbacks` 회신을 소비.
+- 제출 식별자(`submitted_ref`)·FIU 접수번호(`fiu_ack_ref`)·결과는 결재 완료와 별도 evidence 로 보존(폐루프). 재제출은 기존 `:submit` 4-eyes 재사용(`resubmit_count` 증가). 신규 report 생성·`supersedesReportId` 방식 미사용.
 
 ### 9.2 CTR — 데이터 수집·검증 보조 및 면제(제외) 처리
 
-- `transaction.completed`·`crypto.*` ingest 시 tenant policy pack `effective version`의 기준금액으로 CTR 후보 집계(`aml_canonical_events` window aggregation). 기준금액·대상은 policy pack version으로 관리(법령 변경 수용).
-- CTR evidence export는 `aml_evidence_exports`(export_type=`CTR_EVIDENCE`) + manifest hash.
-- **CTR 제외(면제) 처리(설계서 §14.3, API §3.6 정본)**: 법정 면제 대상 확정 시 `aml_regulatory_reports.status=CANCELLED`로 전이하며, `ctr_exemption_code`(면제 사유 코드, 설계서 §14.3 법정 제외 규칙)를 **필수** 기록한다. 면제 확정은 **REPORTING_OFFICER 4-eyes 결재**(`subject_type=CTR_SUBMIT`, 자기승인 금지)를 거친다. 결재 EXECUTED 후 아웃박스에 면제 감사 이벤트를 기록하며, 증적은 `aml_evidence_exports`로 보존한다. 면제 결재 흐름:
+- 거래 ingest(`remit.*`/`domestic.*`/`wallet.*`/`transaction.*`) 시 tenant policy pack effective version 기준금액으로 CTR 후보 집계(`aml_canonical_events` window aggregation). 기준금액·대상은 policy pack version 으로 관리.
+- CTR evidence export 는 `aml_evidence_exports`(export_type=`CTR_EVIDENCE`) + manifest hash.
+- **CTR 제외(면제)**: 법정 면제 확정 시 `aml_regulatory_reports.status=CANCELLED`로 전이하며 `ctr_exemption_code`를 **필수** 기록한다(코드 truth `RegulatoryReportService` cancel = CTR exemption 동일 전이). 면제 확정은 REPORTING_OFFICER 4-eyes(`subject_type=CTR_SUBMIT`, 자기승인 금지)·증적 `aml_evidence_exports` 보존.
 
-  ```
-  CTR 후보 → DRAFT → :submit(REPORTING_OFFICER) → APPROVED → 면제 사유 확정
-    → status=CANCELLED + ctr_exemption_code 기록(4-eyes EXECUTED) → 감사 append-only
-  ```
+### 9.3 Travel Rule — VASP 정보 보존·전달 (hanpass-ph 미사용 슬롯)
 
-  비면제 건은 §9.1 STR 흐름과 동일하게 `:submit` → 외부 제출(`CTR_SUBMIT`) → SUBMITTED → ACKNOWLEDGED 폐루프.
-
-### 9.3 Travel Rule — VASP 정보 보존·전달 (설계서 §18.4)
-
-- `crypto.travel-rule-submitted` 수신 → `aml_travel_rule_transfers`(completeness_status/risk_status). `risk_status`는 DB §5.15 enum 4종만(`CLEAR`/`SANCTIONED_ADDRESS`/`MIXER_EXPOSURE`/`HIGH_RISK`), 비정본 `REVIEW`는 `HIGH_RISK`로 정규화(§4.3).
-- `completeness_status∈{MISSING_ORIGINATOR, MISSING_BENEFICIARY, INCOMPLETE}` 또는 `risk_status∈{HIGH_RISK,SANCTIONED_ADDRESS,MIXER_EXPOSURE}` → exception 큐(`ix_trt_risk`) → `VASP_TRAVEL_RULE_REVIEW` case → exception 확정은 🔒결재(`TRAVEL_RULE_EXCEPTION`). `completeness_status` 3종(DB §5.22: `MISSING_ORIGINATOR`=송신정보 누락·`MISSING_BENEFICIARY`=수신정보 누락·`INCOMPLETE`=복합 누락)은 모두 불완전 상태로 간주해 동일 exception 큐로 라우팅한다.
-- originator/beneficiary는 ref/hash, VASP는 코드(`originator_vasp`/`beneficiary_vasp`). raw 송수신자 PII 미전파.
+> Travel Rule(crypto VASP) 흐름은 Phase 8 Advanced Domain Pack(`travel-rule.*`/`crypto.*` 패밀리)에 속하며 **hanpass-ph 운영에서는 미사용**이다. `aml_travel_rule_transfers` 테이블·`TravelRuleService`·`VASP_TRAVEL_RULE_REVIEW` case type 은 스키마/코드로 보존(§13)된다.
+> `fds.case.escalated`의 `REQUEST_TRAVEL_RULE_INFO` 액션 매핑(→`VASP_TRAVEL_RULE_REVIEW`)은 코드 truth `FdsDecisionService`에 잔존하나, hanpass-ph fds-svc 는 해당 액션을 발행하지 않는다. exception 큐·`TRAVEL_RULE_EXCEPTION` 결재 세부는 §13 잔존 노트 참조.
 
 ### 9.4 증빙·재제출
 
-- 모든 제출(STR/CTR/TravelRule)은 `aml_evidence_exports`로 manifest hash·row count·query snapshot 저장(D-11 UI+API+manifest hash).
-- **재제출 전략(설계서 §14.1a·DB §3.12·API §3.6 정본)**: `SUBMISSION_FAILED` 건은 **기존 report row를 유지**하며 보고 본문 정정 후 **`:submit` 4-eyes 결재 절차를 재사용**한다. `resubmit_count`(DB `aml_regulatory_reports.resubmit_count`)를 증가시키고 회차별 제출·회신 이력을 evidence로 보존한다. **신규 report 생성·`supersedesReportId` 방식은 사용하지 않는다.** 재제출 흐름:
-  ```
-  SUBMISSION_FAILED → 정정(보고 본문) → :submit(REPORTING_OFFICER 4-eyes, resubmit_count+1)
-    → APPROVED → 아웃박스 dispatch → SUBMITTED → FIU 회신 → ACKNOWLEDGED 또는 재귀 SUBMISSION_FAILED
-  ```
-- 재제출 각 회차의 증적(payload, fiu_ack_ref, submission_error_code, 결재 이력)은 append-only로 보존한다.
+- 모든 제출(STR/CTR)은 `aml_evidence_exports`로 manifest hash·row count·query snapshot 저장.
+- **재제출**: `SUBMISSION_FAILED` 건은 기존 report row 유지·보고 본문 정정 후 `:submit` 4-eyes 재사용, `resubmit_count` 증가·회차별 증적(payload/fiu_ack_ref/submission_error_code/결재 이력) append-only 보존.
 
 ---
 
 ## 10. 멀티테넌시 라우팅·PII 미전파
 
-### 10.1 라우팅 — 배포 모델(deployment_model) 기준 (정본 §4.1, API §1.1 · DB §5.28)
+### 10.1 라우팅 — 배포 모델(deployment_model) 기준
 
-`aml_tenants.deployment_model`(DB §5.28, 구 `isolation_mode` 폐기 V17a/V17b)이 **큐·연결 풀·RLS 라우팅의 1차 결정 인자**다. 격리는 DB 행/스키마 토글이 아니라 배포 단위 결정이며, 화면 즉석 선택값이 아니라 온보딩 프로비저닝 프로세스의 산출이다.
+`aml_tenants.deployment_model`(DB §5.28)이 큐·연결 풀·RLS 라우팅의 1차 결정 인자다. hanpass-ph 운영 테넌트 `tenant_demo`는 **`MANAGED_DEDICATED`**(기본, `V2` seed)다.
 
-| deployment_model | 큐 라우팅 | DB 연결 풀 | `tenantId` 의미 | `app.current_tenant` RLS | 비고 |
+| deployment_model | 큐 라우팅 | DB 연결 풀 | `tenantId` 의미 | RLS | hanpass-ph |
 |---|---|---|---|---|---|
-| `MANAGED_DEDICATED`(기본) | 전용 큐 `aml-ingest-{tenantId}-{env}` | 전용 connection pool / 전용 DB | 배포=서비스 **단일 값** — 라우팅은 배포 엔드포인트(DNS·큐 이름) 단위 | RLS 세션변수 설정은 내부 분리 보조용(단일 tenant라 행 격리 역할 없음) | 일반 금융사 기본. IaC 온보딩 자동 |
-| `SELF_HOSTED` | 고객 인프라 내 전용 큐(고객 관리) | 고객 인프라 내 전용 DB | 배포=서비스 **단일 값** — 플랫폼 연결 없음, 고객 인프라 경계 | 동일(단일 tenant) | 은행·고PII·내부망. 설치형 패키지 |
-| `SHARED` | 공용 큐 `aml-ingest-{env}` | 공유 connection pool | `tenantId` = 서비스 간 **행 격리 키** — `Tenant-Id` 헤더 행 라우팅·`app.current_tenant` 세션변수 강제 | RLS `app.current_tenant` 필수 — 서비스 간 행 격리 | 소규모/체험. 즉시 프로비저닝 |
+| `MANAGED_DEDICATED`(기본) | 배포 단위 전용 큐 | 전용 connection pool / 전용 DB | 배포=서비스 **단일 값**(`tenant_demo`) — 라우팅은 배포 엔드포인트 단위 | 세션변수는 내부 분리 보조용 | **운영(tenant_demo)** |
+| `SELF_HOSTED` | 고객 인프라 내 전용 큐 | 고객 인프라 내 전용 DB | 배포=서비스 단일 값, 플랫폼 연결 없음 | 동일(단일 tenant) | 미사용 슬롯 |
+| `SHARED` | 공용 큐 + attr `tenantId` | 공유 connection pool | 서비스 간 **행 격리 키** — `Tenant-Id` 행 라우팅·`app.current_tenant` 강제 | RLS 필수 | 미사용 슬롯 |
 
-- **`tenantId` 라우팅 의미 재정의(정본 §4.1·API §1.1)**: `tenantId`는 **서비스(테넌트) 격리 경계**의 식별자다(계층: 기관 → 서비스(테넌트) → 워크스페이스). 전용 배포(`MANAGED_DEDICATED`/`SELF_HOSTED`)에서 `tenantId`는 배포의 서비스를 나타내는 사실상 **단일 값**이다. 메시지 attribute/헤더의 `Tenant-Id`는 배포 엔드포인트(큐 이름·DNS 레코드) 라우팅의 식별 레이블이며 동일 배포 내 서비스 간 행 격리에 사용되지 않는다. **`SHARED` 배포에서만** `Tenant-Id`가 서비스 간 행 라우팅·RLS(`app.current_tenant` 세션변수) 격리 키로 동작한다.
-- **`data_scope` 의미 재정의(API §1.1·정본 §4)**: `data_scope`는 저장 격리 경계가 아니라 **운영자 row-level 조회·조치 권한 필터**(영업점·법인그룹 하위 격리, bo-api 권한 매핑)다. 배포 모델과 독립적으로 동작한다.
-- consumer는 처리 전 `aml_source_systems`로 `(tenantId, sourceSystem)` 유효성 검증(deployment_model과 무관하게 동일 규칙).
-- `traceId`는 ingest→screening→RA→TM→case→report→export 전 구간 전파(설계서 §20.3), 하나의 `caseId`/`reportId`는 동일 `traceId` timeline.
+- **`tenantId`**: 서비스(테넌트) 격리 경계 식별자. 전용 배포(hanpass-ph)에서는 사실상 단일 값(`tenant_demo`)이며 메시지 attribute `Tenant-Id`는 배포 엔드포인트 라우팅 레이블이다. `SHARED`에서만 서비스 간 행 라우팅·RLS 키.
+- **`data_scope`**: 저장 격리가 아니라 운영자 row-level 조회·조치 권한 필터(bo-api 권한 매핑). 배포 모델과 독립.
+- consumer 는 처리 전 `aml_source_systems`로 `(tenantId, sourceSystem)` 유효성 검증(코드 truth `AmlEventIngestService` step 2).
+- `traceId`는 ingest→screening→RA→TM→case→report→export 전 구간 전파, 하나의 `caseId`/`reportId`는 동일 `traceId` timeline.
 
-### 10.2 raw PII 미전파 (정본 §4, 설계서 §19.2)
+### 10.2 raw PII 미전파
 
-- 큐·이벤트·아웃박스·외부 제출 payload·webhook 어디에도 평문 PII 금지. 전파 가능 항목: `*Ref`(token), `*Hash`(tenant-keyed HMAC), `payloadHash`(sha256), 코드/enum.
-- WLF matching용 원문은 `PiiTokenizationPort`에서 일시 처리 후 폐기(`secret_ref`만 저장, D-05 tenant-managed tokenization).
-- `aml:pii:reveal` scope 보유 운영자만 원문 접근, 접근 시 `aml_audit_events`(category=`RAW_DATA_ACCESS`) 기록.
-- 외부 webhook/report 메시지는 ref/hash + 서명만. evidence 본문은 권한·사유·기간 제한 export(`aml_evidence_exports`)로만 반출.
+- 큐·이벤트·아웃박스·외부 제출 payload·webhook 어디에도 평문 PII 금지. 전파 가능: `*Ref`(token), `*Hash`(tenant-keyed HMAC, `aegis.aml.pii.hmac-key`), `payloadHash`(sha256), 코드/enum.
+- WLF matching 원문은 토큰화 시점만 일시 처리 후 폐기. `aml:pii:reveal` scope 운영자만 원문 접근(`PiiRevealInternalController`), 접근 시 `aml_audit_events`(category=`RAW_DATA_ACCESS`) 기록.
+- 외부 webhook/report 메시지는 ref/hash + 서명만. evidence 본문은 권한·사유·기간 제한 export(`aml_evidence_exports`, 만료 토큰 서명)로만 반출.
 
 ### 10.2a 회원 주체 참조 키 정책 (§19.2 — 업무참조 vs PII 토큰)
 
@@ -689,52 +644,9 @@ sequenceDiagram
 - **업무참조 부재 fail-safe**: 레거시/타 인입 경로로 업무참조가 없는 회원 이벤트는 `tokenize(nationalIdentityKey)` 토큰으로 폴백한다(주체 유실 방지). 이 경로에서만 주체 키가 토큰 형태일 수 있다.
 - **구 토큰 주체 행 잔존 정책(데이터 이행)**: 과거 회원 주체를 `hmac-sha256:*` 토큰으로 적재한 기존 행은 **데이터 마이그레이션 없이 잔존**을 허용한다(정리 배치 없음, Flyway 신규 마이그레이션 없음 — 값 정책 변경이라 스키마 무변경). 데모/재적재 환경에서는 시뮬레이터 재실행으로 업무참조 키로 재적재된다. 조회 경로는 구 토큰 주체 행을 만나도 (값 비교이므로) 크래시 없이 표시하며, 구 vault 토큰 키 행은 orphan 으로 잔존 허용한다(신규 reveal 은 업무참조 키로 해소).
 
-### 10.3 온보딩 프로비저닝 연동 흐름 (bo-api 소유, deployment_model 기준)
+### 10.3 온보딩 프로비저닝 연동 흐름 (bo-api 소유, hanpass-ph는 ACTIVE 단일 테넌트)
 
-서비스 온보딩은 격리 방식 라디오가 아닌 **배포 유형 선택 + 온보딩 신청·상태 관리**다. aml-svc 엔진은 `aml_tenants`의 `deployment_model`/`onboarding_status`/`infra_ref`를 스키마로 보유하며, 상태 전이는 bo-api 온보딩 워크플로우가 트리거한다(엔진 API에 온보딩 엔드포인트 미추가 — API §9·§1.1 정본).
-
-```mermaid
-sequenceDiagram
-    participant OP as 운영자(bo-web)
-    participant BOAPI as bo-api
-    participant AML as aml-svc (aml_tenants)
-    participant IAC as IaC 파이프라인 (Terraform)
-
-    OP->>BOAPI: POST /api/v1/bo/aml/tenants (TenantCreateRequest: deploymentModel 선택)
-    BOAPI->>AML: aml_tenants INSERT (deployment_model, onboarding_status=REQUESTED, default_region=KR)
-    BOAPI-->>OP: 201 TenantDto (onboarding_status=REQUESTED)
-
-    alt MANAGED_DEDICATED 경로
-        OP->>BOAPI: POST .../onboarding/provision (OnboardingProvisionRequest: iacTemplate, requestedBy)
-        BOAPI->>AML: onboarding_status=PROVISIONING
-        BOAPI->>IAC: IaC 파이프라인 트리거 (Terraform apply)
-        BOAPI-->>OP: 202 { onboarding_status: PROVISIONING }
-        IAC-->>BOAPI: DEPLOYED (스택 완료 콜백)
-        BOAPI->>AML: onboarding_status=DEPLOYED, infra_ref=<Terraform stack ID>
-        Note over BOAPI,AML: 검증(VERIFIED)→운영전환(ACTIVE) 단계는 ops 작업 후 상태 전이
-        BOAPI->>AML: onboarding_status=VERIFIED→ACTIVE
-
-    else SELF_HOSTED 경로
-        BOAPI->>AML: onboarding_status=PACKAGE_ISSUED (설치형 패키지 발급)
-        Note over OP,BOAPI: 고객이 자체 인프라에 패키지 설치(Helm/Docker)
-        Note over OP,BOAPI: 고객 인프라에 배포 완료 후 CUSTOMER_DEPLOYED 상태 전이
-        BOAPI->>AML: onboarding_status=CUSTOMER_DEPLOYED (고객 인프라 배포 완료 신고)
-        BOAPI-->>OP: 200 { onboarding_status: CUSTOMER_DEPLOYED }
-        OP->>BOAPI: POST .../onboarding/register (OnboardingRegisterRequest: instanceId, registrationToken)
-        BOAPI->>AML: onboarding_status=REGISTERED, infra_ref=<instanceId>
-        BOAPI-->>OP: 200 { onboarding_status: REGISTERED }
-
-    else SHARED 경로
-        BOAPI->>AML: onboarding_status=ACTIVE (즉시 전환, 프로비저닝 없음)
-    end
-
-    OP->>BOAPI: GET .../onboarding (OnboardingStatusResponse)
-    BOAPI-->>OP: { deploymentModel, onboardingStatus, infraRef, history[], nextExpectedStatus }
-```
-
-- 큐/이벤트에는 온보딩 상태 변화를 별도 발행하지 않는다. 상태 이력은 `aml_tenants`(DB) + bo-api `GET .../onboarding`(조회)로만 노출.
-- `onboarding_status` 상태머신(API §5 `OnboardingStatus` enum, DB §5.28a): 허용되지 않는 전이는 `409 AML.ONBOARDING_INVALID_STATE_TRANSITION`.
-- `deployment_model`은 온보딩 완료 후 **불변** — PUT 직접 변경 시 `409 AML.TENANT_DEPLOYMENT_MODEL_IMMUTABLE`. 변경 필요 시 재온보딩(기존 tenant offboarding 후 신규 등록).
+aml-svc 엔진은 `aml_tenants`의 `deployment_model`/`onboarding_status`/`infra_ref`를 스키마로 보유하며 상태 전이는 bo-api 온보딩 워크플로우가 트리거한다(엔진 API 에 온보딩 엔드포인트 미추가). hanpass-ph `tenant_demo`는 `onboarding_status=ACTIVE`(seed) 단일 운영이다. `deployment_model`은 온보딩 완료 후 불변(PUT 변경 시 `409 AML.TENANT_DEPLOYMENT_MODEL_IMMUTABLE`), `onboarding_status` 허용 외 전이는 `409 AML.ONBOARDING_INVALID_STATE_TRANSITION`. 큐/이벤트에 온보딩 상태 변화는 별도 발행하지 않는다.
 
 ---
 
@@ -742,16 +654,15 @@ sequenceDiagram
 
 | metric | 출처 | alert |
 |---|---|---|
-| `aml.ingest.received` | in/sqs·in/rest | — |
-| `aml.ingest.dlq.depth` | DLQ | depth>0 즉시 |
-| `aml.ingest.lag` | SQS ApproximateAgeOfOldestMessage | SLA 초과 |
+| `aml.ingest.received` | in/rest `AmlEventController` | — |
+| `aml.ingest.dlq.depth`/`aml.outbox.dlq.depth` | DLQ | depth>0 즉시 |
 | `aml.screening.requested`/`true_match`/`false_positive` | ScreenUseCase | — |
-| `aml.outbox.pending` | outbox poller | 적체 시 |
-| `aml.report.submission.failed` | ReportCallbackConsumer | 즉시 |
+| `aml.outbox.pending` | outbox relay | 적체 시 |
+| `aml.report.submission.failed` | ReportSubmissionCallbackConsumer / 제출 어댑터 | 즉시 |
 | `aml.tm.alert.created` / `aml.case.sla.breached` | TM/case | SLA 위반 |
 
-- 경계별(consumer 진입/이탈, 외부 호출) 구조화 로그에 `tenantId`·`sourceSystem`·`idempotencyKey`·`traceId`·`eventType` 포함.
-- connector health·watchlist freshness·reconciliation report(설계서 §15.5)는 in/scheduled가 주기 점검.
+- 경계별(ingest·consumer 진입/이탈, 외부 호출) 구조화 로그에 `tenantId`·`sourceSystem`·`idempotencyKey`·`traceId`·`eventType` 포함(코드 truth `AmlEventIngestService`·`FdsDecisionService` 로그).
+- watchlist freshness·reconciliation 은 `WatchlistReconciliationScheduler`가 주기 점검.
 
 ---
 
@@ -759,25 +670,44 @@ sequenceDiagram
 
 | Capability | 큐/엔드포인트 | 멱등 | 4-eyes | PII | 규제 |
 |---|---|---|---|---|---|
-| Event ingest | `aml-ingest` / `POST /api/v1/aml/events` | UNIQUE idempotency_key | — | ref/hash only | — |
+| Event ingest | `POST /api/v1/aml/events`(REST) | UNIQUE idempotency_key | — | ref/hash only | — |
 | 실시간 screening | `POST /api/v1/aml/screen` | Idempotency-Key | — | 일시처리·폐기 | Sanctions/PEP |
-| TM evaluate | `aml-ingest` / `POST /api/v1/aml/transactions/evaluate` | tx natural key | — | ref/hash | — |
-| FDS escalation | `aml-fds-decision` / `POST /internal/v1/aml/fds-escalations` | fraudCaseRef | — | ref | STR 후보 |
-| WLF true match 전파 | `aml-fds-feedback` | screeningId | 🔒 WLF_DECISION | ref | — |
-| STR/CTR/Travel Rule 제출 | `aml-outbox-dispatch`→adapter | approvalId | 🔒 `STR_SUBMIT`/`CTR_SUBMIT`/`TRAVEL_RULE_EXCEPTION` | masked ref | STR/CTR/TravelRule |
-| Evidence export | `POST /api/v1/evidence/aml/exports` | exportId | reason+권한 | manifest hash | Audit |
-| Vendor bridge | `VENDOR_BRIDGE` connector | vendor alertId | — | 표준 evidence | dual-run |
-| Merchant AML review | `settlement.*`/`entity.*` → `MERCHANT_AML_REVIEW` case | entityRef+scenario | 🔒 case 결재 | ref/hash | — |
+| TM evaluate | `POST /api/v1/aml/transactions/evaluate` | tx natural key | — | ref/hash | — |
+| FDS escalation 소비 | `aml-fds-decision` / `POST /internal/v1/aml/fds-escalations` | (origin_fds_case_ref, fds_event_id) | — | ref | STR 후보 |
+| WLF true match 전파 | `aml-fds-feedback`(FDS_FEEDBACK) | screeningId | 🔒 WLF_DECISION | ref | — |
+| high-risk 전파 | `aml-fds-feedback`(FDS_FEEDBACK) | scoreId | 🔒 RISK_OVERRIDE | ref | — |
+| STR 후보 전파 | `aml-outbox-dispatch`(CASE) | caseId | — | ref | STR |
+| STR/CTR 제출 | `aml-outbox-dispatch`(REGULATORY_REPORT)→submission adapter | approvalId | 🔒 `STR_SUBMIT`/`CTR_SUBMIT` | masked ref | STR/CTR |
+| 고객 webhook | `WEBHOOK` outbox → HTTP relay(서명) | publish key | — | masked ref+서명 | — |
+| Evidence export | `POST /api/v1/evidence/aml/exports` | exportId | reason+권한 | manifest hash·만료토큰 | Audit |
 
-> **merchant 제재/정지 경계**: aml-svc는 instrument·merchant를 **직접 정지하지 않는다**(자금 흐름 제어는 fds-svc 소유 경계). FDS의 `SUSPEND_MERCHANT`(→정본 `SUSPEND_INSTRUMENT`, fds-integration §8.2)에 대응하는 AML 측 capability는 (a) `MERCHANT_AML_REVIEW`(필요 시 `ECOMMERCE_SETTLEMENT_REVIEW`) case 개설(case_type 정본=DB §5.8 enum 12종, 비정본 `MERCHANT_RISK` 미사용), (b) RA `risk_grade` HIGH/PROHIBITED 확정 시 `aml.customer.high_risk` 아웃박스(§3.3)로 fds-svc에 전파해 fds-svc가 `SUSPEND_INSTRUMENT`(대상=`MERCHANT_ACCOUNT`)를 집행하는 흐름이다. AML enum/아웃박스에 `SUSPEND_MERCHANT` 독립 코드는 두지 않는다.
+> **merchant 제재/정지 경계**: aml-svc 는 instrument·merchant 를 직접 정지하지 않는다(자금 흐름 제어는 fds-svc 소유). AML 측 capability 는 (a) `MERCHANT_AML_REVIEW` case 개설(case_type 정본=DB §5.8 enum 12종, 비정본 `MERCHANT_RISK` 미사용), (b) RA `risk_grade` HIGH/PROHIBITED 확정 시 `aml.customer.high_risk` 아웃박스(§3.3)로 fds-svc 에 전파해 fds-svc 가 `SUSPEND_INSTRUMENT`를 집행하는 흐름이다. AML enum/아웃박스에 `SUSPEND_MERCHANT` 독립 코드는 두지 않는다.
 
 ---
 
-## 13. 변경 이력
+## 13. Phase 8 Advanced Domain — 스키마 잔존 노트(hanpass-ph 미사용)
+
+본 절은 **hanpass-ph 가 운영에서 사용하지 않으나 코드/스키마에 보존**된 net-new/Advanced Domain 연동 표면을 한 곳에 모은다(삭제 금지·확장 슬롯). hanpass-ph 정본 흐름은 §3~§12 이며, 아래는 **미사용**이다.
+
+- **EventFamily 비-hanpass 멤버**(코드 truth `EventFamily.java`): `trade`·`invoice`·`crypto`·`travel-rule`·`settlement`·`order`·`seller`·`market`·`internal`·`audit`(Advanced Domain Pack) 및 `vendor`(Legacy Vendor Bridge). strict gate 는 이들을 허용(미등재 reject 방지)하나 hanpass-ph core-banking 은 발행하지 않는다.
+- **Advanced Domain projection**(코드 truth `AdvancedDomainIngestService`·`VendorAlertProjectionService`·business-document projection): `trade.*`/`invoice.*` → `aml_business_documents`, `crypto.*`/`travel-rule.*`/`settlement.*`/`order.*`/`internal.*` → AdvancedSignal/TM alert + review/EDD case. hanpass-ph 는 인입 이벤트가 없어 no-op.
+- **Travel Rule**(`aml_travel_rule_transfers`·`TravelRuleService`·`ManageTravelRuleUseCase`·`VASP_TRAVEL_RULE_REVIEW` case·`TRAVEL_RULE_EXCEPTION` 결재·report_type `TRAVEL_RULE`): VASP originator/beneficiary·completeness/risk status·exception 큐 라우팅 로직 보존. `risk_status` enum 4종(`CLEAR`/`SANCTIONED_ADDRESS`/`MIXER_EXPOSURE`/`HIGH_RISK`), `completeness_status` 3종(`MISSING_ORIGINATOR`/`MISSING_BENEFICIARY`/`INCOMPLETE`)은 DB §5.15/§5.22 보존. hanpass-ph 미사용.
+- **Legacy Vendor Bridge**(`VendorMigrationService`·`aml_alerts.external_alert_ref`·`source_origin=VENDOR`·dual-run): 기존 벤더 alert/case 수신·비교 표면 보존. hanpass-ph 단일 원천 운영에서 미사용.
+- **case_type 확장 멤버**(DB §5.8 12종): `TBML_REVIEW`·`VASP_TRAVEL_RULE_REVIEW`·`B2B_INVOICE_REVIEW`·`ECOMMERCE_SETTLEMENT_REVIEW` 등은 Advanced Domain 전용으로 hanpass-ph 미발생.
+
+> 위 표면은 향후 hanpass-ph 외 도메인 확장 시 활성화된다. 본 명세 §3~§12 의 hanpass-ph 정본 흐름과 충돌하지 않으며, 스키마·enum·코드 보존 원칙(닫힌 enum 삭제 금지)을 유지한다.
+
+---
+
+## 14. 변경 이력
 
 | 일자 | 버전 | 변경 | 비고 |
 |---|---|---|---|
-| 2026-07-04 | v2.5 | **중립(canonical) 동기 수집 흐름 반영(코드=truth, feature/aml-neutral-canonical-ingest, additive).** (1) **§3.1a 신설** — 큐(`aml-ingest`) 비동기 인입과 병존하는 동기 REST 단일 수집 표면(`POST /aml/v1/transaction-events`) 매핑 표(5 product → canonical eventType·EventFamily·channelType·후속 usecase·산출). WALLET_TOPUP(`CASH_IN`)만 CTR 현금성, reversal 순증 차감, WLF sender 전 product·receiver=remit, PII 토큰화 경계 명문화. (2) **§5.1a 신설** — 단일 POST → 검증(422) → 토큰화·vault → 멱등 ingest → WLF + CTR/STR 동기 팬아웃 Mermaid 시퀀스(HOLD 미구현 가정 G6, WLF best-effort). 원천은 시뮬레이터·경량, 대량은 §3.1 큐 경로. | aegis-java-implementer. 코드=truth. 근거=aml-svc `NeutralTransactionEventController`·`NeutralTransactionEventService`·`ProductEventTypeMapper`·`NeutralEventValidator`. API 02-aml §2.1a/§3.17 동기화. |
+| 2026-07-04 | v2.8 | **중립(canonical) 동기 수집 흐름 반영(코드=truth, feature/aml-neutral-canonical-ingest, additive).** (1) **§3.1a 신설** — REST canonical ingest 와 병존하는 동기 REST 단일 수집 표면(`POST /aml/v1/transaction-events`) 매핑 표(5 product → canonical eventType·EventFamily·channelType·후속 usecase·산출). WALLET_TOPUP(`CASH_IN`)만 CTR 현금성, reversal 순증 차감, WLF sender 전 product·receiver=remit, PII 토큰화 경계 명문화. (2) **§5.1a 신설** — 단일 POST → 검증(422) → 토큰화·vault → 멱등 ingest → WLF + CTR/STR 동기 팬아웃 Mermaid 시퀀스(HOLD 미구현 가정 G6, WLF best-effort). 원천은 시뮬레이터·경량, 대량 비동기 ingest 는 consumer 미구현으로 후속. | aegis-java-implementer. 코드=truth. 근거=aml-svc `NeutralTransactionEventController`·`NeutralTransactionEventService`·`ProductEventTypeMapper`·`NeutralEventValidator`. API 02-aml §2.1a/§3.17 동기화. |
+| 2026-07-02 | v2.7 | **데모 회원 등록 선행 인입 이벤트 명문화(데이터 정직화, 코드=truth, feature/aml-demo-data-honesty, 기능정의서 v9.27).** **§4.1** 에 데모 회원 등록 선행 이벤트(`{eventType:"member", member:{memberRef,name,nationality,gender,dob,declaredIncomePhp}}`) 추가 — bo-api 인메모리 member vault(상한·eviction·전송값=열람값 reveal)에 upsert, 회원 identity·신고소득 유일 원천(hash 파생 회원 프로필 폐기), 미등록 회원 거래는 identity 의존 판정(명단·소득) skip. 시뮬레이터는 거래 인입에 앞서 회원 풀(진양성 명단 동명 + 저소득)을 등록하고, 거래 payload 에 명의 불일치용 `senderHolderName`(STR_THIRD_PARTY 실신호)을 실는다. WLF 스크리닝은 sender=vault 이름·receiver=payload 이름/국가로 실매칭 레코드 2건 생성(§4.2). DB 스키마 무변경. | integration-designer. 근거=bo-api `AmlDemoMemberVault`·`AmlScreeningRecordStore`·`AmlTmService`(라이브 결선)·`IngestTestController`(member 이벤트), `tools/aml-ingest-simulator`(회원 등록 선행). API §3.1/§3.2·기능정의서 §1.11 BR-DEMO-HONESTY 동기화. DB 불변. |
+| 2026-07-02 | v2.6 | **송금 수취인 정보 규격 명문화 + 비-prod 라이브 인입 시뮬레이터 계약(코드=truth, feature/aml-tm-real-watchlist-matching, 기능정의서 v9.26).** (1) **§4.2 payload** — `receiverName`·`receiverCountry`(nullable, additive) 명문화: 수취인 정보 규격 **국내송금=이름만 / 해외송금=이름+수취 국가(국적)**(성별·생년월일 미제공, 가용 필드 국내 [NAME]/해외 [NAME,NATIONALITY]), `receiverRef`=서버 `sha256(name\|country)` 파생, 원문 미영속·매칭 transient, 실명 매칭 발동 기준 nameScore ≥ 0.92. (2) **§4.1 시뮬레이터 계약** — 인입 테스트 이벤트 payload 의 `transaction`(nested) 객체가 TM 라이브 평가(`ingestLiveTransaction`) 구동(prod 미노출), 시뮬레이터 수취인 풀=진양성(명단 동명) 소수+깨끗 다수. DB 스키마 무변경. | integration-designer. 근거=common `HanpassPhTransactionPayload`(receiverName·receiverCountry), aml-svc `StrEvaluationService`·`FuzzyMatchEngine`, bo-api `AmlStrLiveReportStore`(실명 매칭)·`AmlTmService.ingestLiveTransaction`, `tools/aml-ingest-simulator`. API §3.4/§3.4a·기능정의서 §7.1 BR-011/013 동기화. DB 불변. |
+| 2026-07-02 | v2.5 | **송금 수취인 동시 명단 평가용 `receiverRef` 인입 payload 가산(코드=truth, feature/aml-tm-receiver-screening, 기능정의서 v9.25).** §4.2 transaction payload 에 **`receiverRef`(nullable, 비-PII 운영 수취인 식별자 `RCPT-2401NNNN`)** 추가 — 송금 거래(DOMESTIC_REMIT·CROSS_BORDER_REMIT)의 수취인 STR_PEP·STR_SANCTION 동시 평가(§7.1 BR-013)에서 수취인 COUNTERPARTY WLF 스크리닝(transactionRef 그룹) 대상 키. FDS/AML 공용 시뮬레이터 계약(`HanpassPhTransactionPayload` additive 마지막 필드, FDS 룰 로직 무변경). 수취인 원문은 reveal 체계로만(raw PII 미탑재). DB 스키마 무변경. | integration-designer. 근거=common `HanpassPhTransactionPayload.receiverRef`, aml-svc `StrEvaluationService`(수취인 COUNTERPARTY 계보 평가)·`ScreeningResultStorePort.findCounterpartyScreenings`. API §3.4a·기능정의서 §7.1 BR-013 동기화. DB 불변. |
+| 2026-06-30 | v3.0 | **hanpass-ph 재그라운딩(코드 truth 우선).** 시스템=hanpass-ph AML RegOps 단일 운영 테넌트 `tenant_demo`·단일 원천 `core-banking`(`core-banking.v1`)로 확정. **(1) §1.1 서비스 경계**를 core-banking REST ingest + fds-svc SQS 위임 + 규제기관 submission + 서명 webhook relay 로 재작성(가상 7실서비스/다서비스 발행자 박스 제거). **(2) §2.1 큐 카탈로그**를 코드 truth 로 정정 — 실제 `@SqsListener`는 `aml-fds-decision`(FdsDecisionConsumer)뿐, ingest 는 REST 전용(`aml-canonical-events`는 config 선언만·consumer 미구현 명시), `aml-report-callbacks`는 `@SqsListener` 미선언(sync-close/REST callback), webhook 은 SQS 미경유 HTTP relay. **(3) §3 이벤트 카탈로그**를 hanpass eventType taxonomy(`remit.*`/`domestic.*`/`wallet.*`/`transaction.*` + identity `customer.*`/`entity.*`/`beneficial-owner.*`)·6채널(`CASH_IN`/`DOMESTIC_REMIT`/`CROSS_BORDER_REMIT`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`/`CARD_NOT_PRESENT`)로 교체. 비-hanpass family(crypto/trade/invoice/order/settlement/travel-rule/vendor 등) 인바운드 행 제거. **(4) 아웃박스 event 명칭**을 코드 truth 로 정정 — `aml.report.submitted`(구 `report.submission.requested`)·`aml.screening.true_match`·`aml.customer.high_risk`·`aml.case.str_recommended`, aggregate_type 6종 라우팅(WEBHOOK→HTTP / FDS_FEEDBACK→aml-fds-feedback / 그 외→aml-outbox-dispatch). **(5) §9.3 Travel Rule** 을 hanpass-ph 미사용 슬롯으로 격하. **(6) §13 신설** — Phase 8 Advanced Domain·Vendor Bridge·Travel Rule 스키마/코드 잔존 노트(삭제 금지·미사용 명시). **(7) 패키지명** `com.hanpass.aml`→`com.aegis.aml`(코드 truth) 정정. **(8) §4.1 envelope** 를 실제 `IngestEventRequest`(헤더 권위·payloadHash 선택 서버계산·occurredAt 선택) 기준으로 정합. 멀티테넌트 인프라(tenant_id·data_scope·outbox)는 코드 truth 로 유지, 운영 행은 hanpass-ph 단일. | integration-designer. 코드 truth=`AmlEventController`·`AmlEventIngestService`·`EventFamily`·`FdsDecisionConsumer/Service`·`FdsFeedbackOutboxEmitter`·`HighRiskOutboxAdapter`·`WebhookOutboxEmitter`·`OutboxRelayRouter`·`SqsOutboxRelayPublisher`·`ReportSubmissionCallbackConsumer`·`RegulatoryReportService`·`application.yml`·`V2/V4/V13/V26/V27`. |
 | 2026-06-21 | v2.4 | **코드 기준 outbox·webhook 정합(이격 리포트 AML).** (1) **§3.4 + §8.1 `aml_outbox.aggregate_type` 5종→6종** — `IRA_REPORT` 추가(IRA 제출 폐루프 enqueue, 구현 V13). 물리 테이블 마이그레이션 표기를 `Flyway V16` → 실제 **V4 생성**으로 교정. (2) **§3.4 `webhook.callback.requested` 콜백 URL 원천 명문화** — `aml_api_credentials`(`credential_type=WEBHOOK enabled`).`webhook_url`(구현 V17)이 정본이며 공유 secret은 동일 행 `secret_ciphertext`. **`aml_source_systems`에 webhook URL 컬럼 없음** 명시(fds-svc `fds_api_credentials.webhook_url` 미러). | integration-designer. 근거=`aml-svc/.../db/migration/V13`(outbox 6종)·V17(webhook_url)·V2(api_credentials). 이격6·18·21 반영. DB §3.15 동기화. |
 | 2026-06-19 | v2.3 | 테넌트=서비스 재정의(기관 → 서비스(테넌트=`tenant_id`) → 워크스페이스). 설명 텍스트의 "고객사"를 "서비스"로 치환(§1 운영자 집계 경계·§2.1 큐 카탈로그·§3.4 webhook envelope·§10.1 deployment_model 라우팅 표·`tenantId` 의미 재정의·§10.3 온보딩). `tenant_id`/`tenantId`/`Tenant-Id`·큐명(`aml-ingest-{tenantId}-{env}`)·RLS(`app.current_tenant`)·scope 코드명 불변(의미만 서비스). | integration-designer |
 | 2026-06-19 | v2.2 | **데이터 레이어 hanpass-ph 재그라운딩(REST sync).** §1.1 외부 시스템 박스를 hanpass-ph 7실서비스(member/walletchg/domestic/remit/wallet/tx-history/inbound-svc)로 교체. §3.1 인바운드 event family 발행자(source_system)를 실서비스별로 매핑(member-svc=customer/entity/beneficial-owner, walletchg/domestic/remit/inbound=transaction.requested, remit/wallet=settlement.posted, wallet=account.*) + 재그라운딩 주석(tx-history-svc=대상 360° 피드). §4.2 transaction payload 에 `corridor`(send/receive country·currency ← remit)·`amountBase`(USD ← remit usd_amount/report_amount) 추가. §7.2 필드매핑을 hanpass-ph 실컬럼(member_id/wallet_transaction_id/transfer_number/charge_order_id/transaction_id·account_hash·zoloz_aml_screening·str_indicators)으로 현행화. **규제 임계·기한 불변** — `str_indicators`·`sanction_screening_event`는 데이터 신호로만 매핑(규제 STR 분류 KR 정본 유지). | integration-designer. 식별자 keyed-HMAC. domestic-svc member_id varchar(36) join 정규화. DB §3.2/§3.8/§3.10/§3.15/§3.16·API·PRD §1.5/§7 동기화. |
