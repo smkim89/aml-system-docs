@@ -222,9 +222,9 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 | GET | `/api/v1/admin/fds/rules/{ruleId}` | rule 단건 상세. 응답 `ruleJson`은 원본 `valueRef`/`groupRef`를 유지하고 BO 표시용 현재 `value`/`group`을 보강한다. | `fds:admin:rule` | — |
 | POST | `/api/v1/admin/fds/rules` | rule 초안 생성(`status=DRAFT`) | `fds:admin:rule` | — |
 | PUT | `/api/v1/admin/fds/rules/{ruleId}` | rule 수정(초안) | `fds:admin:rule` | — |
-| POST | `/api/v1/admin/fds/rules/{ruleId}/activate` | rule 활성화 상신 | `fds:admin:rule` | **필수** |
+| POST | `/api/v1/admin/fds/rules/{ruleId}/activate` | rule 활성화 상신(`RuleActionRequest`, inline rule은 simulationId 필수) | `fds:admin:rule` | **필수** |
 | POST | `/api/v1/admin/fds/rules/{ruleId}/disable` | rule 비활성 | `fds:admin:rule` | tenant policy |
-| POST | `/api/v1/admin/fds/rules/{ruleId}/rollback` | 버전 rollback(`fds_rule_versions`) | `fds:admin:rule` | **필수** |
+| POST | `/api/v1/admin/fds/rules/{ruleId}/rollback` | 버전 rollback(`fds_rule_versions`, RuleActionRequest.reason 필수) | `fds:admin:rule` | **필수** |
 | GET | `/api/v1/admin/fds/rules/{ruleId}/versions` | rule version 이력 | `fds:admin:rule` | — |
 | POST | `/api/v1/admin/fds/rules/simulations` | rule simulation 실행(예상 hit rate) | `fds:rule:simulate` | — |
 | GET | `/api/v1/admin/fds/rules/simulations/{simulationId}` | simulation 결과 | `fds:rule:simulate` | — |
@@ -445,6 +445,12 @@ FundingDto(△, 중립 WALLET_TOPUP §6.4 `funding` 블록): `fundingInstrumentT
 `ruleJson` DSL은 literal `value` 외에 운영 변수 참조를 지원한다. `{"valueRef":"c1213.velocity.6h.count.threshold"}`는 DB `fds_rule_variables.value_json`으로 치환되어 비교/velocity 임계값이 되고, `{"groupRef":"c1213.geo.risk_country.group"}`는 위험그룹 ID로 치환되어 `in_group` 조건에 사용된다. Admin 조회(`GET /admin/fds/rules`, `GET /admin/fds/rules/{ruleId}`)는 원본 참조 키를 유지하면서 BO 표시용 현재값을 `value`/`group`에 보강해 반환한다. 변수 누락/타입 불일치 룰은 해당 룰만 미매칭 처리한다.
 
 > C-1213/M-2025 룰팩: 초기 시드는 VELOCITY(6h 10회째 차단), DEVICE(변경 후 3h 내 4M KRW 해외송금), GEO(가입 3일 이내 위험국가 그룹 접속), BEHAVIOR(동일 수취계좌 18M KRW 및 다대일/일대다), ELECTION(선거기간 지역 등록 급증·대량 현금) 룰을 포함한다. DEVICE 룰은 `device.changedWithinHours`/`account.changedWithinHours` 소스 신호만으로 차단하지 않고, `device.priorDifferentWithin3h=true`(같은 회원의 3시간 내 이전 거래 중 현재와 다른 device token 존재) 근거를 함께 요구한다. DEVICE/GEO는 제한 룰(`INLINE_ONLY`)과 사후 모니터링 룰(`ASYNC_ONLY`)을 분리한다. 위험국가(VN/KH/CN 초기값)와 임계값/가중치는 코드 상수가 아니라 `fds_rule_variables` 및 `fds_risk_groups` 값으로 운영 변경한다.
+
+RuleActionRequest(`POST /admin/fds/rules/{ruleId}/activate`, `POST /admin/fds/rules/{ruleId}/rollback`):
+| 필드 | 타입 | 필수 | 매핑/검증 |
+|---|---|---|---|
+| reason | string | activate △ / rollback ● | `fds_approval_requests.reason`, rollback 감사 사유 |
+| simulationId | uuid | inline activate ● / async-only activate △ | 활성화 결재 payload. `INLINE_AND_ASYNC`/`INLINE_ONLY` 룰 활성화는 사전 simulation 결과 참조 필수 |
 
 ### 5.9 RuleSimulationRequest / Response — `fds_rule_simulations`
 요청: `ruleId`(uuid, △) 또는 `ruleJson`(object ●), `sampleWindow`({`from`,`to`} object).
@@ -1526,6 +1532,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-06 | v3.4 | **FDS 룰 활성화/rollback 4-eyes 요청 본문 역전파(코드=truth, fix/fds-rule-approval-flow).** §4.6 activate/rollback 이 `RuleActionRequest(reason, simulationId)` 를 수신하는 계약을 명시. inline rule 활성화는 `simulationId` 필수, rollback은 `reason` 필수로 fail-fast. fds-svc 결재 payload에는 simulationId/reason을 보존하고, bo-api 엔진 위임 응답의 결재 큐 상태는 `SUBMITTED`로 정규화한다. | aegis-spec. 근거=fds-svc `RuleAdminController`·`RuleAdminService`·`RuleActionRequest`, bo-api `FdsRuleGroupService`. |
 | 2026-07-05 | v3.3 | **누적 계약 드리프트 역전파(코드=truth, fix/aml-ra-envelope-fds-spec-backprop) — 판정 목록 `rule` 필터·Case SLA 필드·Case 목록 `slaBreached` 필터.** (1) **§4.2 `GET /api/v1/fds/decisions`** 목록 필터의 `ruleNo`(적중 룰 번호) → **`rule`**(적중 룰 id/이름 부분일치·대소문자 무시 — fds-svc 는 숫자 룰 번호가 없어 목록 행의 룰 코드/이름 문자열로 검색) 정정(`DecisionQueryController.listDecisions` `@RequestParam String rule` 1:1). (2) **§5.5 `CaseDto`** 에 `slaDueAt`(datetime, nullable — `CaseSlaPolicy` 파생 처리 SLA 기한)·`slaBreached`(boolean — SLA 초과 여부) 필드 추가(구 문서엔 미표기, 코드 `CaseDto.slaDueAt/slaBreached`·도메인 `Case.getSlaDueAt/isSlaBreached`·`CaseSlaPolicy.dueAt/breached` 정본). (3) **§4.x `GET /api/v1/fds/cases`** 목록 필터에 `slaBreached`(boolean) 추가(`CaseController.listCases` `@RequestParam Boolean slaBreached`). ⚠️ §4.6 `/admin/fds/rules` 의 `ruleNo`(텍스트검색) 및 OpenAPI `RuleRef.ruleNo`(§5.4 응답 필드)는 **코드=truth 그대로 유지**(`RuleAdminController` `@RequestParam ruleNo`·`FdsDecisionCaseDtos.RuleRef.ruleNo` — 별개 계약, 변경 없음). | aegis-spec. 코드=truth. 근거=fds-svc `adapter/in/rest/DecisionQueryController`(rule)·`adapter/in/rest/CaseController`(slaBreached)·`adapter/in/rest/dto/CaseDto`(slaDueAt/slaBreached)·`domain/Case`·`domain/CaseSlaPolicy`. |
 | 2026-07-04 | v3.2 | **(H1) 판정 발동 룰 근거 거래 조회 엔드포인트 역전파(코드=truth, fix/aml-fds-spec-backprop).** (1) **§4.2 Decision API 표에 행 추가** — `GET /api/v1/fds/decisions/{decisionId}/evidence-transactions?ruleId=&page=&size=`(scope `fds:case:read`) 판정 근거 거래 전수 페이징(요구2, 발동 룰 evidence 윈도우 해소·`feature_snapshot` 캡 미절단, `ruleId` 미지정 시 대표 룰 A12, size 기본 50·200 클램프 A8, 미지 decision 404). (2) **§5.4a `DecisionEvidenceTransactionsResponse` DTO 신설** — 코드 `DecisionEvidenceTransactionsResponse`(ruleId/ruleName/outcome/dimension/dimensionRef/window/windowStart/asOf/channelFilter/transactions=`PageResponse<EventViewResponse>`) 1:1 전사, rows=EventView 투영(토큰만·raw PII 미포함·canonical_payload 미노출). | aegis-spec. 코드=truth. 근거=fds-svc `adapter/in/rest/DecisionQueryController`(GET evidence-transactions)·`adapter/in/rest/dto/DecisionEvidenceTransactionsResponse`·`EventViewResponse`·port `QueryDecisionEvidenceUseCase`·`DecisionEvidenceQueryPort`. sass §01-fdsSvc 동기화. |
 | 2026-07-04 | v3.0 | **중립(canonical) 수집 블록 인입 확장 반영(코드=truth, feature/aml-neutral-canonical-ingest, additive).** §5.1 `IngestEventRequest` 표에 `card`/`balance`/`funding` 블록 행 추가 + `CardDto`(scheme·issuerCountry·domesticInternationalFlag)·`BalanceDto`(balanceBefore·balanceAfter)·`FundingDto`(fundingInstrumentType·isAutoTopup·isManualApproval) 서브-DTO 설명 신설 + `RiskSignalsDto`에 `accountHolderNameMatch`(차명계좌 §6.2)·`fundingSourceType` 가산. AML 중립 수집 API(02-aml §2.1a)의 5 product 신호를 FDS 판정 경로가 동일 feature 결선으로 소비하도록 확장(비-PII만, PAN/계좌/충전수단 masked 미수용·`instrument.instrumentRef` 토큰 참조 §16.1). 기존 룰팩 C1213 이 cmp/velocity 노드로 소비 "가능"까지가 목표(신규 룰팩 신설 없음). feature 카탈로그 등록=DB §feature catalog V6(01-fds-db.md). | aegis-java-implementer. 코드=truth. 근거=fds-svc `adapter/in/rest/dto/IngestEventRequest`(CardDto·BalanceDto·FundingDto·RiskSignalsDto.accountHolderNameMatch/fundingSourceType)·`domain/rule/DomainFeatureKeys`(§6.2~§6.5 blocks). |
