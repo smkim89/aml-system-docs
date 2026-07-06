@@ -177,7 +177,8 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 |---|---|---|---|---|---|
 | POST | `/api/v1/fds/decisions/evaluate` | 승인 전 실시간 FDS 판단. `fds_decisions`+`fds_decision_reasons` 생성 | API Key+HMAC/mTLS · `fds:decision:evaluate` | 필수 | — |
 | GET | `/api/v1/fds/decisions/{decisionId}` | decision 단건(증적: matched_rules·feature_snapshot 요약) | `fds:case:read` | — | — |
-| GET | `/api/v1/fds/decisions` | decision 목록(필터 11종: `transactionRef`,`subjectRef`(대상 토큰),`ruleNo`(적중 룰 번호),`decision`,`channelType`,`currency`,`amountMin`,`amountMax`,`sendCountry`,`receiveCountry`,`from`,`to` · 페이지네이션). 채널/통화/금액/corridor 축은 연결 canonical event LEFT JOIN 파생(DB §5.10·§5.5) | `fds:case:read` | — | — |
+| GET | `/api/v1/fds/decisions/{decisionId}/evidence-transactions?ruleId=&page=&size=` | **판정 발동 룰 근거 거래 전수 페이징**(요구2 — 판정 근거 거래 전수 표시). 발동 룰의 evidence 윈도우(dimension + rolling window + channel scope)를 해소해 근거 거래 **전체**를 페이징(캡된 `feature_snapshot` evidence 는 미절단). `ruleId` 미지정 시 대표 룰(최심각 outcome, A12) 사용. `size` 기본 50·어댑터 200 클램프(A8). 미지 decision 404. 응답 DTO §5.4a `DecisionEvidenceTransactionsResponse` | `fds:case:read` | — | — |
+| GET | `/api/v1/fds/decisions` | decision 목록(필터 11종: `transactionRef`,`subjectRef`(대상 토큰),`rule`(적중 룰 id/이름 부분일치 — 대소문자 무시. fds-svc 는 숫자 룰 번호가 없어 목록 행에 표시되는 룰 코드/이름 문자열로 검색),`decision`,`channelType`,`currency`,`amountMin`,`amountMax`,`sendCountry`,`receiveCountry`,`from`,`to` · 페이지네이션). 채널/통화/금액/corridor 축은 연결 canonical event LEFT JOIN 파생(DB §5.10·§5.5) | `fds:case:read` | — | — |
 
 > 장애 정책(D-14): `fds_source_systems.fail_policy`(`FAIL_CLOSED`/`FAIL_OPEN`/`CASE_ONLY`)에 따라 평가 불가 시 응답 `decision` 결정. `CASE_ONLY`는 `REVIEW`+case 후보.
 
@@ -193,7 +194,7 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 ### 4.4 Case API (외부/위임) — `fds:case:read` / `fds:case:update`
 | 메서드 | 경로 | 설명 | scope | 4-eyes |
 |---|---|---|---|---|
-| GET | `/api/v1/fds/cases` | case 목록(필터: `status`,`caseType`,`priority`,`assignedTo`,`from/to`) | `fds:case:read` | — |
+| GET | `/api/v1/fds/cases` | case 목록(필터: `status`,`caseType`,`priority`,`assignedTo`,`from/to`,`slaBreached`(boolean — SLA 기한 초과만)) | `fds:case:read` | — |
 | GET | `/api/v1/fds/cases/{caseId}` | case 단건 + 요약 | `fds:case:read` | — |
 | GET | `/api/v1/fds/cases/{caseId}/events` | case timeline(`fds_case_events`, append-only) | `fds:case:read` | — |
 | PATCH | `/api/v1/fds/cases/{caseId}` | status/priority/assignee 변경 | `fds:case:update` | `INTERNAL_AUDIT` 종결 시 필수 |
@@ -218,6 +219,7 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 |---|---|---|---|---|
 | GET | `/api/v1/admin/fds/rule-sets` | rule set 목록(`fds_rule_sets`) | `fds:admin:rule` | — |
 | GET | `/api/v1/admin/fds/rules` | rule 목록(필터: `ruleSetId`,`status`,`channelScope`,`decisionOutcome`,`evaluationMode`,`ruleNo`(텍스트검색) — PRD §6.1 BR-001 5축) | `fds:admin:rule` | — |
+| GET | `/api/v1/admin/fds/rules/{ruleId}` | rule 단건 상세. 응답 `ruleJson`은 원본 `valueRef`/`groupRef`를 유지하고 BO 표시용 현재 `value`/`group`을 보강한다. | `fds:admin:rule` | — |
 | POST | `/api/v1/admin/fds/rules` | rule 초안 생성(`status=DRAFT`) | `fds:admin:rule` | — |
 | PUT | `/api/v1/admin/fds/rules/{ruleId}` | rule 수정(초안) | `fds:admin:rule` | — |
 | POST | `/api/v1/admin/fds/rules/{ruleId}/activate` | rule 활성화 상신 | `fds:admin:rule` | **필수** |
@@ -242,7 +244,9 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 
 ### 4.8 Source/Connector/Credential Admin API (위임) — `fds:admin:source-system` / `fds:admin:credential`
 
-> **소스 시스템 카탈로그(hanpass-ph, DB §5.3a)**: `source_system` 식별자는 hanpass-ph 트랜잭션 마이크로서비스(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`)로 등록·예시화한다. 업스트림은 `REST_PUSH`(REST sync 인입, 연동 §7.1) 기준이며, 거래 소스는 hanpass eventType taxonomy(§3.5.2)를 emit하고 `channel_type`은 소스별로 `CASH_IN`(walletchg)/`DOMESTIC_REMIT`(domestic)/`CROSS_BORDER_REMIT`(remit)/`WALLET_PAYMENT`·`WALLET_WITHDRAWAL`(wallet)에 대응한다. 연동 키 매핑은 연동 §7.2 정본(원문 금지·token/HMAC). **규제(CTR/STR) 임계·기한 불변.**
+> **소스 시스템 카탈로그(hanpass-ph 재그라운딩, DB §5.3a)**: `source_system` 식별자는 hanpass-ph 트랜잭션 마이크로서비스(`member-svc`/`walletchg-svc`/`domestic-svc`/`remit-svc`/`wallet-svc`/`tx-history-svc`/`inbound-svc`)로 등록·예시화한다(generic `card-processor`/`core-banking`/`atm-switch` 대체). 업스트림은 `REST_PUSH`(REST sync 인입, 연동 §7.1) 기준이며, 거래 소스는 hanpass eventType taxonomy(§3.5.2)의 `*.requested`/`transaction.requested` 계열을 emit하고 `channel_type`은 소스별로 `CASH_IN`(walletchg)/`DOMESTIC_REMIT`(domestic)/`CROSS_BORDER_REMIT`(remit)/`WALLET_PAYMENT`·`WALLET_WITHDRAWAL`(wallet)/`INBOUND_REMIT`(inbound)에 대응한다. 연동 키 매핑은 연동 §7.2 정본(원문 금지·token/HMAC). **데이터 레이어 한정 — 규제(CTR/STR) 임계·기한 불변.**
+>
+> **BO 데모/시뮬레이터 주석**: 로컬 BO 커넥터 관리와 `tools/aml-ingest-simulator`는 FDS 탐지 결정과 AML TM의 공통 거래 payload를 한 화면에서 모니터링하기 위해 집계 connector id `HANPASS_PH`를 사용한다. 이 집계 ID는 운영 실서비스 source catalog를 대체하지 않으며, generic `atm-switch` 커넥터 seed는 사용하지 않는다.
 
 | 메서드 | 경로 | 설명 | scope | 4-eyes |
 |---|---|---|---|---|
@@ -301,20 +305,32 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 | channel | ChannelDto | ● | `channelType` 필수(§3.5.1) | `channel_type`,`payment_rail` |
 | corridor | CorridorDto | △ | remit 계열 corridor | `send_country`·`receive_country`… |
 | geoCountry | string | △ | ISO 국가코드(PII 아님) | `geo_country` |
+| card | CardDto | △ | 중립 CARD_PAYMENT §6.3 | (canonical_payload) |
+| balance | BalanceDto | △ | 중립 §6.3~§6.5 잔액 | (canonical_payload) |
+| funding | FundingDto | △ | 중립 WALLET_TOPUP §6.4 | (canonical_payload) |
 | payloadHash | string(128) | △ | `sha256:...` | `payload_hash` |
 | canonicalPayload | string(JSON) | △ | 정규화 payload(마스킹·`transaction.phpEquivalent` 운반) | `canonical_payload` |
 
 > `Tenant-Id`/`Workspace-Id`/`Source-System`/`Idempotency-Key`/`X-Correlation-Id`/`traceparent`는 헤더로 전달(body 미포함, `IngestController` 시그니처 정합). **rawPayload·PAN·주민번호 포함 시 ingest reject 또는 tokenization 후 폐기**(§16.1).
 
-SubjectDto: `subjectType`(string), `subjectRef`(string token), `country`(string).
+> **중립(canonical) 수집 블록 확장(코드=truth, feature/aml-neutral-canonical-ingest, additive).** AML 중립 수집 API(aml-api §2.1a)의 5 product 신호를 FDS 판정 경로가 동일 결선으로 소비하도록 `IngestEventRequest`에 `card`/`balance`/`funding` 블록과 `riskSignals.accountHolderNameMatch`/`fundingSourceType`를 추가했다(비-PII 신호만·기존 룰팩 C1213 이 cmp/velocity 노드로 소비 "가능"까지가 목표, 신규 룰팩 신설 없음). PAN·계좌·충전수단 masked 값은 미수용 — 카드/수단은 `instrument.instrumentRef` 토큰으로만 참조(§16.1). feature 카탈로그 등록은 DB §feature catalog V6(01-fds-db.md).
+
+SubjectDto: `subjectType`(enum subject_type ●), `subjectRef`(string token ●), `country`(string(8)), `kycLevel`, `riskRating`.
 ActorDto: `actorType`(string), `actorRef`(string).
-TransactionDto: `transactionRef`(string), `transactionType`(enum `TransactionType`, **DB §4.19 폐쇄 12종 정본** — `WITHDRAWAL`/`DEPOSIT`/`TRANSFER`/`REMITTANCE`/`PAYMENT`/`REFUND`/`REVERSAL`/`CHARGE`/`SETTLEMENT`/`PAYOUT`/`EXCHANGE`/`ADJUSTMENT`, 자유 문자열 금지, §10 `TransactionType` schema), `direction`(enum `INBOUND`/`OUTBOUND`), `amount`(decimal(24,8), ≥0), `currency`(string), `amountBase`(decimal(24,8) — **base 통화 USD**; hanpass-ph remit은 `usd_amount`/`report_amount`에서 산출, DB §5.5), `baseCurrency`(기본 `USD`), `status`. **PHP 환산 임계 feature `transaction.phpEquivalent`는 `canonicalPayload.transaction.phpEquivalent`로 운반**된다(§3.5.3).
-CorridorDto(△, `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT` 등 remit 계열): `sendCountry`(`send_country`), `receiveCountry`(`receive_country`), `sendCurrency`(`send_currency`), `receiveCurrency`(`receive_currency`) — hanpass-ph `remit-svc`/`domestic-svc` corridor 매핑, DB §5.5. 모든 필드 선택(ISO 코드, PII 아님). 미탑재 시 `canonical_payload.corridor`로 표기.
-InstrumentDto: `instrumentType`(string), `instrumentRef`(string token), `accountRef`, `institutionCode`, `country`.
+TransactionDto: `transactionRef`(string ●), `transactionType`(enum `TransactionType` ●, **DB §4.19 폐쇄 12종 정본** — `WITHDRAWAL`/`DEPOSIT`/`TRANSFER`/`REMITTANCE`/`PAYMENT`/`REFUND`/`REVERSAL`/`CHARGE`/`SETTLEMENT`/`PAYOUT`/`EXCHANGE`/`ADJUSTMENT`, 자유 문자열 금지, §10 `TransactionType` schema), `direction`(enum `INBOUND`/`OUTBOUND`), `amount`(decimal(24,8), ≥0), `currency`(string(12)), `amountBase`(decimal(24,8) — **base 통화 USD**; hanpass-ph remit은 `usd_amount`/`report_amount`에서 산출, DB §5.5), `baseCurrency`(기본 `USD`), `corridor`(CorridorDto △, cross-border 송금 시), `status`. **PHP 환산 임계 feature `transaction.phpEquivalent`는 `canonicalPayload.transaction.phpEquivalent`로 운반**된다(§3.5.3).
+CorridorDto(△, `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`INBOUND_REMIT` 등 remit 계열): `sendCountry`(string(2), `send_country`), `receiveCountry`(string(2), `receive_country`), `sendCurrency`(string(12), `send_currency`), `receiveCurrency`(string(12), `receive_currency`) — hanpass-ph `remit-svc`/`domestic-svc`/`inbound-svc` corridor 매핑, DB §5.5. 모든 필드 선택(ISO 코드, PII 아님). 미탑재 시 `canonical_payload.corridor`로 표기.
+InstrumentDto: `instrumentType`(enum instrument_type ●), `instrumentRef`(string token ●), `accountRef`, `institutionCode`, `country`.
 CounterpartyDto: `counterpartyType`(string), `counterpartyRef`(string token), `country`.
 MerchantDto: `merchantRef`(string token), `mcc`(string), `country`.
-DeviceDto: `deviceRef`(string token), `fingerprint`(string token — §10.1 device velocity).
-ChannelDto: `channelType`(enum channel_type, **hanpass-ph 운영 5종** `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`, §3.5.1·DB §4.4), `paymentRail`(string), `entryMode`(string).
+DeviceDto(△): `deviceRef`(string token), `fingerprint`(string token). 이벤트 조회 응답(`GET /fds/events*`)도 `deviceRef`를 마스킹 토큰으로 반환해 DEVICE 시간 윈도우 룰의 현재/이전 거래 비교 근거를 제공한다(raw device fingerprint 미노출).
+ChannelDto: `channelType`(enum channel_type ● **21종** — hanpass-ph 운영 5종 `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL` + `INBOUND_REMIT` 포함, DB §4.4), `paymentRail`(enum payment_rail/string), `entryMode`.
+GeoDto(△): `country`(string(2) — 접속/IP 국가), `latitude`(decimal), `longitude`(decimal). 위도/경도는 보조 참고값이며 필수 아님.
+RiskSignalsDto(△): `memberAgeDays`(int), `accountChangedWithinHours`(int), `deviceChangedWithinHours`(int), `manyToOnePattern`(boolean), `oneToManyPattern`(boolean), `electionPeriod`(boolean), `regionalRegistrationSpikeCount`(long), `bulkCashAmountBase`(decimal), `accountHolderNameMatch`(boolean △ — 중립 §6.2 국내송금 예금주명 대조; `false`=차명계좌 STR 신호, feature `transfer.accountHolderNameMatch`), `fundingSourceType`(string △ — 중립 §6.2 국내송금 자금원천 유형, feature `transfer.fundingSourceType`).
+CardDto(△, 중립 CARD_PAYMENT §6.3 `card` 블록 — 비-PII만): `scheme`(string — VISA/MASTERCARD 등, feature `card.scheme`), `issuerCountry`(string(2), feature `card.issuerCountry`), `domesticInternationalFlag`(string — `INTERNATIONAL`→feature `card.international`=true). `panMasked`(BIN+말미4)는 미수용 — 카드는 `instrument.instrumentRef` 토큰으로만 참조(§16.1).
+BalanceDto(△, 중립 §6.3~§6.5 `balance` 블록): `balanceBefore`(decimal, feature `balance.before`), `balanceAfter`(decimal, feature `balance.after`). 파생 feature `balance.delta`(after−before)는 충전 직후 잔액 0 근접 pass-through(환치기) 신호(§6.4 STR 관점).
+FundingDto(△, 중립 WALLET_TOPUP §6.4 `funding` 블록): `fundingInstrumentType`(string — CARD/BANK_ACCOUNT 등, feature `funding.instrumentType`; 서로 다른 수단 다수=분산충전), `isAutoTopup`(boolean, feature `funding.autoTopup`), `isManualApproval`(boolean, feature `funding.manualApproval` — 관리자 수동충전 남용 신호). 충전수단 masked 값은 미수용(instrument 토큰 참조, §16.1).
+
+> FDS/TM 공통 거래 payload 동기화: FDS `POST /fds/events`·`POST /fds/decisions/evaluate`와 AML TM `POST /aml/transactions/evaluate`는 동일 실시간 거래 신호를 사용한다. 위 보조 필드는 canonical payload feature key `geo.country`, `geo.latitude`, `geo.longitude`, `customer.accountAgeDays`, `account.changedWithinHours`, `device.changedWithinHours`, `behavior.manyToOnePattern`, `behavior.oneToManyPattern`, `election.active`, `election.registrationSpikeCount`, `election.bulkCashAmountBase`로 노출된다.
 
 ### 5.2 IngestEventResponse (202 신규 수신 / 200·201 멱등 재반환)
 `POST /fds/events`는 **비동기 큐 적재**다(§4.1). 신규 수신 성공 = **202 Accepted**(`status=ACCEPTED`, 큐 적재 완료·정규화/평가는 후속). 멱등 재요청(동일 `Idempotency-Key`+동일 payload)은 저장된 결과를 **200/201**로 재반환(`Idempotency-Replayed: true`, §3.3). 중복 event(`event_id` 충돌)는 `status=DUPLICATE`, reject는 `status=REJECTED`(422 계열, §6).
@@ -362,6 +378,25 @@ ChannelDto: `channelType`(enum channel_type, **hanpass-ph 운영 5종** `CROSS_B
 
 > `RuleRef`(코드 정합) = `ruleId`(uuid)·`versionNo`(int)·`ruleName`(string)·`outcome`(string) — UI가 판정을 이끈 발화 룰을 가독 렌더할 수 있도록 이름·outcome 동봉(§10 OpenAPI 보강). `amount`/`currency`/`channelType`/`sendCountry`/`receiveCountry`는 `eventId`로 연결한 canonical event의 마스킹 read projection이며 event 미해석 시 `null`(raw PII 아님). `feature_snapshot`/`input_event_hash`는 증적용이며 기본 응답 미노출(Evidence API 전용 경계).
 
+### 5.4a DecisionEvidenceTransactionsResponse — `GET /api/v1/fds/decisions/{decisionId}/evidence-transactions` (요구2 — 판정 근거 거래 전수)
+
+발동 룰의 evidence 윈도우 메타(발동 룰 + dimension + rolling window + channel scope)와 근거 거래의 페이징 envelope 를 반환한다. 캡된 `feature_snapshot` evidence 는 이 뷰를 절단하지 않는다(전수 페이징). 응답 형상은 fds-svc `DecisionEvidenceTransactionsResponse`(port `QueryDecisionEvidenceUseCase.EvidenceResult`, `DecisionEvidenceQueryPort`)와 1:1:
+
+| 필드 | 타입 | 매핑 |
+|---|---|---|
+| `ruleId` | string(uuid)\|null | 설명 대상 발동 룰(미지정 시 대표 룰 A12) |
+| `ruleName` | string\|null | 발동 룰 이름 |
+| `outcome` | enum\|null | 발동 룰 outcome(decision severity) |
+| `dimension` | enum\|null | 집계 축(subject velocity / banking-day cash sum / single-transaction group) |
+| `dimensionRef` | string\|null | 집계 축 참조 키(주체/그룹 토큰) |
+| `window` | string\|null | rolling window(예 `PT6H`) |
+| `windowStart` | string(date-time)\|null | 윈도우 시작 시각 |
+| `asOf` | string(date-time)\|null | 집계 기준 시각 |
+| `channelFilter` | array<string>\|null | 채널 scope 필터 |
+| `transactions` | `PageResponse<EventViewResponse>` | 근거 거래 전수 페이지(정렬 `occurredAt,desc`) |
+
+`transactions.content` 원소 = `EventViewResponse`(canonical event 뷰 투영, §5.1 canonical event 필드 미러) — 테넌트 키 토큰만·raw PII 미포함(§16.1), `canonical_payload` 미노출. 주요 필드: `eventId`/`eventType`/`eventFamily`/`occurredAt`/`subjectRef`/`subjectCountry`/`transactionRef`/`transactionType`/`channelType`/`paymentRail`/`sendCountry`/`receiveCountry`/`amount`/`currency`/`amountBase`/`baseCurrency`/`counterpartyRef`/`deviceRef`/`payloadHash`. party 식별정보는 마스킹 토큰만 실리며 원문 PII 는 미포함(§16.1 마스킹/hash 정책).
+
 ### 5.5 CaseDto — `fds_cases`
 | 필드 | 타입 | 매핑 |
 |---|---|---|
@@ -374,6 +409,8 @@ ChannelDto: `channelType`(enum channel_type, **hanpass-ph 운영 5종** `CROSS_B
 | assignedTo | string(운영자 token) | `assigned_to` |
 | closeReason | string(64) | `close_reason` (DB VARCHAR(64) §5.13). **enum 8종** `FP_THRESHOLD`/`FP_NORMAL_PATTERN`/`FP_DATA_QUALITY`/`CONFIRMED_FRAUD`/`CONFIRMED_MULE`/`CONFIRMED_ATO`/`ESCALATED_AML`/`OTHER`(DB §4.11·설계서 §11.6.1a). `POST .../close` 요청 시 필수, 상세 메모(자유 텍스트)는 case event(`CLOSED` payload) 보조 저장으로 분리 |
 | amlCaseRef | string | aml-svc cross-ref(`fds_cases.aml_case_id`, integration 확정) |
+| slaDueAt | datetime(nullable) | `sla_due_at` — 케이스 처리 SLA 기한(`CaseSlaPolicy` 파생, 케이스 유형·우선순위 기준). null = SLA 미적용 |
+| slaBreached | boolean | `sla_breached` — SLA 기한 초과 여부. 응답은 `CaseSlaPolicy.breached`(`sla_due_at < now AND 비종결`) 라이브 평가값(목록 `slaBreached` boolean 필터 축, L151) |
 | createdBy / updatedBy | string(128, nullable) | `created_by` / `updated_by` (DB §5.13) |
 | createdAt / updatedAt | datetime | 동일 |
 
@@ -400,13 +437,20 @@ ChannelDto: `channelType`(enum channel_type, **hanpass-ph 운영 5종** `CROSS_B
 | dslSource | string | △ | `dsl_source`(no-code 표현) |
 | ruleJson | object | ● | `rule_json` |
 | decisionOutcome | enum decision | △ | `decision_outcome` |
+| evaluationMode | enum | △ | `evaluation_mode`: `INLINE_AND_ASYNC`(실시간+사후), `INLINE_ONLY`(실시간 제한 전용), `ASYNC_ONLY`(사후 모니터링 전용) |
 | status | enum rule_status | (응답) | `status` |
 | createdBy / updatedBy | string(128, nullable) | (응답) | `created_by` / `updated_by` (DB §5.17) |
 | createdAt / updatedAt | datetime | (응답) | `created_at` / `updated_at` (DB §5.17) |
 
+`ruleJson` DSL은 literal `value` 외에 운영 변수 참조를 지원한다. `{"valueRef":"c1213.velocity.6h.count.threshold"}`는 DB `fds_rule_variables.value_json`으로 치환되어 비교/velocity 임계값이 되고, `{"groupRef":"c1213.geo.risk_country.group"}`는 위험그룹 ID로 치환되어 `in_group` 조건에 사용된다. Admin 조회(`GET /admin/fds/rules`, `GET /admin/fds/rules/{ruleId}`)는 원본 참조 키를 유지하면서 BO 표시용 현재값을 `value`/`group`에 보강해 반환한다. 변수 누락/타입 불일치 룰은 해당 룰만 미매칭 처리한다.
+
+> C-1213/M-2025 룰팩: 초기 시드는 VELOCITY(6h 10회째 차단), DEVICE(변경 후 3h 내 4M KRW 해외송금), GEO(가입 3일 이내 위험국가 그룹 접속), BEHAVIOR(동일 수취계좌 18M KRW 및 다대일/일대다), ELECTION(선거기간 지역 등록 급증·대량 현금) 룰을 포함한다. DEVICE 룰은 `device.changedWithinHours`/`account.changedWithinHours` 소스 신호만으로 차단하지 않고, `device.priorDifferentWithin3h=true`(같은 회원의 3시간 내 이전 거래 중 현재와 다른 device token 존재) 근거를 함께 요구한다. DEVICE/GEO는 제한 룰(`INLINE_ONLY`)과 사후 모니터링 룰(`ASYNC_ONLY`)을 분리한다. 위험국가(VN/KH/CN 초기값)와 임계값/가중치는 코드 상수가 아니라 `fds_rule_variables` 및 `fds_risk_groups` 값으로 운영 변경한다.
+
 ### 5.9 RuleSimulationRequest / Response — `fds_rule_simulations`
 요청: `ruleId`(uuid, △) 또는 `ruleJson`(object ●), `sampleWindow`({`from`,`to`} object).
 응답: `simulationId`(uuid), `estimatedHitRate`(decimal(8,4)), `resultSummary`(object), `createdAt`(datetime, DB §5.19 `created_at`), `createdBy`(string(128), nullable, DB §5.19 `created_by`).
+
+시뮬레이션은 활성 rule variable과 group-backed variable을 현재값으로 해석한 뒤 canonical event 표본을 재평가한다. 따라서 `valueRef`/`groupRef` 기반 룰의 예상 hit rate는 운영 변수·위험그룹 변경값을 반영한다.
 
 ### 5.9a RuleRecommendationRequest / Response (POST /admin/fds/rules/recommendations)
 
@@ -522,7 +566,7 @@ ApprovalDecisionRequest(approve/reject): `comment`(string △). checker는 토�
 |---|---|---|---|---|
 | displayName | string(160) | △ | 비공백, ≤160 | `display_name` |
 | active | boolean | △ | 비활성(`false`) 시 멤버 0 선결(BR-001) | (상태 전이, §5.18 주) |
-| groupType | enum risk_group_type (DB §4.14 6종) | △(에코) | **변경 불가** — 저장값과 상이 시 거부(BR-002) | `group_type`(read-only) |
+| groupType | enum risk_group_type (DB §4.14, `RISK_COUNTRY` 포함) | △(에코) | **변경 불가** — 저장값과 상이 시 거부(BR-002) | `group_type`(read-only) |
 
 - `{groupId}`=`group_id`(PK `(tenant_id, workspace_id, group_id)`). 최소 1개 수정 필드(`displayName`·`active`) 필수 — 둘 다 없으면 `FDS-VALIDATION-001`.
 - **`group_id`(=groupCode)·`group_type`(=kind) immutable**(BR-001/BR-002). path `groupId`는 식별자이며 변경 불가. body에 `groupType`을 포함할 경우 저장값과 동일해야 하며, 상이하면 `FDS-VALIDATION-002`(enum/immutable 위반)로 거부.
@@ -536,7 +580,7 @@ ApprovalDecisionRequest(approve/reject): `comment`(string △). checker는 토�
 | 필드 | 타입 | 매핑 |
 |---|---|---|
 | groupId | string(96) | `group_id` |
-| groupType | enum risk_group_type (DB §4.14 6종) | `group_type` |
+| groupType | enum risk_group_type (DB §4.14, `RISK_COUNTRY` 포함) | `group_type` |
 | displayName | string(160) | `display_name` |
 | memberCount | integer | (`fds_risk_group_members` count, 비활성 선결 판정용) |
 | createdBy / updatedBy | string(128, 운영자 token) | `created_by` / `updated_by` |
@@ -1482,6 +1526,10 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-05 | v3.3 | **누적 계약 드리프트 역전파(코드=truth, fix/aml-ra-envelope-fds-spec-backprop) — 판정 목록 `rule` 필터·Case SLA 필드·Case 목록 `slaBreached` 필터.** (1) **§4.2 `GET /api/v1/fds/decisions`** 목록 필터의 `ruleNo`(적중 룰 번호) → **`rule`**(적중 룰 id/이름 부분일치·대소문자 무시 — fds-svc 는 숫자 룰 번호가 없어 목록 행의 룰 코드/이름 문자열로 검색) 정정(`DecisionQueryController.listDecisions` `@RequestParam String rule` 1:1). (2) **§5.5 `CaseDto`** 에 `slaDueAt`(datetime, nullable — `CaseSlaPolicy` 파생 처리 SLA 기한)·`slaBreached`(boolean — SLA 초과 여부) 필드 추가(구 문서엔 미표기, 코드 `CaseDto.slaDueAt/slaBreached`·도메인 `Case.getSlaDueAt/isSlaBreached`·`CaseSlaPolicy.dueAt/breached` 정본). (3) **§4.x `GET /api/v1/fds/cases`** 목록 필터에 `slaBreached`(boolean) 추가(`CaseController.listCases` `@RequestParam Boolean slaBreached`). ⚠️ §4.6 `/admin/fds/rules` 의 `ruleNo`(텍스트검색) 및 OpenAPI `RuleRef.ruleNo`(§5.4 응답 필드)는 **코드=truth 그대로 유지**(`RuleAdminController` `@RequestParam ruleNo`·`FdsDecisionCaseDtos.RuleRef.ruleNo` — 별개 계약, 변경 없음). | aegis-spec. 코드=truth. 근거=fds-svc `adapter/in/rest/DecisionQueryController`(rule)·`adapter/in/rest/CaseController`(slaBreached)·`adapter/in/rest/dto/CaseDto`(slaDueAt/slaBreached)·`domain/Case`·`domain/CaseSlaPolicy`. |
+| 2026-07-04 | v3.2 | **(H1) 판정 발동 룰 근거 거래 조회 엔드포인트 역전파(코드=truth, fix/aml-fds-spec-backprop).** (1) **§4.2 Decision API 표에 행 추가** — `GET /api/v1/fds/decisions/{decisionId}/evidence-transactions?ruleId=&page=&size=`(scope `fds:case:read`) 판정 근거 거래 전수 페이징(요구2, 발동 룰 evidence 윈도우 해소·`feature_snapshot` 캡 미절단, `ruleId` 미지정 시 대표 룰 A12, size 기본 50·200 클램프 A8, 미지 decision 404). (2) **§5.4a `DecisionEvidenceTransactionsResponse` DTO 신설** — 코드 `DecisionEvidenceTransactionsResponse`(ruleId/ruleName/outcome/dimension/dimensionRef/window/windowStart/asOf/channelFilter/transactions=`PageResponse<EventViewResponse>`) 1:1 전사, rows=EventView 투영(토큰만·raw PII 미포함·canonical_payload 미노출). | aegis-spec. 코드=truth. 근거=fds-svc `adapter/in/rest/DecisionQueryController`(GET evidence-transactions)·`adapter/in/rest/dto/DecisionEvidenceTransactionsResponse`·`EventViewResponse`·port `QueryDecisionEvidenceUseCase`·`DecisionEvidenceQueryPort`. sass §01-fdsSvc 동기화. |
+| 2026-07-04 | v3.0 | **중립(canonical) 수집 블록 인입 확장 반영(코드=truth, feature/aml-neutral-canonical-ingest, additive).** §5.1 `IngestEventRequest` 표에 `card`/`balance`/`funding` 블록 행 추가 + `CardDto`(scheme·issuerCountry·domesticInternationalFlag)·`BalanceDto`(balanceBefore·balanceAfter)·`FundingDto`(fundingInstrumentType·isAutoTopup·isManualApproval) 서브-DTO 설명 신설 + `RiskSignalsDto`에 `accountHolderNameMatch`(차명계좌 §6.2)·`fundingSourceType` 가산. AML 중립 수집 API(02-aml §2.1a)의 5 product 신호를 FDS 판정 경로가 동일 feature 결선으로 소비하도록 확장(비-PII만, PAN/계좌/충전수단 masked 미수용·`instrument.instrumentRef` 토큰 참조 §16.1). 기존 룰팩 C1213 이 cmp/velocity 노드로 소비 "가능"까지가 목표(신규 룰팩 신설 없음). feature 카탈로그 등록=DB §feature catalog V6(01-fds-db.md). | aegis-java-implementer. 코드=truth. 근거=fds-svc `adapter/in/rest/dto/IngestEventRequest`(CardDto·BalanceDto·FundingDto·RiskSignalsDto.accountHolderNameMatch/fundingSourceType)·`domain/rule/DomainFeatureKeys`(§6.2~§6.5 blocks). |
+| 2026-07-04 | v3.1 | **bo-api 판정 목록 페이징 봉투 역전파(코드=truth, fix/list-server-pagination).** bo-api `GET /api/v1/fds/decisions`(BO 위임 표면)에 `page`(기본 0)·`size`(기본 20·상한 200) 파라미터 추가, 응답을 배열 → **`DecisionPage{rows, page, size, totalElements, totalPages}`** 봉투로 전환(fds-svc `PageResponse` 메타 passthrough — 기존엔 위임 시 totalElements 유실로 목록 화면이 첫 페이지만 표시되던 결함). stub(비위임) 경로도 동일 슬라이스+실측 total. bo-web 탐지결정 목록 페이저(총건수·페이지 표기) 결선. | aegis-java-implementer. 코드=truth. 근거=bo-api `FdsDecisionCaseStubController.listDecisions`(page/size)·`FdsDecisionCaseDtos.DecisionPage`·`FdsDecisionCaseStubService`. |
 | 2026-07-02 | v2.11 | **데모 인입 테스트 이벤트 transaction payload 규격·라이브 판정 실 payload 정합(데이터 정직화, 코드=truth, feature/fds-demo-data-honesty, 기능정의서 v6.10 · AML §7.1 BR-DEMO-HONESTY).** §5.1 뒤에 **데모 인입 테스트 이벤트 note 신설** — 데모 시뮬레이터가 FDS·AML 양쪽에 동일 nested `transaction`(AML 과 동일 필드 `memberRef`·`transactionRef`·`channel`·`amount`·`currency`·`corridor`·`receiverName`·`receiverCountry`·`senderHolderName`)을 전송하고 `FdsIngestTestController.TestEvent` 가 그대로 소비(기존 4필드만 소비→나머지 흡수), FDS 라이브 판정(`ingestLiveDecision`)이 `transactionRef` 을 **payload 원문 그대로** 사용(조작 `txn-live-{seq}` 폐기)·`FdsRuleCatalog` ACTIVE 룰 실평가(hash 파생 폐기) → 한 거래가 FDS 판정(§5.5 `transactionRef`)·AML 알림에 동일 `transactionRef`. seed 판정/케이스 픽스처 폐기(인입 0=빈 목록). 비-prod 전용(위임/prod fail-closed 불변). DB 스키마 무변경. | aegis-spec. 코드=truth. 근거=bo-api `FdsDecisionCaseStubService.ingestLiveDecision`·`FdsIngestTestController.TestEvent`·`FdsRuleCatalog`. 기능정의서 §8.2/§11.1 BR-005·integration(동일 transaction FDS+AML)·AML §7.1 BR-DEMO-HONESTY 동기화. DB 불변. |
 | 2026-06-30 | v2.10 | **hanpass-ph 재그라운딩(코드 정본 `com.aegis.fds` 1:1 정합).** (1) 헤더 — 운영 도메인=hanpass-ph 5채널 명시, 책임 패키지 `com.hanpass.fds`→`com.aegis.fds` 정정, 코드 정본 핀(컨트롤러·DTO·`ChannelType`/`EventFamily`/Flyway V17·V20·V22) 추가. (2) §2.2 `Tenant-Id`=hanpass-ph 단일 운영 테넌트 `tenant_demo`(테넌트=서비스 모델은 스키마 truth 유지). (3) **§3.5 신설 — hanpass 채널 5유형(`CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`)·eventType taxonomy(`remit`/`domestic`/`wallet` family, `*.requested`)·phpEquivalent 룰 feature(`transaction.phpEquivalent` PHP 환산 임계 표, V22 정합)**. (4) §5.1 `IngestEventRequest` DTO를 코드 record와 1:1 정합(`messageVersion`/`merchant`/`device`/`corridor`/`geoCountry`/`canonicalPayload` 반영, 가공의 `location`/`LocationDto` 제거, sub-DTO 필드 코드 정합), ChannelDto=운영 5종. (5) §5.3 `EvaluateRequest`를 코드 DTO(`eventId`/`transactionRef`/`subjectRef`/`sourceSystem`/`canonicalPayloadJson` 경량 body)로 정정(과거 "IngestEventRequest 동일 구조" 폐기). (6) §5.4 `DecisionResponse`에 코드 필드(`eventId`/`transactionRef`/`subjectRef`/`caseId`/`amount`/`currency`/`amountBase`/`baseCurrency`/`channelType`/`sendCountry`/`receiveCountry`) + `RuleRef`(`ruleName`/`outcome`) 반영. (7) §7.2 reasonCode 예시를 송금·월렛 도메인으로 교체(비-hanpass crypto/trade/seller/invoice 제거). (8) §10 OpenAPI — `ChannelType`(5종)·`EvaluateDecisionRequest` schema 신설, `RuleRef`/`DecisionResponse` 코드 필드 보강, `channelScope`/`CaseType` 주석에 hanpass 운영 범위·닫힌 enum 보존 명시. (9) §4.8 소스 카탈로그에서 `inbound-svc`/`INBOUND_REMIT` 제거(5채널 범위). enum/엔드포인트/scope/인증/HTTP·4-eyes 정본 불변(코드 닫힌 enum은 보존하되 hanpass 미사용 도메인 주석). `RuleRef` 는 v2.8·v2.9(ours)의 `ruleNo`/`displayName`/`reference` 와 union 유지. | java-implementer |
 | 2026-06-28 | v2.9 | **Travel Rule(`TRAVEL_RULE_MISSING`) `reference`(MISSING_FIELD)를 수령방식별로 정합(코드=truth).** 해외송금 수령 방식(`payoutMethod`: ACCOUNT_TRANSFER/CASH_PICKUP/WALLET)에 따라 필수 수취인 정보가 달라, `RuleRef.reference`(type=MISSING_FIELD)가 `{payoutMethod, requiredFields[], missingFields[], corridor}`를 담는다. `requiredFields`=방식별 필수(계좌이체 이름·계좌·은행 / 캐시픽업 이름·전화·신분증 / 지갑 이름·지갑주소), `missingFields`⊆required(캐시픽업은 계좌번호 미보고). 필드 key·방식 코드만(원문 PII 미포함). AML VASP `completenessStatus`(§02-aml §3.14)와는 별개 모델. | aegis-spec. 코드=truth. 근거=bo-api `travelRuleReference`. |

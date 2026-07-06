@@ -341,17 +341,18 @@ com.hanpass.fds
 ├── domain/        # CanonicalEvent, Subject, Actor, Instrument, Transaction,
 │                  #   Decision, Action, Case, RiskGroup, RuleSet 등 ADT·불변식
 ├── application/
-│   ├── usecase/   # IngestEvent, EvaluateDecision, RouteAction, ManageCase,
+│   ├── usecase/   # IngestEvent, EvaluateDecision, QueryDecisionEvidence, RouteAction, ManageCase,
 │   │              #   ManageApproval, ManageRule, SimulateRule, ManageGroup, ExportEvidence,
 │   │              #   ManageSourceSystem, VendorBridge
 │   ├── port/in/   # IngestEventUseCase, EvaluateDecisionUseCase, RouteActionUseCase,
+│   │              #   QueryDecisionEvidenceUseCase(판정 발동 룰 근거 거래 전수 조회, API §4.2),
 │   │              #   ManageCaseUseCase, ManageApprovalUseCase,
 │   │              #   ManageRuleUseCase, SimulateRuleUseCase,
 │   │              #   ManageGroupUseCase, ExportEvidenceUseCase,
 │   │              #   ManageSourceSystemUseCase, VendorBridgeUseCase
 │   │              #   (유스케이스↔API 그룹 정본은 API 명세 §4)
 │   └── port/out/  # CanonicalEventStorePort, FeatureStorePort, ActionOutboxPort,
-│                  #   AmlCasePort(aml-svc), SchemaRegistryPort,
+│                  #   AmlCasePort(aml-svc), SchemaRegistryPort, DecisionEvidenceQueryPort,
 │                  #   ApprovalStorePort, CaseStorePort, EvidenceExportPort
 ├── adapter/
 │   ├── in/rest/        # Case·Action·Evidence·Admin·Approval·VendorBridge API 50종+
@@ -366,7 +367,7 @@ com.hanpass.fds
 └── global/        # tenant context, traceId 전파, 보안/마스킹 필터, 설정
 ```
 
-> `adapter/in/rest`의 엔드포인트 전수·요청/응답 스키마 정본은 **API 명세(`docs/design/api/01-fds-api.md` §4)** 이며, 위 주석은 그룹 요약이다(Case·Action·Evidence·Admin·Approval·External Vendor Bridge). `port/in`의 유스케이스 포트는 API §4 그룹(ManageCase·ManageApproval·ExportEvidence·ManageGroup·ManageSourceSystem·VendorBridge 등)과 1:1 대응한다. **`ManageRuleUseCase`는 룰 생성·수정·활성화·rollback(API §4.6 Rule Admin 11종, 4-eyes `subjectKind=RULE`)의 생명주기 관리 포트이며, `SimulateRuleUseCase`(룰 시뮬레이션/백테스트, `POST /api/v1/admin/fds/rules/simulations`)와 역할이 분리된다.**
+> `adapter/in/rest`의 엔드포인트 전수·요청/응답 스키마 정본은 **API 명세(`docs/design/api/01-fds-api.md` §4)** 이며, 위 주석은 그룹 요약이다(Case·Action·Evidence·Admin·Approval·External Vendor Bridge). `port/in`의 유스케이스 포트는 API §4 그룹(ManageCase·ManageApproval·ExportEvidence·ManageGroup·ManageSourceSystem·VendorBridge 등)과 1:1 대응한다. **`ManageRuleUseCase`는 룰 생성·수정·활성화·rollback(API §4.6 Rule Admin 11종, 4-eyes `subjectKind=RULE`)의 생명주기 관리 포트이며, `SimulateRuleUseCase`(룰 시뮬레이션/백테스트, `POST /api/v1/admin/fds/rules/simulations`)와 역할이 분리된다.** **Decision 조회 그룹(API §4.2)은 `DecisionQueryController`가 단건(`GET /decisions/{id}`)·목록(`GET /decisions`)에 더해 `GET /decisions/{decisionId}/evidence-transactions`(판정 발동 룰 근거 거래 전수 페이징, 요구2)를 제공한다 — 인바운드 포트 `QueryDecisionEvidenceUseCase`, 아웃바운드 포트 `DecisionEvidenceQueryPort`(발동 룰 evidence 윈도우 해소 + 근거 거래 조회), 응답 DTO `DecisionEvidenceTransactionsResponse`(API §5.4a).**
 >
 > bo-api·bo-web은 정본의 별도 레이아웃(패키지-바이-피처 / Next.js App Router)을 따르며, 본 문서의 enum·API·규칙을 그대로 입력으로 사용한다.
 
@@ -2358,6 +2359,7 @@ hanpass-ph FDS(`fds-svc`)는 Hanpass `FdsSvc`를 참조 구현으로 삼되, 그
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-04 | v2.7 | **(H1) 판정 발동 룰 근거 거래 조회 유스케이스 역전파(코드=truth, fix/aml-fds-spec-backprop).** §6.2 헥사고날 레이아웃 — `application/port/in`에 `QueryDecisionUseCase`·`QueryDecisionEvidenceUseCase`(판정 발동 룰 근거 거래 전수 조회, API §4.2) 추가, `application/port/out`에 `DecisionEvidenceQueryPort`(발동 룰 evidence 윈도우 해소 + 근거 거래 조회) 추가. `adapter/in/rest` 註記에 Decision 조회 그룹(`DecisionQueryController`: `GET /decisions/{id}`·`GET /decisions`·`GET /decisions/{decisionId}/evidence-transactions`, 응답 DTO `DecisionEvidenceTransactionsResponse` API §5.4a) 명문화. 어댑터-인 표면 + 유스케이스 목록 수준 반영(엔진 도메인 무변경). | aegis-spec. 코드=truth. 근거=fds-svc `adapter/in/rest/DecisionQueryController`·port `QueryDecisionEvidenceUseCase`·`QueryDecisionUseCase`·`DecisionEvidenceQueryPort`·usecase `QueryDecisionService`. API §4.2/§5.4a 동기화. |
 | 2026-06-30 | v2.6 | **hanpass-ph grounding 재정합(코드 truth 기준).** 문서를 일반 멀티서비스 SaaS FDS 플랫폼 서술에서 **hanpass-ph 단일 FDS 엔진(`fds-svc`, 테넌트 `tenant_demo`) 아키텍처 정본**으로 재작성. 제목·§1 목적·§2.1~2.4·§4·§5.1/5.4·§6 아키텍처 다이어그램·§7 데이터 모델·§8.1 event family·§8.2 캐논 예시·§9.1~9.3 enum·§10.1/10.2 룰·§13.0b/13.4 멀티테넌시·§12 연동·§14.6 commerce·§15 도메인 예시·§18 Phase3/7·결론·§3.1 — hanpass-ph **5채널**(`CROSS_BORDER_REMIT`·`DOMESTIC_REMIT`·`CASH_IN`·`WALLET_PAYMENT`·`WALLET_WITHDRAWAL`) + `transaction.phpEquivalent`(결제액 PHP 환산) 룰 feature로 정렬. 카드·PG·코인·무역·이커머스·B2B·내부감사 등 **비-hanpass 채널/Phase 7 advanced domain**과 다수 도메인 예시는 제거하되, `ChannelType`/`EventFamily`/`InstrumentType`/`PaymentRail` 닫힌 enum·commerce/trade 도메인·feature 분기는 코드 truth로 **닫힌 잔존(미사용)** 명시. 헥사고날(domain/application/adapter/global)·멀티테넌시 인프라는 코드 truth로 유지. `EventFamily` REMIT/DOMESTIC/WALLET 보강. | aml-system-docs 역전파(코드 truth) |
 | 2026-06-21 | v2.5 | **룰 추천 엔드포인트·빌더 인라인 시뮬 반영(코드 정합).** §18 Phase 5(Compliance Operations Console)의 rule simulation 인접에 **rule recommendation(threshold sweep)** 1줄 추가 — 목표 적중률 → 표본(거래) 내 단일 피처 분포 percentile 임계값 역산 + 단일조건 룰 엔진 재평가 검증(인접 대안 ±1·2%p), 표본 500 근사·read-only, 빌더 인라인 추천 패널 소비(API §4.6 `POST /admin/fds/rules/recommendations`). 도메인 모델·enum 불변. | aegis-java-implementer |
 | 2026-06-15 | v2.4 | T9(FDS-ENG-05) evidence export 산출 포맷 명문화 — 설계서-코드 갭 마감: §16.4 생성 원칙에 `export_format` 4종 **네이티브 산출** 항목 추가(`CSV`/`JSON_API`=텍스트, `EXCEL`=Apache POI 실 `.xlsx`, `PDF`=OpenPDF 실 `.pdf`, content-type·확장자 정합, EXCEL/PDF도 CSV와 동일 masking 논리 콘텐츠만 소비—raw PII 미도입 DB §7.1) + manifest hash는 바이너리 비결정 메타데이터 배제 위해 **canonical 논리 콘텐츠 + format enum** 위 SHA-256으로 계산(재현성 보장) 명문화. §11.6.15 export_format 표에 §16.4 cross-ref 추가. 코드 정본(`LocalExportArtifactAdapter`) 정합 — enum 4종↔코드↔content-type 1:1. | aegis-java-implementer |

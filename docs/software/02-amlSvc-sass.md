@@ -343,16 +343,20 @@ com.aegis.aml
 │   │              #   CddEddService·CaseManagementService, RegulatoryReportService,
 │   │              #   ApprovalDispatchService(4-eyes), OutboxRelayService(아웃박스),
 │   │              #   IdentityProjectionService·LinkRelationshipService, FdsDecisionService,
+│   │              #   AlertRelatedTransactionsService(알림 발동 근거 거래 전수 조회),
 │   │              #   PolicyManagementService·PolicyPackService·PolicySimulationService,
 │   │              #   Watchlist/HighRiskRegistry/IraReport/PepApproval/PiiReveal/EvidenceExport …
 │   ├── port/in/   # IngestAmlEventUseCase, ScreenSubjectUseCase(transactionRef로 sender+receiver 묶음),
 │   │              #   AssessRiskUseCase, EvaluateTmUseCase, ManageCaseUseCase·ManageCddUseCase,
-│   │              #   ManageRegulatoryReportUseCase, RunApprovalUseCase, ImportWatchlistUseCase …
+│   │              #   ManageCddEddUseCase, ManageRegulatoryReportUseCase·ReviewStrCtrUseCase,
+│   │              #   ManagePolicyUseCase, RunApprovalUseCase, ImportWatchlistUseCase,
+│   │              #   QueryAlertRelatedTransactionsUseCase …
 │   └── port/out/  # CanonicalEventStorePort, CanonicalEventWindowPort(velocity·phpEquivalent),
 │                  #   WatchlistEntry/Source/FreshnessStorePort, ScreeningResultStorePort,
 │                  #   RiskModel/RiskScoreStorePort, TmScenarioStorePort, CaseRepositoryPort,
 │                  #   RegulatoryReportStorePort, ApprovalRequestPort, OutboxStore/MessagingPort,
-│                  #   PiiTokenPort·PiiVaultPort, ReportSubmissionPort, WebhookSenderPort, AuditEventPort …
+│                  #   BankingCalendarPort, PiiTokenPort·PiiVaultPort, ReportSubmissionPort,
+│                  #   WebhookSenderPort, AuditEventPort …
 ├── adapter/
 │   ├── in/rest/        # 3-plane(API §0): Public /api/v1/aml/**(ingest·screen·RA·TM·evidence),
 │   │                   #   Internal /internal/v1/aml/**(screen·RA·PII reveal·FDS escalation),
@@ -1949,6 +1953,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-04 | **알림 발동 근거 거래 전수 조회 표면 역전파(코드=truth, fix/aml-fds-spec-backprop).** §6.2 헥사고날에 in-port `QueryAlertRelatedTransactionsUseCase`(알림 발동 근거 거래 전수 페이징, API §2.4/§3.4d) + out-port `CanonicalEventWindowPort`(근거 윈도우 페이징)·`BankingCalendarPort` 추가. `adapter/in/rest` 엔드포인트 전수·응답 스키마 정본은 API §2.4/§3.4d 위임(본 레이아웃은 그룹 요약). 엔진 domain 무변경 — read-only 조회 표면. | aegis-spec. 코드=truth. 근거=aml-svc `application/port/in/QueryAlertRelatedTransactionsUseCase`·`application/usecase/AlertRelatedTransactionsService`·`application/port/out/CanonicalEventWindowPort`·`adapter/in/rest/AlertController`(`GET /alerts/{alertId}/related-transactions`). API §2.4/§3.4d 동기화. |
 | 2026-06-30 | **hanpass-ph 기준 재작성(코드 truth).** 본 설계서를 SaaS 다도메인 AML 일반화 → **hanpass-ph 단일 서비스 AML 엔진(`aml-svc`)** 정본으로 재정렬. (1) 제목·§1·§2 — 시스템=hanpass-ph AML, 비-hanpass 도메인(카드 PG·crypto·trade/TBML·ecommerce·B2B) 일반화 제거, fds/aml 관계 유지. (2) §3·§4 — Hanpass 참조구현을 코드 구성요소 매핑으로 교체, "지원 금융 도메인 15종" → hanpass-ph 거래 6채널(`CASH_IN`/`DOMESTIC_REMIT`/`CROSS_BORDER_REMIT`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`/`CARD_NOT_PRESENT`, V26). (3) §6.2 — 헥사고날 패키지 레이아웃을 실제 소스(`com.aegis.aml` domain/application/adapter) 기준으로 재작성. (4) §8.1 — event family를 코드 `EventFamily` enum **20종** 정본으로 교체(hanpass-ph `REMIT`/`DOMESTIC`/`WALLET` transaction-bearing, advanced/vendor는 미사용 잔존 명시). (5) §10.2a — 거래당 sender/receiver WLF(`transactionRef`) 신설. (6) §12.1 — `TmScenario` 10종 + 데모 ACTIVE 시나리오(phpEquivalent 임계, V19/V22/V26/V28)로 재작성. (7) §9/§10/§11/§13.3/§14.1 — 닫힌 enum의 hanpass-ph 미사용 값을 ✕ 표기. (8) §15.3~§15.5 — REST+SQS만, polling/CDC·legacy bridge 미사용 잔존. (9) §16 — 멀티테넌트 유지·운영=`tenant_demo` 단일 명시. (10) §18 — 도메인별 예시를 hanpass-ph 6채널로 교체. (11) Travel Rule/VASP·advanced domain·vendor 전수에 미사용 주석. | aegis-java-implementer. 근거=`services/aml-svc/src/main/java/com/aegis/aml`(EventFamily·TmScenario·ScreenSubjectUseCase·TmEvaluationService)·migration V19/V22/V26/V27/V28/V29. 닫힌 enum·DB 컬럼은 삭제 아닌 "잔존(미사용)" 표기 — 코드/DB 정본 보존. |
 | 2026-06-21 | **코드 기준 outbox aggregate_type 정합(이격 리포트 AML).** §15.8 `aml_outbox.aggregate_type` 허용값 5종→**6종**(`IRA_REPORT` 추가 — 구현 V13, IRA 제출 폐루프 enqueue). DB §3.15·integration §8.1 동기화. | system-architect. 근거=`aml-svc/.../db/migration/V13`. 이격18 반영. |
 | 2026-06-11 | QA HIGH(L118) 해소: §8.1 cross-reference 구문 "연동 §3.1이 14종으로 표기한 것은 오기" → "연동 §3.1은 15종 정본과 동기화 완료"로 교체(연동 v1.6 `vendor.*` 등재 반영 직접 확인). | system-architect |

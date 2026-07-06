@@ -103,6 +103,86 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 > RA 평가 `POST /api/v1/aml/risk-assessments/evaluate`, 실시간 WLF
 > `POST /api/v1/aml/screen`. 물리 엔진 alias 추가는 별도 버전 작업으로 분리하며, 현재 BO 카탈로그/헬스의 분류 정본은 이 표기다.
 
+> **인입 파이프라인 step 7d — 1차 온보딩 RA 엔진 CDD 파생(코드=truth, feature/aml-onboarding-ra-cdd-derivation, 요구 런 11).** `POST /api/v1/aml/events` 로 **`customer.cdd.completed`** 가 인입되면 단일 트랜잭션의 identity projection(step 7, `aml_customers` upsert + `kyc_evidence` + PII vault) **직후** 엔진이 1차 RA 를 CDD 데이터로부터 직접 파생한다(`DeriveOnboardingRaUseCase`·`OnboardingRaDerivationService`) — 별도 `POST /risk-assessments/evaluate` 호출·클라 계산 없이 `aml_risk_scores` 1차 RA 행이 생성된다:
+> - **(a) SCREENING** = 회원 WLF 스크리닝(SANCTION/PEP, 주체 키 `memberRef`, idem `cdd-ra:{eventId}`, `TargetType.CUSTOMER`, transient name/dob 는 매칭 토큰만·미저장 §19.2). 매치(POSSIBLE/TRUE, 비 AUTO_DISCOUNTED) 시 SCREENING=100 + **위험등급 HIGH 강제 상향(floor)** + 사유(list_type SANCTION/PEP) + 근거 참조 토큰(screeningId/entryId/listType), 무매치=0.
+> - **(b) GEOGRAPHY** = 국적/거주국 × 국가위험 정본(`LookupCountryRiskUseCase.gradeFor`, §2.7 국가위험) → PROHIBITED/HIGH=100·MEDIUM=60·LOW/미등재=15(nationality×residenceCountry **max 결합**).
+> - **(c) CUSTOMER** = `kyc_evidence`(sourceOfFunds·kycLevel) → `(sofRisk+kycLevelRisk)/2` 엔진 파생(occupation 예약).
+> 파생 규칙은 ACTIVE ONBOARDING 모델(`KR_DEFAULT_RA`) `parameters` JSONB 정본(V19)이 소비하며 엔진 상수 하드코딩 없음. **fail-safe**: 스크리닝 미가용(워치리스트 stale/미수입) 시 freshness **boolean 선검사**로 1차 RA **평가 보류**(스코어 미생성)하되 CDD 인입 자체는 `ACCEPTED` — 예외 전파로 인입 TX 를 rollback-only 오염시키지 않는다(§15.5·§20.2 fail-closed). `customer.cdd.completed` 외 이벤트는 no-op.
+
+### 2.1a 중립(canonical) 수집 API — `POST /aml/v1/transaction-events` (코드=truth, feature/aml-neutral-canonical-ingest)
+
+소스 중립(canonical) 수집 API. 해외송금·국내송금·카드결제·월렛충전·월렛결제 5개 product 를 **단일 Envelope**(`docs/aml-data.md` §3~§7, ISO 20022/FATF R.16/ISO 4217·3166·8601)로 수신하고, 하나의 POST 로 WLF 스크리닝 + CTR/STR 평가(TM 파이프라인)를 팬아웃한다. 기존 `POST /api/v1/aml/events`(§3.1, 내부 canonical 저장 경로)와 별개의 공개 수집 표면이며, 원천 시스템은 자기 컬럼을 이 표준 필드로 매핑만 하면 동일 API 로 인입한다.
+
+| 메서드 | 경로 | scope | 멱등 | 헤더 | 설명 | DB |
+|---|---|---|---|---|---|---|
+| POST | `/aml/v1/transaction-events` | `aml:event:write` | Y | `Tenant-Id`(필수)·`Idempotency-Key`(옵션, 미지정 시 body `eventId` 사용·지정 시 `eventId`와 일치 필수)·`X-Trace-Id`(옵션) | 중립 Envelope 수신 → 검증(422) → PII 토큰화·vault → canonical event 멱등 저장 → WLF + CTR/STR 평가. 응답=수신확인 + 평가요약 | `aml_canonical_events`(+`aml_alerts`·CTR/STR 파생) |
+
+**상태코드 매핑**(엔진 `NeutralTransactionEventController#httpStatus` = truth): `ACCEPTED`→`202`, `REPLAYED`(멱등 재전송·동일 payload)→`200`, `DUPLICATE`(동일 키·다른 내용)→`409`, `REJECTED`(검증 실패)→`422`. 검증 실패는 **단일 422** 에 누적 위반 목록을 실어 반환하며 500 을 던지지 않는다(fail-closed).
+
+**요청 Envelope 스키마**(공통, `NeutralEventRequest` = truth). 상세 블록·Party·Amounts 는 §3.17.
+
+| 필드 | 타입 | R | 검증/설명 |
+|---|---|---|---|
+| `eventId` | string(UUID) | R | 이벤트 고유 ID(멱등키). `Idempotency-Key` 헤더와 일치해야 함 |
+| `eventType` | enum | R | `CREATED`/`COMPLETED`/`CANCELLED`/`REFUNDED`/`REVERSED`. 취소·환불·역거래는 CTR 순증(§9)을 위해 `relatedReference` 필수 |
+| `product` | enum | R | `CROSS_BORDER_REMITTANCE`/`DOMESTIC_TRANSFER`/`CARD_PAYMENT`/`WALLET_TOPUP`/`WALLET_PAYMENT` |
+| `direction` | enum | R | `INBOUND`/`OUTBOUND`/`INTERNAL` |
+| `transactionReference` | string | R | 원천 거래 고유번호 |
+| `relatedReference` | string | 조건부 | 취소/환불/역거래 시 원거래 참조번호(reversal eventType 이면 필수) |
+| `occurredAt` | string(date-time) | R | ISO-8601 offset 포함 |
+| `valueDate` | string(date) | — | 결제/정산일 |
+| `channel` | enum | — | `MOBILE_APP`/`WEB`/`BRANCH`/`API`/`KIOSK` |
+| `institutionId` | string | R | 보고기관 식별자(멀티 소스 구분). 엔진 canonical `sourceSystem`으로 매핑(가정 G8) |
+| `status` | string | R | 원천 거래 최종 상태 |
+| `originator` | object(Party) | R | 주체 고객. `nationalIdentityKey` 필수(CTR 최소요건 §9). §3.17 Party |
+| `amounts` | object | R | 금액 블록. `baseAmount`/`baseCurrency` 필수, `baseCurrency`=테넌트 규제통화(가정 G3). §3.17 Amounts |
+| `counterparty` | object(Party) | 조건부 | 상대방. `CROSS_BORDER_REMITTANCE`이면 필수(Travel Rule §6.1) |
+| `remittance`/`domesticTransfer`/`cardPayment`/`walletTopup`/`walletPayment` | object | 조건부 | `product`에 대응하는 블록만 채움(§3.17 product 블록) |
+
+**422 검증 규칙**(`NeutralEventValidator` = truth): ① 필수필드 누락(`eventId`/`eventType`/`product`/`direction`/`transactionReference`/`institutionId`/`status`/`occurredAt`/`originator.nationalIdentityKey`/`amounts.baseAmount`/`amounts.baseCurrency`) ② `occurredAt` ISO-8601 offset 위반 ③ 통화 ISO 4217(3자)·국가 ISO 3166-1 alpha-2(2자) 위반 ④ `baseAmount` < 0 ⑤ `amounts.baseCurrency` ≠ 테넌트 규제통화(가정 G3, 데모=PHP·임계 ₱500,000 — 잘못된 환산으로 CTR 오보고 방지 fail-closed) ⑥ reversal eventType 인데 `relatedReference` 누락 ⑦ `CROSS_BORDER_REMITTANCE`인데 `counterparty` 누락. 위반은 배열로 누적되어 한 번의 422 로 반환된다. 미지 enum 값은 역직렬화 단계에서 `400 AML.BAD_REQUEST`.
+
+**family 매핑 표**(`ProductEventTypeMapper` = truth, 가정 G1/G2). product+lifecycle → canonical `eventType` 문자열 + engine `channelType` 토큰:
+
+| product | canonical eventType | EventFamily | channelType | CTR 현금성 |
+|---|---|---|---|---|
+| CROSS_BORDER_REMITTANCE | `remit.transfer.<verb>` | REMIT | `CROSS_BORDER_REMIT` | 비현금 |
+| DOMESTIC_TRANSFER | `domestic.transfer.<verb>` | DOMESTIC | `DOMESTIC_REMIT` | 비현금 |
+| CARD_PAYMENT | `transaction.card-payment.<verb>` | TRANSACTION(가정 G1, 신규 enum 없음) | `CARD_PAYMENT` | 비현금 |
+| WALLET_TOPUP | `wallet.charge.<verb>` | WALLET | `CASH_IN` | **현금성(CTR 대상)** |
+| WALLET_PAYMENT | `wallet.pay.<verb>` | WALLET | `WALLET_PAYMENT` | 비현금 |
+
+- `<verb>` = lifecycle 소문자(`created`/`completed`/`cancelled`/`refunded`/`reversed`, 가정 G2). 기존 hanpass `*.requested` 태그는 레거시 커넥터용으로 병존(strict gate 는 family prefix 만 검사).
+- `channelType`=`CASH_IN`(WALLET_TOPUP)만 CTR 현금성 게이트(`CtrEvaluationService.CASH_BEARING_CHANNELS`)에 걸려 CTR DRAFT 를 연다. 나머지 product 는 STR/TM 은 평가하되 CTR DRAFT 를 열지 않는다.
+
+**CTR 순증(net) 규칙**(가정 G4, `NeutralTransactionEventService#signedBaseAmount` = truth): reversal eventType(CANCELLED/REFUNDED/REVERSED)은 `amountBase`/`phpEquivalent`를 **음수**로 저장해 동일 `(tenant, subject, bankingDay)` 일합산 윈도우가 원거래를 순증 차감한다. 별도 보정 레코드 없이 DRAFT 가 부호 합산을 누적하며, 임계 재하락 시에도 DRAFT 는 유지된다(자동 철회·삭제 없음, 감사추적 보존).
+
+**PII 토큰화 경계**(가정 G7/G9, §1.6 원칙 그대로): raw 이름·신분증번호·계좌번호·전화는 컨트롤러→usecase 수신 경계에서만 존재하고, 즉시 토큰화(`PiiTokenPort`)+가역 vault(`aml_pii_vault`) 적재 후 소멸한다. 엔진 payload·canonical event·로그·응답에는 `targetRef`/`counterpartyRef`·`*Masked`만 실린다. **회원 주체 참조 키(`targetRef`, subject)는 회원 업무참조(`originator.partyReference`, 예 `M-1001`)를 토큰화하지 않고 그대로 쓴다**(비PII 업무참조 — integration §10.2a·§19.2): FDS `subject_ref`·CDD `customer_ref`·`aml_risk_scores.target_ref`와 동일 회원 키라 온보딩↔거래 RA 가 이어진다. PII 속성(이름·`nationalIdentityKey`·신분증·전화)만 토큰/vault 로 흐른다. counterparty(외부 수취인) 안정키=이름+거주국+전화(기존 WLF 정본 재사용). 신분증번호(`idNumberToken`)는 vault 만, payload·응답 미포함. 업무참조 부재 레거시 경로만 `originator.nationalIdentityKey` 기반 토큰으로 폴백(잔존 허용).
+
+**응답**(`NeutralIngestResponse` = truth, 가정 G6 — 동기 HOLD 오케스트레이션 미구현): `{ eventId, status(ACCEPTED/REPLAYED/DUPLICATE/REJECTED), accepted(boolean), violations(string[], REJECTED 시만), evaluation }`. `evaluation`(평가된 경우만)=`{ decision(PASS/REPORT — advisory 파생값), alertCount, firedRuleCodes[], screened(boolean) }`. WLF 실패는 인입 실패로 전파하지 않고 `screened=false`로만 표기(가정 G10, best-effort).
+
+**엔진 저장 flat canonical payload**(`NeutralTransactionEventService#flatPayload` = truth — 위 **입력 Envelope**(nested)와 구분되는, 엔진이 canonical event(`aml_canonical_events.payload` JSONB)에 저장하고 TM/CTR/STR 룰 윈도우가 소비하는 **평탄(flat) 키** 정본). 입력 nested 필드를 서버가 평탄화·토큰화·파생한 결과이며, camelCase 단일 depth 다:
+
+| flat 키 | 타입 | 파생/설명 |
+|---|---|---|
+| `targetRef` | string | **회원 주체 참조 키 = 회원 업무참조**(`originator.partyReference`, 예 `M-1001` — 비PII, 토큰화 안 함, integration §10.2a). subject_ref·`customer_ref`·`aml_risk_scores.target_ref`·`aml_alerts.target_ref`와 동일 값. 업무참조 부재 레거시 경로만 `nationalIdentityKey` 기반 토큰 폴백 |
+| `memberRef` | string | 비PII 회원 업무참조(`originator.partyReference`, 예 `M-1001`) — 화면 회원번호 열, FDS `subject_ref` 동형. 주체 키 통일 이후 `targetRef`와 동일 값이나 `payload->>'memberRef'` 직접 소비 하위호환 열로 유지. 부재 시 키 미기록 |
+| `transactionRef` | string | `transactionReference`(원천 거래 고유번호) |
+| `amountBase` | decimal | 정규화 base 금액. reversal(취소/환불/역거래)은 **음수**(가정 G4·일합산 순증 차감) |
+| `phpEquivalent` | decimal | PHP 환산액 = `amountBase`(baseCurrency=PHP 가정 G3) |
+| `currency` | string | `amounts.baseCurrency`(ISO 4217, 테넌트 규제통화) |
+| `channelType` | string | family 매핑(위 family 표)의 engine channelType 토큰(예 `CASH_IN`/`DOMESTIC_REMIT`/`CROSS_BORDER_REMIT`) |
+| `direction` | string\|null | `INBOUND`/`OUTBOUND`/`INTERNAL` |
+| `counterpartyRef` | string | 단일 canonical 상대방 토큰(flat payload·WLF 스크리닝·vault 공유; 아래 파생 규칙). 부재 시 키 미기록 |
+| `corridor` | string\|null | **서버 파생 문자열**(송금 2종만; 아래 파생 규칙). 미해당(WALLET/CARD)은 키 미기록 |
+| `product` | string | `CROSS_BORDER_REMITTANCE`/`DOMESTIC_TRANSFER`/`CARD_PAYMENT`/`WALLET_TOPUP`/`WALLET_PAYMENT` |
+| `eventLifecycle` | string | `eventType`(`CREATED`/`COMPLETED`/`CANCELLED`/`REFUNDED`/`REVERSED`) |
+| `relatedReference` | string | 원거래 참조(reversal 시). 부재 시 키 미기록 |
+| `institutionId` | string | 보고기관 식별자(canonical `sourceSystem` 매핑, 가정 G8) |
+| product 신호 | — | `product` 블록별 비PII STR/FDS 신호(`addProductSignals`=truth): REMIT=`destinationCountry`/`payoutPartner`/`relationshipToBeneficiary`/`payoutMethod`, DOMESTIC=`accountHolderNameMatch`/`fundingSourceType`, CARD=`mcc`/`merchantRef`/`merchantCountry`/`balanceBefore`/`balanceAfter`, WALLET_TOPUP=`fundingInstrumentType`/`balanceBefore`/`balanceAfter`/`walletId`, WALLET_PAYMENT=`mcc`/`merchantRef`/`balanceBefore`/`balanceAfter`/`walletId`(값 있을 때만 기록) |
+
+- **`corridor` 서버 파생 규칙**(`corridor()` = truth): 발신국 = 테넌트 규제국(`aml.neutral.regulatory-country`, 기본 `PH`). `DOMESTIC_TRANSFER` → `{reg}-{reg}`(예 `PH-PH`), `CROSS_BORDER_REMITTANCE` → `{reg}-{destinationCountry}`(destinationCountry 부재 시 `counterparty.residenceCountry` 폴백; 둘 다 없으면 키 미기록), `WALLET_*`/`CARD_PAYMENT` → 키 미기록. **flat `corridor` 는 문자열**이며, 입력 §3.17 remittance 블록/§4.2·`corridor` object(nested `{ sendCountry, receiveCountry, sendCurrency, receiveCurrency }`)는 발신측이 싣는 **상세 입력 구성요소**다 — 엔진은 이를 저장 시 위 문자열로 평탄 파생하므로, 룰 윈도우가 소비하는 corridor 정본은 **본 flat 문자열**이고 §3.4d/§3.4a `relatedTransactions[].corridor` 도 이 문자열을 상속한다.
+- **`counterpartyRef` 단일화 규칙**(`resolveCounterpartyRef` = truth): 해외송금은 counterparty 블록의 안정 WLF 키(이름+거주국+전화) 토큰, 국내송금(counterparty 블록 없음)은 `domesticTransfer.creditAccount.accountHolderName`(예금주) 기반 receiver 안정 토큰 — 둘 다 flat payload·WLF screen key·vault 가 공유하는 **동일 값**(교차거래 discounting·reveal 정합). 상대방/예금주 신원이 없으면 키 미기록.
+
 ### 2.2 Screening API (Public) — 설계서 §10·§15.2·§15.7
 
 | 메서드 | 경로 | scope | 멱등 | 설명 | DB |
@@ -110,7 +190,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | POST | `/api/v1/aml/screen` | `aml:screen:evaluate` | Y | 실시간 WLF/제재/PEP screening. **hanpass-ph 해외송금은 거래당 sender(송금 회원)·receiver(수취인) 2회 호출**(§3.2 `transactionRef`로 연결) | `aml_screening_results` |
 | GET | `/api/v1/aml/screenings/{screeningId}` | `aml:screen:evaluate` | — | screening 결과 조회 | `aml_screening_results` |
 
-> **hanpass-ph WLF 호출 패턴(§3.2 정본·`ScreeningController.screen`)**: 해외송금(`remit`) 거래는 **sender = 송금 회원**(`targetType=CUSTOMER`, `targetRef`=member UUID keyed token)과 **receiver = 수취인**(`targetType=COUNTERPARTY`, `targetRef`=수취인 키 = 이름+국가+전화 토큰)을 **각각 1회씩 screen**한다(수취국 PH/VN/ID 제재 = 진양성). 두 결과는 동일 `transactionRef`(해외송금 거래번호 keyed token)로 묶여 케이스/증빙에서 거래 단위로 묶인다. receiver 스크리닝은 워치리스트 receiver 엔트리(aml-svc Flyway V26)와 매칭하며 `subjectIdentity`(§3.2) 4필드(NAME/NATIONALITY/GENDER/DOB)는 주체 무관 균일(COUNTERPARTY 미보유 필드는 reveal stub 이 빈 값). 회원가입·국내송금·월렛 등 비-cross-border 거래는 sender(`CUSTOMER`)만 screen. FP 화이트리스트(§2.7·§3.2)는 `(targetRef::matchedEntryId)` fingerprint를 키로 하므로 **특정 거래가 아니라 동일 대상의 재screening 전반에 거래간(across-transaction) 유효**하다(동일 FP 매칭은 `AUTO_DISCOUNTED`로 자동 감점). 엔진 도메인 비변경 — 데모/시뮬레이터/시드 한정. TM STR_PEP·STR_SANCTION 은 이 receiver COUNTERPARTY 스크리닝 계보를 수취인 명단 평가에 재사용(§3.4a·기능정의서 §7.1 BR-013).
+> **WLF 스크리닝 대상 = 해외송금 + 국내송금 양당사자(sender + receiver)(hanpass-ph 데모 정합)**: 송금계열 2 product — 해외송금(`CROSS_BORDER_REMITTANCE`, `remit-svc` cross-border)·국내송금(`DOMESTIC_TRANSFER`) — 거래는 송금인(sender = 회원 본인, `targetType=CUSTOMER`, `targetRef`=member UUID keyed token)과 수취인(receiver = 상대방, `targetType=COUNTERPARTY`, 해외송금 수취인 키=이름+국가+전화 토큰)을 **각각 1건씩** screen 한다(수취국 PH/VN/ID 제재 = 진양성). 두 결과는 동일 `transactionRef`(거래번호 keyed token)로 묶여 케이스/증빙에서 거래 단위로 연결된다. receiver 스크리닝은 워치리스트 receiver 엔트리와 매칭하며 `subjectIdentity`(§3.2) 4필드(NAME/NATIONALITY/GENDER/DOB)는 주체 무관 균일(COUNTERPARTY 미보유 필드는 reveal stub 이 빈 값) — 국내송금 receiver 에도 동일 적용된다. 국내송금 receiver 식별은 `domesticTransfer.creditAccount.accountHolderName`(이름) + 상대방 국가(A6, 기본 `PH`)로 해결하고, sender 스크리닝과 동일 `transactionReference` 로 키잉되어 STR party-aware receiver lineage(계약 1·6)가 소비한다. 회원가입·월렛충전·월렛결제 등 잔여(비-송금계열) 거래는 sender(`CUSTOMER`)만 screen. FP 화이트리스트(§2.7·§3.2)는 `(targetRef::matchedEntryId)` fingerprint를 키로 하므로 **특정 거래가 아니라 동일 대상의 재screening 전반에 거래간(across-transaction) 유효**하다(동일 FP 매칭은 `AUTO_DISCOUNTED`로 자동 감점). 엔진 도메인 비변경 — 데모/시뮬레이터/시드 한정. TM STR_PEP·STR_SANCTION 은 receiver COUNTERPARTY 스크리닝 계보를 수취인 명단 평가에 재사용(§3.4a·기능정의서 §7.1 BR-013).
 
 ### 2.3 Risk Assessment API (Public) — 설계서 §11
 
@@ -125,9 +205,11 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | 메서드 | 경로 | scope | 멱등 | 설명 | DB |
 |---|---|---|---|---|---|
 | POST | `/api/v1/aml/transactions/evaluate` | `aml:tm:evaluate` | Y | 거래 TM 평가·alert 생성 | `aml_alerts`(+`aml_canonical_events`) |
+| GET | `/api/v1/aml/alerts?status=&rule=&channel=&corridor=` | `aml:case:read` | — | alert triage 큐 목록(응답 DTO §3.4a `AlertDto[]`). **`status` 미지정 ⇒ 전 상태 반환**('전체' 시맨틱, run3 D1 — 기존 `defaultValue="DETECTED"` 드리프트 해소). `rule`=발동 룰 코드, `channel`/`corridor`=알럿 evidence `relatedTransactions[]` 대표값 클라이언트측 필터(run3 D6·가정 G2 1단계, 엔진 스키마 조인 필터는 후속). 전부 optional | `aml_alerts` |
 | GET | `/api/v1/aml/alerts/{alertId}` | `aml:case:read` | — | alert 조회(응답 DTO §3.4a `AlertDto`) | `aml_alerts` |
+| GET | `/api/v1/aml/alerts/{alertId}/related-transactions?page=&size=` | `aml:case:read` | — | **알림 발동 근거 거래 서버 페이징**(요구2·A8) — 발동 룰이 결정하는 윈도우(주체 velocity 윈도우 / 영업일 현금 합산 / 단건 그룹)의 근거 거래 **전수**를 페이징(20행 evidence 표시 캡과 별개). 응답 DTO §3.4d `RelatedTransactionsResponse` | `aml_alerts`(+`aml_canonical_events`) |
 
-> 엔진(aml-svc) public 알림 목록은 `status` 단일 필터(`GET /api/v1/aml/alerts?status=`)의 저수준 큐 조회다. **운영자 화면용 다중 필터 브라우즈 목록(`sourceOrigin`·`severity`·`scenario`·`channel`·`corridor`·`targetRef`·`from`/`to`)은 bo-api `GET /api/v1/bo/aml/alerts`(§2.5a)** 가 위임·집약한다(엔진 직접 다중필터 미노출).
+> 엔진(aml-svc) public 알림 목록은 `status`(optional, 미지정=전체)·`rule`·`channel`·`corridor` 필터의 큐 조회다. **운영자 화면용 다중 필터 브라우즈 목록(`sourceOrigin`·`severity`·`scenario`·`channel`·`corridor`·`targetRef`·`from`/`to`)은 bo-api `GET /api/v1/bo/aml/alerts`(§2.5a)** 가 위임·집약한다.
 
 ### 2.5 Regulatory Evidence API (Public) — 설계서 §15.6
 
@@ -156,7 +238,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | POST | `/internal/v1/aml/fds-escalations` | `fds-svc` | FDS fraud case → AML case/alert escalation 수신(body §3.10 `FdsEscalationRequest` → `FdsDecisionCommand` 어댑팅, `eventId`=멱등키(없으면 `fraudCaseRef`), `action`=FDS handoff verb, 응답 `{ alertId, accepted }`). SQS `aml-fds-decision` 큐 경로(`FdsDecisionConsumer`)와 **동일 usecase·동일 멱등(DB partial UNIQUE)·동일 감사**(T11/AML-ENG-05). 인증 = **API key + HMAC**(ingest 필터 `AmlIngestAuthenticationFilter` 차용, ADR 2026-06-15 D2; mesh mTLS 는 P8 보강). scope 강제는 호출자(fds-svc) 평면 책임(가정 A5). | `aml_alerts`(source_origin=FDS) |
 | GET | `/internal/v1/aml/customers/{customerRef}/risk` | `fds-svc` | AML high-risk/WLF 상태 조회(FDS risk group 전파용). public `GET /api/v1/aml/customers/{customerRef}/risk`와 동일 `AssessRiskUseCase`·`CustomerRiskResponse` 재사용(가정 A6), 최신 RA 등급 단독(WLF 병합 미정의 → 후속). 미존재 시 404 `AML.NOT_FOUND`. 인증 = **API key + HMAC**(가정 A1, mesh mTLS 는 P8 보강). | `aml_risk_scores`,`aml_screening_results` |
 | POST | `/internal/v1/aml/screen` | 내부 onboarding mesh | 내부 서비스용 동기 screening. public `POST /api/v1/aml/screen`와 동일 `ScreenSubjectUseCase`·`ScreenRequest`/`ScreeningResponse` 재사용(가정 A6), `Idempotency-Key` 헤더 필수(가정 A4·공개 경로 일관). 인증 = **API key + HMAC**(가정 A1, mesh mTLS 는 P8 보강). | `aml_screening_results` |
-| POST | `/internal/v1/aml/pii/reveal` | `bo-api` | 마스킹 PII reveal 정본(입력 `targetRef`/`field`/`reason` → 출력 `value`=이 요청 한정 transient cleartext). `field` 도메인 7종(`NAME`/`DOC`/`ACCOUNT`/`WALLET`/`NATIONALITY`/`GENDER`/`DOB`, §1.6, 2026-06-29 확장). 인증 = **API key + HMAC**(ingest 필터 `AmlIngestAuthenticationFilter` 차용, T3/AML-ENG-03·ADR 2026-06-15 D2). 엔진측 `RAW_DATA_ACCESS` 감사 1건(마스킹 detail). 역참조 미존재·복호화 실패 시 **503 `AML.SCREENING_UNAVAILABLE`**(fail-closed). scope `aml:pii:reveal` 강제는 호출자(bo-api) 평면 책임(§1.6, 가정 A5). mesh mTLS 는 배포계층(P8) 보강. | `aml_pii_vault`(가역암호 vault, DB §3.21) |
+| POST | `/internal/v1/aml/pii/reveal` | `bo-api` | 마스킹 PII reveal 정본(입력 `targetRef`/`field`/`reason` → 출력 `value`=이 요청 한정 transient cleartext). **`targetRef` = subject 참조**(회원 `customerRef` 또는 워치리스트 엔트리 `entryId`) — vault·엔진이 이 참조로 원문을 해소한다. 마스킹 **값** 토큰(표시명 마스킹·문서/이름 hash·UBO ref 등)을 `targetRef` 로 보내면 해소 불가(run5 #2). `field` 도메인 7종(`NAME`/`DOC`/`ACCOUNT`/`WALLET`/`NATIONALITY`/`GENDER`/`DOB`, §1.6, 2026-06-29 확장) — 이외 값은 **400 `AML.BAD_REQUEST`**. 인증 = **API key + HMAC**(ingest 필터 `AmlIngestAuthenticationFilter` 차용, T3/AML-ENG-03·ADR 2026-06-15 D2). 엔진측 `RAW_DATA_ACCESS` 감사 1건(마스킹 detail). 역참조 미존재·복호화 실패 시 **503 `AML.SCREENING_UNAVAILABLE`**(fail-closed). **비운영 stub 경로**(bo-api, delegate 미설정)에서 vault·데모 카탈로그 어디에도 없는 미인식 `targetRef` 는 가짜 원문 placeholder 를 반환하지 않고 **404 `AML.PII_TARGET_NOT_FOUND`**(감사 미기록 — 실패가 audit 이전, run5 #2). scope `aml:pii:reveal` 강제는 호출자(bo-api) 평면 책임(§1.6, 가정 A5). mesh mTLS 는 배포계층(P8) 보강. | `aml_pii_vault`(가역암호 vault, DB §3.21) |
 
 ### 2.7 Admin API (bo-api 전용) — 설계서 §13~§14·§16
 
@@ -167,22 +249,43 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | POST | `/api/v1/admin/aml/watchlist-sources` | `aml:admin:watchlist` | — | source 등록 | `aml_watchlist_sources` |
 | POST | `/api/v1/admin/aml/watchlist-sources/{sourceCode}/imports` | `aml:admin:watchlist` | — | import 업로드(diff 생성, DRAFT) | `aml_watchlist_entries` |
 | POST | `/api/v1/admin/aml/watchlist-sources/{sourceCode}/imports/{version}:apply` | `aml:admin:watchlist` | 🔒4-eyes | import 적용(active_version 승격) | `aml_watchlist_sources` |
-| GET | `/api/v1/admin/aml/watchlist-entries` | `aml:admin:watchlist` | — | 명단 항목 조회(masked) | `aml_watchlist_entries` |
+| POST | `/api/v1/admin/aml/watchlist-sources/{sourceCode}/sync` | `aml:admin:watchlist` | — (auto-apply, 4-eyes 아님) | **실 무료 공개 제재명단(OFAC SDN·UN Consolidated) 동기화** — fetch→StAX 파싱→멱등 upsert(외부키 `external_ref`)→**auto-apply**(actor `system:sanctions-sync`, 공개·권위 소스는 사람 승인 없이 `active_version` 승격)→DELISTED 정리→버전 prune(최근 2개)→freshness 갱신. 외부망 장애는 예외 미전파(fail-safe, 200+`outcome=FAILED`) — freshness 미갱신 시 48h 게이트가 스크리닝 fail-closed(설계 의도). 응답 `WatchlistSyncResult`(sourceCode·outcome(APPLIED/UNCHANGED/FAILED)·activeVersion·ingestedCount·delistedCount·prunedCount·lastImportedAt). 스케줄러(기본 03:20 UTC, `SanctionsImportScheduler`) 일일 자동 + 본 엔드포인트 수동 트리거. | `aml_watchlist_sources`,`aml_watchlist_entries` |
+| GET | `/api/v1/admin/aml/watchlist-entries` | `aml:admin:watchlist` | — | 명단 항목 조회(masked)·**`entryIds`(콤마구분) 지정 시 배치 해소(엔진 `WatchlistEntryQueryService.listByIds`, 요청당 최대 200-id 클램프)** | `aml_watchlist_entries` |
+
+> **bo-api `GET /api/v1/bo/aml/watchlist-entries` `entryIds` 배치 해소 모드(코드=truth, run7 RA-003).** 기존 브라우즈 필터(`sourceCode`·`listType`·`status`·`name`·`country`·`addedFrom`/`addedTo`·`version`) 외에 **`entryIds`(콤마구분 문자열, 반복 파라미터 허용)** 를 노출한다. `entryIds` 지정 시 **다른 필터는 무시**하고 지정 엔트리를 배치 해소하며 **요청 id 순서를 보존**(미존재 id 는 결과에서 누락)한다. 위임 경로는 엔진 `GET /api/v1/admin/aml/watchlist-entries?entryIds=`(200-id 청크로 분할)로 위임하고, 비운영(stub) 경로는 stub 소스에서 필터 해소한다(양경로 `AmlWatchlistService.findEntriesByIds`). 응답은 브라우즈와 **동일 페이징 봉투 `WatchlistEntryPage{rows, page, size, totalElements, totalPages}`**(`totalElements`=해소 성공 엔트리 수). 행은 §3.x `WatchlistEntryDto` 공개 필드(`normalizedTokens`·`listType`·`subjectKind`·`country`·`nationality`·`dob`·`program`·`version`·`status`·`createdAt`·`externalRef`) — 공개 제재명단 데이터로 raw PII 미노출 규약 불변. **용도**: RA 상세(AML-RA-003 ①)의 신원 대조 패널에서 `forcedFloorEvidence[].entryId` 를 배치 조회해 회원 신원(reveal 게이트, §2.6 `/pii/reveal`)과 명단 엔트리 원본값을 나란히 비교(공개 명단측만 plaintext).
+
+> **명단 엔트리 브라우저 딥링크 계약(§딥링크 계약).** RA 상세·WLF 매치 근거 패널(§3.3 `forcedFloorEvidence`)의 '명단 엔트리 조회 ▶' 링크는 BE 가 제공하는 참조 토큰만으로 명단 엔트리 브라우저(AML-WL-001 ③, bo-web `/aml/watchlist`)로 딥링크한다: **`/aml/watchlist?listType=<listType>&entry=<entryId>`**. `listType`·`entry` 는 `forcedFloorEvidence[]` 원소의 `listType`/`entryId` 를 그대로 전달하며, 브라우저 진입 시 `listType` 을 엔트리 목록 사전필터로 적용한다. **구 `?source=<sourceCode>` 계약은 폐기** — BE `ForcedFloorEvidence` 는 `sourceCode` 를 제공하지 않는다(raw PII·비제공 토큰 미노출 규약). 토큰 부재 시 브라우저 기본 목록으로 폴백.
+
+> **bo-api 위임(§10.4).** BO 화면 수동 트리거는 `POST /api/v1/bo/aml/watchlist-sources/{sourceCode}/sync`(scope `aml:admin:watchlist` or `BO_SUPER_ADMIN`, `AmlWatchlistController`) → `AmlEngineClient`로 위 엔진 `.../{code}/sync`에 순수 위임한다(응답 `WatchlistSyncResponse` 미러, 운영자 감사 `WATCHLIST_IMPORT_APPLIED`·trigger MANUAL). 제재명단 수집은 엔진 전용 표면이라 **비위임(stub) 모드는 fail-closed 503 `AML.ENGINE_UNAVAILABLE`**(위조 성공 카운트가 48h freshness 게이트를 잘못 갱신하는 것 방지, 4-eyes 계약 대상 아님).
 
 #### Screening 검토 (§10.4)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
 | GET | `/api/v1/admin/aml/screenings?status=POSSIBLE_MATCH` | `aml:case:read` | — | 검토 큐 조회 | `aml_screening_results` |
 | POST | `/api/v1/admin/aml/screenings/{screeningId}/decision` | `aml:case:update` | 🔒4-eyes(TRUE_MATCH/FP) | WLF 판정(true/false positive) | `aml_screening_results`,`aml_approvals` |
-| POST | `/api/v1/admin/aml/screenings/fp-whitelist` | `aml:admin:watchlist` | 🔒4-eyes | false positive whitelist 등록 | `aml_approvals` |
+| POST | `/api/v1/admin/aml/screenings/fp-whitelist` | `aml:admin:watchlist` | 🔒4-eyes | false positive whitelist 등록 | `aml_approvals`,`aml_fp_whitelist` |
+
+> **`FpWhitelistRegisterRequest`(FP whitelist 등록 요청, DB `aml_fp_whitelist` §3.8a — 코드=truth).** 4-eyes 상신 payload(bo-api `ScreeningDtos.FpWhitelistRegisterRequest`·aml-svc `WhitelistFalsePositiveUseCase.WhitelistCommand`=truth):
+> | 필드 | 타입 | 필수 | 설명 |
+> |---|---|---|---|
+> | `screeningId` | string(uuid) | Y | 면제를 촉발한 발원 스크리닝 결과 id(DB `screening_id`, **V14**, §3.8 추적성 — 아래 `matchedEntryId`(엔트리 id)와 **별개 슬롯**·discount 키 아님) |
+> | `targetRef` | string | Y | 면제 대상 ref(DB `target_ref`) |
+> | `matchedEntryId` | string | Y | **면제 대상 워치리스트 엔트리 id**(DB `matched_entry_id`, §3.7 `entry_id`) — **discount matchFeature 슬롯**. 반드시 워치리스트 `entry_id`(절대 `screeningId` 아님 — 과거 이 슬롯에 screeningId 를 넣어 `AUTO_DISCOUNTED` 미발동, run2 D2). 단건(요청당 엔트리 1개) |
+> | `targetType` | enum | N | 스크리닝 행의 대상 유형(DB `target_type` §5.23, `CUSTOMER`/`ENTITY`/`COUNTERPARTY`/`CRYPTO_ADDRESS`) — 수취인(COUNTERPARTY) 면제가 하드코딩 CUSTOMER 로 기록되지 않도록 승계 |
+> | `makerId` | string | Y | 상신자(4-eyes maker). checker≠maker 승인 필요 |
+> | `reason` | string | N | 면제 사유(DB `reason`, **V14**, maker 입력·운영 뷰 표시) |
+> | `expiresAt` | string(date-time)\|null | N | 면제 만료일(DB `expires_at`, **V14**, **null=무기한**). 응답·조회에서 `expiresAt < now()` ⇒ **EXPIRED 파생 상태**(DB §3.8a 가정 A5, 스케줄러 없음·조회/discount 판정 시점 파생) 표기 |
+>
+> **가정 C(정정)**: 직전 초안은 `entryIds` **배치** 배열을 가정했으나 코드=truth 재검증 결과 요청 계약은 **단건 `matchedEntryId`**(bo-api `FpWhitelistRegisterRequest`·aml-svc `WhitelistCommand` 모두 단수)다 — 배치 필드 없음. 본 표는 실제 DTO(단건) 기준으로 확정한다(추측 없음). 응답 `FpWhitelistRegisterResponse{ approvalId, approvalStatus(§ SUBMITTED/…), payloadHash }`, 조회 행 `FpWhitelistEntry{ whitelistId, screeningId, targetRef, status(ACTIVE/EXPIRED/REVOKED), registeredBy, reason, registeredAt, expiresAt, revokedAt }`(bo-api DTO=truth·PII 마스킹). checker 승인(EXECUTED) 시 `aml_fp_whitelist`(active=true) 등록 → 후속 동일 매치 `AUTO_DISCOUNTED` 즉시 적용(§10 예외 규칙).
 
 #### Risk Assessment 정책·override (§11.3)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
-| GET | `/api/v1/admin/aml/ra-models` | `aml:admin:policy` | — | RA 모델 목록 | (정책 store) |
+| GET | `/api/v1/admin/aml/ra-models?modelCode=` | `aml:admin:policy` | — | RA 모델 버전 목록. 응답 `RaModelSummary[]` — 각 행에 `scenario`(ONBOARDING/ONGOING, DB §3.9 `aml_risk_models.scenario`) + **`parameters`(JSON, DB §3.9 `aml_risk_models.parameters` 1:1)** 노출. ONGOING 모델은 `parameters` 에 트리거·룰 심각도 가중·lookback·최근성·1차 baseline 결합·주기 단축·EDD 임계 정의를 담고, ONBOARDING 모델은 `{}` | (정책 store) |
+| POST | `/api/v1/admin/aml/ra-models` | `aml:admin:policy` | — | RA 모델 버전 초안(draft·결재 불필요). 요청 `DraftRequest{ modelCode, version, scenario?, weights, mediumThreshold, highThreshold, prohibitedThreshold, parameters? }` — **`scenario`(ONBOARDING/ONGOING) 옵션, 미지정 시 `ONBOARDING`**(엔진 `RiskModelAdminController.draft` default). **`parameters`(옵션) 는 ONGOING 모델 정의 JSON**(DB §3.9), ONBOARDING 은 생략 시 `{}`. **작성자(maker)는 요청 본문이 아니라 인증 principal(`principal.email()`)에서 서버 파생**한다(신뢰경계 — bo-api BFF `RaDtos.DraftRequest` 계약에 `makerId` 필드 부재, 하단 §3.3 註 동형). 응답 `RaModelSummary` | (정책 store) |
 | POST | `/api/v1/admin/aml/ra-models/{modelCode}/simulate` | `aml:admin:policy` | — | sample population simulation(응답 DTO §3.15 `SimulationResponse`) | — |
-| POST | `/api/v1/admin/aml/ra-models/{modelCode}/versions/{version}:activate` | `aml:admin:policy` | 🔒4-eyes | RA 모델 활성화 | `aml_approvals` |
-| GET | `/api/v1/admin/aml/risk-scores?riskGrade=&modelVersion=&page=&size=` | `aml:case:read` | — | **RA 점수 목록**(모니터링). `riskGrade` 멀티(콤마 구분)·`modelVersion`·페이지네이션 필터. 응답 `RiskScoreResponse[]`(§3.3, `mandatoryHighRisk`·`mandatoryHighRiskReasons` 포함). **구현됨**(`RiskScoreAdminController`) | `aml_risk_scores` |
+| POST | `/api/v1/admin/aml/ra-models/{modelCode}/versions/{version}:activate` | `aml:admin:policy` | 🔒4-eyes | RA 모델 활성화. 요청 `ActivateRequest{ reason? }` — **작성자(maker)는 요청 본문이 아니라 인증 principal(`principal.email()`)에서 서버 파생**(bo-api BFF `RaDtos.ActivateRequest` 계약에 `makerId` 필드 부재, 하단 §3.3 註 동형·미인증 상신 거부). 응답 `202 { approvalId, status: SUBMITTED }` | `aml_approvals` |
+| GET | `/api/v1/admin/aml/risk-scores?riskGrade=&modelVersion=&country=&reviewDueSoon=&targetRef=&scenario=&requiredAction=&registeredWithinDays=&latestPerTarget=&page=&size=` | `aml:case:read` | — | **RA 점수 목록**(모니터링). `riskGrade` 멀티(콤마 구분)·`modelVersion`·**`country`(국적 필터, 엔진이 실제 국가 차원 보유·#7; stub 경로는 `targetRef` seed 파생 결정적 국가 post-filter)**·`reviewDueSoon`(boolean — 재심사 임박)·`targetRef`(contains 검색)·페이지네이션 필터. **RA 목록 서버 필터 4종(2026-07-06, feature/aml-ra-list-filters-dedupe — 전부 optional·additive)**: ① `scenario`=`ONBOARDING`(1차)\|`ONGOING`(2차) — `aml_risk_models.scenario` 모델 레지스트리 exists-join(모델 코드 하드코딩 아님, 잘못된 값 400), 변경이력 9.31 의 "서버측 scenario 필터 후속 과제" 해소; ② `requiredAction`(권고 조치, 콤마 멀티 — `NONE`(조치 없음)·`CDD_UPDATE`(CDD 갱신)·`EDD`(강화된 고객확인)·`RELATIONSHIP_REVIEW`(관계 검토), `NONE` 토큰은 레거시 `required_action IS NULL` 행 포섭); ③ `registeredWithinDays`(양수 int — **인입(온보딩) 회원 필터**, `aml_customers.created_at ≥ now-일수` exists-join); ④ `latestPerTarget`(boolean 기본 false — **회원(targetRef)별 최신 1건 dedupe**, `evaluated_at` max 상관 서브쿼리[tenant·targetRef·modelVersion·scenario 한정] — **dedupe 먼저 선정 후 등급/조치/임박 등 상태 필터를 outer 적용**해 "현재 상태" 목록 의미론 보장, `count`/`items` 동일 술어). 응답은 **페이지 봉투 `RiskScoreListResponse{ items: RiskScoreResponse[], page, size, total }`**(§1.2 envelope 원칙 정합 — `total`은 페이지 무관 전체 건수로 타일↔목록 정합·페이지 이동에 사용) — `items` 원소가 `RiskScoreResponse`(§3.3, `mandatoryHighRisk`·`mandatoryHighRiskReasons`·`forcedFloorEvidence`·`operativeNextReviewDueAt` 포함). bo-api `GET /api/v1/bo/aml/risk-scores` 가 동일 파라미터를 pass-through 위임하며, stub 경로도 동일 의미론(scenario=stub 행 시나리오 필터·requiredAction NULL 포섭·registeredWithinDays 는 seed 파생 결정적 가입일 post-filter·latestPerTarget 는 stub 이 target 당 1행이라 no-op) — 패리티 유지. **구현됨**(`RiskScoreAdminController`) | `aml_risk_scores`,`aml_risk_models`,`aml_customers` |
 | GET | `/api/v1/admin/aml/risk-scores/distribution?modelVersion=` | `aml:case:read` | — | **RA 등급 분포**. 응답 `RiskDistributionResponse`(§3.3b). **구현됨**(`RiskScoreAdminController`) | `aml_risk_scores` |
 | GET | `/api/v1/admin/aml/customers/pipeline-stats?histogramDays=` | `aml:case:read` | — | **CDD/RA 파이프라인 집계**(KYC 상태 분포·신규 등록 윈도우·RA 처리 현황·기간 히스토그램). `Tenant-Id` 헤더 필수·`Workspace-Id` 옵션. `histogramDays` 1~90·기본 14(범위 밖 클램프). 응답 `CddRaPipeline`(§3.3c). 집계 카운트만(raw PII 미노출). **구현됨**(엔진) | `aml_customers`,`aml_risk_scores` |
 | POST | `/api/v1/admin/aml/risk-scores/{scoreId}/override` | `aml:case:update` | 🔒4-eyes(하향) | 등급 수동 조정. 요청 `RiskOverrideRequest`(§3.3) | `aml_risk_scores`,`aml_approvals` |
@@ -210,7 +313,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 #### Regulatory Reporting (§14)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
-| GET | `/api/v1/admin/aml/reports?reportType=STR&status` | `aml:case:read` + **`COMPLIANCE` role 필수(STR 필터 시)** | — | 보고 목록. **tipping-off 통제(설계서 §19.2a)**: `reportType=STR` 조회 시 COMPLIANCE 전담 role 보유자만 허용 — scope에 `COMPLIANCE` role이 없으면 `403 AML.FORBIDDEN_SCOPE`. 운영자 화면에 정보누설금지(tipping-off) 경고 배너 표시 필요. 열람 이벤트는 `RAW_DATA_ACCESS` 감사 기록 | `aml_regulatory_reports` |
+| GET | `/api/v1/admin/aml/reports?reportType=STR&status` | `aml:case:read` + **`COMPLIANCE` role 필수(STR 필터 시)** | — | 보고 목록. **`status` 미지정 ⇒ 전 상태 반환**('전체' 시맨틱, run3 D11 — 기존 `defaultValue="DRAFT"` 드리프트 해소, SUBMITTED/ACKNOWLEDGED 행이 '전체'에서 소실되던 결함). 응답 `ReportSummary[]`는 `createdAt`(기안일)·`reportDeadlineAt`(법정 +5영업일 제출 기한=DB `due_at`)을 포함(run3 D12 — 위임 경로에서 SLA 뱃지·기간 필터가 항상 '-'/빈 목록이던 결함 해소); `slaStatus`는 back-office 가 `reportDeadlineAt` 로 파생(가정 G8, §3.6). **tipping-off 통제(설계서 §19.2a)**: `reportType=STR` 조회 시 COMPLIANCE 전담 role 보유자만 허용 — scope에 `COMPLIANCE` role이 없으면 `403 AML.FORBIDDEN_SCOPE`. 운영자 화면에 정보누설금지(tipping-off) 경고 배너 표시 필요. 열람 이벤트는 `RAW_DATA_ACCESS` 감사 기록 | `aml_regulatory_reports` |
 | POST | `/api/v1/admin/aml/reports` | `aml:case:update` | — | 보고 초안 생성(DRAFT) | `aml_regulatory_reports` |
 | POST | `/api/v1/admin/aml/reports/{reportId}:submit` | `aml:case:update` | 🔒4-eyes(REPORTING_OFFICER) | STR/CTR/Travel Rule 제출 | `aml_regulatory_reports`,`aml_approvals` |
 | POST | `/api/v1/admin/aml/reports/{reportId}:reject` | `aml:case:update` | 🔒4-eyes(REPORTING_OFFICER) | 보고 기각(`REJECTED` 전이) — **사유 코드(`reasonCode`) 필수**, 자기승인 금지(설계서 §14.1a) | `aml_regulatory_reports`,`aml_approvals` |
@@ -282,11 +385,19 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 #### country risk·policy pack 관리 (§13.4·§13.5·§19.1·§19.3)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
-| GET | `/api/v1/admin/aml/country-risk` | `aml:admin:policy` | — | 국가위험 등급표 조회(ISO 국가별 risk band·근거) | (정책 store) |
+| GET | `/api/v1/admin/aml/country-risk` | `aml:admin:policy` | — | 국가위험 등급표 조회(ISO 국가별 risk band·근거·출처(provenance)). `countryCode` 생략 시 유효(ACTIVE) 전체 표 | `aml_country_risk` |
+| GET | `/api/v1/admin/aml/country-risk/import-status` | `aml:admin:policy` | — | **국가위험 일일 수집 상태**(소스 메타 + 최근 run diff 10건, §3.12 `CountryRiskImportStatusDto`) — 활성 제공자(EU_COMMISSION 기본/FATF 대안) 병기 | `aml_country_risk_sources`,`aml_country_risk_import_runs` |
+| POST | `/api/v1/admin/aml/country-risk:import` | `aml:admin:policy` | — (시스템 provenance 자동 적용 — 결재 없음) | **국가위험 즉시 수집(수동 트리거)** — 동기 실행, 응답 §3.12 `CountryRiskImportResultDto`(SyncResult) | `aml_country_risk`(+`aml_country_risk_sources`,`aml_country_risk_import_runs`) |
 | POST | `/api/v1/admin/aml/country-risk:change` | `aml:admin:policy` | 🔒4-eyes(subjectType=`COUNTRY_RISK`) | 국가위험 변경 상신(§13.4 'country risk 변경') | `aml_approvals` |
 | POST | `/api/v1/admin/aml/policy-packs:change` | `aml:admin:policy` | 🔒4-eyes(subjectType=`POLICY_PACK`) | tenant policy pack 변경 상신(STR/CTR/Travel Rule 기준금액·effective version, 설계서 §14.3·§19.1) | `aml_approvals`(+`aml_tenants.policy_pack_code`) |
 
 > `country-risk:change`·`policy-packs:change`는 결재 상신 진입점이다. 상신 시 §3.7 `subjectType=COUNTRY_RISK`/`POLICY_PACK` 결재가 생성되며(`202 + approvalId`), 승인(checker) 후 실행(EXECUTED) 시점에 정책 store(국가위험 등급표 / `aml_tenants.policy_pack_code` effective version)에 반영된다. policy pack 기준금액(CTR 고액현금거래·STR·Travel Rule)은 법령·감독규정 변경 가능성이 있어 effective version으로 관리한다(설계서 §14.3).
+>
+> **국가위험 일일 자동 수집(country-risk-daily-import, DB §3.22c·V16·V18)**: 일일 스케줄러(`CountryRiskImportScheduler`, cron 기본 `0 40 3 * * *`·`aml.country-risk.import.enabled` 기본 false·single-flight)와 수동 트리거(`:import`)가 동일 유스케이스(`SyncCountryRiskUseCase.sync`)를 실행한다. **수집 소스는 제공자 선택형(`aml.country-risk.feed.provider`) — 기본 `EU_COMMISSION`(EU 집행위 고위험 제3국 페이지, 봇 차단 없음), 대안 `FATF`(black/grey 페이지; 현재 HTTP 403 Akamai 봇 차단으로 수집 불가라 대안으로 강등)**:
+> - **EU_COMMISSION(기본)** — 단일 고위험 목록 → 전부 `HIGH`(basis `EU_HIGH_RISK_THIRD_COUNTRY`), provenance `EU_COMMISSION`, 결정적 국가명→ISO-2 매핑 26개국(`EuHighRiskCountryIso`, 미래 신규 미매핑 시 skip+run diff `unmapped` 기록), canonical `eu-<hash12>`.
+> - **FATF(대안)** — black(Call for Action)→`PROHIBITED`/grey(Increased Monitoring)→`HIGH`(`FatfGradeMapping`), provenance `FATF_DAILY`, canonical `fatf-<hash12>`.
+>
+> 활성 제공자별 결정적 매핑으로 **시스템 provenance ACTIVE 버전을 결재 없이 즉시 적용**하고 run diff 를 감사 기록한다(자동 수집은 4-eyes 대상 아님 — 수동 조정만 `:change` 🔒). 동일 버전 재수집 = `SKIPPED_UNCHANGED` no-op(버전 증식 없음), 실패 = fail-safe(기존 등급 유지·`FAILED` 기록). **MANUAL(4-eyes) ACTIVE 등급 우선 — 자동 수집이 덮지 않고 `suppressedManual` 로 기록**. 이탈(delist)은 동일 제공자 provenance ACTIVE 만 supersede(제공자 전환이 타 provenance 보존). bo-api 위임: `GET /api/v1/bo/aml/country-risk/import-status`·`POST /api/v1/bo/aml/country-risk:import`(수동 트리거는 감사 이벤트 `COUNTRY_RISK_IMPORT_TRIGGERED` 기록, bo V8).
 
 #### 결재(공통)·감사·source (§13.5·§19.3·§16)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
@@ -357,10 +468,13 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | `requiredActions` | array<string> | `MANUAL_REVIEW`/`EDD_REVIEW`/... |
 | `matchedEntries` | array<string> | 후보 entry_id(masked). **하위호환 유지** — `matchedCandidates`와 병존(기존 소비자 보존) |
 | `matchedCandidates` | array<object> | **가산(additive) 필드.** 매칭 후보 출처계보. 각 원소 `MatchedCandidate`(아래 표) — `matchedEntries`의 각 entry_id를 `aml_watchlist_entries`+`aml_watchlist_sources` 조인으로 enrich한 best-effort 파생값. **raw PII 미포함**(masked entryId·출처·버전·점수·토큰개수만) |
-| `matchedRules` | array<object> | 적용된 WLF 룰 참조 `{ ruleCode, threshold }`(파생값, DB `rule_version` 기준 투영). 단수 `ruleVersion`과 구분 |
+| `matchedRules` | array<object> | 적용된 WLF 룰 참조 `{ ruleCode, threshold, score }`(파생값, DB `rule_version` 기준 투영). `score`(number)는 해당 룰에 대해 산출된 실측 유사도 점수(threshold 대비 판정 근거·엔진 WLF 룰 score 투영, `ScreeningResponse.matchedRules[].score` 코드=truth). 단수 `ruleVersion`과 구분 |
 | `subjectIdentity` | object | **가산(additive) 필드(bo-api WLF 매치 상세 투영).** reveal 게이트 대상 식별정보 메타 `SubjectIdentity`(아래 표) — 대상 식별자(`targetRef`) + reveal 가능 필드 키 목록만. **raw PII(이름·국적·성별·생년 원문) 미포함** — 원문은 `aml:pii:reveal`+사유+`RAW_DATA_ACCESS` 경로(§1.6, `POST /internal/v1/aml/pii/reveal` §2.6)로만 노출. **CUSTOMER·counterparty 대상 모두 `[NAME, NATIONALITY, GENDER, DOB]` 4필드 균일**(주체 무관). 주체가 보유하지 않는 필드(예 수취자=상대방의 성별·생년월일)는 reveal stub 이 빈 값(`""`)을 반환한다(placeholder 아님) |
 | `ruleVersion` | string | 적용 WLF 룰/threshold 버전(DB `rule_version`) |
 | `decidedBy` | string | 판정자(분석가, DB `decided_by`, nullable) |
+| `decidedAt` | string(date-time) | 판정 시각(DB `decided_at`, nullable) |
+| `createdAt` | string(date-time) | 결과 행 생성 시각(DB `created_at`, `ScreeningResponse.createdAt` 코드=truth). review-queue/history 기간필터·SLA 기준. **미영속 결과(실시간 POST 비저장)는 null 가능** — `decidedAt`(판정 시각)와 병기·구분 |
+| `expiresAt` | string(date-time) | 실시간 결과 만료(§15.7) |
 
 > **bo-api enrichment(가산, 엔진 `ScreeningResponse` 미포함).** 아래 필드는 코어 `ScreeningResponse` 레코드에 없고 bo-api가 `matchedEntries`를 `aml_watchlist_entries`·`aml_watchlist_sources`로 조인해 파생하거나 화면이 로컬 합성하는 best-effort 값이다(raw PII 미포함): `matchedCandidates[]`(매칭 후보 출처계보, 아래 `MatchedCandidate` 표)·`matchedRules[]`(`{ruleCode, threshold}`)·`riskGrade`·`requiredActions[]`·`decidedAt`·`expiresAt`. 코어 엔진 응답만 소비하는 호출자는 이 필드를 가정하지 않는다.
 
@@ -401,9 +515,9 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | `targetRef` | string | R | customer/entity ref |
 | `targetType` | enum | R | `CUSTOMER`/`ENTITY` |
 | `modelCode` | string | — | 미지정 시 tenant 기본 모델 |
-| `factors` | object | — | factor 입력 override(§11.1). **hanpass-ph 데모 정합**: 1차 RA는 회원가입(`member-svc` 온보딩) 시점 1회 수행하며 factor=회원 KYC 속성 `nationality`(고위험국)·`occupation`·`sourceOfFunds`·`kycLevel`(거래 기준 factor는 1차 제거 — 2차 활동 재평가·TM 소관). 엔진 factor catalog 비변경 — 데모/시뮬레이터/시드 한정 |
-| `highRiskCountry` | boolean | — | (optional) 당연고위험 트리거 — 고위험 국가 연계. 미지정=false. 강제 상향 입력 신호(`EvaluateCommand`) |
-| `wlfTrueMatch` | boolean | — | (optional) 당연고위험 트리거 — WLF 진성 매치. 미지정=false |
+| `factors` | object | — | factor 입력 override(§11.1). **보조 입력 강등(요구 런 11)**: 1차 온보딩 RA 는 엔진이 `customer.cdd.completed` 인입 시 CDD 데이터로부터 직접 파생하고(§2.1 step 7d), `factors` 는 **테스트·수동 재평가용 보조 입력**으로 강등됐다 — 온보딩 인입 경로는 엔진 파생 factors(출처 `cdd:*` = `cdd:country-risk`/`cdd:kyc-evidence`/`cdd:wlf-screening`)를 정본으로 쓰고, 요청 override 유입 시 출처 `override` 로 파생값 위에 후적용·감사 기록(하위호환). 엔진 factor catalog 비변경 |
+| `highRiskCountry` | boolean | — | (optional·**보조 입력 강등**) 당연고위험 트리거 — 고위험 국가 연계 신호(`EvaluateCommand`). 미지정=false. 온보딩 GEOGRAPHY 는 엔진이 국가위험 정본에서 파생(§2.1 step 7d (b)) — 본 플래그는 수동 경로 보조 |
+| `wlfTrueMatch` | boolean | — | (optional·**보조 입력 강등**) 당연고위험 트리거 — WLF 진성 매치. 미지정=false. 온보딩 SCREENING 은 엔진이 WLF 스크리닝에서 파생(§2.1 step 7d (a)) — 본 플래그는 수동 경로 보조 |
 | `uboMismatch` | boolean | — | (optional) 당연고위험 트리거 — UBO 불일치/복잡 구조. 미지정=false |
 
 응답 `RiskScoreResponse` (DB `aml_risk_scores`):
@@ -420,12 +534,17 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | `factorBreakdown` | object | factor별 점수·근거(DB `factor_breakdown`) |
 | `requiredAction` | enum | §5.26(`CDD_UPDATE`/`EDD`/`RELATIONSHIP_REVIEW`/`NONE`) |
 | `mandatoryHighRisk` | boolean | 당연고위험 강제 상향 적용 여부. 점수 산식과 별개의 오버라이드 규칙(고위험 국가·WLF 진성·UBO 불일치·HRR 매칭). RA 점수 목록(`GET .../risk-scores`, §2.7) 응답에 포함 |
-| `mandatoryHighRiskReasons` | array&lt;string&gt; | 당연고위험 적용 사유(업무 용어 문자열 배열, raw PII 없음). 강제 상향 미적용 시 빈 배열 |
-| `nextReviewDueAt` | string(date-time) | 재심사 예정(DB `next_review_due_at`, nullable) |
+| `mandatoryHighRiskReasons` | array&lt;string&gt; | 강제 등급 상향(floor) 적용 사유 코드 배열(영문 코드 passthrough, raw PII 없음). 강제 상향 미적용 시 빈 배열. **값집합 — (a) 당연고위험(HRR) 레지스트리·명단 floor**: `SANCTION`/`PEP`(WLF 진성 매치 명단 유형)·`HIGH_RISK_REGISTRY`(HRR 등록) 등. **(b) 국가위험 등급-기반 floor(V20·기능정의서 §5.1 (b′)·DB §7)**: **`HIGH_RISK_COUNTRY_NATIONALITY`**(고위험 국적)·**`HIGH_RISK_COUNTRY_RESIDENCE`**(고위험 거주국) 2종 — 국적/거주국 국가위험 ACTIVE 등급(`PROHIBITED→HIGH`·`HIGH→MEDIUM`)으로 결정적 상향, 해당 국가만 개별 병기. **국가위험 floor 는 HRR 과 구분**(모델 정본 `aml_risk_models.parameters.countryFloor` 소비, `forcedFloorEvidence` 원소 미추가) — FE(라벨 사전 `lib/aml-risk.ts`)는 국가위험 코드에 "국가위험 floor(HRR 아님)" 배지, HRR 코드에 "HRR" 배지를 매핑한다. 미지 코드는 raw 표기(graceful passthrough) |
+| `forcedFloorEvidence` | array&lt;object&gt;\|null | **명단 매치(WLF) 강제 상향 근거 참조**(#1, 명단 매치 floor 전용). 각 원소 `{ listType(string — 매치 명단 유형, 예 `SANCTION`/`PEP`), screeningId(string\|null — 매치 스크리닝 실행 참조 토큰), entryId(string\|null — 매치 명단 엔트리 참조 토큰), label(string\|null — 사유 라벨) }`. **masked 참조 토큰만 — raw PII 없음**. 엔진 `factorBreakdown.forcedFloor` evidence 마커 파생. **국가위험 등급-기반 floor(`HIGH_RISK_COUNTRY_*`)는 이 배열에 원소를 추가하지 않고 `mandatoryHighRiskReasons` 코드로만 노출**(명단 매치가 아니므로 entry/screening 토큰 없음) — 명단 매치가 없으면 `null`/빈 배열. FE 는 명단 유형 뱃지 표시 + 명단 엔트리 브라우저 딥링크(§딥링크 계약)에 사용 |
+| `nextReviewDueAt` | string(date-time) | 재심사 예정(DB `next_review_due_at`, nullable). **평가 시점 산출 예정일**(policy 로 재산출) — FE 보조 라벨 |
+| `operativeNextReviewDueAt` | string(date-time)\|null | **운영 재심사일** — CDD 재이행 주기 관리 메뉴와 동일한 값(회원 주기 수동 조정 4-eyes 승인이 반영된 `aml_customers.next_review_due_at` 조인). FE 는 이 값을 '재심사일'로 우선 렌더하고 부재 시 `nextReviewDueAt` 로 폴백(#10). additive·nullable |
 | `isOverride` | boolean | 수동 등급 조정 여부(DB `is_override`, 4-eyes 대상) |
 | `evaluatedAt` | string(date-time) | 평가 시각(DB `evaluated_at`) |
 | `inputDataAsOf` | string(date-time) | nullable. **입력 데이터 기준시점**(평가에 사용된 원천 데이터의 as-of 시점). 엔진 응답에 있으면 passthrough, 없으면 best-effort(`evaluatedAt` 대체). RA 상세·점수 목록(`GET .../risk-scores`, §2.7) 응답에 포함 |
 | `policyPackVersion` | string | nullable. **정책팩 버전**(평가 시점 적용 Policy Pack(STR/CTR/Travel Rule 기준) effective version). 엔진 응답에 있으면 passthrough, 없으면 `null`(stub 상수). RA 상세·점수 목록(§2.7) 응답에 포함 |
+| `scenario` | enum | **평가 시나리오**(`ONBOARDING`/`ONGOING`, DB §3.9 `aml_risk_models.scenario`). `ONBOARDING`=1차·회원가입 CDD 완료 시점, `ONGOING`=2차·상시(STR/CTR 발동 시 거래 가중 재평가). 엔진 응답에 값이 없으면 bo-api 는 `ONBOARDING` 으로 안전 기본 처리(graceful) |
+| `reassessmentAlerts` | array&lt;object&gt; | **2차(ONGOING) 재평가를 유발한 발동 STR/CTR 알림 계보**(재평가 사유). 각 원소 `{ alertId(string — 참조 토큰), ruleCode(string — 룰 코드 enum), severity(string), detectedAt(string(date-time)) }`. 엔진 `factorBreakdown.triggerAlerts` 파생(V12 parameters `trigger.families [STR,CTR]`). 1차(ONBOARDING) 행은 빈 배열. raw PII 없음(마스킹 토큰·enum·시각만) |
+| `reviewShortened` | object\|null | **재이행 주기 단축(from→to)** — 2차 재평가가 재이행 주기를 앞당긴 경우 `{ from(string(date-time) — 단축 전 `next_review_due_at`), to(string(date-time) — 단축 후) }`. 엔진 `factorBreakdown.reviewShortened` 파생, **앞당기기만**(산출 주기가 기존 예정일보다 늦어 min-clamp 로 유지되면 `null`). 1차 행은 `null` |
 
 `RiskOverrideRequest` → `POST /api/v1/admin/aml/risk-scores/{scoreId}/override`(🔒4-eyes, §2.7, scope `aml:case:update`, subjectType=`RISK_OVERRIDE`):
 
@@ -433,9 +552,14 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 |---|---|---|---|
 | `targetGrade` | enum | R | 조정 목표 등급(§5.2 `LOW`/`MEDIUM`/`HIGH`/`PROHIBITED`). **하향만 허용** — 현재 등급보다 낮은 등급만 선택 가능(상향은 거부). 화면은 위험점수 목록에서 행 선택 후 현재 등급 기준 하향 가능 등급만 select 노출 |
 | `reason` | string | R | 조정 사유(필수, 감사·결재 payload) |
-| `makerId` | string | R | 상신자(maker). 4-eyes — maker≠checker. 응답 `{ approvalId, status: "SUBMITTED" }` |
+| `targetRef` | string | — | 화면 목록·상세가 조회한 RA 대상 참조(customerRef) — 오버레이 폐루프 키·현재 등급 산출 기준을 화면과 통일하기 위해 동봉(#2·#3). 미전달 시 `scoreId` 로 graceful fallback(구 계약 하위호환) |
+| `currentGrade` | enum\|null | 화면이 표시한 현재 등급(§5.2). 서버 산출값과 대조해 화면↔검증 불일치를 조기 차단하는 선택 힌트(#2). 미전달 시 서버가 대상 기준으로 산출 |
+
+> **작성자(maker)는 요청 본문이 아니라 인증 principal 에서 서버 파생한다**(신뢰경계·4-eyes 작성자≠승인자). bo-api RA write 3경로 — draft(`POST .../ra-models`)·activate(`.../versions/{v}:activate`)·override(`.../risk-scores/{id}/override`) — 의 계약 record `RaDtos.{DraftRequest, ActivateRequest, OverrideRequest}` 에 `makerId` 필드는 **부재** — 클라이언트가 타 운영자 명의를 주입할 경로가 없고, 감사·결재·엔진 위임 payload 의 maker 는 인증 principal(`principal.email()`)로 채워진다(미인증 시 상신 거부). 형제 PEP 경영진 승인(`:submit-pep-approval`)·CDD 재이행 주기(`periodic-review-policy`) 상신과 동형. 응답 `202 { approvalId, status: "SUBMITTED" }`.
 
 > override는 **블라인드 scoreId 직접 입력이 아니라** 위험점수 목록 조회(`GET .../risk-scores`, 등급 필터+`targetRef`) → 행 선택 → 현재 등급 기준 하향 가능 등급만 선택 → 사유 입력 → 4-eyes 상신 흐름이다(PRD §6.1 AML-RA-002).
+
+> **RA 모델 관리 DTO `scenario`·`parameters`(bo-api BFF, 코드=truth).** bo-api 의 RA 모델 관리 read model `RaModel`(`GET /api/v1/bo/aml/ra-models`)과 그 하위 `RaModelVersion` 은 model-level 축 **`scenario`(ONBOARDING/ONGOING, DB §3.9 `aml_risk_models.scenario` 1:1)** 와 **`parameters`(JSON, DB §3.9 `aml_risk_models.parameters` 1:1)** 를 노출한다 — `RaModelVersion.scenario`/`parameters` 는 소유 `RaModel` 을 승계(같은 modelCode 의 버전은 동일 scenario)해 버전 행이 모델 그룹 밖에서도 자기서술적이다. FE 는 `scenario` 를 시나리오 배지에, `parameters` 를 트리거·룰 심각도 가중·lookback·최근성·1차 결합·주기 단축·EDD 임계 규칙 패널에 verbatim 렌더한다(하드코딩 금지). 엔진 응답에 `scenario` 부재 시 bo-api 는 `ONBOARDING` 으로 안전 기본 처리(graceful, `RaDtos.RaScenario`). enum 2종 = `ONBOARDING`(1차·온보딩·`KR_DEFAULT_RA`) / `ONGOING`(2차·상시·**실운영 `KR_ONGOING_RA v1 ACTIVE`**, 정의는 모델 `parameters` 로 노출 — STR/CTR 발동 시 거래 가중 재평가→주기 단축→EDD 자동 개시). ONGOING 재평가 결과는 §3.3 `RiskScoreResponse.{scenario, reassessmentAlerts, reviewShortened}` 로 화면에 표시(bo-api `RaDtos.{ReassessmentAlert,ReviewShortened}` 1:1).
 
 ### 3.3b RiskDistributionResponse → `GET /api/v1/admin/aml/risk-scores/distribution` (DB `aml_risk_scores`)
 
@@ -509,12 +633,12 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 |---|---|---|
 | `alertId` | string(uuid) | DB `alert_id` PK |
 | `alertType` | enum | §5.18 `alert_type`(`TM_SCENARIO`/`SCREENING`/`RA`/`FDS_ESCALATION`/`VENDOR_ALERT`). **API 정본, DB 1:1** |
-| `ruleCode` | enum | **CTR/STR 보고 룰 코드**(`AmlReportRuleCode`: CTR_SINGLE·CTR_DAILY·STR_PEP·STR_SANCTION·STR_KYC_INCOME_MISMATCH·STR_STRUCTURED·STR_NO_PURPOSE·STR_THIRD_PARTY·STR_VELOCITY_CASH·STR_MANUAL). TM_SCENARIO 타입 알림의 발동 룰 코드, DB `scenario_code` 칼럼에 저장(§5.6, v9.21 CHECK 확장), nullable(비-TM 알림). **JSON 필드명 = `ruleCode`**(v9.21 — 레거시 `scenarioCode` 폐기). 심각도 매핑: `STR_SANCTION`(RESTRICT)=`CRITICAL`, 그 외 STR=`HIGH`, CTR=`MEDIUM` |
+| `ruleCode` | string\|null | **CTR/STR 보고 룰 코드**(`AmlReportRuleCode`: CTR_SINGLE·CTR_DAILY·STR_PEP·STR_SANCTION·STR_KYC_INCOME_MISMATCH·STR_STRUCTURED·STR_NO_PURPOSE·STR_THIRD_PARTY·STR_VELOCITY_CASH·STR_MANUAL). TM_SCENARIO 타입 알림의 발동 룰 코드이며 엔진 DB `scenario_code` 칼럼 값을 JSON 필드명 `ruleCode`로 노출한다(v9.21 — 레거시 `scenarioCode` 응답 필드 폐기). 정상 CTR/STR 룰 경로는 `AmlReportRuleCode.name()`이고, bo-api read model은 레거시 시나리오 경로 알림이 남아 있을 때 표시 공백 방지를 위해 엔진 `scenarioCode`/`evidence.trigger.scenarioCode` 문자열을 fallback 표시값으로 사용할 수 있다. 비-TM 알림(SCREENING/RA/FDS_ESCALATION/VENDOR_ALERT)은 null. 심각도 매핑: `STR_SANCTION`(RESTRICT)=`CRITICAL`, 그 외 STR=`HIGH`, CTR=`MEDIUM` |
 | `targetRef` | string | 대상 고객/법인 ref(회원번호/대상 식별자, DB `target_ref`, nullable) |
 | `transactionRef` | string | 관련 거래 ref(DB `transaction_ref`, nullable). hanpass-ph: charge_order_id/transaction_id/transfer_number/wallet_transaction_id |
 | `severity` | enum | §5.19 `alert_severity`(`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`) |
 | `status` | enum | §5.7 `alert_status` **6종**: `DETECTED`/`TRIAGED`/`CASE_OPENED`/`DISMISSED`/`ESCALATED`/`STR_RECOMMENDED`(DB CHECK 6종. 이후 조사·보고·종결은 `aml_cases.status` 인계) |
-| `evidence` | object | **TM 알림 상세 데이터모델(DB §3.10 정본). 발동 CTR/STR 룰의 증거(v9.21 — 레거시 시나리오 계열 폐기).** ① 트리거 `{ ruleCode(AmlReportRuleCode), strReasonCode(STR 룰만 — StrReasonCode: PEP/SANCTION/KYC_MISMATCH/STRUCTURED/NO_PURPOSE/THIRD_PARTY/UNUSUAL_PATTERN/MANUAL), description(룰 카탈로그 자연어) }`. ② 집계 패턴 `{ measure, window, count, amount, currency, threshold, thresholdMet }` — **CTR 룰**은 (주체, 영업일) 현금거래 합산액·임계(예 "1BD 현금거래 합산 ₱600,000"), **STR 룰**은 주체 rolling 윈도우 집계(있는 룰에 한함, 예 현금속도). `measure`는 서술 라벨(문자열). ③ `relatedTransactions[]`(`{ transactionRef, subjectRef(거래 주체 회원번호), channel, amount, currency, corridor, counterpartyRef, occurredAt, fdsDecisionRef }`) — 집계를 구성한 형제거래(윈도우 조회 불가·빈 결과 시 평가 거래 단건 폴백). ④ `fundGraph`(자금그래프 funnel 미니뷰). ⑤ `watchlistMatch`(**STR_PEP·STR_SANCTION 전용**, v9.22 — WLF 판정 동형 명단 매칭 계보; v9.26 — 발동 자체가 실명 매칭) `{ listType(PEP\|SANCTIONS), entryId(마스킹 토큰), entryName(마스킹 이름 = WLF primary_name_hash 토큰), sourceCode, provider(소스 제공처 이름), matchScore(0.0~1.0 실제 overall 복합점수, 있을 때만), nameScore(v9.26 — 이름 sub-score 0.0~1.0; **데모 발동 기준 = nameScore ≥ 0.92**, WLF TRUE 임계값을 이름 축에 적용, 있을 때만), matchReasonCodes[](v9.26 — 매칭 사유 코드, 있을 때만), screeningRef(연계 WLF 판정 id, 있을 때만), origin(WATCHLIST_MATCH\|KYC_PEP_FLAG), entryIdentity(v9.24 — 명단 엔트리 식별정보 비교 메타 `{ entryRef, fields[] }`, `SubjectIdentity` 동형·`fields ⊆ [NAME,NATIONALITY,GENDER,DOB]` 중 **서버 가용 필드만**(부분 식별 엔트리 축소), reveal 키만·raw PII 미포함, 있을 때만), matchedParty(v9.25 — `MEMBER`(회원/송금인)\|`RECEIVER`(수취인)), partyRef(매칭 당사자 참조 — 회원=subjectRef·수취인=receiverRef), partyIdentity(bo-api read-time projection — 매칭 당사자 식별정보 비교 메타 `{ targetRef, fields[] }`, `SubjectIdentity` 동형; matchedParty=RECEIVER 면 수취인, 채널별 가용 필드만(국내 [NAME]/해외 [NAME,NATIONALITY]), 있을 때만), additionalMatches[](양당사자 동시 매칭 시 나머지 당사자의 **동일 스키마** 목록 — 대표=회원 우선, 비면 생략) }` — 데모 정본은 당사자 이름(+해외는 국가 보조)을 WLF 데모 매처로 ACTIVE 명단 엔트리와 실매칭하고 nameScore ≥ 0.92 일 때만 발동(hash 합성 발동·임의 엔트리·가공 점수 폐기 v9.26), matchScore/entryName 등 lineage 는 실매칭 엔트리·실 점수. 실엔진은 대상 최신 스크리닝 매칭 엔트리 중 룰 listType 일치 항목을 계보로 삼고, 부재 시 `origin=KYC_PEP_FLAG`(entry/provider/entryIdentity 생략) 정직 fallback. **송금 채널(DOMESTIC_REMIT·CROSS_BORDER_REMIT)** 거래는 수취인 COUNTERPARTY 스크리닝 계보(그 거래 transactionRef 그룹, TRUE_MATCH 우선)가 있으면 RECEIVER 매칭을 additionalMatches 로 함께 수록(계보 부재 시 수취인 평가 skip — 합성 신호 없음). 다른 룰 알림은 이 블록을 포함하지 않는다. 회원번호/거래번호는 업무 식별자로 노출하고 이름·계좌·지갑 등 raw PII 는 금지 |
+| `evidence` | object | **TM 알림 상세 데이터모델(DB §3.10 정본). 정상 경로는 발동 CTR/STR 룰의 증거(v9.21 — 레거시 시나리오 발동 폐기)**. ① 트리거 `{ ruleCode(AmlReportRuleCode), strReasonCode(STR 룰만 — StrReasonCode: PEP/SANCTION/KYC_MISMATCH/STRUCTURED/NO_PURPOSE/THIRD_PARTY/UNUSUAL_PATTERN/MANUAL), description(룰 카탈로그 자연어) }`. 레거시 시나리오 행이 남아 있으면 트리거가 `{ scenarioCode, strIndicator, description }`일 수 있으며 bo-api는 표시용 fallback으로만 소비한다. ② 집계 패턴 `{ measure, window, count, amount, currency, threshold, thresholdMet, appliedRiskGrade, countThreshold, distinctCounterparties, counterpartyThreshold }` — **CTR 룰**은 (주체, 영업일) 현금거래 합산액·임계, **STR 룰**은 주체 rolling 윈도우 집계(있는 룰에 한함). `measure`는 서술 라벨, `threshold`는 적용된 effective threshold이며 `appliedRiskGrade`/`countThreshold`/`distinctCounterparties`/`counterpartyThreshold`는 차등 임계·건수·다상대 축이 있는 경우에만 채운다. ③ `relatedTransactions[]`(`{ transactionRef, subjectRef(거래 주체 회원번호 토큰), memberRef(비PII 회원 업무참조 = originator.partyReference), channel, amount, currency, corridor, counterpartyRef, occurredAt, fdsDecisionRef }`) — 집계를 구성한 형제거래(최신순, 표시 캡 20; 윈도우 조회 불가·빈 결과 시 평가 거래 단건 폴백). **수취인 원문 이름(`counterpartyName`)은 evidence JSONB 영속 금지**이며 read-path vault reveal(§19.2)로만 해소한다. ④ `fundGraph`(`{ nodes[], edges[], path[], source }`; 윈도우 거래가 있으면 canonical 이벤트 파생 실 그래프 `source=CANONICAL_EVENTS`, 무거래 시만 `PLACEHOLDER_NO_TRANSFER_LINKS`). **노드 kind 는 product 별 파생(v9.33, 코드=truth `FundGraphBuilder`)** — 루트 `SUBJECT` + WALLET_TOPUP→`FUNDING_SOURCE`(충전수단 `fundingInstrumentType`·기본 INBOUND)·CARD_PAYMENT/WALLET_PAYMENT→`MERCHANT`(가맹점 `merchantRef`·label 은 `merchantCountry` 있을 때 `ref (국가)`·기본 OUTBOUND)·CROSS_BORDER_REMITTANCE/DOMESTIC_TRANSFER→`COUNTERPARTY`(`counterpartyRef` 토큰)·신호 전무만 `UNKNOWN_CP` 폴백(노드 first-seen·엣지 amount desc 최대 20·거래 최대 50). **TM evidence 경로 COUNTERPARTY label 은 토큰만**(§19.2); **Subject360 fund-view read(§2.5a)만** vault reveal(사유 `SUBJECT360_FUND_VIEW`·`RAW_DATA_ACCESS`, 국가=destinationCountry∥corridor 목적지 축)로 `이름 (국가)` 해석(fail-safe → 토큰). + `features`(velocity 스냅샷 `{ velocityCount24h, velocitySumPhp, amountPhpEq }`, 있을 때). ⑤ `watchlistMatch`(**STR_PEP·STR_SANCTION 전용**, v9.22~v9.26) `{ listType(PEP\|SANCTIONS), entryId, entryName(마스킹 이름 토큰), sourceCode, provider, matchScore, nameScore(데모 발동 기준 ≥ 0.92), matchReasonCodes[], screeningRef, origin(WATCHLIST_MATCH\|KYC_PEP_FLAG), entryIdentity(v9.31 — 명단 엔트리 식별정보 비교 메타 `{ entryRef, fields[] }`), matchedParty(v9.32 — `MEMBER`\|`RECEIVER`), partyRef, partyIdentity, additionalMatches[] }`. 데모 정본은 당사자 이름(+해외는 국가 보조)을 ACTIVE 명단 엔트리와 실매칭하고, 실엔진은 대상 최신 스크리닝 매칭 엔트리 중 룰 listType 일치 항목을 계보로 삼으며 부재 시 `origin=KYC_PEP_FLAG`로 정직 fallback 한다. 송금 채널(`DOMESTIC_REMIT`·`CROSS_BORDER_REMIT`)은 수취인 COUNTERPARTY 스크리닝 계보가 있으면 RECEIVER 매칭을 함께 수록하고, 계보 부재 시 수취인 평가를 skip 한다. 회원번호/거래번호는 업무 식별자로 노출하고 이름·계좌·지갑 등 raw PII 는 금지 |
 | `subject360Ref` | string | 대상 360° 통합뷰 링크 키(= `targetRef`/`customerRef`) → `GET /api/v1/bo/aml/subjects/{customerRef}/360`(§2.5a). nullable |
 | `sourceOrigin` | enum | §5.20 `source_origin`(`AML`/`FDS`/`VENDOR`) |
 | `externalAlertRef` | string | 외부 벤더 alert 식별자(DB `external_alert_ref`, nullable, `source_origin=VENDOR`일 때) |
@@ -539,6 +663,38 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `currency` | string | Y | 합계 통화(ISO). `evidence.집계패턴.currency` 파생 |
 | `dominantChannel` | string | Y | 우세 채널(충전/국내/해외). `relatedTransactions[].channel` 최빈값 파생 |
 
+### 3.4d RelatedTransactionsResponse → `GET /api/v1/aml/alerts/{alertId}/related-transactions` (aml-svc, 발동 근거 거래 서버 페이징)
+
+알림의 **발동 근거 거래 전수**를 서버 페이징한다(요구2·A8). 발동 룰이 근거 윈도우(주체 velocity 윈도우 / 영업일 현금 합산 / 단건 그룹)의 dimension·window 를 결정하고, `evidence.relatedTransactions[]`(표시 캡 20)이 아닌 **전체 근거 거래 집합**을 반환한다. 응답 형상은 aml-svc `AlertController.RelatedTransactionsResponse`(port `QueryAlertRelatedTransactionsUseCase`, usecase `AlertRelatedTransactionsService`)와 1:1:
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `rows` | array<`RelatedTransactionDto`> | 근거 거래 행(아래 표). 최신순(occurredAt desc) |
+| `page` | integer | 0-based 현재 페이지 |
+| `size` | integer | 페이지 크기(기본 50) |
+| `totalCount` | integer(long) | 전체 근거 거래 수(캡 없음) |
+| `ruleCode` | string\|null | 근거 윈도우를 결정한 발동 룰 코드 |
+| `window` | string\|null | 근거 윈도우(예 rolling 24h / banking day) 라벨 |
+| `dimension` | string\|null | 집계 축(예 subject velocity / cash sum / single-transaction group) |
+
+`RelatedTransactionDto`(`rows` 원소 — 마스킹 ref + 수치 집계만, §19.2):
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `transactionRef` | string | 거래 업무 식별자(마스킹/토큰) |
+| `memberRef` | string\|null | 비PII 회원 업무참조(화면 회원번호 열; `subjectRef`/`targetRef` 토큰과 별개, `originator.partyReference` 파생) |
+| `counterpartyRef` | string\|null | 상대방 ref(마스킹 토큰) |
+| `counterpartyName` | string\|null | 수취인 원문 이름(read-path vault reveal 로 해소; reveal 실패·구(舊) 행은 null → 화면 토큰 폴백. evidence JSONB 미영속) |
+| `direction` | string\|null | 거래 방향(입금/출금 등) |
+| `amount` | number | 거래 금액(base) |
+| `currency` | string\|null | 통화(ISO 4217) |
+| `channel` | string\|null | 채널(충전/국내/해외) |
+| `corridor` | string\|null | corridor(송금국-수취국) |
+| `occurredAt` | string(date-time) | 거래 발생 시각 |
+| `fdsDecisionRef` | string\|null | 연계 FDS 판정 ref |
+
+> raw PII 미포함 — `memberRef`·`transactionRef`·`counterpartyRef` 는 업무 식별자/마스킹 토큰으로 노출하고 계좌·지갑 등 원문 PII 는 금지(§1.6·§19.2). party 식별정보(송금인·수취인 신원)는 §3.2 `subjectIdentity` 규약을 상속한다 — evidence JSONB 및 목록 응답에는 마스킹 토큰(`targetRef`/`counterpartyRef`)만 영속·실리고, `counterpartyName`(수취인 원문 이름)은 **응답 read-path 에서만** audited vault reveal 로 산출되며 evidence JSONB 에는 미영속(§3.4a evidence 스키마와 정합)이다. reveal 은 `aml:pii:reveal` scope + 사유 + `RAW_DATA_ACCESS` 감사(`POST /internal/v1/aml/pii/reveal` §2.6)로만 산출하고(fail-closed), reveal 실패·구(舊) 행은 `counterpartyName=null` → 화면은 `counterpartyRef` 토큰으로 폴백한다.
+
 ### 3.4b Subject360Dto → `GET /api/v1/bo/aml/subjects/{customerRef}/360` (bo-api 집계 read model, DB §3.16)
 
 | 필드 | 타입 | 설명 |
@@ -546,10 +702,11 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `customerRef` | string | 대상 키(= `member.member_id`/회원번호). domestic-svc varchar(36) join 정규화 |
 | `identity` | object | 신원·CDD 요약(`member-svc`) `{ subjectType(string: `customer`/`transaction-only` — 고객 마스터 보유 여부), displayNameMasked(string: 표시명 마스킹 토큰), kycStatus, country, … }`(hash/token) |
 | `pepStatus` | object\|null | **PEP(정치적 주요인물) 상태 요약**(DB §3.3 `aml_customers.is_pep`/`pep_approval_id`, V24). `null` = 거래 전용 주체. `{ isPep(boolean — 경영진 승인 EXECUTED 여부), pepApprovalStatus(string\|null: 진행 중 `PEP_APPROVAL` 결재 상태 `SUBMITTED`/`EXECUTED`/`REJECTED`/null), pepApprovalId(string(uuid)\|null — 확정 결재 증거 링크) }`. 비-PEP은 `isPep=false`. raw PII 미포함(상태·토큰만) |
-| `riskSummary` | object\|null | 위험·활동 요약. `null` = 거래 전용 주체(고객 마스터 없음·RA 미산정). `{ riskGrade(§5.2), riskScore, factorBreakdown, nextReviewDueAt, reviewCadenceMonths(integer\|null — 등급별 재이행주기 정책(§3.22) 파생 재확인 주기, 회원 상세 '다음 재심사 기한'·임박 배지 표시), mandatoryHighRisk(boolean — 당연고위험 강제 상향 여부), highRiskRegistryReason(**array&lt;string&gt;** — 당연고위험 레지스트리 사유, 단수 아님), screeningStatus(zoloz `risk_level`/`decision` 파생) }`. PEP 확정 시 `riskGrade`=HIGH 강제 상향(PROHIBITED 아님 — 거래 허용+EDD) |
+| `riskSummary` | object\|null | 위험·활동 요약. `null` = **RA 미산정**(거래 전용 주체이거나, 고객 마스터는 있으나 RA read 실패/미산정 — 이 둘은 `identity.kycStatus`/`raAvailable` 조합으로 구분, 아래 참조). `{ riskGrade(§5.2), riskScore, factorBreakdown, nextReviewDueAt, reviewCadenceMonths(integer\|null — 등급별 재이행주기 정책(§3.22) 파생 재확인 주기, 회원 상세 '다음 재심사 기한'·임박 배지 표시), mandatoryHighRisk(**boolean\|null** — 당연고위험 강제 상향 여부; `null`=미상(위임 경로에서 RA read 로 파생 불가) — `false` 단정 금지, CDD profile §3.9 와 1:1), highRiskRegistryReason(**array&lt;string&gt;** — 당연고위험 레지스트리 사유, 단수 아님), screeningStatus(**실 WLF 최근 판정 상태** — `NO_MATCH`/`POSSIBLE_MATCH`/`TRUE_MATCH`/`FALSE_POSITIVE`/`AUTO_DISCOUNTED`/`ESCALATED`(§3.2 `ScreeningStatus`), 판정 부재/조회 실패 시 `UNKNOWN`. 구 계약의 RA 등급 파생 `REVIEW`/`CLEAR` 폐기 — '스크리닝' 라벨과 실 WLF 판정 의미 정합) }`. PEP 확정 시 `riskGrade`=HIGH 강제 상향(PROHIBITED 아님 — 거래 허용+EDD) |
+| `raAvailable` | boolean | **RA(위험평가) read 성공 여부 마커.** `true`=RA 산정됨(`riskSummary` 채워짐). `false` + `identity.kycStatus != "NO_CUSTOMER_MASTER"` = **RA 미산정(고객 마스터 있음)** — RA read 404/일시 오류. `false` + `identity.kycStatus == "NO_CUSTOMER_MASTER"` = **거래 전용 주체**(고객 마스터 없음). RA 조회만 실패했을 때 identity 를 보존하며 '거래 전용'으로 오강등하지 않기 위한 구분 필드(run5 #5) |
 | `transactionFeed` | array<object> | `tx-history-svc` 통합 이력(충전/국내/해외 타임라인 — `transactionRef`·`channel`·`amount`·`currency`·`corridor`·`direction`·`status`(string optional: `DECIDED`/`MONITORED`/null — 거래 처리 상태)·`occurredAt`). stub/빈 배열 가능 |
 | `fundGraph` | object | `wallet-svc` `transfer_links` 자금그래프(funnel — 노드/엣지 요약, token). `source=PLACEHOLDER_NO_TRANSFER_LINKS` 가능(자금이체 링크 미연동) |
-| `caseStrSummary` | object | 케이스·STR 건수 요약. **STR 건수는 준법감시 전담 scope 한정 투영(tipping-off §19.2a)** |
+| `caseStrSummary` | object | 케이스·STR 건수 요약 `{ alertCount, openCaseCount, caseCount, strCount }`. 알림/케이스 건수는 **대상(`targetRef`) 서버 필터**로 산출한다(TM 알림 목록 §2.5a·CDD 케이스 목록 `GET .../cdd/cases`(§2.7) 과 동일 필터 오버로드 — 전체 최신 N건 스캔이 아니라 대상 한정 조회라 목록↔집계 카운트가 정합, run5 #6). **STR 건수는 준법감시 전담 scope 한정 투영(tipping-off §19.2a)** |
 | `assembledAt` | string(date-time) | 데이터 신선도 — read model 조립 시각(nullable) |
 
 > read-only 집계 파생. raw PII 미노출(token/hash·마스킹). 엔진 `GET /aml/customers/{customerRef}/profile`·`/risk` + canonical events(transaction.*) + relationships(`USES_ACCOUNT`/`REPEATED_PAYEE`)를 결합하며 별도 영속 테이블 없음(DB §3.16).
@@ -602,11 +759,13 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `priority` | enum | — | `LOW`/`MEDIUM`/`HIGH`/`URGENT` |
 | `assignedTo` | string | — | 담당 분석가 |
 | `eddTrigger` | enum | — | §13.2 EDD trigger. 허용값 8종(DB §5.29 정본): `WLF_TRUE_MATCH`/`HIGH_RA_SCORE`/`HIGH_RISK_COUNTRY`/`UNUSUAL_TRANSACTION`/`COMPLEX_OWNERSHIP`/`TRADE_MISMATCH`/`CRYPTO_RISK`/`INTERNAL_OVERRIDE` |
-| `originAlertId` / `originScreeningId` | string(uuid) | — | 발단 |
+| `originAlertId` | string(uuid) | — | **발단 alert**(알림→케이스 전환, DB `origin_alert_id`). GET 상세(`CaseDetail`)가 실값 응답 — 위임(엔진) 경로 유실 결함(run3 D5·D8) 해소 |
+| `originScreeningId` | string | — | **발단 screening/RA 스코어 id**(RA→EDD 착수, DB §3.11 `origin_screening_id` **VARCHAR(96)·V15**, FK 아님·문자열 참조 토큰). GET 상세가 실값 응답 — 이 필드 부재로 `null` 하드코딩되던 케이스 상세 '발단' 유실(run3 D8) 해소 |
 | `originFdsCaseRef` | string | — | FDS 위임 발단 cross-ref(DB `origin_fds_case_ref`, `source_origin=FDS` 시 채움. fds-svc 역추적용, nullable) |
 | `timeline` | array<object> | — | 처리 이력(evidence) |
 | `dueAt` / `closedAt` | string(date-time) | — | SLA·종결 |
 
+`CreateCaseRequest`(수동 케이스 생성, `POST .../cdd/cases`): `{ caseType, targetRef?, priority?, assignedTo?, dueAt?, originAlertId?, originScreeningId?, eddTrigger? }` — `originAlertId`(알림→케이스 전환)·`originScreeningId`(RA→EDD 착수)·`eddTrigger` 는 발단 계보로 **생성→재조회에서 실값 영속**(run3 D5·D8, 전부 optional).
 `CaseCloseRequest`(🔒4-eyes): `{ resolution, reason, makerId }` → 결재 상신.
 `CaseTimelineEntryRequest`: `{ kind, note, evidenceRefs[] }`.
 
@@ -660,7 +819,11 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `checkerId` | string | 승인자 (**maker≠checker**) |
 | `payloadHash` | string | 고정 hash(변경 시 무효화) |
 | `reason` | string | 사유 |
-| `expiresAt` / `executedAt` | string(date-time) | 만료·실행(결재≠실행 분리) |
+| `stagedPayload` | string\|null | **상신 시점 고정 canonical payload**(상세 전용, DB §3.16 `staged_payload`). 결재함 **상신 내용·변경 전→후(as-is/to-be) 파생 소스** — masked/tokenized only(원문 PII 미저장 §19.2). `null`=live 파생 subject/legacy(run3 D13) |
+| `submittedAt` | string(date-time)\|null | **상신일시**(DB §3.16 `created_at` 매핑, 신규 컬럼 없음·가정 G5). 결재함 정렬(desc) 기준. `null`=live 파생 subject(run3 D13) |
+| `expiresAt` / `executedAt` | string(date-time) | 만료·실행(결재≠실행 분리). `expiresAt`=결재함 만료 임박 뱃지 원천(`null`=무기한, run3 D13) |
+
+> **결재함 위임(엔진) 응답 parity(run3 D13, 코드=truth).** 엔진 `ApprovalController.{ApprovalSummary,ApprovalDetail}` 가 `submittedAt`(=`created_at`)·`expiresAt`·`stagedPayload`(Detail)를 응답하도록 결선해 위임 경로에서 상신일시·만료·변경내역·상신내용이 전부 `null` 로 내려와 정렬·만료 뱃지·변경 전후 표가 무력화되던 결함을 해소한다. stub↔엔진 위임 응답 모양 동형(불변식).
 
 `ApprovalDecisionRequest`: `{ checkerId, decision: "APPROVE"|"REJECT", reason }`. 서버는 `checkerId == makerId` 시 `409 AML.SELF_APPROVAL_FORBIDDEN`.
 
@@ -717,6 +880,8 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `createdAt` | string(date-time) | |
 
 > raw PII(이름·주민번호·여권번호 원문) 미노출. 식별은 `customerRef`(토큰), 매칭 보조는 `*Hash`만(DB §2.2). PII 원문 접근은 `aml:pii:reveal` scope+감사 필요(§1.6).
+>
+> **bo-api 화면 aggregate `CustomerProfile.riskSummary.mandatoryHighRisk`(당연고위험) 파생(run5 #3).** 위 엔진 evidence `CustomerProfileDto` 는 mandatory(당연고위험 강제 상향) 필드를 싣지 않는다. bo-api 프로필 화면 aggregate(`GET /api/v1/bo/aml/customers/{ref}/profile`)는 동일 위임 컨텍스트의 RA read(`GET /aml/customers/{ref}/risk` → `RiskScoreResponse.{mandatoryHighRisk, mandatoryHighRiskReasons, forcedFloorEvidence}`, §3.3)를 재사용해 `riskSummary.mandatoryHighRisk`(**boolean\|null**) 를 합성한다 — `isPep=true` 면 사유에 `PEP` 포함, RA read 실패 시 `null`(미상, `false` 단정 금지). stub(비운영) 경로는 RA stub 을 단일 소스로 하여 프로필 등급·사유·재확인주기가 RA 상세(§3.3)와 일치한다(PEP 승인·RISK_OVERRIDE 폐루프 양 read 동형, run5 #4).
 
 `SourceSystemDto`: `{ sourceSystem, ingestMode(§5.14), schemaVersion, authMode(API_KEY_HMAC/OAUTH2/MTLS), failurePolicy(MANUAL_REVIEW/FAIL_CLOSED/DELAY_ALLOWED), status(enum 2종: `ACTIVE`/`DISABLED` — DB §3.2 `aml_source_systems.status` 정본), enabled, createdAt(date-time), updatedAt(date-time) }`. `secretRef`는 응답에서 마스킹.
 
@@ -782,11 +947,21 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 |---|---|---|
 | `country` | string | ISO 국가코드 |
 | `riskBand` | enum | `LOW`/`MEDIUM`/`HIGH`/`PROHIBITED`(국가위험 등급, RA 등급 §5.2와 동일 축) |
-| `basis` | array<string> | 근거(FATF blacklist/greylist·제재·고위험 corridor 등) |
-| `version` | integer | 정책 버전 |
+| `basis` | array<string> | 근거(FATF blacklist/greylist·EU 고위험·제재·고위험 corridor 등). 자동 수집분은 `FATF_BLACKLIST`/`FATF_GREYLIST`(FATF, `FatfGradeMapping`) 또는 `EU_HIGH_RISK_THIRD_COUNTRY`(EU 집행위, 기본) |
+| `version` | string | 정책 버전 레이블(VARCHAR(80) — 자동 수집분은 canonical SHA-256 파생: `eu-<hash>`/`fatf-<hash>`) |
+| `status` | enum | `DRAFT`/`ACTIVE`/`SUPERSEDED`(버전 상태, DB §3.22c) |
 | `effectiveFrom` | string(date-time) | 적용 시점 |
+| `provenance` | enum | **(V16·V18)** `MANUAL`(수동 4-eyes 오버라이드 — 우선, 자동 수집이 덮지 않음)/`FATF_DAILY`(FATF 자동 수집)/`EU_COMMISSION`(EU 집행위 자동 수집 — 기본 제공자, V18). 시스템 provenance 는 결재 없이 즉시 ACTIVE. enum `CountryRiskProvenance` 1:1 |
+| `sourceUrl` | string | **(V16)** 자동 수집분의 원천 URL(EU 고위험 제3국 URL / FATF 공개 목록 URL). 수동 행 null |
+| `asOf` | string(date-time) | **(V16)** 소스 관측 시점. 수동 행 null |
 
 `CountryRiskChangeRequest`(🔒4-eyes, `POST .../country-risk:change`): `{ changes: [ { country, riskBand, basis[] } ], reason, makerId }` → §3.7 `subjectType=COUNTRY_RISK` 결재 상신. 응답 `{ approvalId, status: SUBMITTED }`. 실행(EXECUTED) 후 변경 국가 관련 대상 재평가(RA) 트리거.
+
+`CountryRiskImportStatusDto`(GET `.../country-risk/import-status` — 국가위험 일일 수집 상태 패널): `{ sourceCode("FATF_DAILY"), provider(활성 feed 제공자 — `EU_COMMISSION` 기본/`FATF` 대안), status(ACTIVE|DISABLED), blackUrl(소스 URL — provenance; **EU 제공자에선 null**, FATF 는 Call-for-Action URL), greyUrl(소스 URL — provenance; **EU 제공자에선 단일 고위험 제3국 URL**, FATF 는 Increased-Monitoring URL), activeVersion(현재 적용 canonical SHA-256 — 첫 적용 전 null), lastImportedAt, lastCheckedAt, lastStatus(APPLIED|SKIPPED_UNCHANGED|FAILED — 시도 전 null), lastError, recentRuns: CountryRiskImportRunDto[](최근 10건) }` — DB §3.22c `aml_country_risk_sources` + `aml_country_risk_import_runs` 1:1. **소스 URL 계약: EU 단일 목록은 `greyUrl` 에 단일 URL·`blackUrl` null(FE 는 `provider` 로 소스 표기 분기), FATF 는 black/grey 쌍**. `provider`/`blackUrl`/`greyUrl` 은 활성 feed 값(`CountryRiskFeedPort.provider()/blackUrl()/greyUrl()`, 라이브 feed 제공자를 소스 메타 라벨보다 우선 표기). `CountryRiskImportRunDto` = `{ runId, sourceCode, startedAt, finishedAt, status, version, added[], upgraded[], downgraded[], delisted[], suppressedManual[], error }`(run diff — ISO 코드 목록: 신규/상향/하향/이탈/수동보존. `runId`/`sourceCode` 로 상태 패널 행 식별).
+
+`CountryRiskImportResultDto`(POST `.../country-risk:import` — 수동 트리거 동기 실행 결과, 엔진 `SyncResult` 1:1): `{ status(APPLIED|SKIPPED_UNCHANGED|FAILED), version, added[], upgraded[], downgraded[], delisted[](이번 run 에 활성 제공자 목록에서 이탈한 ISO — 동일 제공자 provenance ACTIVE 만 supersede), suppressedManual[](MANUAL 오버라이드 우선으로 건너뛴 ISO, 가정 A8), error(FAILED 시 fail-safe 사유 — 기존 등급 유지) }`(엔진 SyncResult 는 `sourceCode`/`importedAt` 미포함).
+
+> bo-api 위임 계약(`GET/POST /api/v1/bo/aml/country-risk*`, `CountryRiskDtos`, 필드 단위 1:1 — QA 런 10 H-1): 등급표 행(`CountryRiskEntry`)은 엔진 `CountryRiskDto` 를 그대로 통과하되(`version` string→FE int 파생(`v7`→7·`fatf-<hash>`→0)·`policyPackCode` 는 bo-api 프레젠테이션 기본값), import-status/import 응답의 run diff 는 **엔진과 동일한 ISO 코드 목록(added/upgraded/downgraded/delisted/suppressedManual: string[])** 을 그대로 통과해 화면이 국가 목록 pill 을 렌더한다(카운트 손실 없음). import-status 는 소스 URL(blackUrl/greyUrl)을 병기하며, import 결과의 `sourceCode`/`importedAt` 은 엔진 SyncResult 에 없어 bo-api 가 요청 맥락(FATF_DAILY·응답 시각)으로 채운다. 수동 트리거는 `COUNTRY_RISK_IMPORT_TRIGGERED` 감사 이벤트(bo V8)를 남긴다.
 
 ### 3.13 PolicyPackChangeRequest (Admin, `aml_tenants.policy_pack_code`)
 
@@ -831,9 +1006,12 @@ RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenari
 | `simulationId` | string(uuid) | 시뮬레이션 실행 식별자(감사·재현) |
 | `modelVersion` / `scenarioVersion` | string | 대상 모델/시나리오 버전 |
 | `samplePopulation` | object | `{ definition, sampleSize, periodFrom, periodTo }`(예: 최근 90일 신규) |
-| `gradeShift` | object | 등급 이동 추정 `{ LOW(integer), MEDIUM, HIGH, PROHIBITED }`(부호 있는 증감, PRD '높음 +142 / 중간 -88 / 낮음 -54') |
-| `falsePositiveImpact` | object | 오탐 영향 추정 `{ deltaPercent(number), baseline, projected }`(PRD '오탐 영향 추정 +6%') |
+| `gradeShift` | object | 등급 이동 추정 `{ LOW(integer), MEDIUM, HIGH, PROHIBITED }`(부호 있는 증감 = 후보 분포 − 기준 분포, PRD '높음 +142 / 중간 -88 / 낮음 -54') |
+| `baselineDistribution` | object\|null | **활성 버전 기준 분포**(증감 `gradeShift` 의 기준선) `{ LOW(long), MEDIUM, HIGH, PROHIBITED }`. 표본 부재 시 생략(nullable, #4) |
+| `falsePositiveImpact` | object\|null | 오탐 영향 추정 `{ deltaPercent(number), baseline, projected }`(PRD '오탐 영향 추정 +6%'). **미산출 시 생략**(nullable — 0% 오표시 방지, #4) |
 | `evaluatedAt` | string(date-time) | 실행 시각 |
+
+> **RA simulate 요청 `RaSimulateRequest` = `{ modelVersion, samplePopulation }`(코드=truth).** 구 `factorWeightOverrides`(요인 가중 오버라이드)는 FE 미전송·엔진 미소비 dead 필드였으므로 **요청·응답 계약에서 제거**(#4). 표본(sample)은 bo-api 가 최근 90일 점수로 서버측 자동 구성한다. bo-api `RaDtos.{RaSimulateRequest,SimulationResponse}` 1:1.
 
 ### 3.16 TenantDto / TenantCreateRequest / OnboardingProvisionRequest / OnboardingRegisterRequest / OnboardingStatusResponse (bo-api 소유, DB `aml_tenants`)
 
@@ -911,6 +1089,47 @@ RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenari
 | `region` | string | 배포 리전 |
 | `history` | array<object> | 상태 전이 이력 `{ status, transitionedAt, actor, note }` |
 | `nextExpectedStatus` | string | 다음 예상 상태(상태머신 기반 안내용, nullable) |
+
+### 3.17 NeutralEventRequest 블록 스키마 → `POST /aml/v1/transaction-events` (코드=truth, feature/aml-neutral-canonical-ingest)
+
+§2.1a 중립 수집 API 의 Party·Amounts·product 블록 상세. 필드는 엔진 domain record(`NeutralParty`·`NeutralAmounts`·`NeutralProductBlocks`)와 1:1. raw PII(성명·계좌·신분증번호)는 수신 경계에서만 존재하고 토큰화·vault 후 소멸(§2.1a PII 경계).
+
+**Party**(`originator`/`counterparty` 공통, `PartyDto`):
+
+| 필드 | 타입 | R | 설명 |
+|---|---|---|---|
+| `partyReference` | string | — | 당사자 내부 식별자 |
+| `partyType` | enum | — | `INDIVIDUAL`/`LEGAL_ENTITY` |
+| `nationalIdentityKey` | string | R(originator) | 동일인 식별키(CI/해시). subject 토큰의 원천, 분산·차명 탐지 핵심 |
+| `fullNameLatin`/`fullNameLocal` | string | — | 로마자/자국어 성명(WLF·실명확인). **토큰화 후 vault**(PiiField.NAME) |
+| `dateOfBirth` | string(date) | — | 생년월일(vault, PiiField.DOB) |
+| `gender` | enum | — | `M`/`F`/`X`(vault, PiiField.GENDER) |
+| `nationality`/`residenceCountry`/`countryOfBirth` | string(country) | — | ISO 3166-1 alpha-2. `nationality`(vault) WLF factor |
+| `phone`/`email` | string | — | E.164/이메일. counterparty 안정키 구성(phone) |
+| `identification` | array<object> | — | 신분증 배열. `{ idType, idNumberMasked, idNumberToken, issuingCountry, issueDate, expiryDate }`. `idNumberToken`(또는 masked)은 **vault 만**(PiiField.DOC), payload·응답 미포함(가정 G7) |
+| `kyc` | object | — | `{ occupation, sourceOfFunds, sourceOfFundsDescription, kycLevel, kycVerifiedAt, cddDueDate, customerRiskRating }` |
+
+**Amounts**(`amounts`, `AmountsDto`):
+
+| 필드 | 타입 | R | 설명 |
+|---|---|---|---|
+| `grossAmount`/`grossCurrency` | decimal/currency | R | 고객이 낸 총액·ISO 4217 |
+| `netAmount`/`netCurrency` | decimal/currency | — | 수취/정산 금액 |
+| `baseAmount`/`baseCurrency` | decimal/currency | R | 규제통화 환산액·CTR 임계 판정. `baseCurrency`=테넌트 규제통화(가정 G3, 불일치 시 422) |
+| `reportingAmount`/`reportingCurrency` | decimal/currency | — | 감독기관 보고 기준액 |
+| `exchangeRate`/`feeAmount`/`feeCurrency` | decimal | — | 환율·수수료 |
+
+**product 블록**(해당 `product`일 때만 채움):
+
+| product | 블록 | 주요 필드(비-PII 신호) | 엔진 payload 파생 |
+|---|---|---|---|
+| CROSS_BORDER_REMITTANCE | `remittance` | `purpose`·`payoutMethod`(§7)·`destinationCountry`·`payoutPartner`·`relationshipToBeneficiary`·`counterpartyAccount{accountIdentifierMasked,bankCode,bankName,branch,routingType,routingValue}` | `destinationCountry`·`payoutPartner`·`relationshipToBeneficiary`·`payoutMethod`·`corridor`(origin-dest) |
+| DOMESTIC_TRANSFER | `domesticTransfer` | `debitAccount`/`creditAccount{accountIdentifierMasked,bankCode,accountHolderName(PII)}`·`accountHolderNameMatch`·`fundingSourceType` | `accountHolderNameMatch`(차명 STR 신호)·`fundingSourceType` |
+| CARD_PAYMENT | `cardPayment` | `panMasked`·`issuer`·`cardScheme`·`domesticInternationalFlag`·`merchantId`·`merchantName`·`merchantCategoryCode`(MCC)·`merchantCountry`·`acquiringCity`·`localAmount`/`localCurrency`·`authorizationCode`·`balanceBefore`/`balanceAfter` | `mcc`·`merchantRef`·`merchantCountry`·`balanceBefore`/`After`(고위험 MCC·pass-through) |
+| WALLET_TOPUP | `walletTopup` | `fundingInstrumentType`(§7)·`fundingInstrumentMasked`·`isAutoTopup`·`isManualApproval`·`approverId`·`balanceBefore`/`balanceAfter`·`walletId` | `fundingInstrumentType`(분산충전)·`balanceBefore`/`After`(pass-through)·`walletId` |
+| WALLET_PAYMENT | `walletPayment` | `merchantId`·`merchantName`·`merchantType`·`settlementCurrency`·`merchantCategoryCode`·`productType`/`productName`·`paymentInstrument`·`balanceBefore`/`balanceAfter`·`walletId` | `mcc`·`merchantRef`·`balanceBefore`/`After`·`walletId` |
+
+> `panMasked`(BIN+말미4)·`accountIdentifierMasked`·`accountHolderName`은 마스킹/PII 필드로, 엔진 payload 에는 토큰/마스킹 신호만 실린다(§2.1a PII 경계). STR 신호(가정 G5)는 신규 룰코드 신설 없이 기존 룰/시나리오가 소비: 차명계좌=`accountHolderNameMatch`→`STR_THIRD_PARTY`, 분할/취소환불=`STR_STRUCTURED`, pass-through·분산충전=`STR_NO_PURPOSE`·`STR_VELOCITY_CASH`, 동일수취인 집중=TM velocity(counterparty), 고위험 MCC=FDS C1213 결선.
 
 ---
 
@@ -1042,7 +1261,15 @@ components:
         matchedEntries: { type: array, items: { type: string } }
         ruleVersion: { type: string }
         decidedBy: { type: string, nullable: true }
-        # riskGrade·requiredActions·matchedCandidates·matchedRules·decidedAt·expiresAt 는 bo-api enrichment(엔진 응답 외, §3.2)
+        decidedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time, nullable: true }
+        # riskGrade·requiredActions·matchedCandidates·matchedRules·expiresAt 는 bo-api enrichment(엔진 응답 외, §3.2)
+    RuleRef:
+      type: object
+      properties:
+        ruleCode: { type: string }
+        threshold: { type: number }
+        score: { type: number }
     IngestEventResponse:
       type: object
       properties:
@@ -1292,8 +1519,17 @@ components:
             MEDIUM: { type: integer }
             HIGH: { type: integer }
             PROHIBITED: { type: integer }
+        baselineDistribution:
+          type: object
+          nullable: true
+          properties:
+            LOW: { type: integer, format: int64 }
+            MEDIUM: { type: integer, format: int64 }
+            HIGH: { type: integer, format: int64 }
+            PROHIBITED: { type: integer, format: int64 }
         falsePositiveImpact:
           type: object
+          nullable: true
           properties:
             deltaPercent: { type: number }
             baseline: { type: number }
@@ -1677,7 +1913,7 @@ paths:
 | watchlist freshness / import 승인 | `GET/POST /admin/aml/watchlist-sources`, `.../imports/{ver}:apply`(🔒) |
 | RA score distribution / high-risk 현황 / 시뮬레이션 | (집계 화면) bo-api `GET /api/v1/bo/aml/dashboard`(§9); (엔진 모니터링) **`GET /api/v1/admin/aml/risk-scores`(목록·`riskGrade`/`modelVersion` 필터)·`GET .../risk-scores/distribution`(등급 분포) — 구현됨**(§2.7); (엔진 저수준) `GET /admin/aml/ra-models`, `GET /aml/customers/{ref}/risk`, `POST .../ra-models/{code}/simulate`(응답 `SimulationResponse` §3.15) |
 | CDD/EDD checklist / periodic review 정책 | `GET/POST .../cdd/checklists`, `PUT .../cdd/checklists/{id}`(🔒), `PUT .../cdd/periodic-review-policy`(🔒) |
-| country risk / policy pack 관리 | `GET .../country-risk`, `POST .../country-risk:change`(🔒 COUNTRY_RISK), `POST .../policy-packs:change`(🔒 POLICY_PACK) |
+| country risk / policy pack 관리 | `GET .../country-risk`, `GET .../country-risk/import-status`, `POST .../country-risk:import`(FATF 일일 수집 수동 트리거 — 결재 없음), `POST .../country-risk:change`(🔒 COUNTRY_RISK), `POST .../policy-packs:change`(🔒 POLICY_PACK) |
 | RA 모델 활성화 / 등급 override | `.../ra-models/.../activate`(🔒), `.../risk-scores/{id}/override`(🔒) |
 | TM alert backlog / scenario 관리 | `GET /aml/alerts/{id}`, `.../tm-scenarios/{code}:activate`(🔒) |
 | case SLA / CDD·EDD 처리 | `GET /admin/aml/cdd/cases`, `PATCH .../{id}`, `.../{id}:close`(🔒) |
@@ -1804,6 +2040,11 @@ paths:
 | `POST .../source-systems`(secret 변경) | `SECRET_CHANGE` | source credential 변경 | `aml:admin:source-system` |
 
 > 본 표로 설계서 §13.4 4-eyes 대상 전수(16종)가 진입 엔드포인트와 1:1 매핑된다. `STR_SUBMIT`·`CTR_SUBMIT`은 동일 경로(`:submit`)이되 `reportType` 파라미터로 분기되며, COMPLIANCE(STR)/REPORTING_OFFICER(CTR) 전담 결재 라인이 구분된다(설계서 §14.1a·§19.2a 정본). 보고 기각·취소(`:reject`/`:cancel`)는 **신규 subjectType 없이** `STR_SUBMIT`/`CTR_SUBMIT` 결재 사이클을 재사용하며 전이 종류(REJECT/CANCEL)·사유 코드는 결재 payload(`payload_hash` 고정)에 포함된다(설계서 §14.1a) — 결재 라인은 두 전이 모두 `REPORTING_OFFICER`. `COUNTRY_RISK`/`POLICY_PACK`은 §3.7 enum 정본이며 §2.7 `country-risk:change`/`policy-packs:change`가 결재 생성 트리거다. `CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`는 §3.7 enum 정본(총 16종); DB §5.16 동기화 대상. PRD §11.1·설계서 §13.5 동기화 대상.
+>
+> **WLF 판정 폐루프 예외 규칙(코드=truth, `ScreeningOperationsService`/`ApprovalDispatchService`)** — `POST .../screenings/{id}/decision`·`POST .../screenings/fp-whitelist` 로 산출되는 판정 상태(§5.5)는 4-eyes 적용 시점이 판정별로 갈린다:
+> - **`ESCALATED`(상위승인) = staging(지연 적용).** 판정을 즉시 반영하지 않고 4-eyes 상신(`subjectType=WLF_DECISION`, SUBMITTED)한다. **checker 승인(EXECUTED) 시점에만** 실제 상태 전이가 반영된다(maker≠checker·`payload_hash` 고정). 상신·미승인 구간에는 원 판정 상태가 유지된다(성급한 상태 오염 방지).
+> - **`AUTO_DISCOUNTED`(자동 낮춤) = 즉시 적용(4-eyes 우회).** FP whitelist(`aml_fp_whitelist`, DB §3.8a) 등록으로 확정된 오탐 면제는 **등록 즉시 후속 동일 매치(matchFeature)를 자동 낮춤**한다 — 별도 승인 게이트를 거치지 않는다(FP whitelist 등록 자체는 `subjectType=FP_WHITELIST` 4-eyes 로 진입하되, 그 산출물인 discount 적용은 조회·판정 시점에 즉시 반영). 만료(`expires_at < now()` ⇒ EXPIRED, DB §3.8a 가정 A5) 후에는 discount 미적용.
+> - **§10 미정의 지점 — 가정 B**: 위 두 규칙의 승인 주체/subject_type 매핑은 코드상 approval `subjectType`(`WLF_DECISION`·`FP_WHITELIST`) 기준으로 기술한다. 상세 승인 라인 표현이 §10 표에 없는 부분은 코드 계약(`ApprovalDispatchService` 분기)만 기술하고 추측하지 않는다.
 
 ---
 
@@ -1847,6 +2088,26 @@ eAMLA 제출은 **raw PII 미전송** — 토큰화된 보고 참조만 전달�
 ## 변경 이력
 
 | 일자 | 변경 | 비고 |
+| 2026-07-05 | **1차 온보딩 RA 엔진 CDD 파생 API 역전파(코드=truth, feature/aml-onboarding-ra-cdd-derivation, 요구 런 11).** 1차 RA 를 엔진이 `customer.cdd.completed` 인입 시 CDD 데이터(SANCTION/PEP 명단 비교 + 국적별 리스크 + kyc_evidence)로부터 직접 산출하도록 이관. (1) **§2.1 인입 파이프라인 step 7d 콜아웃 신설** — identity projection 직후 엔진이 (a) WLF 스크리닝(SANCTION/PEP·주체 키 memberRef·idem `cdd-ra:{eventId}`) 매치 시 SCREENING=100+HIGH floor+사유+근거, (b) 국적×거주국 국가위험 정본(`LookupCountryRiskUseCase.gradeFor`) max 결합→GEOGRAPHY(PROHIBITED/HIGH=100·MEDIUM=60·LOW/미등재=15), (c) kyc_evidence→CUSTOMER=(SOF+KYC)/2 를 파생해 `aml_risk_scores` 1차 RA 를 생성(별도 evaluate 호출 없이). fail-safe=freshness boolean 선검사로 stale 시 평가 보류·CDD 인입 ACCEPTED(§15.5·§20.2, 인입 TX rollback-only 오염 없음). 파생 규칙=ACTIVE ONBOARDING 모델 `parameters`(V19) 정본·엔진 상수 하드코딩 없음. (2) **§3.3 `factors`/`highRiskCountry`/`wlfTrueMatch` 보조 입력 강등** — 온보딩 인입 경로는 엔진 파생 factors(출처 `cdd:*`)를 정본으로 쓰고, 요청 override 는 테스트·수동 재평가용 보조 입력(출처 `override` 후적용·감사, 하위호환). RA 응답 계약 변경 없음. | aegis-java-implementer(spec). 코드=truth. 근거=aml-svc `application/{port/in/DeriveOnboardingRaUseCase,usecase/OnboardingRaDerivationService}`·`AmlEventIngestService`(step 7d)·`RiskAssessmentService.materialize`(derivedFactors 정본·override 강등)·`AssessRiskUseCase.EvaluateCommand.derivedFactors`·`domain/risk/{OnboardingRaParameters,OnboardingRaFactorDeriver}`·`db/migration/V19__ra_onboarding_derivation_parameters.sql`, `scripts/demo_ingest.py`(클라 계산 제거). DB §3.9/§7 V19·기능정의서 §5.1(v9.27) 동기화. |
+| 2026-07-05 | **국가위험 수집 소스 제공자화 API 역전파 — EU 집행위 기본·FATF 대안(코드=truth, fix/aml-country-risk-eu-source).** FATF 페이지 403 봇 차단 대응으로 수집 소스가 제공자 선택형(`aml.country-risk.feed.provider` 기본 `EU_COMMISSION`·대안 `FATF`). **§2.7 country risk 표·일일 자동 수집 note** 를 제공자 선택형으로 갱신(EU 단일 고위험→HIGH·basis `EU_HIGH_RISK_THIRD_COUNTRY`·26개국 결정적 ISO 매핑·미매핑 skip+`unmapped`·이탈 판정=동일 제공자 provenance). **§3.12 갱신**: (1) `CountryRiskDto.provenance` enum 에 `EU_COMMISSION` 추가(V18)·`basis` 에 `EU_HIGH_RISK_THIRD_COUNTRY`·`version` 레이블 `eu-<hash>`/`fatf-<hash>`·`sourceUrl` EU/FATF. (2) `CountryRiskImportStatusDto` 소스 URL 계약 명문화 — **EU 는 `greyUrl` 에 단일 URL·`blackUrl` null(FE 는 `provider` 로 표기 분기), FATF 는 black/grey 쌍**, `provider` 는 활성 feed 값(라이브 우선). (3) `CountryRiskImportResultDto.delisted` 판정=동일 제공자 provenance ACTIVE. bo-api `Provenance` enum·`RiskBasisSource` 대칭 확장(1:1). | aegis-java-implementer(spec). 코드=truth. 근거=aml-svc `adapter/in/rest/PolicyAdminController`(`CountryRiskImportStatusDto.from`+feedProvider)·`application/port/out/CountryRiskFeedPort`(provider())·`adapter/out/feed/{Eu*,CountryRiskFeedConfig}`·bo-api `aml/countryrisk/dto/CountryRiskDtos`(Provenance.EU_COMMISSION·FeedProvider·RiskBasisSource.EU_HIGH_RISK_THIRD_COUNTRY)·회귀 `AmlCountryRiskProxyDelegationTest`. DB §3.22c/§7 V18 동기화. |
+| 2026-07-05 | **국가위험 위임 계약 1:1 정합 역전파(QA 런 10 수정, 코드=truth, feature/aml-country-risk-daily-import).** §3.12 bo-api↔aml-svc 위임 계약을 필드 단위 1:1 로 교정(H-1): (1) 엔진 `CountryRiskDto.version` 은 **string**(bo-api 가 int Integer 로 오해 → string 소비·FE int 파생으로 정정), `CountryRiskImportRunDto` 에 **`runId`/`sourceCode`/`delisted` 추가**·diff 는 **ISO 코드 목록(string[])** 로 통일(bo-api 가 int 카운트로 lossy 요약하던 것을 제거 — FE 국가 목록 pill 렌더), `CountryRiskImportStatusDto` 에 **`blackUrl`/`greyUrl`(FATF 소스 URL provenance) 추가**(엔진=정본 확장), `CountryRiskImportResultDto` 는 엔진 `SyncResult` 에 없는 `sourceCode`/`importedAt` 을 bo-api 가 요청 맥락으로 채움 명문화. (2) bo-api 위임 계약 註 를 카운트→국가 목록으로 갱신. run diff `delisted` 는 run 이력에 영속(DB §3.22c diff JSONB, L-1). §3.12 DTO 표·bo-api 위임 계약 문단 갱신. | aegis-java-implementer(spec). 코드=truth. 근거=aml-svc `adapter/in/rest/PolicyAdminController`(`CountryRiskImportStatusDto`+blackUrl/greyUrl·`CountryRiskImportRunDto`+runId/sourceCode/delisted)·`application/port/out/CountryRiskSourceStorePort.CountryRiskImportRun`(runId·delisted)·bo-api `aml/countryrisk/{service/AmlCountryRiskService(engine records),dto/CountryRiskDtos}`·회귀 `AmlCountryRiskProxyDelegationTest`. DB §3.22c/§7 V17 동기화. |
+| 2026-07-05 | **국가위험 FATF 일일 웹 수집 API 역전파(코드=truth, feature/aml-country-risk-daily-import).** (1) **§2.7 country risk 표에 2행 추가** — `GET .../country-risk/import-status`(FATF 일일 수집 상태: 소스 메타+최근 run diff 10건)·`POST .../country-risk:import`(수동 즉시 수집 트리거 — **결재 없음**, 동기 `SyncResult`), 둘 다 scope `aml:admin:policy`. `GET .../country-risk` 는 `countryCode` 생략 시 유효(ACTIVE) 전체 표·provenance 노출로 갱신. **일일 자동 수집 note 신설** — 스케줄러(cron 기본 `0 40 3 * * *`·enabled 기본 false·single-flight)와 수동 트리거가 동일 유스케이스, FATF black→PROHIBITED/grey→HIGH 결정적 매핑·canonical SHA-256 버전·UNCHANGED no-op·실패 fail-safe·**MANUAL 오버라이드 우선(suppressedManual)**·자동 수집은 4-eyes 비대상(시스템 provenance 즉시 ACTIVE). (2) **§3.12 `CountryRiskDto` 필드 3종 추가** — `provenance`(MANUAL/FATF_DAILY)·`sourceUrl`·`asOf`(V16) + `version` string(80)·`status`(DRAFT/ACTIVE/SUPERSEDED) 코드 정합, **`CountryRiskImportStatusDto`/`CountryRiskImportRunDto`/`CountryRiskImportResultDto` 구조 신설** + bo-api 위임 계약 註(run diff 카운트 요약·blackUrl/greyUrl·`COUNTRY_RISK_IMPORT_TRIGGERED` 감사). (3) §6 BO 매핑 country risk 행에 import 2종 반영. | aegis-java-implementer(spec). 코드=truth. 근거=aml-svc `adapter/in/rest/PolicyAdminController`(`countryRiskImportStatus`/`triggerCountryRiskImport`/`CountryRiskDto`+provenance)·`application/port/in/SyncCountryRiskUseCase.SyncResult`·`adapter/in/scheduled/CountryRiskImportScheduler`·bo-api `aml/countryrisk/{controller/AmlCountryRiskController,dto/CountryRiskDtos}`. DB §3.22c/§7 V16·기능정의서 §12-A.3 동기화. |
+| 2026-07-05 | **RA-003 신원 대조 근거용 watchlist-entries `entryIds` 배치 해소 역전파(코드=truth, feature/aml-ra-detail-evidence-run7).** §2.7 명단 조회 note 에 bo-api `GET /api/v1/bo/aml/watchlist-entries` 의 **`entryIds`(콤마구분·반복 파라미터) 배치 해소 모드** 명문화 — 지정 시 다른 필터 무시·요청 순서 보존(미존재 id 누락), 위임=엔진 `?entryIds=`(200-id 청크)·비운영=stub 필터 양경로, 응답 브라우즈 동일 페이징 봉투 `WatchlistEntryPage{rows,page,size,totalElements,totalPages}`(`totalElements`=해소 성공 수), 행=공개 `WatchlistEntryDto` 필드(raw PII 미노출 불변) + 엔진 `GET /api/v1/admin/aml/watchlist-entries` 행에 batch-resolve(200-id 클램프) 註. **가정 A1(코드=truth)**: 직전 §2.7 는 브라우즈 필터만 명시하고 `entryIds` 배치 해소 파라미터 미정의 — 엔진(`WatchlistEntryQueryService.listByIds`, run2 D9)·bo-api 내부(`AmlWatchlistService.findEntriesByIds`) 기존재를 공개 컨트롤러 passthrough(`AmlWatchlistController.listEntries` `entryIds` param) 노출로 정본화. **용도**: RA 상세(AML-RA-003 ①) 신원 대조 패널이 `forcedFloorEvidence[].entryId` 를 배치 조회해 회원 신원(reveal 게이트 `POST /internal/v1/aml/pii/reveal` §2.6)과 명단 엔트리 원본값(공개 명단측만 plaintext)을 나란히 비교. **RA 응답 계약 변경 없음**(`RiskScoreResponse.forcedFloorEvidence` 불변·§3.3) — 일치 필드 하이라이트는 기존 스크리닝 상세 `matchedCandidates[].reasonCodes`(§3.2, `DOB_MATCH`/`NATIONALITY_MATCH`) 를 `screeningId`·`entryId` 로 조인해 FE 파생(가정 A2, 토큰 부재 시 graceful 생략). 재평가(ONGOING) 알림별 근거거래는 기존 `GET .../alerts/{alertId}/related-transactions`(§2.4) 재사용(신설 없음, 가정 A3). Flyway 신규 없음(aml-svc V16 미사용). | aegis-java-implementer(spec). 코드=truth. 근거=bo-api `aml/watchlist/controller/AmlWatchlistController.listEntries`(`entryIds` param)·`service/AmlWatchlistService.{listEntriesPage,findEntriesByIds,entriesByIdsPage}`(위임 200-id 청크·stub 양경로)·aml-svc `adapter/in/rest/WatchlistAdminController.listEntries`(entryIds batch-resolve)·`application/usecase/WatchlistEntryQueryService.listByIds`. Flyway/DB 변경 없음. |
+| 2026-07-05 | **RA 점수 목록 페이지 봉투 역전파(코드=truth, fix/aml-ra-envelope-fds-spec-backprop).** §2.3 `GET /api/v1/admin/aml/risk-scores` 응답을 배열 `RiskScoreResponse[]` → **페이지 봉투 `RiskScoreListResponse{ items: RiskScoreResponse[], page, size, total }`**(§1.2 envelope 원칙 정합 — `total`은 페이지 무관 전체 건수로 타일↔목록 정합·페이지 이동)로 정정. 생산자 `RiskScoreAdminController.list` 가 `RiskScoreListResponse(items,page,size,total)` 봉투를 반환하나 문서는 배열로 명시(§2.3 미명시 지점 — 가정 G-H1: 생산자 코드=truth 를 정본으로 봉투 채택)해 bo-api 소비자(`AmlRaService.ENGINE_RISK_SCORES` bare array 기대)가 위임 시 Jackson MismatchedInputException 500 을 냈다. bo-api 를 봉투 소비(`.items()` 추출)로 정합화한 코드 변경(회귀 `AmlRaProxyDelegationTest`)의 동일 작업 단위 역전파. | aegis-spec. 코드=truth. 근거=aml-svc `adapter/in/rest/RiskScoreAdminController.{list,RiskScoreListResponse}`·bo-api `aml/ra/service/AmlRaService`(`EngineRiskScorePage` 봉투 소비). §1.2 envelope 정합. |
+| 2026-07-05 | **TM 알림·케이스·보고·결재 흐름 정합(엔진 계약) 역전파(코드=truth, fix/aml-tm-case-report-approval-flow-20260705).** (1) **§2.4 알림 목록** — `GET /api/v1/aml/alerts` 를 표에 명시, `status` optional(미지정=전 상태, `defaultValue="DETECTED"` 드리프트 해소·D1) + `channel`/`corridor` evidence 대표값 클라이언트측 필터(D6·G2 1단계) 추가. (2) **§2.7 보고 목록** — `GET .../reports` `status` optional(미지정=전 상태, `defaultValue="DRAFT"` 드리프트 해소·D11), 응답 `ReportSummary` 에 `createdAt`·`reportDeadlineAt`(=DB `due_at`) 추가(위임 경로 SLA 뱃지·기간 필터 결함 D12 해소, slaStatus 는 back-office 파생 G8). (3) **§3.5 CaseDto/CreateCaseRequest** — `originScreeningId` 를 `string`(VARCHAR(96)·DB §3.11 V15, FK 아님·문자열 토큰)으로 정정, `CreateCaseRequest` 에 `originAlertId`/`originScreeningId`/`eddTrigger` 발단 계보 영속(생성→재조회 실값, D5·D8). (4) **§3.7 ApprovalDto** — `submittedAt`(=DB `created_at`)·`stagedPayload`(=DB `staged_payload`, 상신 내용·변경 전→후 파생) 추가 + 위임 응답 parity 각주(정렬·만료·변경내역 null 결함 D13 해소, submittedAt=created_at 매핑·신규 컬럼 없음·G5). stub↔엔진 위임 응답 동형·prod fail-closed 불변. | aegis-java-implementer. 코드=truth. 근거=aml-svc `AlertController`(queue status optional·channel/corridor)·`RegulatoryReportController.ReportSummary`(createdAt·reportDeadlineAt)·`CaseQueryController.{CreateCaseRequest,CaseDetail}`+`Case.originScreeningId`(V15)·`ApprovalController.{ApprovalSummary,ApprovalDetail}`(submittedAt·expiresAt·stagedPayload)·`domain/approval/ApprovalRequest`. DB §3.11 V15·§3.16(submittedAt/staged_payload) 동기화. |
+| 2026-07-05 | **FP whitelist 등록 메타(V14) 동반 API 정정 역전파(코드=truth, fix/aml-fds-spec-backprop-20260704).** DB §7 V14(`aml_fp_whitelist` reason·expires_at·screening_id, §3.8a)에 맞춰 동반 API 필드를 코드 정본으로 일치화: (1) **§3.2 `ScreenResponse.matchedRules`** — 스키마 `{ruleCode, threshold}`→`{ruleCode, threshold, score}`(엔진 WLF 룰 score 투영, `ScreeningResponse.matchedRules[].score` 코드=truth) + OpenAPI `RuleRef.score` 추가. (2) **§3.2 `ScreenResponse`에 `createdAt`(string(date-time), 미영속 결과 null 가능·`ScreeningController.ScreeningResponse.createdAt` 코드=truth) 행 추가** + OpenAPI `ScreenResponse.{decidedAt,createdAt}` 추가. (3) **§10 WLF 판정 폐루프 예외 규칙 명문화** — `ESCALATED`=staging(checker 승인 EXECUTED 시점 반영)·`AUTO_DISCOUNTED`=FP whitelist 등록 즉시 적용(4-eyes 우회, expires_at 만료 후 미적용). 미정의 승인 주체는 코드 `subjectType`(WLF_DECISION·FP_WHITELIST) 기준(가정 B). (4) **§2.3 Screening 검토 `POST .../screenings/fp-whitelist` `FpWhitelistRegisterRequest` 신설** — 단건 `matchedEntryId`(discount 슬롯·엔트리 id)·`screeningId`(발원 결과 id·별개 슬롯)·`targetRef`/`targetType`·`makerId`·`reason`·`expiresAt`(null=무기한, EXPIRED 파생) 필드(DB §3.8a V14 1:1). **가정 C 정정**: 초안의 `entryIds` **배치** 가정을 코드=truth(단건 `matchedEntryId`, bo-api `FpWhitelistRegisterRequest`·aml-svc `WhitelistCommand`) 로 철회 — 배치 필드 없음. | data-modeler. 코드=truth. 근거=aml-svc `adapter/in/rest/ScreeningController.ScreeningResponse`(score·createdAt)·`application/usecase/{ScreeningReviewService,FpWhitelistService}`·`application/port/in/WhitelistFalsePositiveUseCase.WhitelistCommand`(ESCALATED staging vs AUTO_DISCOUNTED 즉시·단건 matchedEntryId)·bo-api `aml/screening/dto/ScreeningDtos.{MatchedRule.score,FpWhitelistRegisterRequest,FpWhitelistStatus.EXPIRED}`·`db/migration/V14__fp_whitelist_registration_metadata.sql`. DB §3.8a/§7 V14 동기화. |
+| 2026-07-05 | **RA 4-eyes 작성자(maker) 서버 파생 전환 역전파(코드=truth, fix/aml-ra-4eyes-maker-trust-boundary).** RA write 3경로(draft·activate·override)가 작성자를 요청 본문 `makerId`(비신뢰 클라이언트 입력)로 신뢰하던 신뢰경계 결함을 형제 서비스(PEP 승인·CDD 재이행 주기)와 동형으로 정정: 작성자는 인증 principal(`principal.email()`)에서만 서버 파생하고(미인증 상신 거부), bo-api BFF 계약 `RaDtos.{DraftRequest, ActivateRequest, OverrideRequest}` 에서 `makerId` 필드·`@NotBlank` 제거. (1) **§2.7 `POST .../ra-models`(draft)·`.../versions/{v}:activate`** 행에 maker 서버 파생 註 추가. (2) **§3.3 `RiskOverrideRequest` 하단 註** 를 draft/activate/override 3경로 공통으로 일반화. 엔진 위임·감사 payload 의 maker 는 서버 파생값 유지(계약 필드명 불변). | aegis-java-implementer. 코드=truth. 근거=bo-api `aml/ra/service/AmlRaService.requireMaker(BackofficePrincipal)`(3 호출부 `principal` 전환)·`aml/ra/dto/RaDtos.{DraftRequest,ActivateRequest,OverrideRequest}`(makerId 제거). Flyway/DB 변경 없음. `:bo-api spotlessCheck·test(985)·bootJar` 그린. |
+| 2026-07-05 | **RA 근거 계약 정합·FE↔BE `listType` 통일 역전파(코드=truth, fix/aml-ra-flow-backprop).** FE↔BE 근거 필드 계약 단절(FE 오기대 `matchType`/`sourceCode` → 상세 탭 `undefined.toUpperCase()` 크래시) 해소를 코드=정본으로 문서 일치화: (1) **§3.3 `RiskScoreResponse`** — `forcedFloorEvidence[]`(당연고위험 강제 상향 근거, 원소 `{listType,screeningId,entryId,label}` masked 참조 토큰·raw PII 없음)·`operativeNextReviewDueAt`(운영 재심사일=회원 주기 수동조정 승인 반영, FE '재심사일' 우선·부재 시 `nextReviewDueAt` 폴백) 행 추가. (2) **`RiskOverrideRequest`** — `targetRef`(오버레이 폐루프 키·현재등급 산출 기준, 미전달 시 scoreId graceful fallback)·`currentGrade`(화면 표시 현재등급 대조 힌트) 행 추가. (3) **§3.15 `SimulationResponse`** — `baselineDistribution`(기준 분포·증감 기준선, nullable) 추가·`falsePositiveImpact` nullable 명시 + `RaSimulateRequest`=`{modelVersion,samplePopulation}` 로 확정하고 **구 `factorWeightOverrides`(dead 필드) 제거** 명문화. (4) **§2.7 RA 점수 목록** — `country` 필터 파라미터 추가. (5) **§2.3 명단 엔트리 브라우저 딥링크 계약 신설** — `/aml/watchlist?listType=<listType>&entry=<entryId>`(BE 제공 토큰만), 구 `?source=<sourceCode>` 폐기. | aegis-java-implementer. 코드=truth. 근거=bo-api `aml/ra/dto/RaDtos.{RiskScore.forcedFloorEvidence,ForcedFloorEvidence,RiskScore.operativeNextReviewDueAt,OverrideRequest.{targetRef,currentGrade},RaSimulateRequest,SimulationResponse.baselineDistribution}`·aml-svc `adapter/in/rest/RiskScoreAdminController`(country 필터)·bo-web `components/common/WatchlistMatchEvidencePanel`·`lib/aml-risk.AmlForcedFloorEvidence`(listType). DB §7 V13 동기화. |
+| 2026-07-04 | **2차 상시 RA(ONGOING) 모델 실환경화·응답 필드 역전파 — `parameters`·`reassessmentAlerts`·`reviewShortened`(코드=truth, V12).** 직전 행(ONGOING=DRAFT placeholder·다음 단계 예정)의 다음 단계를 반영: (1) **§2.7 `GET/POST .../ra-models`** — 응답 `RaModelSummary`·요청 `DraftRequest` 에 **`parameters`(JSON, DB §3.9 `aml_risk_models.parameters` 1:1)** 노출. ONGOING 모델은 트리거·룰 심각도 가중·lookback·최근성·1차 baseline 결합·주기 단축·EDD 임계 정의를 담고 ONBOARDING 은 `{}`. (2) **§3.3 `RiskScoreResponse` 필드 3종 신설** — `scenario`(ONBOARDING/ONGOING·graceful 기본 ONBOARDING)·`reassessmentAlerts[]`(2차 재평가 유발 STR/CTR 알림 계보, 엔진 `factorBreakdown.triggerAlerts` 파생, 1차는 빈 배열)·`reviewShortened`(재이행 주기 단축 from→to, 앞당기기만, 미단축 시 null). (3) **§507 후주 정정** — ONGOING 을 "DRAFT placeholder 자리만"→**실운영 `KR_ONGOING_RA v1 ACTIVE`, 정의는 모델 `parameters` 로 노출**. bo-api `RaDtos.{RaModel.parameters,RaModelVersion.parameters,RiskScore.{scenario,reassessmentAlerts,reviewShortened},ReassessmentAlert,ReviewShortened}` 1:1. | aegis-spec. 코드=truth. 근거=bo-api `aml/ra/dto/RaDtos`·`aml/ra/service/AmlRaService`(3필드 passthrough)·aml-svc `db/migration/V12__ra_ongoing_model_activation.sql`·`domain/risk/{OngoingRaParameters,OngoingRaFactorDeriver}`·`application/usecase/OngoingRaService`. DB §3.9/§7 V12·기능정의서 §6.1 BR-006 동기화. |
+| 2026-07-04 | **RA 모델 시나리오 파라미터·응답 필드 역전파(코드=truth, feature/ra-onboarding-lifecycle).** (1) **§2.7 Admin API RA 모델** — `GET .../ra-models` 응답 `RaModelSummary[]` 각 행에 `scenario`(ONBOARDING/ONGOING, DB §3.9 `aml_risk_models.scenario`) 노출, `POST .../ra-models` draft 요청 `DraftRequest` 에 **`scenario?`(옵션, 미지정 시 ONBOARDING — 엔진 `RiskModelAdminController.draft` default)** 추가. (2) RA 모델 응답 DTO 에 `scenario` 필드 노출(bo-api `RaDtos.RaModel.scenario`·`RaModelVersion.scenario` 버전 승계) — `ONBOARDING`(1차 온보딩) / `ONGOING`(2차 상시). 2차 상시(`ONGOING`)는 DRAFT placeholder 로만 시딩(활성화·거래가중 재평가·주기 단축·EDD 자동 개시는 다음 단계 예정, 기능정의서 §6.1 BR-006). | aegis-spec. 코드=truth. 근거=aml-svc `adapter/in/rest/RiskModelAdminController`(draft `scenario` default ONBOARDING)·`domain/enums/RaScenario`·`domain/risk/RiskModel.scenario`, bo-api `aml/ra/dto/RaDtos`(RaScenario·RaModel/RaModelVersion.scenario). DB §3.9/§7 V11·기능정의서 §6.1 동기화. |
+| 2026-07-04 | **related-txn 회원/수취인 필드 + flat canonical payload 정본 역전파(코드=truth, fix/related-txn-required-fields).** (1) **§3.4a evidence `relatedTransactions[]`** — `memberRef`(비PII 회원 업무참조=originator.partyReference, evidence JSONB 영속 허용) 키 추가하고 `AlertEvidence.RelatedTransaction.asMap()` 순서와 1:1 정합, `counterpartyName`(수취인 원문 이름)은 evidence 영속 금지·read-path vault reveal만임을 명문화. (2) **§3.4d `RelatedTransactionDto` 표** — `memberRef`·`counterpartyName` 2행 추가(`AlertController.RelatedTransactionDto` 11필드 1:1) + 각주에 counterpartyName read-path reveal·null 폴백 명문화. (3) **§2.1a 엔진 저장 flat canonical payload 표 신설** — `flatPayload` 14키 + product 신호 전수, `corridor` 서버 파생 규칙(`aml.neutral.regulatory-country` 기본 PH·DOMESTIC→`{reg}-{reg}`·CROSS_BORDER→`{reg}-{dest}`)·`counterpartyRef` 단일화(해외=counterparty 안정키·국내=예금주 토큰) 명문화, §4.2 corridor object(입력 상세)와의 상충 해소(입력 nested vs 저장 flat 문자열). | aegis-spec. 코드=truth. 근거=aml-svc `AlertController.RelatedTransactionDto`·`AlertEvidence.RelatedTransaction`·`NeutralTransactionEventService.{flatPayload,corridor,resolveCounterpartyRef,addProductSignals}`. integration §59 동기화. |
+| 2026-07-04 | **(H2) 국내송금 양당사자 WLF 스크리닝 역전파(코드=truth, fix/aml-fds-spec-backprop).** **§2.2 Screening API 콜아웃** — WLF 스크리닝 대상 범위를 "해외송금 sender+receiver + 비-cross-border sender-only" → **"해외송금(`CROSS_BORDER_REMITTANCE`) + 국내송금(`DOMESTIC_TRANSFER`) 양당사자 sender(`CUSTOMER`)+receiver(`COUNTERPARTY`)"** 로 확장. sender-only 잔여를 회원가입·월렛충전·월렛결제(비-송금)로 축소(국내송금 제거). 국내송금 receiver 는 수취계좌 명의인/PH fallback best-effort 매칭, `subjectIdentity` 4필드(NAME/NATIONALITY/GENDER/DOB) 주체 무관 균일 동일 적용. 엔진 도메인 비변경 — 데모/시뮬레이터/시드 한정. | aegis-spec. 코드=truth. 근거=aml-svc `NeutralTransactionEventService.RECEIVER_SCREEN_PRODUCTS`(`CROSS_BORDER_REMITTANCE`+`DOMESTIC_TRANSFER`)·`screenCounterpartyBestEffort`(`TargetType.COUNTERPARTY`)·`NeutralTransactionEventServiceTest`(DOMESTIC_TRANSFER co-screen). |
+| 2026-07-04 | **(H1) 알림 발동 근거 거래 조회 엔드포인트 역전파(코드=truth, fix/aml-fds-spec-backprop).** (1) **§2.4 TM API 표에 행 추가** — `GET /api/v1/aml/alerts/{alertId}/related-transactions?page=&size=`(scope `aml:case:read`) 발동 근거 거래 서버 페이징(요구2·A8, 발동 룰 윈도우 근거 거래 전수, 20행 evidence 캡과 별개). (2) **§3.4d `RelatedTransactionsResponse` DTO 신설** — 코드 `AlertController.RelatedTransactionsResponse`(rows/page/size/totalCount/ruleCode/window/dimension) + `RelatedTransactionDto`(transactionRef/counterpartyRef/direction/amount/currency/channel/corridor/occurredAt/fdsDecisionRef) 1:1 전사. party 식별정보는 §3.2 `subjectIdentity` 규약 상속(마스킹 토큰 + reveal 가능 필드 키만·raw PII 미포함, 원문은 `aml:pii:reveal`+`RAW_DATA_ACCESS` 경로). | aegis-spec. 코드=truth. 근거=aml-svc `adapter/in/rest/AlertController`(GET related-transactions·`RelatedTransactionsResponse`/`RelatedTransactionDto`)·port `QueryAlertRelatedTransactionsUseCase`·usecase `AlertRelatedTransactionsService`. sass §02-amlSvc 동기화. |
+| 2026-07-04 | **중립(canonical) 수집 API 역전파(코드=truth, feature/aml-neutral-canonical-ingest).** (1) **§2.1a 신설** — `POST /aml/v1/transaction-events`(scope `aml:event:write`, 헤더 `Tenant-Id`/`Idempotency-Key`/`X-Trace-Id`) 엔드포인트 행 + 요청 Envelope 스키마 표(공통 15필드) + 상태코드 매핑(202/200/409/422) + 422 검증 규칙 7항(가정 G3 baseCurrency=테넌트 규제통화 fail-closed) + family 매핑 표(5 product → canonical eventType·EventFamily·channelType, 가정 G1 CARD_PAYMENT→transaction 재사용·enum 무확장, WALLET_TOPUP→CASH_IN 만 CTR 현금성) + CTR 순증(net) 규칙(가정 G4 reversal 음수 signed amount) + PII 토큰화 경계(가정 G7/G9) + 응답 계약(가정 G6 accepted+평가요약, HOLD 미구현). (2) **§3.17 신설** — `NeutralEventRequest` Party·Amounts·5 product 블록 스키마 표(엔진 domain record 1:1, STR 신호 결선 가정 G5, 신규 룰코드 없음). 기존 canonical `/api/v1/aml/events`(§3.1)와 별개 공개 수집 표면. | aegis-java-implementer. 코드=truth. 근거=aml-svc `adapter/in/rest/NeutralTransactionEventController`·`application/usecase/NeutralTransactionEventService`·`application/port/in/IngestNeutralTransactionEventUseCase`·`domain/neutral/{NeutralEnums,ProductEventTypeMapper,NeutralEventValidator,NeutralParty,NeutralAmounts,NeutralProductBlocks,NeutralTransactionEvent}`. 정본 요구=`docs/aml-data.md` §2~§9. |
+| 2026-07-04 | **회원별 CDD 재이행 주기 관리 역전파(코드=truth, feature/cdd-review-cycle-management, b067310).** (1) 엔진 `GET /api/v1/admin/aml/customers/review-cycle`(bo-api 위임 `GET /api/v1/bo/aml/customers/review-cycle`) — 등록 회원 전체 검색: `customerRef`(부분일치)·`riskGrade`·`kycStatus`·`country`·`pep`·`dueFrom`/`dueTo`(next_review_due_at 범위, 임박순 정렬)·`customerType` 필터 + 페이징 봉투 `{rows,page,size,totalElements,totalPages}`, 행에 최신 RA 점수/모델 조인(N+1 없음). (2) `POST /api/v1/bo/aml/customers/{customerRef}/review-cycle:change` — next_review_due_at 수동 조정 **4-eyes 상신**(newDueAt·reason 필수, PERIODIC_REVIEW_CHANGE 감사, 결재 승인 전 미반영·maker 신뢰경계 검증). 화면: 고객위험·심사 §CDD 이행 주기 관리(/aml/customers/review-cycle) — 기존 EDD 임박 큐(운영 대기열)와 역할 구분. | aegis-java-implementer. 코드=truth. 근거=aml-svc `CddReviewCycleController`·bo-api `reviewcycle` 피처·bo-web `AmlReviewCycle`. |
+| 2026-07-04 | **TM 알림 목록 서버 페이징 offset 정합(코드=truth, fix/list-server-pagination).** §2.5a `GET /api/v1/bo/aml/alerts`의 `page` 파라미터가 병합·필터 후 **offset(skip=page×size)으로 실제 적용**됨을 명문화 — 기존 구현은 limit만 적용해 모든 page가 첫 페이지를 반환(목록 화면이 전건을 못 보던 결함). 엔진 위임·stub 양 경로 동일 적용, total 메타 없는 배열 응답 불변(bo-web은 반환 길이<size로 마지막 페이지 판정하는 prev/next 페이저). | aegis-java-implementer. 코드=truth. 근거=bo-api `AmlTmService.listAlerts`(skip(page×limit) 엔진·stub 양 경로). |
+| 2026-07-04 | **워치리스트 엔트리 브라우즈 조회 확장 역전파(코드=truth, feature/watchlist-entries-browser).** §2.3 `GET /api/v1/bo/aml/watchlist-entries`(위임: 엔진 `GET /api/v1/admin/aml/watchlist-entries`)에 필터 추가 — `name`(이름 토큰 부분일치·대소문자 무시, normalized_tokens), `country`(ISO-2, attributes.country), `addedFrom`/`addedTo`(created_at 범위 — 날짜별 추가분), `version`(수집 버전), 기존 `sourceCode`/`listType`/`status` 유지. 응답을 배열 → **페이징 봉투 `{rows, page, size, totalElements, totalPages}`**(FDS DecisionPage 명명 일관)로 전환, bo-api passthrough(total 유실 방지). 행: normalizedTokens(공개 명단 원문 토큰)·listType·subjectKind·country·nationality·dob·program·version·status·createdAt·externalRef. 실데이터 42,572건 E2E(이름 ABBAS 110·국적 EG 166·복합 2) 정합. | aegis-java-implementer. 코드=truth. 근거=aml-svc `WatchlistAdminController.listEntries`·`WatchlistEntryQueryService`·bo-api `AmlWatchlistController`. DB V10 인덱스(02-aml-db). |
+| 2026-07-03 | **레거시 시나리오 알림 발동 룰 표시 폴백(코드=truth, fix/aml-tm-rule-alert-evidence).** §3.4a `AlertDto` 테이블에 **`ruleCode`(string\|null)** 행 신설 — bo-api `AlertSummary`/`AlertDetail` 매핑 필드로, 정상 CTR/STR 룰 경로는 `AmlReportRuleCode.name()`(예 `STR_VELOCITY_CASH`)이고 엔진이 top-level `ruleCode` 없이 `scenario_code`만 실은 **레거시 시나리오 경로 알림**(예 `STRUCTURING`, `AmlReportRuleCode` 미파싱)은 발동 룰 표시가 비지 않도록 `evidence.trigger.scenarioCode` → 엔진 `scenarioCode` 문자열로 **폴백**함을 명문화. `AmlReportRuleCode` enum 계약 무변경(레거시 코드는 문자열로만 표시), JSON 직렬화 형태 `string\|null` 불변(bo-web `ruleLabel` 문자열 폴백 보유로 무변경). bo-api `AlertSummary`/`AlertDetail.ruleCode` 타입을 enum→String 완화(내부 룰 필터·멱등 키는 `.name()` 정합). | aegis-java. 코드=truth. 근거=bo-api `TmDtos.AlertSummary/AlertDetail.ruleCode`(String)·`AmlTmService.engineRuleCode`/`triggerScenarioCode`/`matchesAlertSummary`. **아울러 §3.4a `evidence` 행에 CTR/STR 룰 경로 변형을 명문화** — 룰 카탈로그 발동 알림의 ① 트리거 `{ ruleCode, strReasonCode(STR만), description }`, ② 실측 윈도우 집계(CTR=(member,bankingDay) 현금 합산·실측 건수 / STR=주체 rolling 24h; 수치 임계 룰만 threshold/thresholdMet), ③ `relatedTransactions[]`=주체 윈도우 형제거래(캡 20·빈 윈도우 단건 폴백), ④ `fundGraph`=윈도우 거래 있으면 `CANONICAL_EVENTS` 실 그래프·무거래 시 `PLACEHOLDER` + `features`·`watchlistMatch`, 윈도우 조회 실패 fail-safe. 근거=aml-svc `TmAlertEvidenceAssembler`·`CtrEvaluationService.persistCtrAlert`·`StrEvaluationService.persistStrAlerts`. DB §3.10 동기화. |
 | 2026-07-02 | **데모 데이터 정직화 — 회원 등록 인입 이벤트·스크리닝 실 레코드 명문화(코드=truth, feature/aml-demo-data-honesty, 기능정의서 v9.27).** (1) **§3.1 인입** — 데모 회원 등록 인입 이벤트(`{eventType:"member", member:{memberRef,name,nationality,gender,dob,declaredIncomePhp}}`)→인메모리 member vault(회원 identity·신고소득 유일 원천·미등록 회원 identity 룰 skip) + 거래 payload `senderHolderName`(nullable, STR_THIRD_PARTY 실신호) 명문화, hash 파생 회원 프로필 폐기. (2) **§3.2 스크리닝** — 데모 큐/상세=송금 인입당 sender(CUSTOMER)+receiver(COUNTERPARTY) 2건 실매칭 레코드(인메모리·상한·transactionRef 쌍 그룹·랜덤 UUID screeningId, 데모 멤버 즉석 행·hash 인코딩 id 폐기, 미지 id not-found), 밴딩 엔진 동형(≥0.66 POSSIBLE·TRUE_MATCH=4-eyes만), **부분 식별[이름+국가] 수취인 overall 상한 0.65 자동 NO_MATCH(FuzzyMatchEngine 전체 가중치 합 정규화 동형, TM 명단 룰 nameScore 축과 비대칭=의도된 정직 동작)**, FP 화이트리스트 시드 폐기·벌크런 실카운트. 비-prod 전용(위임/prod 불변). DB 스키마 무변경. | aegis-spec. 코드=truth. 근거=bo-api `AmlDemoMemberVault`·`AmlScreeningRecordStore`·`AmlScreeningService`·`AmlTmService`(라이브 결선·senderHolderName)·`IngestTestController`. 기능정의서 §1.11 BR-DEMO-HONESTY·§3.2·§7.1·§9.1·§12.2·integration §4 동기화. DB 불변. |
 | 2026-07-02 | **명단 룰(STR_PEP·STR_SANCTION) 발동 = 실명 매칭 + 송금 수취인 정보 규격 가산(코드=truth, feature/aml-tm-real-watchlist-matching, 기능정의서 v9.26).** (1) **§3.4a `evidence.watchlistMatch`** — `nameScore`(이름 sub-score, **데모 발동 기준 = nameScore ≥ 0.92**, WLF TRUE 임계값을 이름 축에 적용)·`matchReasonCodes[]` 가산, `matchScore`=실제 overall 복합점수·`entryName` 등 lineage=실매칭 엔트리(hash 합성 발동·임의 엔트리·가공 점수 폐기). `partyIdentity` 는 채널별 가용 필드만(국내 [NAME]/해외 [NAME,NATIONALITY]). (2) **§3.4 인입 payload** — `HanpassPhTransactionPayload` 에 `receiverName`·`receiverCountry`(nullable, additive) 명문화, 수취인 정보 규격(국내=이름만/해외=이름+국가, 성별·생년월일 미제공)·`receiverRef`=sha256(name\|country) 파생. 엔진 evaluate 바디는 수취인 원문 미탑재(COUNTERPARTY 스크리닝 계보로만 평가). 데모 자동 발동은 [스크리닝 매칭→분석가 4-eyes 확정→STR] 폐루프 압축 근사(실엔진 라이브 0.66 POSSIBLE 캡·TRUE_MATCH=분석가 확정·회원 발동 pep_flag). DB 스키마 무변경(JSONB 확장). | aegis-spec. 코드=truth. 근거=aml-svc `StrEvaluationService`·`FuzzyMatchEngine`·`MatchRuleSet`(0.92)·`WlfScreeningService`(0.66 POSSIBLE 캡), bo-api `AmlStrLiveReportStore`·`AmlWatchlistMatchLineage`·`AmlDemoPiiCatalog`·`HanpassPhTransactionPayload`(receiverName·receiverCountry). 기능정의서 §7.1 BR-011/013·integration §4.2 동기화. DB 불변. |
 | 2026-07-02 | **송금 거래 STR_PEP·STR_SANCTION 을 회원+수취인 당사자별 동시 평가 — 매칭 당사자 구분 가산(코드=truth, feature/aml-tm-receiver-screening, 기능정의서 v9.25).** (1) **§3.4a `evidence.watchlistMatch`** — `matchedParty`(MEMBER\|RECEIVER)·`partyRef`·`partyIdentity`(bo-api read-time projection, 매칭 당사자 식별정보 비교 메타 `SubjectIdentity` 동형)·`additionalMatches[]`(양당사자 동시 매칭 시 나머지 당사자, 동일 스키마, 대표=회원 우선) 확장. 송금 채널(DOMESTIC_REMIT·CROSS_BORDER_REMIT)만 수취인 COUNTERPARTY 스크리닝 계보(transactionRef 그룹·TRUE_MATCH 우선)로 RECEIVER 평가, 부재 시 skip(합성 신호 없음). (2) **§3.6 `reportPayload`** — STR 보고 payload `watchlistMatches[]` 항목에 matchedParty·partyRef·additionalMatches 동반. (거래·룰)당 알림 1건 유지. DB 스키마 무변경(JSONB 확장). | aegis-spec. 코드=truth. 근거=aml-svc `StrEvaluationService`(당사자별 평가·`findCounterpartyScreenings`)·`AlertEvidence.WatchlistMatch`(matchedParty·additionalMatches), bo-api `AmlTmService`(partyIdentity read-time projection)·`AmlStrLiveReportStore`. 기능정의서 §7.1 BR-011/012 동기화. DB 불변. |
