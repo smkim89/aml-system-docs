@@ -278,6 +278,14 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 >
 > **가정 C(정정)**: 직전 초안은 `entryIds` **배치** 배열을 가정했으나 코드=truth 재검증 결과 요청 계약은 **단건 `matchedEntryId`**(bo-api `FpWhitelistRegisterRequest`·aml-svc `WhitelistCommand` 모두 단수)다 — 배치 필드 없음. 본 표는 실제 DTO(단건) 기준으로 확정한다(추측 없음). 응답 `FpWhitelistRegisterResponse{ approvalId, approvalStatus(§ SUBMITTED/…), payloadHash }`, 조회 행 `FpWhitelistEntry{ whitelistId, screeningId, targetRef, status(ACTIVE/EXPIRED/REVOKED), registeredBy, reason, registeredAt, expiresAt, revokedAt }`(bo-api DTO=truth·PII 마스킹). checker 승인(EXECUTED) 시 `aml_fp_whitelist`(active=true) 등록 → 후속 동일 매치 `AUTO_DISCOUNTED` 즉시 적용(§10 예외 규칙).
 
+#### 회원원장(member ledger) read (§CDD·DB §3.22f, AML-CDD-004 / AML-MBR-001)
+| 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
+|---|---|---|---|---|---|
+| GET | `/api/v1/admin/aml/members/{memberRef}/ledger` | `aml:case:read` | — | 회원원장 요약(현재 `kyc_status`·`risk_grade`·재실사 예정일 + CDD/EDD 이력 카운트). 회원 키 `memberRef`(= `originator.nationalIdentityKey` = `aml_customers.customer_ref`). Masked refs only(raw PII 미노출 §19.2) | `aml_customers` |
+| GET | `/api/v1/admin/aml/members/{memberRef}/cdd-history?types=&page=&size=` | `aml:case:read` | — | 회원 CDD/EDD 이력 페이지(최신순). **`types` 반복 파라미터**(예 `types=CDD_INITIAL&types=EDD_OPENED`, 생략 시 전체) enum `CDD_INITIAL·CDD_REVIEW·EDD_OPENED·EDD_CLOSED`(DB §3.22f `history_type` = 엔진 `CddHistoryType`, §5.36). 잘못된 유형 토큰은 400. 응답 페이징 봉투 `{ rows, page, size, totalElements, totalPages }`, 행은 masked 스냅샷(`historyId·historyType·kycStatus·riskGrade·sourceEventId·traceId·actor·details·occurredAt`) — raw PII 미노출 | `aml_member_cdd_history` |
+
+> **코드=truth 역전파(feature/aml-member-ledger-contract).** 위 두 라우트는 종전 §2.x 에 미정의였다. bo-api BFF(`AmlMemberLedgerController` — `GET /api/v1/bo/aml/members/{ref}/ledger`·`/cdd-history?types=`)가 `AmlEngineClient`(`/api/v1` + path)로 aml-svc admin API(`GET /admin/aml/members/{ref}/{ledger|cdd-history}`)에 위임하므로, Admin API 프리픽스 규약(§본절 line18)을 정본으로 채택해 aml-svc `MemberLedgerController` 라우트(`/api/v1/admin/aml/members/*`)와 `types` 반복 파라미터를 확정한다. 위임 미설정 시 bo-api 는 비-prod 결정적 stub, prod 는 fail-closed(503 `AML.ENGINE_UNAVAILABLE`). enum·응답 필드는 DB §3.22f `aml_member_cdd_history` CHECK(**V26**, §5.36) + 엔진 `CddHistoryType` + bo-api `MemberLedgerDtos.HistoryType` 3중 일치.
+
 #### Risk Assessment 정책·override (§11.3)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
