@@ -661,7 +661,7 @@ no-code rule builder가 노출하는 feature 정의(§10.1).
 |---|---|---|---|---|
 | tenant_id / workspace_id | VARCHAR(64) | N | PK | |
 | approval_request_id | UUID | N | PK | |
-| subject_kind | VARCHAR(48) | N | `ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`/`POLICY_PACK` | 결재 대상 종류(9종). `CASE_CLOSE`=case 종결 4-eyes(대상=`fds_cases.case_id`). `POLICY_PACK`=규제 팩 토글 변경 4-eyes(대상=`fds_tenants.tenant_id`, 설계서 §11.5·§16.2). API §8 결재 매핑 |
+| subject_kind | VARCHAR(48) | N | `ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`/`POLICY_PACK`/`RULE_PARAM` | 결재 대상 종류(10종). `CASE_CLOSE`=case 종결 4-eyes(대상=`fds_cases.case_id`). `POLICY_PACK`=규제 팩 토글 변경 4-eyes(대상=`fds_tenants.tenant_id`, 설계서 §11.5·§16.2). `RULE_PARAM`=룰 변수(파라미터) 편집 4-eyes(대상=`fds_rules.rule_id`, V7 CHECK, API §5.9b·§8). API §8 결재 매핑 |
 | subject_ref | VARCHAR(256) | Y | | 대상 식별자 |
 | approval_line | VARCHAR(48) | N | enum 4.12 | |
 | status | VARCHAR(32) | N | `'DRAFT'` | enum 4.12 |
@@ -848,6 +848,23 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | created_at | TIMESTAMPTZ | N | now() | |
 | created_by | VARCHAR(128) | N | DEFAULT `system` | |
 
+### 5.36 fds_rule_param_overrides (룰 변수 편집 4-eyes · API §5.9b · V7)
+룰 튜닝 변수(파라미터)의 tenant/workspace/rule 별 override 값. 변수 카탈로그는 `fds_rules.rule_json`의 수치 리프값에서 파생하며(별도 카탈로그 테이블 없음), 승인 완료된 `RULE_PARAM` 결재(§5.23)가 이 테이블에 override set을 **원자적으로 upsert**한다(`RuleParamService.applyApproved`). 판정 엔진은 결정마다 override를 fresh read(캐시 없음)해 새 임계값을 즉시 반영한다. 상신(maker)은 즉시 반영하지 않고 `fds_approval_requests`(subject_kind=`RULE_PARAM`, subjectRef=`rule_id`) 생성 → checker 승인 후 적용(작성자≠승인자). 멀티테넌시 `(tenant_id, workspace_id, …)` 선두. (저장소 파일 `V7__rule_param_overrides.sql`.)
+
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id | VARCHAR(64) | N | PK | |
+| workspace_id | VARCHAR(64) | N | PK, DEFAULT `'default'` | |
+| rule_id | UUID | N | PK | 대상 룰(`fds_rules.rule_id`) |
+| param_key | VARCHAR(128) | N | PK | 변수 키(`rule_json` 리프 경로) |
+| param_value | NUMERIC(20,6) | N | | override 값 |
+| unit | VARCHAR(16) | Y | | 단위 자유 텍스트(예: `%`/`건`/`PHP`, 폐쇄 enum 아님) |
+| updated_by | VARCHAR(128) | Y | | 적용 checker |
+| updated_at | TIMESTAMPTZ | N | DEFAULT now() | |
+
+- PK `pk_fds_rule_param_overrides (tenant_id, workspace_id, rule_id, param_key)`
+- 인덱스 `ix_rule_param_overrides_rule (tenant_id, workspace_id, rule_id)` — 룰별 override 조회.
+
 ---
 
 ## 6. 인덱스 명세
@@ -913,7 +930,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 
 ## 8. Flyway 마이그레이션 순서
 
-스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V6, 누락 없음)이다.
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V7, 누락 없음)이다.
 
 | 버전 | 파일 | 내용(실제) | 비고 |
 |---|---|---|---|
@@ -923,6 +940,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | V4 | `V4__rule_variables_and_country_groups.sql` | 룰 임계값/가중치/그룹 참조를 `fds_rule_variables`·`fds_risk_groups`·`fds_risk_group_members`로 외부화. C-1213 룰 JSON을 `valueRef`/`groupRef` 기반으로 갱신 | additive seed |
 | V5 | `V5__device_rule_requires_prior_different_device.sql` | device 변경 룰이 이전 device와 다른 경우만 발화하도록 feature catalog/rule JSON을 보강 | additive seed |
 | V6 | `V6__neutral_block_features.sql` | AML 중립 5 product(카드/잔액/충전/국내송금) 신호를 `fds_feature_catalog`에 upsert. 키: `merchant.mcc`, `merchant.country`, `card.scheme`, `card.issuerCountry`, `card.international`, `balance.before`, `balance.after`, `balance.delta`, `funding.instrumentType`, `funding.autoTopup`, `funding.manualApproval`, `transfer.accountHolderNameMatch`, `transfer.fundingSourceType` | additive seed |
+| V7 | `V7__rule_param_overrides.sql` | 룰 변수(파라미터) 편집 4-eyes 폐루프. 신규 테이블 `fds.fds_rule_param_overrides`(PK `(tenant_id, workspace_id, rule_id, param_key)`, `param_value numeric(20,6)`, `unit varchar(16)`, `updated_by`/`updated_at`, 인덱스 `ix_rule_param_overrides_rule`) + `fds_approval_requests.subject_kind` CHECK를 `RULE_PARAM` 추가로 재빌드(9종→10종). 승인 후 override set 원자 적용, 판정은 fresh read | additive |
 
 > **consolidate 주의**: 2026-06-30 이전 문서의 구 phase 파일(V10~V22 등)은 현행 저장소에 실재하지 않는다. 해당 스키마·CHECK·demo seed 의미는 V1/V2 baseline·seed와 V3~V6 additive seed로 흡수되었으므로, 본 표가 Flyway 정본이다.
 
@@ -959,7 +977,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 - **배포/온보딩 메타(`fds_tenants`)**: `deployment_model`(`MANAGED_DEDICATED`/`SELF_HOSTED`/`SHARED`, 3종), `onboarding_status`(`REQUESTED`/`PROVISIONING`/`DEPLOYED`/`VERIFIED`/`ACTIVE`/`PACKAGE_ISSUED`/`CUSTOMER_DEPLOYED`/`REGISTERED`, 8종), `default_region`, `infra_ref`. 구 `isolation_mode` 컬럼·enum(`SHARED`/`SCHEMA`/`DB`) 폐기. API `DeploymentModel`/`OnboardingStatus` enum, `TenantDto.deploymentModel`/`onboardingStatus`/`region`/`infraRef` 필드와 1:1. 온보딩 엔드포인트는 bo-api 전용(`POST .../onboarding/provision`, `GET .../onboarding`, `POST .../onboarding/register`).
 - **핵심 테이블**: `fds_canonical_events`, `fds_decisions`, `fds_decision_reasons`, `fds_actions`, `fds_cases`, `fds_case_events`, `fds_rules`, `fds_rule_versions`, `fds_rule_simulations`, `fds_feature_catalog`, `fds_risk_groups`, `fds_risk_group_members`, `fds_approval_requests`, `fds_approval_steps`, `fds_api_credentials`, `fds_external_decisions`, `fds_evidence_exports`, `fds_audit_logs`, `fds_idempotency_keys`, `fds_business_documents`, `fds_commerce_orders`, `fds_settlements`, `fds_connector_offsets`, `fds_schema_mappings`, `fds_source_systems`, `fds_subjects`, `fds_accounts`, `fds_instruments`, `fds_transactions`, `fds_tenants`, `fds_workspaces`.
 - **PK 패턴**: `(tenant_id, workspace_id, <natural key>)`. decision/action/case/approval/export/audit는 `UUID` 식별자, event는 원천 `event_id`(VARCHAR).
-- **enum 코드값**: §4 전체(decision 8종, **action_type 23종 — API `ActionType` enum이 정본, §4.8과 1:1**, case_type 11종, instrument 12종, **channel_type 21종 closed**(`ChannelType.java`·`ck_fds_events_channel_type` CHECK; hanpass-ph 운영 채널은 `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`(+`INBOUND_REMIT`) 5(+1)유형으로 한정, §4.4), **event_family 19종**(`EventFamily.java`·`ck_fds_events_family` CHECK; `REMIT`/`DOMESTIC`/`WALLET` 포함, V21, §4.16), payment_rail 18종, capability 9종, approval_line 6종, approval_status 8종, **transaction_type 12종(§4.19, `fds_transactions.transaction_type` 폐쇄 CHECK)**, idempotency scope 4종(`EVENT`/`DECISION`/`ACTION`/`AML_FEEDBACK`, V19)). `subject_kind` **9종**(`CASE_CLOSE` case 종결 4-eyes + `POLICY_PACK` 규제 팩 토글 4-eyes 포함, 설계서 §11.5).
+- **enum 코드값**: §4 전체(decision 8종, **action_type 23종 — API `ActionType` enum이 정본, §4.8과 1:1**, case_type 11종, instrument 12종, **channel_type 21종 closed**(`ChannelType.java`·`ck_fds_events_channel_type` CHECK; hanpass-ph 운영 채널은 `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`(+`INBOUND_REMIT`) 5(+1)유형으로 한정, §4.4), **event_family 19종**(`EventFamily.java`·`ck_fds_events_family` CHECK; `REMIT`/`DOMESTIC`/`WALLET` 포함, V21, §4.16), payment_rail 18종, capability 9종, approval_line 6종, approval_status 8종, **transaction_type 12종(§4.19, `fds_transactions.transaction_type` 폐쇄 CHECK)**, idempotency scope 4종(`EVENT`/`DECISION`/`ACTION`/`AML_FEEDBACK`, V19)). `subject_kind` **10종**(`CASE_CLOSE` case 종결 4-eyes + `POLICY_PACK` 규제 팩 토글 4-eyes + `RULE_PARAM` 룰 변수 편집 4-eyes(V7, 대상=`fds_rules.rule_id`) 포함, 설계서 §11.5).
 - **AML cross-ref 컬럼**: `fds_cases.aml_case_id VARCHAR(96) NULL`(API `amlCaseRef`, integration §9.1). FK 아님.
 - **금액 타입**: `NUMERIC(24,8)`, base/표시 통화 분리(`amount`/`amount_base`, `currency`/`base_currency`).
 - **증적 컬럼**: `payload_hash`, `input_event_hash`, `feature_snapshot`, `matched_rules`, `manifest_hash`, `evidence_hash`.
@@ -970,6 +988,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-07 | v3.2 | **룰 변수(파라미터) 편집 4-eyes 폐루프 마이그레이션 반영(코드=truth, V7).** (1) §8 저장소 마이그레이션 표에 `V7__rule_param_overrides.sql`(1:1) 행 추가 + "현행 V1~V6, 누락 없음" → "V1~V7"로 정정. (2) §5.36 `fds_rule_param_overrides` 테이블 명세 신설(PK `(tenant_id, workspace_id, rule_id, param_key)`, `param_value numeric(20,6)`, `unit varchar(16)` 자유텍스트, `updated_by`/`updated_at`, 인덱스 `ix_rule_param_overrides_rule`). (3) §5.23 `fds_approval_requests.subject_kind` 9종 → **10종**(`RULE_PARAM` 추가, 대상=`fds_rules.rule_id`, V7가 CHECK를 `DROP … ADD`로 재빌드). (4) §10 downstream enum 노트 `subject_kind` 9종 → 10종 동기화. | aegis-java-implementer. 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V7__rule_param_overrides.sql`·`domain/enums/SubjectKind`(RULE_PARAM)·`application/usecase/RuleParamService`(override upsert·RULE_PARAM_UPDATE 감사)·API §5.9b·§8. |
 | 2026-07-04 | v3.1 | **중립(canonical) 수집 블록 feature 마이그레이션 반영(코드=truth, feature/aml-neutral-canonical-ingest, additive).** §8 저장소 마이그레이션 표에 신규 파일 `V6__neutral_block_features.sql`(1:1) 행 추가 — `fds_feature_catalog`에 AML 중립 5 product(카드/잔액/충전/국내송금) 신호 feature 13종을 `_global`/`default` scope `ON CONFLICT DO UPDATE` upsert(시드·DDL 아님). 신규 룰팩 INSERT 없음(기존 C1213 이 cmp 노드로 소비 "가능"까지가 목표). 키=`merchant.mcc`·`merchant.country`·`card.scheme`·`card.issuerCountry`·`card.international`·`balance.before`·`balance.after`·`balance.delta`·`funding.instrumentType`·`funding.autoTopup`·`funding.manualApproval`·`transfer.accountHolderNameMatch`·`transfer.fundingSourceType`. §5.20·API §5.1·`domain/rule/DomainFeatureKeys` 1:1. | aegis-java-implementer. 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V6__neutral_block_features.sql`·`domain/rule/DomainFeatureKeys`. |
 | 2026-06-30 | v3.0 | **hanpass-ph 재그라운딩 + 저장소 Flyway 정합**: (1) 헤더·§1에 대상 시스템=hanpass-ph(KR→PH 해외송금+PH 국내송금+지갑 5거래유형)·단일 운영 테넌트 `tenant_demo`(멀티테넌트 인프라는 보존)·금액 임계 `phpEquivalent`(PHP, USD 병기) 명문화. (2) §4.4 `channel_type`을 hanpass 5(+1)유형(`CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`(+`INBOUND_REMIT`)) 중심으로 재서술(enum은 코드 truth대로 21종 closed 유지, 비-hanpass 채널은 enum 호환 존속·미사용·카드룰 disabled 명시). (3) §4.16 `event_family`를 19종(`REMIT`/`DOMESTIC`/`WALLET` 포함, `EventFamily.java`)으로 정정. (4) §5.17 `fds_rules`에 컬럼 `evaluation_mode`와 `phpEquivalent` 임계 정본(5룰·USD×56·PH CTR ₱500,000) 명문화. (5) §10 downstream enum 요약에 channel/event_family 코드 truth 반영. **현행 저장소는 이후 consolidate 되어 §8 정본 표의 V1~V6 파일만 실재한다.** | data-modeler |
 | 2026-06-21 | v2.0 | **코드 정합(저장소 fds-svc Flyway 실제 파일 1:1) — §8 마이그레이션 표 전면 교정·증적 컬럼 back-fill.** (1) §8 표의 논리 `V17__deployment_model.sql`/`V18__compliance_policy.sql`/`V19__notify_channels.sql` 행을 폐기하고, 저장소 실제 파일과 1:1 매핑 표(V10~V18) 신설: 배포 모델·규제 팩 전환(`deployment_model`/`onboarding_status`/`infra_ref`/`compliance_policy`·`isolation_mode` DROP)은 별도 파일이 아니라 **`V2__phase1_foundation.sql`** 이 수행함을 명시(`isolation_mode`는 `V1__baseline.sql` 생성). V11 `payload_json`·V12 materialized_state·V13 action_outbox_backoff(`next_attempt_at`)·V14 notify_channels·V15 webhook_outbox·V16 ph_data_grounding(channel 21종 CHECK·corridor 4컬럼·hanpass 소스 7종 시드)·V17 demo_ph_rules(데모 시드)·V18 demo_approval_seed(데모 시드) 실내용 기재. (2) §5.23 `fds_approval_requests`에 `payload_json JSONB NULL` 행 추가(V11). (3) §5.10 `fds_decisions` 채널/금액/corridor가 `fds_canonical_events` LEFT JOIN 파생(현재 구현)임을 주석화·향후 비정규화 예정. (4) §4.9 `ACKED` 전이 트리거(`SENT→ACKED`, `ActionResultConsumer`/`aws` 프로파일) 명시. (5) §4.4 hanpass 채널 재그라운딩 주석에 `(Flyway V16)` 병기. §5.1/§4.1 `(§8 V17)` 인라인 참조를 `V2__phase1_foundation.sql`로 정정. enum·컬럼 정본 코드 집합 불변. | data-modeler |

@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **6.11** | **2026-07-07** | **SM Kim** | **룰 변수(파라미터) 편집 4-eyes 폐루프 신설 — 룰 상세에서 임계값·건수·윈도우 변수 수정 → `RULE_PARAM` 결재 → 승인 시 엔진 평가 즉시 반영(코드=truth, feature/fds-rule-param-editing).** ① **§6.2 SFDS-RULE-002 변수 편집 섹션 신설**: 룰 상세 하단 "임계·변수 편집" — 변수 카탈로그는 룰 `ruleJson` 수치 리프(임계금액·건수·윈도우분)에서 결정적 유도(`GET /api/v1/admin/fds/rules/{ruleId}/params`), 항목별 라벨·단위·기본값(리터럴)·현재 유효값(resolved: 오버라이드→전역 변수→리터럴)·min/max·정수전용·editable 노출. `[변경 상신]` = `POST .../rules/{ruleId}:update-params` 🔒 — **룰 단위 전체 셋 원자 제출**, 202 + `approvalRequestId`, 진행 중 결재 존재 시 pending 배지 + 재상신 차단. ② **결재 subject `RULE_PARAM` 신설**(subject_kind 9종→**10종**, 대상=`rule_id`) — §12.1 결재함·§16.5 4-eyes 표 동기화. 승인(EXECUTED) 시 엔진(fds-svc)이 `fds.fds_rule_param_overrides`(DB §5.36)에 override 셋 원자 적용, **엔진은 평가마다 룰·override 를 DB 신선 조회(캐시 없음)하므로 이후 인입 거래부터 새 임계 기준으로 탐지결정 산출**(폐루프). 반려·미승인 시 기존 리터럴 유지. ③ 검증 파이프라인: unknown key·read-only 변수·[min,max] 범위·정수전용 위반 상신 거부(400). ④ bo-web 파라미터 편집 폼은 AML 보고서 룰(REPORT_RULE_PARAM)과 공통 컴포넌트(`components/common/RuleParamEditForm`) 재사용. | 근거=fds-svc `RuleParamService`·`RuleParamCatalog`·`RuleEngine`(override resolve)·Flyway `V7__rule_param_overrides.sql`, bo-api `FdsRuleParamService`(위임+데모 stub 폐루프, V12), bo-web `FdsRuleDetail`·`RuleParamEditForm`·`useRuleParams/useUpdateRuleParams`. API §4.6·§5.9b / DB §5.36 상호 참조. 회귀 방어: local-ci `check_4eyes_contract` RULE_PARAM 폐루프 가드 + `RuleParamClosedLoopIntegrationTest`(Testcontainers, 변경 전/후 탐지결정 차이). |
 | **6.10** | **2026-07-02** | **SM Kim** | **데모 데이터 정직화 — FDS 판정을 실 인입 payload+실 룰 기반으로(코드=truth, feature/fds-demo-data-honesty · AML §7.1 BR-DEMO-HONESTY[기능정의서(AML) v9.27]의 FDS 확장).** §8.2 SFDS-DEC-002 **BR-005 신설**·§11.1 SFDS-CASE-001 **BR-005 신설**: (1) **동일 거래 양쪽 인입** — 시뮬레이터가 동일 nested `transaction` 객체(memberRef·transactionRef·channel·amount·currency·corridor·receiverName/Country·senderHolderName)를 FDS·AML 에 전송, `FdsIngestTestController.TestEvent` 가 payload 를 그대로 소비(기존 4필드만 소비→버려졌던 나머지 흡수). (2) **FDS 라이브 판정=실 payload+실 룰** — `ingestLiveDecision` 이 `transactionRef` 를 payload 원문 그대로 사용(조작 `txn-live-{seq}` 폐기), `FdsRuleCatalog` ACTIVE 룰을 실 거래 속성(금액밴드·채널·corridor·FDS 신호)으로 실평가해 ALLOW/REVIEW/BLOCK·발동 룰·점수 산출, hash 파생(seq→score/channel/amount/corridor) 전면 폐기 → **한 거래가 FDS 판정·AML 알림에 동일 `transactionRef`**. (3) 케이스 auto-open 실 판정 기반(4-eyes 유지)·룰 드릴다운 실근거/"상세 근거 미제공"(조작 금지)·**seed 픽스처(2 판정+2 케이스) 폐기**·인입 0=빈 목록(정직 문구)·엔진 위임·prod fail-closed 불변. | 근거=bo-api `FdsDecisionCaseStubService.ingestLiveDecision`(payload transactionRef·실 룰 평가)·`FdsIngestTestController.TestEvent`(nested transaction payload)·`FdsRuleCatalog`, bo-web `FdsDecisionInvestigation`·`FdsCaseManagement`. API §5(인입 이벤트 transaction payload)·integration(동일 transaction FDS+AML 전송)·AML §7.1 BR-DEMO-HONESTY 상호 참조. DB 불변. PPT 재빌드는 후속. |
 | **6.9** | **2026-06-28** | **SM Kim** | **Travel Rule 수령방식(payout method)별 필수 수취인 정보 정합(코드 정합).** 해외송금은 계좌이체만이 아니라 **캐시픽업(이름·전화번호로 수령)**·지갑 수령이 있어, Travel Rule 필수 수취인 정보를 계좌번호로만 체크하면 캐시픽업이 오탐난다. §8.2 SFDS-DEC-001 `TRAVEL_RULE_MISSING` 룰 참조(`RuleRef.reference` MISSING_FIELD)를 **수령 방식별**로: ACCOUNT_TRANSFER(계좌이체→이름·계좌번호·은행)·CASH_PICKUP(캐시픽업→이름·전화·신분증)·WALLET(지갑→이름·지갑주소). 누락 정보(missingFields)는 **방식별 필수정보(required)에서만** 산출 — **캐시픽업은 계좌번호를 누락으로 보고하지 않음**. 참조에 `payoutMethod`·`requiredFields`·`missingFields`·`corridor` 노출(필드 key·방식 코드만, 원문 PII 미노출). AML VASP Travel Rule(지갑/originator·beneficiary VASP·completenessStatus)은 별개 모델로 무변경. | 근거=bo-api `travelRuleReference`·`payoutMethodFor`, bo-web `RuleReferenceView`. API RuleRef.reference 동기화. |
 | **6.8** | **2026-06-28** | **SM Kim** | **발동 룰별 참조 데이터 드릴인(코드 정합).** §8.2 SFDS-DEC-001 결정 상세 **발동 룰 카드**에 룰 종류별 참조 데이터를 펼쳐볼 수 있게 함 — 대포통장(MULE_BANK)→**걸린 명단 계좌**(BLOCKLIST_MATCH: 계좌·그룹·신고이력·24h 송신자), 24시간 송금 급증(VELOCITY_24H)→**기여 거래 리스트**(VELOCITY_WINDOW: 거래번호·금액·시각·상대), ATM_GEO→위치 이상, CRYPTO_RISK→지갑 위험, TRAVEL_RULE_MISSING→누락 정보. `RuleRef.reference`(룰별 참조, API 동기화). **마스킹 토큰만·raw PII 미노출**(BR 신설). 엔진 위임·prod fail-closed 무변경. | 근거=bo-api `RuleRef.reference`·`ruleReferenceFor`, bo-web `RuleReferenceView`. |
@@ -1127,8 +1128,8 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 | 항목 | 내용 |
 |------|------|
 | **기능 ID** | SFDS-RULE-002 |
-| **권한** | `SFDS_RULE:READ` |
-| **API** | `GET /api/v1/admin/fds/rules/{ruleId}` · `GET /api/v1/admin/fds/rules/{ruleId}/versions` |
+| **권한** | `SFDS_RULE:READ` (변수 편집 상신은 `SFDS_RULE:OPERATE`) |
+| **API** | `GET /api/v1/admin/fds/rules/{ruleId}` · `GET /api/v1/admin/fds/rules/{ruleId}/versions` · **변수 편집**: `GET /api/v1/admin/fds/rules/{ruleId}/params` · `POST /api/v1/admin/fds/rules/{ruleId}:update-params` 🔒(`RULE_PARAM` 4-eyes, 202+approvalRequestId — API §4.6·§5.9b) |
 
 #### 화면 레이아웃
 
@@ -1154,6 +1155,24 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 
 > **표시 원칙**: 운영자 화면에는 내부 변수·필드명(`groupBy`, `target`, `beneficiaryInstrumentRef`, `<<THRESHOLD_*>>` 등)을 노출하지 않고, "대상 / 조건 / 측정 / 기간 / 기준값 / 동작" 의 업무 용어와 자연어 문장으로만 표시한다. 원본 DSL(JSON)은 `현재버전 조건` 탭의 고급 보기 또는 룰 빌더의 DSL 토글에서만 확인한다.
 
+#### 임계·변수 편집 (4-eyes `RULE_PARAM`)
+
+룰 상세 하단의 **변수(파라미터) 편집 섹션** — 룰을 재작성하지 않고 임계금액·건수·윈도우분 등 **수치 변수만** 4-eyes 결재로 변경한다(코드=truth: fds-svc `RuleParamService`·bo-web `RuleParamEditForm`).
+
+```
+┌─ 임계·변수 편집 (4-eyes) ─────────────────────────────────────────────────┐
+│ ⚠ 진행 중 결재 있음: appr-... (승인/반려 전 재상신 불가)      [pending 배지]│
+│ 변수            │ 현재 유효값 │ 기본값  │ 허용 범위        │ 새 값         │
+│ 임계금액(PHP)   │ 84,000     │ 84,000 │ 1 ~ 8,400,000    │ [________]    │
+│ 집계 건수(건)   │ 5          │ 5      │ 1 ~ 10,000 (정수) │ [________]    │
+│ 사유 [_____________________________]              [변경 상신 🔒RULE_PARAM] │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+- **변수 카탈로그**: 룰 `ruleJson` 수치 리프에서 결정적 유도(`GET .../rules/{ruleId}/params`) — 항목별 `label`·`unit`·`defaultValue`(리터럴)·`currentValue`(resolved: 오버라이드→전역 변수→리터럴)·`min`/`max`·`integerOnly`·`editable`·`overridden`(API §5.9b RuleParamItem). 허용 범위 기본 정책(가정 A4): 금액·건수 min=1, 금액 max=기본값×100, 건수 max=10,000(정수), 윈도우 1~43,200분(30일, 정수), 비율 [0,1].
+- **상신**: `[변경 상신]` = `POST .../rules/{ruleId}:update-params` 🔒 — **룰 단위 편집 가능 변수 전체 셋을 원자 제출**(부분 승인으로 인한 셋 정합 붕괴 방지). 202 Accepted + `approvalRequestId`, 결재함(SFDS-APPR-001)에 `RULE_PARAM`(대상=`rule_id`)으로 수렴.
+- **반영**: 승인 시 엔진이 `fds.fds_rule_param_overrides`(DB §5.36)에 override 셋을 원자 적용 — **엔진은 평가마다 룰·override 를 DB 신선 조회(캐시 없음)하므로 이후 인입 거래부터 새 임계 기준으로 탐지결정이 산출**된다. 반려·미승인 시 기존 값 유지.
+
 #### 버전 히스토리 탭
 
 ```
@@ -1176,6 +1195,8 @@ ver │ status      │ author        │ approver      │ activatedAt        �
   | 롤백 | `SFDS_RULE:APPROVE` | SUPERSEDED 버전 존재 |
 - **BR-003**: 버전 히스토리는 작성자·승인자·결재 시각·changeNote 를 7년 보존 표시. 작성자=승인자 위반은 시스템상 불가하나 로그에서 검증 가능.
 - **BR-004**: 최근 Hit 탭은 결정 조회(SFDS-DEC-001)로 ruleNo 프리필터된 링크.
+- **BR-005 (변수 편집 4-eyes)**: 임계·변수 편집 상신은 `SFDS_RULE:OPERATE` + `RULE_PARAM` 결재(대상=`rule_id`, §16.5) 필수 — 즉시 반영 아님(202). maker≠checker, 진행 중(`SUBMITTED`) 결재 존재 시 pending 배지 표시 + 재상신 차단. 승인 시 override 셋 원자 적용·반려 시 기존 값 유지, 전 과정 감사 기록.
+- **BR-006 (변수 검증)**: 상신 값은 서버 검증을 통과해야 한다 — unknown key·read-only(`editable=false`) 변수 거부, `[min,max]` 범위(inclusive)·정수전용(`integerOnly`) 위반 400. 룰 단위 편집 가능 변수 **전체 셋 원자 제출**(부분 제출로 인한 리프 간 정합 붕괴 방지).
 
 ### 6.3 SFDS-RULE-003 · 룰 빌더 (멀티도메인, 문장형)
 
@@ -1975,7 +1996,7 @@ sequenceDiagram
 
 | 컬럼·요소(표시) | 설명 (괄호=내부 코드) |
 |------|------|
-| 결재 종류 | 결재 대상 작업 유형 — 케이스 액션 / 룰 활성화·롤백 / 필드매핑 변경 / 자격증명 회전 / 명단 멤버 / 증적 export 최종본 / high-risk 가맹점 정상화 / 케이스 종결 / **규제 팩 변경**(대상=`tenant_id`) (`subject_kind` **9종** `ACTION/RULE/MAPPING/SECRET/GROUP/EXPORT/MERCHANT_NORMALIZE/CASE_CLOSE/POLICY_PACK`, DB §5.23·API §5.12) |
+| 결재 종류 | 결재 대상 작업 유형 — 케이스 액션 / 룰 활성화·롤백 / 필드매핑 변경 / 자격증명 회전 / 명단 멤버 / 증적 export 최종본 / high-risk 가맹점 정상화 / 케이스 종결 / **규제 팩 변경**(대상=`tenant_id`) / **룰 변수 변경**(대상=`rule_id`) (`subject_kind` **10종** `ACTION/RULE/MAPPING/SECRET/GROUP/EXPORT/MERCHANT_NORMALIZE/CASE_CLOSE/POLICY_PACK/RULE_PARAM`, DB §5.23·API §5.12) |
 | 대상 | 결재 대상 식별자(`subject_ref`) — 룰 번호·버전, 케이스 번호(`case_id`), 소스시스템 매핑 버전, 자격증명 키, 명단 멤버 건수, export pack 등 |
 | 상신자 | 결재를 올린 maker(`maker_subject`). 승인자(checker)와 동일 인물일 수 없음 |
 | 결재 라인 | 적용 결재 라인 — 자기승인 차단 / maker-checker / 컴플라이언스 책임자 / 리스크 책임자 / 보안 관리자 / 임원 승인 (`approval_line` **6종** `SELF_APPROVAL_DISABLED/MAKER_CHECKER/COMPLIANCE_MANAGER/RISK_MANAGER/SECURITY_ADMIN/EXECUTIVE_APPROVAL`, DB §4.12) |
@@ -1986,7 +2007,7 @@ sequenceDiagram
 
 #### 비즈니스 규칙
 
-- **BR-001**: 필터 `유형(subject_kind 9종) / 상태(approval_status 8종) / 상신자` + `대상` 검색. 행 ▶ 펼침 시 결재 단건(`payload_hash`·결재 단계·만료 시각·최대 실행 횟수)을 조회.
+- **BR-001**: 필터 `유형(subject_kind 10종) / 상태(approval_status 8종) / 상신자` + `대상` 검색. 행 ▶ 펼침 시 결재 단건(`payload_hash`·결재 단계·만료 시각·최대 실행 횟수)을 조회.
 - **BR-002**: **self-approval 방지** — 승인자(checker)는 상신자(maker)와 동일 사용자일 수 없다. 위반 시 `FDS-APPROVAL-SELF`(409)로 [승인] 차단. AI agent는 maker(상신)만 가능하며 checker(승인) 불가.
 - **BR-003**: **payload 무결성** — 상신 시 `payload_hash`로 고정되며, 승인 시점에 payload가 변경되었으면 `FDS-APPROVAL-PAYLOAD-CHANGED`로 무효 처리하고 재상신을 요구한다.
 - **BR-004**: 결재 라인은 작업 유형별 기본값을 따른다(§16.5 4-eyes 결재 대상 표) — 룰/케이스 종결/export 최종본=컴플라이언스 책임자, 명단/가맹점 정상화=리스크 책임자, 자격증명=보안 관리자, 매핑/케이스 액션=maker-checker, 대규모는 임원 승인. 승인 후 상태는 `승인(APPROVED)` → BE 실행 결과에 따라 `실행(EXECUTED)`/`실행실패(EXECUTION_FAILED)`로 전이한다.
@@ -2277,7 +2298,7 @@ sequenceDiagram
 | 설정 › 연동·데이터 | SFDS-MAP-001 | 소스/스키마 레지스트리 | `GET /api/v1/admin/fds/source-systems` | fds-svc | T-04 |
 | 설정 › 연동·데이터 | SFDS-MAP-002 | 필드 매핑/PII 정책 | `PUT /api/v1/admin/fds/source-systems/{ss}/mappings` 🔒 | fds-svc | T-04 |
 | 설정 › 탐지 정책 | SFDS-RULE-001 | 룰 목록 | `GET /api/v1/admin/fds/rule-sets`, `/rules` | fds-svc | T-09·T-11 |
-| 설정 › 탐지 정책 | SFDS-RULE-002 | 룰 상세/버전 | `GET /api/v1/admin/fds/rules/{id}`, `/versions` | fds-svc | T-11 |
+| 설정 › 탐지 정책 | SFDS-RULE-002 | 룰 상세/버전 | `GET /api/v1/admin/fds/rules/{id}`, `/versions`, `/{id}/params`, `POST /{id}:update-params` 🔒(`RULE_PARAM`) | fds-svc | T-11 |
 | 설정 › 탐지 정책 | SFDS-RULE-003 | 룰 빌더(문장형) | `GET /api/v1/admin/fds/feature-catalog`, `POST /api/v1/admin/fds/rules`, `PUT .../{id}` | fds-svc | T-09·T-11 |
 | 설정 › 탐지 정책 | SFDS-RULE-004 | 임계 파라미터 변경 | `PUT /api/v1/admin/fds/rules/{id}` (임계만) | fds-svc | T-11 |
 | 설정 › 탐지 정책 | SFDS-RULE-005 | 활성화·롤백·비활성 | `POST /api/v1/admin/fds/rules/{id}/activate` 🔒, `/rollback` 🔒, `/disable` | fds-svc | T-11 |
@@ -2347,7 +2368,7 @@ sequenceDiagram
 
 ### 16.5 4-eyes 결재 대상 (API §8, 설계서 §11.4/§11.5)
 
-결재함(SFDS-APPR-001)에서 일괄 관리. `fds_approval_requests.subject_kind` **9종**(`ACTION/RULE/MAPPING/SECRET/GROUP/EXPORT/MERCHANT_NORMALIZE/CASE_CLOSE/POLICY_PACK`, `CASE_CLOSE`=case 종결 4-eyes(대상=`fds_cases.case_id`), `POLICY_PACK`=규제 팩 토글 변경 4-eyes(대상=`fds_tenants.tenant_id`, 설계서 §16.2), DB §5.23·API §5.12 정본) · `approval_line` **6종**(`SELF_APPROVAL_DISABLED/MAKER_CHECKER/COMPLIANCE_MANAGER/RISK_MANAGER/SECURITY_ADMIN/EXECUTIVE_APPROVAL`, DB §4.12) · `approval_status` 8종(`DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED`). payload는 `payload_hash`로 고정되며 승인 후 변경 시 무효(`FDS-APPROVAL-PAYLOAD-CHANGED`). 상신자(maker)≠승인자(checker), AI agent는 maker만 가능.
+결재함(SFDS-APPR-001)에서 일괄 관리. `fds_approval_requests.subject_kind` **10종**(`ACTION/RULE/MAPPING/SECRET/GROUP/EXPORT/MERCHANT_NORMALIZE/CASE_CLOSE/POLICY_PACK/RULE_PARAM`, `CASE_CLOSE`=case 종결 4-eyes(대상=`fds_cases.case_id`), `POLICY_PACK`=규제 팩 토글 변경 4-eyes(대상=`fds_tenants.tenant_id`, 설계서 §16.2), `RULE_PARAM`=룰 변수(임계) 변경 4-eyes(대상=`fds_rules.rule_id`, §6.2 BR-005 — 승인 시 `fds_rule_param_overrides` 원자 적용·엔진 평가 즉시 반영), DB §5.23·API §5.12 정본) · `approval_line` **6종**(`SELF_APPROVAL_DISABLED/MAKER_CHECKER/COMPLIANCE_MANAGER/RISK_MANAGER/SECURITY_ADMIN/EXECUTIVE_APPROVAL`, DB §4.12) · `approval_status` 8종(`DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED`). payload는 `payload_hash`로 고정되며 승인 후 변경 시 무효(`FDS-APPROVAL-PAYLOAD-CHANGED`). 상신자(maker)≠승인자(checker), AI agent는 maker만 가능.
 
 | 작업(화면) | `subject_kind` | 기본 `approval_line` |
 |---|---|---|

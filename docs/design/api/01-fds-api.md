@@ -3,7 +3,7 @@
 > **운영 도메인**: 본 명세는 **hanpass-ph**(필리핀 송금·월렛 사업자) AML/FDS RegOps 플랫폼의 fds-svc REST API 정본이다. 거래는 hanpass-ph **5채널**(`CROSS_BORDER_REMIT`(해외송금)·`DOMESTIC_REMIT`(국내송금)·`CASH_IN`(월렛충전)·`WALLET_PAYMENT`(월렛결제)·`WALLET_WITHDRAWAL`(월렛출금))만 다룬다(§3.5). 카드결제·가상자산(crypto)·무역금융(trade)·PG·이커머스·마켓플레이스·B2B 등 비-hanpass 채널/도메인은 운영 대상이 아니다(닫힌 enum에는 잔존하나 hanpass-ph는 미사용).
 > 정본: `.claude/skills/_shared/aegis-stack.md` (4서비스 모노레포 · Java 25 · Spring Boot 3.5.x · 헥사고날 · 멀티테넌시 · PII 마스킹 · 4-eyes · 한국 Policy Pack).
 > 입력 설계서: `docs/software/01-fdsSvc-sass.md` (§6.2 헥사고날 `adapter/in/rest`, §11 action/case/결재, §12.8 Public API, §13 멀티테넌시, §16 PII/규제).
-> 입력 DB: `docs/design/db/01-fds-db.md` (스키마 `fds`, 멀티테넌시 `tenant_id/workspace_id/data_scope`, enum 코드값 §4, 컬럼/타입 §5, `subject_kind` 9종 `CASE_CLOSE`·`POLICY_PACK` 포함 §5.23, `fds_cases.aml_case_id` §5.13, **배포 모델 `fds_tenants.deployment_model`(3종)·`onboarding_status`(8종)·`default_region`·`infra_ref` §4.1·§5.1, 구 `isolation_mode` 폐기**, `close_reason` 8종 §4.11, `compliance_policy` JSONB §5.1, **`transaction_type` 폐쇄 enum 12종 §4.19**, `channel_type` §4.4, corridor 컬럼 §5.5).
+> 입력 DB: `docs/design/db/01-fds-db.md` (스키마 `fds`, 멀티테넌시 `tenant_id/workspace_id/data_scope`, enum 코드값 §4, 컬럼/타입 §5, `subject_kind` 10종 `CASE_CLOSE`·`POLICY_PACK`·`RULE_PARAM` 포함 §5.23, `fds_cases.aml_case_id` §5.13, **배포 모델 `fds_tenants.deployment_model`(3종)·`onboarding_status`(8종)·`default_region`·`infra_ref` §4.1·§5.1, 구 `isolation_mode` 폐기**, `close_reason` 8종 §4.11, `compliance_policy` JSONB §5.1, **`transaction_type` 폐쇄 enum 12종 §4.19**, `channel_type` §4.4, corridor 컬럼 §5.5).
 > 코드 정본: **`services/fds-svc`** (`com.aegis.fds.adapter.in.rest` 전 컨트롤러·DTO, `com.aegis.fds.domain.enums.ChannelType`·`EventFamily`, Flyway `V17`/`V20`/`V22` 데모 룰). 본 문서의 엔드포인트·요청/응답 DTO·enum은 이 저장소와 1:1 일치한다(추측 금지).
 > 책임 서비스: **`services/fds-svc`**. AML/STR/CTR/Travel Rule 본 케이스는 `aml-svc`, 운영자 IAM·결재 집약·감사는 `bo-api`. **bo-web은 bo-api만 호출(엔진 직접호출 금지)**.
 
@@ -40,7 +40,7 @@
 
 - **action_type 마스터 = API `ActionType` enum 23종(전수, §5.7·§7·§10 OpenAPI)**. 설계서 §11.2는 이 23종으로 동기화한다. 설계서 §15의 verb는 정규 매핑(`OPEN_*_CASE`=`OPEN_CASE`+`case_type`, `SUSPEND_MERCHANT`=`SUSPEND_INSTRUMENT`, `SEND_SECURITY_ALERT`=`SEND_ALERT`)으로 흡수한다. `HOLD_TRANSACTION`은 비정본 — 자금 hold는 `HOLD_FUNDS`, 송금 차단은 `BLOCK_TRANSACTION`.
 - **HTTP 상태코드 = 본 API 명세 §6이 정본**. PRD/PPT는 §6 매핑을 따른다(중복=400 `FDS-VALIDATION-001`, 결재 누락=409 `FDS-APPROVAL-REQUIRED`, maker=checker=409 `FDS-APPROVAL-SELF`, raw PII=422 `FDS-PII-REJECTED`, rate limit=429 `FDS-RATE-LIMIT`).
-- **4-eyes `subjectKind` = DB 정본 `fds_approval_requests.subject_kind` 9종(§5.23)과 1:1**. `ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`/`POLICY_PACK`. **case 종결(`POST /fds/cases/{caseId}/close`)은 `CASE_CLOSE`(subjectRef=`case_id`)로 매핑**하고, **규제 팩 토글 변경(`PUT /api/v1/bo/fds/tenants/{tenantId}` compliance_policy)은 `POLICY_PACK`(subjectRef=`tenant_id`, 설계서 §16.2)로 매핑**한다. integration·tasks는 이 9종을 따른다.
+- **4-eyes `subjectKind` = DB 정본 `fds_approval_requests.subject_kind` 10종(§5.23)과 1:1**. `ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`/`POLICY_PACK`/`RULE_PARAM`. **case 종결(`POST /fds/cases/{caseId}/close`)은 `CASE_CLOSE`(subjectRef=`case_id`)로 매핑**하고, **규제 팩 토글 변경(`PUT /api/v1/bo/fds/tenants/{tenantId}` compliance_policy)은 `POLICY_PACK`(subjectRef=`tenant_id`, 설계서 §16.2)로 매핑**하며, **룰 변수 편집(`POST /admin/fds/rules/{ruleId}:update-params`)은 `RULE_PARAM`(subjectRef=`rule_id`)으로 매핑**한다. integration·tasks는 이 10종을 따른다.
 - **Webhook 콜백 계약 = §9가 정본**. 4종(`FdsDecisionCreated`/`FdsCaseOpened`/`FdsCaseStatusChanged`/`FdsActionResult`)·핵심 payload·envelope·`X-Signature` HMAC·재시도/멱등을 §9로 확정한다. `FdsActionResult`는 `actionType`(action_type 23종)을 **필수 포함**하고 `status`는 action_status enum 기준이다. integration §3.2·§4.x는 §9.1 핵심 키와 1:1 정렬한다.
 - **운영자 집계 API 소유 경계 = bo-api(§12)**. 대시보드(플랫폼·서비스별)·서비스 관리(목록/상세/등록/설정)·감사 조회 화면이 호출하는 집계 엔드포인트는 **bo-api가 소유·집약·인증**한다. fds-svc/aml-svc는 저수준 데이터 API만 제공하며, **본 엔진 API 명세(§4)에는 운영자 집계 엔드포인트(대시보드/서비스/감사)를 추가하지 않는다**. PRD/PPT의 해당 화면은 호출 대상을 bo-api로 명시한다.
 
@@ -226,6 +226,8 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 | POST | `/api/v1/admin/fds/rules/{ruleId}/disable` | rule 비활성 | `fds:admin:rule` | tenant policy |
 | POST | `/api/v1/admin/fds/rules/{ruleId}/rollback` | 버전 rollback(`fds_rule_versions`, RuleActionRequest.reason 필수) | `fds:admin:rule` | **필수** |
 | GET | `/api/v1/admin/fds/rules/{ruleId}/versions` | rule version 이력 | `fds:admin:rule` | — |
+| GET | `/api/v1/admin/fds/rules/{ruleId}/params` | rule 튜닝 변수(파라미터) 목록 + pending `RULE_PARAM` 결재 id(`ruleJson` 리프값 파생 카탈로그 + `fds_rule_param_overrides` override 반영) | `fds:admin:rule` | — |
+| POST | `/api/v1/admin/fds/rules/{ruleId}:update-params` | rule 변수(임계값) 변경 상신(`UpdateRuleParamsRequest`, unknown-key·[min,max]·정수전용 검증 후 `RULE_PARAM` 결재 생성). 즉시 반영 아님 — 202 Accepted + `approvalRequestId`, 승인 후 override set 원자 적용 | `fds:admin:rule` | **필수** |
 | POST | `/api/v1/admin/fds/rules/simulations` | rule simulation 실행(예상 hit rate) | `fds:rule:simulate` | — |
 | GET | `/api/v1/admin/fds/rules/simulations/{simulationId}` | simulation 결과 | `fds:rule:simulate` | — |
 | POST | `/api/v1/admin/fds/rules/recommendations` | 룰 추천(목표 적중률 → 단일 피처 임계값 역산·엔진 재평가 검증). read-only(결재 불필요), 집계·임계값만 반환(raw PII/피처값 미반환) | `fds:rule:simulate` | — |
@@ -268,7 +270,7 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 ### 4.9 Approval API (위임) — bo-api IAM 연계
 | 메서드 | 경로 | 설명 | scope | 4-eyes |
 |---|---|---|---|---|
-| GET | `/api/v1/admin/fds/approvals` | 결재 대기 목록(`fds_approval_requests`). 필터: `subjectKind`(enum subject_kind 9종), `status`(enum approval_status 8종), `maker`(상신자 token=`maker_subject`) + 페이지네이션(§3.2) | `fds:case:read` | — |
+| GET | `/api/v1/admin/fds/approvals` | 결재 대기 목록(`fds_approval_requests`). 필터: `subjectKind`(enum subject_kind 10종), `status`(enum approval_status 8종), `maker`(상신자 token=`maker_subject`) + 페이지네이션(§3.2) | `fds:case:read` | — |
 | GET | `/api/v1/admin/fds/approvals/{approvalRequestId}` | 결재 단건(payload_hash 포함) | `fds:case:read` | — |
 | POST | `/api/v1/admin/fds/approvals/{approvalRequestId}/approve` | 승인(checker≠maker 강제) | `fds:action:write` | maker≠checker |
 | POST | `/api/v1/admin/fds/approvals/{approvalRequestId}/reject` | 반려 | `fds:action:write` | — |
@@ -482,6 +484,44 @@ RuleRecommendationResponse:
 | sampleSize | integer | 평가 표본 거래 수(최대 500, 비수치/빈 표본 시 0) |
 | alternatives | object[] `{threshold, hitRate, targetHitRate}` | 인접 대안(±1·2%p) 임계값·예상 적중률·해당 목표 적중률 |
 
+### 5.9b RuleParamsResponse / UpdateRuleParamsRequest / UpdateRuleParamsResponse (GET/POST /admin/fds/rules/{ruleId}/params · :update-params)
+
+룰 빌더의 **변수(파라미터) 편집 4-eyes 폐루프**(코드=truth, `RuleParamDtos`·`RuleParamService`). 변수 카탈로그는 룰의 `ruleJson` 수치 리프값에서 파생하며, 승인 완료된 override 는 `fds.fds_rule_param_overrides`(DB §5.36)에 원자 셋으로 적용된다. 판정은 override 를 결정마다 fresh read(캐시 없음). `unit` 은 자유 텍스트(예: `%`, `건`, `PHP`) — 폐쇄 enum 아님.
+
+RuleParamsResponse (GET):
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| ruleId | uuid | 대상 룰 id |
+| params | RuleParamItem[] | 튜닝 가능 변수 목록(아래) |
+| pendingApprovalId | uuid(nullable) | 진행 중(`SUBMITTED`) `RULE_PARAM` 결재 id(없으면 null) |
+
+RuleParamItem:
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| key | string | 변수 키(`ruleJson` 리프 경로) |
+| label | string | 표시 라벨 |
+| unit | string(nullable) | 단위 자유 텍스트(`%`/`건`/`PHP` 등, 폐쇄 enum 아님) |
+| defaultValue | decimal | 카탈로그 기본값 |
+| currentValue | decimal | 현재 유효값(override 존재 시 override, 없으면 default) |
+| min | decimal(nullable) | 허용 하한(inclusive) |
+| max | decimal(nullable) | 허용 상한(inclusive) |
+| integerOnly | boolean | 정수 전용 여부 |
+| editable | boolean | 편집 가능 여부(read-only 변수는 상신 거부) |
+| overridden | boolean | override 적용 여부 |
+
+UpdateRuleParamsRequest (POST `:update-params` body):
+| 필드 | 타입 | 필수 | 검증 | 설명 |
+|---|---|---|---|---|
+| params | map`<string,string>` | ● | 최소 1개, 키=known+editable, 값=수치·[min,max]·정수전용 | 변경할 `param_key → 값` 셋 |
+| reason | string | △(nullable) | | 상신 사유(결재 payload/`reason` 보존) |
+
+UpdateRuleParamsResponse (202 Accepted):
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| approvalRequestId | uuid | 생성된 `RULE_PARAM` 결재 요청 id |
+
+> 검증 실패(unknown key·범위 초과·정수 위반·빈 셋)는 `IllegalArgumentException`(400). 승인 EXECUTED 시 `RULE_PARAM_UPDATE` 감사(targetKind=`RULE`, targetRef=`rule_id`).
+
 ### 5.10 RiskGroupMemberRequest — `fds_risk_group_members`
 `memberRef`(string token ●), `memberKind`(enum `SUBJECT`/`INSTRUMENT`/`COUNTERPARTY` ●), `expiresAt`(datetime △).
 
@@ -495,9 +535,9 @@ RuleRecommendationResponse:
 응답: `exportId`(uuid), `status`(enum export_status), `manifestHash`(string, READY 시), `approvalRequestId`(uuid, nullable — 결재 대상 export이면 반환·비대상이면 null, DB §5.31 `approval_request_id`), `createdBy`(string(128) — 요청 주체, DB §5.31 `created_by NOT NULL` 정본).
 
 ### 5.12 ApprovalRequestDto / ApprovalDecisionRequest — `fds_approval_requests`/`fds_approval_steps`
-ApprovalRequestDto: `approvalRequestId`(uuid), `subjectKind`(enum subject_kind 9종 `ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`/`POLICY_PACK` = OpenAPI `SubjectKind`), `subjectRef`, `approvalLine`(enum approval_line 6종 = OpenAPI `ApprovalLine`, DB §4.12 `SELF_APPROVAL_DISABLED`/`MAKER_CHECKER`/`COMPLIANCE_MANAGER`/`RISK_MANAGER`/`SECURITY_ADMIN`/`EXECUTIVE_APPROVAL`), `status`(enum approval_status 8종 = OpenAPI `ApprovalStatus`, DB §4.12 `DRAFT`/`SUBMITTED`/`APPROVED`/`REJECTED`/`CANCELLED`/`EXPIRED`/`EXECUTED`/`EXECUTION_FAILED`), `payloadHash`, `payloadJson`(string △, 상세/BO 위임용 staged payload — masked/tokenized, raw PII/secret 미포함. bo-api는 RULE payload의 `statusBeforeSubmit`/`statusAfterSubmit`/`statusAfterApproval`, `fromVersion`/`toVersion`, `reason`, `simulationId` 등에서 `payloadDiff[{field,before,after}]` AS-IS→TO-BE 표를 파생), `makerSubject`, `reason`(string △, 상신 사유 = DB `fds_approval_requests.reason TEXT` §5.23, NULL 허용), `expiresAt`, `maxExecutions`.
+ApprovalRequestDto: `approvalRequestId`(uuid), `subjectKind`(enum subject_kind 10종 `ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`/`POLICY_PACK`/`RULE_PARAM` = OpenAPI `SubjectKind`), `subjectRef`, `approvalLine`(enum approval_line 6종 = OpenAPI `ApprovalLine`, DB §4.12 `SELF_APPROVAL_DISABLED`/`MAKER_CHECKER`/`COMPLIANCE_MANAGER`/`RISK_MANAGER`/`SECURITY_ADMIN`/`EXECUTIVE_APPROVAL`), `status`(enum approval_status 8종 = OpenAPI `ApprovalStatus`, DB §4.12 `DRAFT`/`SUBMITTED`/`APPROVED`/`REJECTED`/`CANCELLED`/`EXPIRED`/`EXECUTED`/`EXECUTION_FAILED`), `payloadHash`, `payloadJson`(string △, 상세/BO 위임용 staged payload — masked/tokenized, raw PII/secret 미포함. bo-api는 RULE payload의 `statusBeforeSubmit`/`statusAfterSubmit`/`statusAfterApproval`, `fromVersion`/`toVersion`, `reason`, `simulationId` 등에서 `payloadDiff[{field,before,after}]` AS-IS→TO-BE 표를 파생), `makerSubject`, `reason`(string △, 상신 사유 = DB `fds_approval_requests.reason TEXT` §5.23, NULL 허용), `expiresAt`, `maxExecutions`.
 
-> `subjectKind` enum은 DB 정본 `fds_approval_requests.subject_kind` 9종(§5.23)과 1:1. `CASE_CLOSE`=case 종결 4-eyes(대상=`fds_cases.case_id`, §8 case close 행), `POLICY_PACK`=규제 팩 토글 변경 4-eyes(대상=`fds_tenants.tenant_id`, 설계서 §16.2).
+> `subjectKind` enum은 DB 정본 `fds_approval_requests.subject_kind` 10종(§5.23)과 1:1. `CASE_CLOSE`=case 종결 4-eyes(대상=`fds_cases.case_id`, §8 case close 행), `POLICY_PACK`=규제 팩 토글 변경 4-eyes(대상=`fds_tenants.tenant_id`, 설계서 §16.2), `RULE_PARAM`=룰 변수(파라미터) 편집 4-eyes(대상=`fds_rules.rule_id`, §8 update-params 행).
 ApprovalDecisionRequest(approve/reject): `comment`(string △). checker는 토큰 주체에서 추출(maker≠checker 강제).
 
 ### 5.13 CredentialDto / CredentialCreateRequest — `fds_api_credentials`
@@ -683,6 +723,7 @@ tenant 알림 채널 1건(설계서 §13.2 alert channel, PRD TNT-002 ⑤). GET�
 | `POST /fds/cases/{caseId}/actions` (자금/규제 action) | `ACTION` | `MAKER_CHECKER` / `EXECUTIVE_APPROVAL`(대규모) |
 | `POST /fds/cases/{caseId}/close` (내부감사·규제 case) | `CASE_CLOSE` (subjectRef=`case_id`) | `COMPLIANCE_MANAGER` |
 | `POST /admin/fds/rules/{ruleId}/activate` · `/rollback` | `RULE` | `COMPLIANCE_MANAGER` |
+| `POST /admin/fds/rules/{ruleId}:update-params` (룰 변수 편집) | `RULE_PARAM` (subjectRef=`rule_id`) | `COMPLIANCE_MANAGER` |
 | `PUT /admin/fds/source-systems/{ss}/mappings` | `MAPPING` | `MAKER_CHECKER` |
 | `PUT /admin/fds/source-systems/{id}` (속성·capability 매트릭스 수정) | `MAPPING` (source-system 구성 도메인, subjectRef=`source_system`) | `MAKER_CHECKER` |
 | `PUT /admin/fds/risk-groups/{groupId}` (마스터 수정/비활성) | `GROUP` (subjectRef=`group_id`) | `RISK_MANAGER` |
@@ -837,7 +878,7 @@ components:
         TRADE_FINANCE_REVIEW, ECOMMERCE_SETTLEMENT_REVIEW, B2B_INVOICE_REVIEW]
     SubjectKind:
       type: string
-      enum: [ACTION, RULE, MAPPING, SECRET, GROUP, EXPORT, MERCHANT_NORMALIZE, CASE_CLOSE, POLICY_PACK]
+      enum: [ACTION, RULE, MAPPING, SECRET, GROUP, EXPORT, MERCHANT_NORMALIZE, CASE_CLOSE, POLICY_PACK, RULE_PARAM]
     ActionStatus:
       type: string
       enum: [PENDING, APPROVAL_REQUIRED, APPROVED, SENT, ACKED, FAILED, CANCELLED]
@@ -1524,7 +1565,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 - **Webhook 콜백(outbound)**: `FdsDecisionCreated`·`FdsCaseOpened`·`FdsCaseStatusChanged`·`FdsActionResult` 4종, `X-Signature: hmac-sha256`, `eventId` 멱등, 지수 backoff 재시도(§9).
 - **운영자 집계 = bo-api 소유**: 대시보드/서비스/감사 집계 엔드포인트는 bo-api(`/api/v1/bo/**`)가 소유. 엔진 API에 미추가(§1.1·§11.2·§12).
 - **배포 모델/온보딩(deployment topology) = bo-api 소유, fds-svc 엔진 API 미추가**: 서비스(테넌트=서비스) 등록은 격리 토글이 아니라 **배포 유형 선택 + 온보딩 신청/상태**다. enum `DeploymentModel{MANAGED_DEDICATED, SELF_HOSTED, SHARED}`(3종) · `OnboardingStatus{REQUESTED, PROVISIONING, DEPLOYED, VERIFIED, ACTIVE, PACKAGE_ISSUED, CUSTOMER_DEPLOYED, REGISTERED}`(8종, §10 OpenAPI)는 DB `fds_tenants.deployment_model`/`onboarding_status` 정본과 1:1. `TenantDto`는 `tenantId`/`deploymentModel`/`onboardingStatus`/`region`(=`default_region`)/`infraRef`(=`infra_ref`) — **`isolationMode` 필드 폐기**. 온보딩 엔드포인트(bo-api 전용): `POST /api/v1/bo/fds/tenants/{tenantId}/onboarding/provision`(프로비저닝 트리거), `GET /api/v1/bo/fds/tenants/{tenantId}/onboarding`(상태 조회), `POST /api/v1/bo/fds/tenants/{tenantId}/onboarding/register`(self-hosted 등록 콜백). 상태머신: 매니지드 `REQUESTED→PROVISIONING→DEPLOYED→VERIFIED→ACTIVE` / self-hosted `REQUESTED→PACKAGE_ISSUED→CUSTOMER_DEPLOYED→REGISTERED` / SHARED `REQUESTED→ACTIVE`(ACTIVE/REGISTERED 도달 시 `tenant_status=ACTIVE`). tenant_id 라우팅: 전용 배포(MANAGED_DEDICATED/SELF_HOSTED)는 배포=서비스 단일(배포 엔드포인트 단위), SHARED만 `Tenant-Id` 헤더 행 라우팅(§11.2·integration).
-- **4-eyes 게이트**: action(자금/규제)·rule activate/rollback·mapping·group member·credential·export 최종본·merchant normalize·**case 종결**·**규제 팩 토글** → `fds_approval_requests.subject_kind` **9종**(`ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`/`POLICY_PACK`) 매핑(§8). **case 종결=`CASE_CLOSE`(대상=`case_id`)**, **규제 팩 토글=`POLICY_PACK`(subjectRef=`tenant_id`)**, ACTION 아님. integration·tasks·PRD는 이 9종을 따른다.
+- **4-eyes 게이트**: action(자금/규제)·rule activate/rollback·**rule 변수 편집**·mapping·group member·credential·export 최종본·merchant normalize·**case 종결**·**규제 팩 토글** → `fds_approval_requests.subject_kind` **10종**(`ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`/`POLICY_PACK`/`RULE_PARAM`) 매핑(§8). **case 종결=`CASE_CLOSE`(대상=`case_id`)**, **규제 팩 토글=`POLICY_PACK`(subjectRef=`tenant_id`)**, **룰 변수 편집=`RULE_PARAM`(subjectRef=`rule_id`)**, ACTION 아님. integration·tasks·PRD는 이 10종을 따른다.
 - **AML 위임 필드**: `amlCaseRef`(= `fds_cases.aml_case_id`, integration 확정 대기).
 
 ---
@@ -1533,6 +1574,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-07 | v3.6 | **FDS 룰 변수(파라미터) 편집 4-eyes 폐루프 역전파(코드=truth, RULE_PARAM).** (1) §4.6 표에 `GET /admin/fds/rules/{ruleId}/params`(scope `fds:admin:rule`, 4-eyes —)·`POST /admin/fds/rules/{ruleId}:update-params`(scope `fds:admin:rule`, **4-eyes 필수**, 202+`approvalRequestId`) 2행 추가. (2) §5.9b DTO 절 신설 — `RuleParamsResponse`(`ruleId`/`params[]`/`pendingApprovalId`)·`RuleParamItem`(`key`/`label`/`unit`/`defaultValue`/`currentValue`/`min`/`max`/`integerOnly`/`editable`/`overridden`)·`UpdateRuleParamsRequest`(`params map<string,string>`/`reason`)·`UpdateRuleParamsResponse`(`approvalRequestId`)를 `RuleParamDtos` 코드와 1:1 기재. `unit`은 자유 텍스트. (3) §8 4-eyes 표에 `POST :update-params → RULE_PARAM(subjectRef=rule_id) → COMPLIANCE_MANAGER` 행 추가(코드 `RuleParamService`가 `ApprovalLine.COMPLIANCE_MANAGER`로 상신). (4) `subject_kind` 참조 전수 **9종→10종**(`RULE_PARAM` 추가) — 헤더·§1.1 원칙·§4.9 approvals 필터·§5.12 `ApprovalRequestDto`·OpenAPI `SubjectKind` enum·§13 downstream. | aegis-java-implementer. 코드=truth. 근거=fds-svc `adapter/in/rest/RuleAdminController`(listParams·updateParams)·`adapter/in/rest/dto/RuleParamDtos`·`application/usecase/RuleParamService`(RULE_PARAM 상신·`RULE_PARAM_UPDATE` 감사)·`domain/enums/SubjectKind`·`db/migration/V7__rule_param_overrides.sql`. |
 | 2026-07-06 | v3.5 | **FDS 룰 결재 상세 AS-IS/TO-BE 표시 역전파(코드=truth, fix/approval-as-is-to-be).** `ApprovalRequestDto.payloadJson`을 API/OpenAPI에 노출하고, RULE 활성화 payload에 `ruleName`·`statusBeforeSubmit`·`statusAfterSubmit`·`statusAfterApproval`·`simulationId`·`reason`, rollback payload에 `ruleName`·`fromVersion`·`toVersion`·`statusBeforeApproval`·`statusAfterApproval`·`reason`을 보존해 bo-api 결재함 `payloadDiff[{field,before,after}]`가 변경 전/후 표를 구성한다. raw PII/secret 미포함 불변. | aegis-java-implementer. 근거=fds-svc `ApprovalRequestDto`·`RuleAdminService`, bo-api `FdsApprovalStubService` 엔진/로컬 diff 파생, bo-web `FdsApprovals` 변경 전/후 컬럼. |
 | 2026-07-06 | v3.4 | **FDS 룰 활성화/rollback 4-eyes 요청 본문 역전파(코드=truth, fix/fds-rule-approval-flow).** §4.6 activate/rollback 이 `RuleActionRequest(reason, simulationId)` 를 수신하는 계약을 명시. inline rule 활성화는 `simulationId` 필수, rollback은 `reason` 필수로 fail-fast. fds-svc 결재 payload에는 simulationId/reason을 보존하고, bo-api 엔진 위임 응답의 결재 큐 상태는 `SUBMITTED`로 정규화한다. | aegis-spec. 근거=fds-svc `RuleAdminController`·`RuleAdminService`·`RuleActionRequest`, bo-api `FdsRuleGroupService`. |
 | 2026-07-05 | v3.3 | **누적 계약 드리프트 역전파(코드=truth, fix/aml-ra-envelope-fds-spec-backprop) — 판정 목록 `rule` 필터·Case SLA 필드·Case 목록 `slaBreached` 필터.** (1) **§4.2 `GET /api/v1/fds/decisions`** 목록 필터의 `ruleNo`(적중 룰 번호) → **`rule`**(적중 룰 id/이름 부분일치·대소문자 무시 — fds-svc 는 숫자 룰 번호가 없어 목록 행의 룰 코드/이름 문자열로 검색) 정정(`DecisionQueryController.listDecisions` `@RequestParam String rule` 1:1). (2) **§5.5 `CaseDto`** 에 `slaDueAt`(datetime, nullable — `CaseSlaPolicy` 파생 처리 SLA 기한)·`slaBreached`(boolean — SLA 초과 여부) 필드 추가(구 문서엔 미표기, 코드 `CaseDto.slaDueAt/slaBreached`·도메인 `Case.getSlaDueAt/isSlaBreached`·`CaseSlaPolicy.dueAt/breached` 정본). (3) **§4.x `GET /api/v1/fds/cases`** 목록 필터에 `slaBreached`(boolean) 추가(`CaseController.listCases` `@RequestParam Boolean slaBreached`). ⚠️ §4.6 `/admin/fds/rules` 의 `ruleNo`(텍스트검색) 및 OpenAPI `RuleRef.ruleNo`(§5.4 응답 필드)는 **코드=truth 그대로 유지**(`RuleAdminController` `@RequestParam ruleNo`·`FdsDecisionCaseDtos.RuleRef.ruleNo` — 별개 계약, 변경 없음). | aegis-spec. 코드=truth. 근거=fds-svc `adapter/in/rest/DecisionQueryController`(rule)·`adapter/in/rest/CaseController`(slaBreached)·`adapter/in/rest/dto/CaseDto`(slaDueAt/slaBreached)·`domain/Case`·`domain/CaseSlaPolicy`. |
