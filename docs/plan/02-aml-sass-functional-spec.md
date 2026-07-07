@@ -1589,7 +1589,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ### 12-A.10 AML-MBR-001 · 회원관리 — 회원원장·CDD/EDD 히스토리 (조회, 문서 미정의 → 코드 truth로 신설)
 
-> **문서 미정의 지점 — 코드 truth로 신설(v9.31).** 종전 §12·인벤토리에 미정의였던 화면이다. bo-web `회원관리` 메뉴(`AmlMemberLedger`, `lib/nav.ts` `AML-MBR-001`)·bo-api `AmlMemberLedgerController`·aml-svc `MemberLedgerController`(admin) 코드를 정본으로 신규 서술한다. 원장(`aml_customers`, DB §3.3)은 회원의 현재 상태만 upsert 로 보존하므로 "회원이 언제 어떤 실사를 어떤 결과로 수행했는가"의 정본은 append-only 이력 테이블(`aml_member_cdd_history`, DB §3.22f)이며, 본 화면이 그 read-only 조회면이다.
+> **문서 미정의 지점 — 코드 truth로 신설(v9.40).** 종전 §12·인벤토리에 미정의였던 화면이다. bo-web `회원관리` 메뉴(`AmlMemberLedger`, `lib/nav.ts` `AML-MBR-001`)·bo-api `AmlMemberLedgerController`·aml-svc `MemberLedgerController`(admin) 코드를 정본으로 신규 서술한다. 원장(`aml_customers`, DB §3.3)은 회원의 현재 상태만 upsert 로 보존하므로 "회원이 언제 어떤 실사를 어떤 결과로 수행했는가"의 정본은 append-only 이력 테이블(`aml_member_cdd_history`, DB §3.22f)이며, 본 화면이 그 read-only 조회면이다.
 
 | 항목 | 내용 |
 |------|------|
@@ -2069,7 +2069,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | AML-WL-003 | 설정 › 연동·데이터 | 내부 요주의 명단·오탐 면제 생명주기(§12-B.5 — **v9.4 메뉴 leaf `내부 명단·오탐 면제` `/aml/watchlist/internal` 노출**) | (엔진·**제안**) `POST .../watchlist-sources/{code}/entries:draft`(수기 등록→diff 초안, 적용은 WL-002 `:apply`🔒 재사용) · `GET .../screenings/fp-whitelist` · `POST .../fp-whitelist/{id}:revoke`🔒 — **후속 API 정합 필요(부록 E v7.0)** |
 | AML-HRR-001 | 운영 › 고객위험·심사 | 당연고위험 레지스트리(§12-B.6) | (엔진·**확정**) `GET .../high-risk-registry` · `PUT .../high-risk-registry/reference-lists/{listType}`🔒(subjectType=`HIGH_RISK_REGISTRY`, scope `aml:admin:high-risk-registry`) — **T2 AML-ENG-02 aml-svc 엔진 구축(부록 E v7.0 해소). bo-api 실위임 후속 T13** |
 | AML-CDD-002 | **운영 › 고객위험·심사** | 고객 CDD 프로필 원장(§12-B.7, 드릴다운, 3탭 — ③ PEP 관리 v9.13) — **운영 영역** (CDD-002 운영 ↔ CDD-001 설정 분리) | (엔진·**제안**) `GET /aml/customers/{ref}/profile`(read-only 파생 — 진입: AML-RA-003 ①·AML-CASE-002 ①·AML-WLF-001 `[고객 프로필 ▶]`) + **(확정) `POST /api/v1/admin/aml/customers/{ref}:submit-pep-approval`🔒(PEP 경영진 승인 상신, subjectType=`PEP_APPROVAL`·승인선 `EXECUTIVE_APPROVAL`, 엔진 V24)** — read-only 원장 후속 API 정합(부록 E v7.0) |
-| AML-MBR-001 | **운영 › 고객위험·심사** | 회원관리 — 회원원장·CDD/EDD 히스토리(§12-A.10, 조회 · **v9.31 코드 truth 신설**, 회원번호 검색 entry) | **bo-api** `GET /api/v1/bo/aml/members/{memberRef}/ledger`(원장 요약) · `GET /api/v1/bo/aml/members/{memberRef}/cdd-history?types=&page=&size=`(이력 페이지) → 엔진 `GET /api/v1/admin/aml/members/{memberRef}/{ledger\|cdd-history}` 위임(scope `aml:case:read`, API §2.x·DB §3.22f·§5.36) |
+| AML-MBR-001 | **운영 › 고객위험·심사** | 회원관리 — 회원원장·CDD/EDD 히스토리(§12-A.10, 조회 · **v9.40 코드 truth 신설**, 회원번호 검색 entry) | **bo-api** `GET /api/v1/bo/aml/members/{memberRef}/ledger`(원장 요약) · `GET /api/v1/bo/aml/members/{memberRef}/cdd-history?types=&page=&size=`(이력 페이지) → 엔진 `GET /api/v1/admin/aml/members/{memberRef}/{ledger\|cdd-history}` 위임(scope `aml:case:read`, API §2.x·DB §3.22f·§5.36) |
 | AML-ING-001 | 설정 › 연동·데이터 | 수신 API 카탈로그·인입 라이브 모니터링(§12.2, v8.0) | **bo-api(제안)** `GET /api/v1/bo/aml/ingest/catalog` · `GET /api/v1/bo/aml/ingest/health`(집계 소유 — API §9 경계) — **후속 API 정합 필요(부록 E v8.0)**. 수신 API 자체 정본 = §1.11 ②(API §3.1~§3.4) |
 
 ### 부록 B. 권한 매트릭스 (scope × 화면)
