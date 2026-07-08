@@ -7,6 +7,7 @@
 > 멀티테넌시 모델(코드 truth, 유지): **테넌트(`tenant_id`) → 워크스페이스(`workspace_id`)** 의 2계층 격리. 사용자는 테넌트/워크스페이스 스코프로 바인딩하며, 플랫폼 운영자(platformOperator)는 테넌트 비종속(tenant-agnostic). 멀티테넌트 격리·플랫폼 운영자·테넌트 바인딩은 코드 truth로 유지하되, **운영 배포는 hanpass-ph 단일 테넌트(`tenant_demo`, 표시명 "hanpass PH")** 기준이다(가상 다(多)테넌트 예시는 비범위). `tenant_demo`는 SELF_HOSTED 온프레미스·정책팩 `KR_DEFAULT`·보고기관 `HANPASS`(한패스, V26 시드). V28에서 가상 데모 테넌트(은행 A·핀테크 B·소규모 C)는 제거되어 운영 레지스트리는 hanpass-ph 단일.
 >
 > 변경 이력:
+> - 2026-07-08 — **공통 셸 다국어 언어 선택기 정본화(코드=truth, bo-web next-intl)**: §6 화면 인벤토리에 공통 셸(헤더)·로그인 언어 선택기 명세 신설 — 헤더 우측 유틸리티(결재함 배지·사용자명 옆)와 로그인 카드 상단에 공용 `LanguageSwitcher`(한국어(`ko`, 기본)·English(`en`)) 노출, 선택은 쿠키(`NEXT_LOCALE`, 1년·`SameSite=Lax`)로만 유지·**URL 불변**(`[locale]` 세그먼트 없음), 변경 시 서버 트리 재렌더(`router.refresh()`). 공통 셸 표시 라벨 정본은 bo-web i18n 카탈로그 키(ko/en) — 하드코딩 금지·래칫(ratchet) 스캔 게이트(FDS PRD §1.8·AML PRD §1.12 신설과 동기).
 > - 2026-07-07 — **RA 당연고위험 등재 결재선 정합(코드 truth, feature/aml-hrr-ra-registration)**: §4.2 subject_type별 라우팅에 **`HRR_REGISTRATION → EXECUTIVE_APPROVAL`** 추가(RA 당연고위험 회원 등재 = 고위경영진 수동승인 결재선, aml-svc `ApprovalLineResolver` 미러). 엔진 `aml_approvals.subject_type` CHECK **20→21**(Flyway **V28**), bo-api `AmlApprovalDtos.SubjectType` 22→**23종** + `bo_approval_routes` 에 `('platform','HRR_REGISTRATION',1,'EXECUTIVE_APPROVAL')` 라우팅 seed·감사 `HRR_REGISTRATION_SUBMITTED` allowlist(bo-api Flyway **V11**). 상신 주체 2원화 — RA 엔진 자동 상신(maker `system:ra-engine`, 이미 등재/PENDING 멱등 no-op) + RA 상세 수동 상신(`POST .../high-risk-registry/registrations`). 승인 EXECUTED 시에만 `RA_HIGH_RISK_CUSTOMERS` 등재 확정+RA 강제 상향(PRD §12-B.6 BR-005).
 > - 2026-07-06 — **CTR 임계 변경 결재함 정합(코드=truth, fix/aml-ctr-threshold-engine-approval)**: `CTR_THRESHOLD`를 bo-api 전용 결재에서 **aml-svc 엔진 결재 대상**으로 승격. 엔진 `aml_approvals.subject_type` CHECK **19→20**(Flyway V23)·`ApprovalLineResolver` 승인선 `REPORTING_OFFICER`·bo-api `AmlCtrThresholdService` 엔진 연결 시 admin 상신 위임(`POST /api/v1/admin/aml/ctr-thresholds/{currency}:update`)으로 정본화. AML 결재함은 엔진 `/admin/aml/approvals`에서 `CTR_THRESHOLD`를 조회한다.
 > - 2026-07-06 — **CTR/STR 룰 파라미터 편집 결재 정합(코드=truth, feature/aml-report-rule-conditions-editing)**: §4.2 subject_type 라우팅에 **`REPORT_RULE_PARAM → COMPLIANCE`**(룰 임계·변수 편집 = 탐지정책, bo-api 코드 승인선 `COMPLIANCE_OFFICER` 미러) 추가 — bo-api `AmlApprovalDtos.SubjectType` 21→**22**종, subjectRef=룰 코드·룰 단위 파라미터 셋 원자 결재·EXECUTED 시 stub 로컬 반영(`backoffice.aml_report_rule_params` V9)/엔진 aml-svc admin `:update-params` 위임(운영 fail-closed). §5 표 bo-api enum(22종)·`bo_audit_logs` V9(`REPORT_RULE_PARAM_CHANGE_SUBMITTED`) 갱신. `REPORT_RULE_PARAM`은 엔진 CHECK 미포함. DB §3.22e/§7 V22·API §2.7/§3.6a·기능정의서 §12-B.3(BR-003 개정·BR-007) 동기화.
@@ -156,6 +157,12 @@ BO-USR-001~004 · BO-ROLE-001/002 · BO-PERM-001 · BO-MENU-001 · BO-APRL-001/0
 6. 결재 위임(`/admin/approval-delegations`, BO-APRL-002)
 
 추가: 헤더 **결재함 배지**(`ApprovalInboxMenu`) — 대기 결재 신호 노출.
+
+**공통 셸(헤더)·로그인 — 다국어 언어 선택기 (구현 완료, bo-web `components/common/LanguageSwitcher`)**:
+- **노출 위치 2곳**: ① **헤더**(`Header`) 우측 유틸리티 영역 — 워크스페이스 선택기와 결재함 배지(`ApprovalInboxMenu`)·사용자명 메뉴 사이에 배치, 데스크톱(md 이상) 상시 노출, 남색 헤더용 `dark` 변형. ② **로그인 카드 상단 우측**(`app/(auth)/login`) — 인증 전에도 언어 전환 가능, `light` 변형(변형은 표시 전용, 동작 동일).
+- **동작**: 한국어(`ko`, 기본)/English(`en`) 선택 → 쿠키(`NEXT_LOCALE`, 수명 1년·`SameSite=Lax`) 기록 + 서버 트리 재렌더(`router.refresh()`). **URL 불변** — `[locale]` URL 세그먼트를 두지 않고 서버가 매 요청 쿠키를 읽어(`i18n/request.ts`) 로케일을 결정하므로, 딥링크·북마크·공유 URL 이 언어 선택과 무관하게 안정적이다. 미지/누락 쿠키 값은 기본 한국어(`ko`)로 정규화(`normalizeLocale`).
+- **접근성·라벨**: 선택기 자체의 표시(언어 자기표기 "한국어"/"English"·aria-label)도 i18n 카탈로그 `language.*` 키에서 해석 — 컴포넌트 하드코딩 없음, `sr-only` label + `aria-label` 제공.
+- **라벨 정본**: 헤더·NAV·로그인·결재함 등 공통 셸의 전 표시 문자열은 bo-web next-intl 카탈로그(ko/en) 키가 정본이며, 하드코딩 금지·래칫(ratchet) 스캔 게이트를 따른다(FDS PRD §1.8·AML PRD §1.12).
 
 ## 7. 정합·불일치 해소 (본 문서가 정본화)
 1. `approval_line` FDS(6)/AML(6) → **단일 통합 enum 7종**(§4.1, V22 `bo_approval_lines`). FDS §16.5·AML 부록 G 동기화 필요(잔여).
