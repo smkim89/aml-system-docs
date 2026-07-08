@@ -157,6 +157,8 @@ BO-USR-001~004 · BO-ROLE-001/002 · BO-PERM-001 · BO-MENU-001 · BO-APRL-001/0
 
 추가: 헤더 **결재함 배지**(`ApprovalInboxMenu`) — 대기 결재 신호 노출.
 
+추가: 공통 셸 **언어 선택기**(`LanguageSwitcher`, 한국어/English) — 헤더 사용자(displayName) 버튼 옆 + 로그인 화면 상단 2곳에 노출(공통 컴포넌트). 쿠키 기반 locale(`NEXT_LOCALE`, 기본 `ko`; `[locale]` URL 라우팅 없음 — URL 구조 불변)이며 선택 시 쿠키 set(path=/, 1년)+`router.refresh()`로 전 화면이 한국어↔영어로 전환된다. 웹에 노출되는 모든 문자열(메뉴·버튼·테이블 헤더·상태/등급 라벨·빈 상태·에러/토스트·aria-label·placeholder)은 next-intl 메시지 카탈로그(`messages/ko.json`·`messages/en.json`, 두 파일 키 셋 100% 일치)로 일원화하고, 서버 enum/코드 값은 프론트 카탈로그에서 라벨 매핑해 표기한다.
+
 ## 7. 정합·불일치 해소 (본 문서가 정본화)
 1. `approval_line` FDS(6)/AML(6) → **단일 통합 enum 7종**(§4.1, V22 `bo_approval_lines`). FDS §16.5·AML 부록 G 동기화 필요(잔여).
 2. `aml_approvals.subject_type` CHECK 16 → 18(§4.2).
