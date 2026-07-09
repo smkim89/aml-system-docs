@@ -251,7 +251,7 @@ FDS는 고객 PII·거래 데이터의 규제·내부보안 요건이 커서 **�
 
 ### 5.5 Compliance plugin
 
-AML, STR, 고액현금거래 보고, 전자금융 이상거래 탐지, 보이스피싱 피해 의심거래, 가상자산 Travel Rule, 내부통제 규정은 국가·업권마다 다르다. core decision engine은 공통으로 두되, 한국 시장용 규정 리포트와 workflow는 별도 policy pack으로 분리한다.
+AML, STR, 고액현금거래 보고, 전자금융 이상거래 탐지, 보이스피싱 피해 의심거래, 내부통제 규정은 국가·업권마다 다르다. core decision engine은 공통으로 두되, 한국 시장용 규정 리포트와 workflow는 별도 policy pack으로 분리한다. (가상자산 Travel Rule 항목은 2026-07-09 Travel Rule 전면 제거로 삭제됨 — aegis-aml 84997e1, fds V9.)
 
 ---
 
@@ -318,7 +318,7 @@ flowchart TB
 | 논리 컴포넌트(본 문서) | 물리 서비스 | 비고 |
 |---|---|---|
 | Ingest / Normalization / Feature Store / Rule Engine / Decision / Action Router | `services/fds-svc` | FDS 엔진 백엔드 (Java 25, Spring Boot 3.5.x, 헥사고날) |
-| AML/STR/CTR/Travel Rule regulatory case, sanction/PEP screening | `services/aml-svc` | AML 엔진. FDS는 `OPEN_AML_CASE`/`REGULATORY_REPORT` 후보를 aml-svc로 위임 |
+| AML/STR/CTR regulatory case, sanction/PEP screening | `services/aml-svc` | AML 엔진. FDS는 `OPEN_AML_CASE`/`REGULATORY_REPORT` 후보를 aml-svc로 위임 (Travel Rule은 2026-07-09 전면 제거 — aegis-aml 84997e1) |
 | Admin Console, 결재(maker-checker), 감사·리포트 집약, IAM | `services/bo-api` | fds-svc·aml-svc admin API를 운영자용으로 집약·인증·감사 |
 | no-code rule builder, case 화면, evidence export UI, 운영 대시보드 | `services/bo-web` | Next.js 16. bo-api 경유만 허용(엔진 직접 호출 금지) |
 
@@ -757,7 +757,7 @@ THEN CHALLENGE
 
 ### 11.2 Action
 
-`action_type`의 정본은 **API 명세(`docs/design/api/01-fds-api.md` §5.7·§7·§10(OpenAPI) `ActionType` enum, 23종)** 이다(마스터 위치 §1.1 명시). DB(`fds_actions.action_type`)·integration capability matrix·본 설계서는 이 23종으로 동기화한다. API §9는 Webhook 콜백 계약이며 enum 마스터가 아니다. §15의 도메인별 '가능 action' 서술에 등장하는 `OPEN_*_CASE`·`SUSPEND_MERCHANT`·`SEND_SECURITY_ALERT`·`CHALLENGE`·`REVIEW` 같은 표현은 정규 `action_type` 코드가 아니며 §11.2a 매핑으로 환원한다.
+`action_type`의 정본은 **API 명세(`docs/design/api/01-fds-api.md` §5.7·§7·§10(OpenAPI) `ActionType` enum, 22종)** 이다(마스터 위치 §1.1 명시). DB(`fds_actions.action_type`)·integration capability matrix·본 설계서는 이 22종으로 동기화한다(2026-07-09 Travel Rule 전면 제거로 `REQUEST_TRAVEL_RULE_INFO` 삭제 — aegis-aml 84997e1, fds V9). API §9는 Webhook 콜백 계약이며 enum 마스터가 아니다. §15의 도메인별 '가능 action' 서술에 등장하는 `OPEN_*_CASE`·`SUSPEND_MERCHANT`·`SEND_SECURITY_ALERT`·`CHALLENGE`·`REVIEW` 같은 표현은 정규 `action_type` 코드가 아니며 §11.2a 매핑으로 환원한다.
 
 | Action | 대상 |
 |---|---|
@@ -781,9 +781,8 @@ THEN CHALLENGE
 | `BLOCK_WITHDRAWAL` | 코인/계좌 출금 차단 |
 | `SUSPEND_API_KEY` | 거래소/법인 API key 정지 |
 | `SUSPEND_EMPLOYEE_SESSION` | 내부 직원 세션 정지 |
-| `REQUEST_TRAVEL_RULE_INFO` | Travel Rule 정보 요청(VASP) |
-| `OPEN_AML_CASE` | AML/STR/Travel Rule 케이스를 aml-svc로 위임 생성 |
-| `REGULATORY_REPORT` | 규제 보고 후보(STR/CTR/Travel Rule) 상신 |
+| `OPEN_AML_CASE` | AML/STR 케이스를 aml-svc로 위임 생성 |
+| `REGULATORY_REPORT` | 규제 보고 후보(STR/CTR) 상신 |
 
 > `OPEN_AML_CASE`/`REGULATORY_REPORT`는 fds-svc가 직접 종결하지 않고 aml-svc로 위임한다(§6.1, AmlCasePort). `SUSPEND_INSTRUMENT`는 카드/계좌/지갑/API key를 포괄하나, 코인 출금 차단은 의도가 다르므로 별도 `BLOCK_WITHDRAWAL`로 구분한다.
 
@@ -798,7 +797,7 @@ THEN CHALLENGE
 | `OPEN_MERCHANT_RISK_CASE` | `OPEN_CASE` | `case_type=MERCHANT_RISK` |
 | `OPEN_TRADE_FINANCE_CASE` | `OPEN_CASE` | `case_type=TRADE_FINANCE_REVIEW` |
 | `OPEN_INTERNAL_AUDIT_CASE` | `OPEN_CASE` | `case_type=INTERNAL_AUDIT` |
-| `OPEN_COMPLIANCE_CASE` (§10.2 코인 룰) | `OPEN_AML_CASE` | `case_type=CRYPTO_TRAVEL_RULE` 또는 `AML_REVIEW` (aml-svc 위임) |
+| `OPEN_COMPLIANCE_CASE` (§10.2 코인 룰) | `OPEN_AML_CASE` | `case_type=AML_REVIEW` (aml-svc 위임 — 구 `CRYPTO_TRAVEL_RULE`은 2026-07-09 Travel Rule 전면 제거로 삭제, aegis-aml 84997e1) |
 | `SUSPEND_MERCHANT` | `SUSPEND_INSTRUMENT` | 대상=`MERCHANT_ACCOUNT`; 자동 제어 불가 tenant는 `OPEN_CASE`(`case_type=MERCHANT_RISK`)로 강등 |
 | `SEND_SECURITY_ALERT` | `SEND_ALERT` | 보안 등급 알림(internal audit) |
 | `CHALLENGE` (§15.2) | decision `CHALLENGE`(§11.1) | action이 아닌 결정값. 추가 인증 유도는 `SEND_ALERT`로 표현 |
@@ -812,13 +811,14 @@ THEN CHALLENGE
 | `AML_REVIEW` | AML/STR/CTR 조사 |
 | `CHARGEBACK_REVIEW` | 카드/PG chargeback |
 | `MULE_ACCOUNT_REVIEW` | 대포통장/자금세탁 네트워크 |
-| `CRYPTO_TRAVEL_RULE` | travel rule 및 address risk |
 | `INTERNAL_AUDIT` | 내부 직원 권한 남용 |
 | `MERCHANT_RISK` | merchant abuse |
 | `REGULATORY_REPORT` | 관할 규제 보고 |
 | `TRADE_FINANCE_REVIEW` | 무역대금·무역기반 자금세탁 검토 |
 | `ECOMMERCE_SETTLEMENT_REVIEW` | 해외 이커머스 정산 리스크 검토 |
 | `B2B_INVOICE_REVIEW` | 인보이스 지급 fraud 검토 |
+
+> `case_type` 정본 enum은 위 **10종**이다. `CRYPTO_TRAVEL_RULE`은 2026-07-09 Travel Rule 전면 제거로 삭제됨(aegis-aml 84997e1, fds V9).
 
 ### 11.4 4-eyes
 
@@ -1495,7 +1495,7 @@ X-Signature: hmac-sha256=...
 }
 ```
 
-> `riskScore`는 정본 `decimal(8,4)`(0~100, DB `fds_decisions.risk_score NUMERIC(8,4)` / API §5.4 `number,double`)이며 산출 정책은 §11.1.1(outcome severity 단조 매핑)이다. Decision API 응답은 JSON `number`(예 `82.0000`)로 직렬화하고, Webhook(outbound) 페이로드는 정밀도 보존을 위해 `"82.0000"` **문자열**로 직렬화한다(integration §4.5, `RiskScoreSerialization`). `recommendedActions`는 §11.2 `action_type` 23종 코드값만 반환하며, **해당 decision으로 실제 emit된 `fds_actions` outbox row의 `action_type` 집합을 투영한 파생 배열**이다(integration §142 — capability/4-eyes 게이트·downgrade 반영; sandbox shadow-only는 빈 배열). 순수 룰 권고값이 아니다.
+> `riskScore`는 정본 `decimal(8,4)`(0~100, DB `fds_decisions.risk_score NUMERIC(8,4)` / API §5.4 `number,double`)이며 산출 정책은 §11.1.1(outcome severity 단조 매핑)이다. Decision API 응답은 JSON `number`(예 `82.0000`)로 직렬화하고, Webhook(outbound) 페이로드는 정밀도 보존을 위해 `"82.0000"` **문자열**로 직렬화한다(integration §4.5, `RiskScoreSerialization`). `recommendedActions`는 §11.2 `action_type` 22종 코드값만 반환하며, **해당 decision으로 실제 emit된 `fds_actions` outbox row의 `action_type` 집합을 투영한 파생 배열**이다(integration §142 — capability/4-eyes 게이트·downgrade 반영; sandbox shadow-only는 빈 배열). 순수 룰 권고값이 아니다.
 
 API 인증·권한:
 
@@ -2109,10 +2109,10 @@ CREATE TABLE fds_connector_offsets (
 | AML | 특정금융정보법, 고객확인, 의심거래보고(STR), 고액현금거래보고(CTR) |
 | 보이스피싱 | 전기통신금융사기 피해 방지, 지급정지·사고신고·의심계좌 탐지 |
 | 카드/PG | PCI DSS 범위 최소화, 가맹점 위험관리, chargeback evidence |
-| 가상자산 | 특금법상 VASP 의무, Travel Rule, 지갑주소 위험평가 |
+| 가상자산 | 특금법상 VASP 의무, 지갑주소 위험평가 (Travel Rule은 2026-07-09 전면 제거 — aegis-aml 84997e1) |
 | 내부통제 | 금융회사 지배구조법, 내부통제기준, 권한 오남용·4-eyes |
 
-**규제 팩 카탈로그(named pack · BO 토글 단위).** 위 영역을 백오피스(고객사 상세 ④ Policy Pack, 기능정의서 §3.2 ④)에서 고객사별로 토글하는 **named pack**으로 묶는다. `KR_BASE`(한국 기본팩)는 **필수 baseline으로 잠금(끄기 불가)** 이며, 나머지는 개별 토글, `TRAVEL_RULE`/`PCI`는 해당 도메인 **계약 후** 활성화한다. 활성 상태는 `fds_tenants.compliance_policy`(§14.1) JSONB에 저장한다. 토글 변경은 **스테이징 → 영향 미리보기(STR/CTR 영향 건수) → 일괄 상신 → 4-eyes(`subjectKind=POLICY_PACK`, §11.5) → effective** 워크플로를 따른다(즉시 반영 아님). 각 팩이 생성하는 보고 후보 큐는 규제 보고 화면(SFDS-REG-001)으로 연동된다.
+**규제 팩 카탈로그(named pack · BO 토글 단위).** 위 영역을 백오피스(고객사 상세 ④ Policy Pack, 기능정의서 §3.2 ④)에서 고객사별로 토글하는 **named pack**으로 묶는다. `KR_BASE`(한국 기본팩)는 **필수 baseline으로 잠금(끄기 불가)** 이며, 나머지는 개별 토글, `PCI`는 해당 도메인 **계약 후** 활성화한다. (구 `TRAVEL_RULE` 팩은 2026-07-09 Travel Rule 전면 제거로 삭제됨 — aegis-aml 84997e1.) 활성 상태는 `fds_tenants.compliance_policy`(§14.1) JSONB에 저장한다. 토글 변경은 **스테이징 → 영향 미리보기(STR/CTR 영향 건수) → 일괄 상신 → 4-eyes(`subjectKind=POLICY_PACK`, §11.5) → effective** 워크플로를 따른다(즉시 반영 아님). 각 팩이 생성하는 보고 후보 큐는 규제 보고 화면(SFDS-REG-001)으로 연동된다.
 
 | 팩 코드 | 표시명 | 기본 | 트리거·보고 양식 | 비고 |
 |---|---|---|---|---|
@@ -2121,7 +2121,7 @@ CREATE TABLE fds_connector_offsets (
 | `SPECIAL_AML` | 특금법(AML/CFT) | ● ON | 의심거래·고액현금 보고(STR/CTR) | 토글 |
 | `PIPA` | 개인정보보호법 | ● ON | 개인정보 침해 대응 보고 | 토글 |
 | `INTERNAL_CONTROL` | 내부통제기준 | ● ON | 내부 감사 케이스 생성 | 토글 |
-| `TRAVEL_RULE` / `PCI` | Travel Rule / PCI | ○ OFF | 가상자산·카드 계약 후 활성화 | 도메인 계약 게이트 |
+| `PCI` | PCI | ○ OFF | 카드 계약 후 활성화 | 도메인 계약 게이트 (구 `TRAVEL_RULE` 팩은 2026-07-09 Travel Rule 전면 제거로 삭제 — aegis-aml 84997e1) |
 
 > AML 서비스는 단일 `KR_DEFAULT` baseline 번들(필수·잠금) + 국가·업권 확장 plugin 모델(AML 설계서 §5.5)이고, 본 FDS는 **법령·관할별 named pack 개별 토글** 카탈로그 모델이다 — 서비스별 규제 책임 범위 차이에 따른 의도된 구조 차이.
 
@@ -2171,7 +2171,7 @@ SaaS FDS는 한국 policy pack을 기본으로 하되, 국가별 규정을 plugi
 | 영역 | 예시 |
 |---|---|
 | AML | STR, CTR, sanction, PEP, structuring |
-| Crypto | Travel Rule, wallet address screening, VASP 위험관리 |
+| Crypto | wallet address screening, VASP 위험관리 (Travel Rule은 2026-07-09 전면 제거 — aegis-aml 84997e1) |
 | Card | PCI DSS 범위 최소화, chargeback evidence |
 | Banking | 내부통제, 4-eyes, suspicious transfer monitoring, 지급정지 |
 | Data Privacy | 개인정보보호법, 신용정보법, GDPR 등 tenant별 적용 |
@@ -2359,6 +2359,7 @@ hanpass-ph FDS(`fds-svc`)는 Hanpass `FdsSvc`를 참조 구현으로 삼되, 그
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-09 | v2.8 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule, aegis-aml 84997e1 — fds V9).** (1) §5.5 compliance plugin 예시에서 가상자산 Travel Rule 제거. (2) §6.1 aml-svc 위임 행 'Travel Rule regulatory case' 제거. (3) §11.2 `action_type` **23종→22종**(`REQUEST_TRAVEL_RULE_INFO` 삭제)·`OPEN_AML_CASE`/`REGULATORY_REPORT` 설명에서 Travel Rule 문구 제거·§11.1.1 recommendedActions 카운트 정정. (4) §11.2a `OPEN_COMPLIANCE_CASE`→`OPEN_AML_CASE` 매핑을 `AML_REVIEW`로 정정(구 `CRYPTO_TRAVEL_RULE` 삭제). (5) §11.3 `case_type` **11종→10종**(`CRYPTO_TRAVEL_RULE` 삭제). (6) §16.2 규제 팩 카탈로그에서 `TRAVEL_RULE` named pack 제거(`PCI`만 잔존)·§15/§16.2 crypto 예시 Travel Rule 문구 제거. | system-architect. 코드=truth. 근거=`services/fds-svc`(ActionType 22종·CaseType 10종·feature `crypto.travelRuleMissing` 제거·CaseSlaPolicy/DecisionActionRouter/AliasMapping travel 분기 제거)·migration V9(`drop_travel_rule`). `OPEN_AML_CASE`/`REGULATORY_REPORT`의 aml-svc 위임은 유지. |
 | 2026-07-04 | v2.7 | **(H1) 판정 발동 룰 근거 거래 조회 유스케이스 역전파(코드=truth, fix/aml-fds-spec-backprop).** §6.2 헥사고날 레이아웃 — `application/port/in`에 `QueryDecisionUseCase`·`QueryDecisionEvidenceUseCase`(판정 발동 룰 근거 거래 전수 조회, API §4.2) 추가, `application/port/out`에 `DecisionEvidenceQueryPort`(발동 룰 evidence 윈도우 해소 + 근거 거래 조회) 추가. `adapter/in/rest` 註記에 Decision 조회 그룹(`DecisionQueryController`: `GET /decisions/{id}`·`GET /decisions`·`GET /decisions/{decisionId}/evidence-transactions`, 응답 DTO `DecisionEvidenceTransactionsResponse` API §5.4a) 명문화. 어댑터-인 표면 + 유스케이스 목록 수준 반영(엔진 도메인 무변경). | aegis-spec. 코드=truth. 근거=fds-svc `adapter/in/rest/DecisionQueryController`·port `QueryDecisionEvidenceUseCase`·`QueryDecisionUseCase`·`DecisionEvidenceQueryPort`·usecase `QueryDecisionService`. API §4.2/§5.4a 동기화. |
 | 2026-06-30 | v2.6 | **hanpass-ph grounding 재정합(코드 truth 기준).** 문서를 일반 멀티서비스 SaaS FDS 플랫폼 서술에서 **hanpass-ph 단일 FDS 엔진(`fds-svc`, 테넌트 `tenant_demo`) 아키텍처 정본**으로 재작성. 제목·§1 목적·§2.1~2.4·§4·§5.1/5.4·§6 아키텍처 다이어그램·§7 데이터 모델·§8.1 event family·§8.2 캐논 예시·§9.1~9.3 enum·§10.1/10.2 룰·§13.0b/13.4 멀티테넌시·§12 연동·§14.6 commerce·§15 도메인 예시·§18 Phase3/7·결론·§3.1 — hanpass-ph **5채널**(`CROSS_BORDER_REMIT`·`DOMESTIC_REMIT`·`CASH_IN`·`WALLET_PAYMENT`·`WALLET_WITHDRAWAL`) + `transaction.phpEquivalent`(결제액 PHP 환산) 룰 feature로 정렬. 카드·PG·코인·무역·이커머스·B2B·내부감사 등 **비-hanpass 채널/Phase 7 advanced domain**과 다수 도메인 예시는 제거하되, `ChannelType`/`EventFamily`/`InstrumentType`/`PaymentRail` 닫힌 enum·commerce/trade 도메인·feature 분기는 코드 truth로 **닫힌 잔존(미사용)** 명시. 헥사고날(domain/application/adapter/global)·멀티테넌시 인프라는 코드 truth로 유지. `EventFamily` REMIT/DOMESTIC/WALLET 보강. | aml-system-docs 역전파(코드 truth) |
 | 2026-06-21 | v2.5 | **룰 추천 엔드포인트·빌더 인라인 시뮬 반영(코드 정합).** §18 Phase 5(Compliance Operations Console)의 rule simulation 인접에 **rule recommendation(threshold sweep)** 1줄 추가 — 목표 적중률 → 표본(거래) 내 단일 피처 분포 percentile 임계값 역산 + 단일조건 룰 엔진 재평가 검증(인접 대안 ±1·2%p), 표본 500 근사·read-only, 빌더 인라인 추천 패널 소비(API §4.6 `POST /admin/fds/rules/recommendations`). 도메인 모델·enum 불변. | aegis-java-implementer |

@@ -1,7 +1,7 @@
 # AML Platform API 명세서 (aml-svc · hanpass-ph)
 
 > **시스템 그라운딩**: 본 명세는 **hanpass-ph AML RegOps** 단일 운영 도메인을 대상으로 한다. 결제 거래는 hanpass-ph 5유형(`remit`(해외송금)·`domestic`(국내이체)·`wallet`(지갑: charge(충전)/pay(결제)/withdraw(출금)))이며, crypto·trade-finance·PG·ecommerce·marketplace·B2B 등 가상 advanced domain은 본 명세에서 다루지 않는다(EventFamily enum의 폐쇄 allow-list 잔존 family는 내부 리플레이 fail-safe 용이며 외부 ingest 표면에는 노출하지 않는다, §3.1).
-> 정본: `.claude/skills/_shared/target-architecture.md` (4서비스 모노레포 · 멀티테넌시 tenant/workspace/data-scope · raw PII 미저장 마스킹 · 4-eyes · 규제 Policy Pack STR/CTR/Travel Rule · bo-web→bo-api만, 엔진 직접호출 금지).
+> 정본: `.claude/skills/_shared/target-architecture.md` (4서비스 모노레포 · 멀티테넌시 tenant/workspace/data-scope · raw PII 미저장 마스킹 · 4-eyes · 규제 Policy Pack STR/CTR · bo-web→bo-api만, 엔진 직접호출 금지).
 > 입력 진실: `docs/software/02-amlSvc-sass.md` v1.x(유스케이스·port·API group §15.7·§16 배포 모델·온보딩 프로비저닝 상태머신) + `docs/design/db/02-aml-db.md` v1.x(테이블·컬럼·enum 정본 — `aml_tenants.deployment_model`/`onboarding_status`/`infra_ref` §3.1·§5.28/§5.28a/§5.28b 포함, 구 `isolation_mode` V17a/V17b 폐기).
 > 책임 서비스: `services/aml-svc` (Java 25, Spring Boot 3.5.x, 헥사고날, `com.aegis.aml`). 컨트롤러 정본: `services/aml-svc/src/main/java/com/aegis/aml/adapter/in/rest`(AmlEventController·ScreeningController·AlertController·RiskController·WatchlistAdminController·TmScenarioAdminController·ApprovalController 등). 참조: `docs/design/api/01-fds-api.md`(배포 모델·온보딩 FDS 패턴 정본).
 > 본 명세의 식별자·필드·enum은 실제 컨트롤러·DTO 및 DB 설계서 §3(테이블)·§5(enum)와 **1:1 동기화**한다(추측 금지). bo-api 소유 서비스·온보딩 엔드포인트(§3.16·§5·§9)는 aml-svc 엔진 API(§2)에 미노출.
@@ -136,7 +136,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | `status` | string | R | 원천 거래 최종 상태 |
 | `originator` | object(Party) | R | 주체 고객. `nationalIdentityKey` 필수(CTR 최소요건 §9). §3.17 Party |
 | `amounts` | object | R | 금액 블록. `baseAmount`/`baseCurrency` 필수, `baseCurrency`=테넌트 규제통화(가정 G3). §3.17 Amounts |
-| `counterparty` | object(Party) | 조건부 | 상대방. `CROSS_BORDER_REMITTANCE`이면 필수(Travel Rule §6.1) |
+| `counterparty` | object(Party) | 조건부 | 상대방. `CROSS_BORDER_REMITTANCE`이면 필수(FATF R.16 당사자 정보 요건 — 인입 계약 검증 규칙, 아래 422 규칙 ⑦) |
 | `remittance`/`domesticTransfer`/`cardPayment`/`walletTopup`/`walletPayment` | object | 조건부 | `product`에 대응하는 블록만 채움(§3.17 product 블록) |
 
 **422 검증 규칙**(`NeutralEventValidator` = truth): ① 필수필드 누락(`eventId`/`eventType`/`product`/`direction`/`transactionReference`/`institutionId`/`status`/`occurredAt`/`originator.nationalIdentityKey`/`amounts.baseAmount`/`amounts.baseCurrency`) ② `occurredAt` ISO-8601 offset 위반 ③ 통화 ISO 4217(3자)·국가 ISO 3166-1 alpha-2(2자) 위반 ④ `baseAmount` < 0 ⑤ `amounts.baseCurrency` ≠ 테넌트 규제통화(가정 G3, 데모=PHP·임계 ₱500,000 — 잘못된 환산으로 CTR 오보고 방지 fail-closed) ⑥ reversal eventType 인데 `relatedReference` 누락 ⑦ `CROSS_BORDER_REMITTANCE`인데 `counterparty` 누락. 위반은 배열로 누적되어 한 번의 422 로 반환된다. 미지 enum 값은 역직렬화 단계에서 `400 AML.BAD_REQUEST`.
@@ -340,13 +340,11 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 |---|---|---|---|---|---|
 | GET | `/api/v1/admin/aml/reports?reportType=STR&status` | `aml:case:read` + **`COMPLIANCE` role 필수(STR 필터 시)** | — | 보고 목록. **`status` 미지정 ⇒ 전 상태 반환**('전체' 시맨틱, run3 D11 — 기존 `defaultValue="DRAFT"` 드리프트 해소, SUBMITTED/ACKNOWLEDGED 행이 '전체'에서 소실되던 결함). 응답 `ReportSummary[]`는 `createdAt`(기안일)·`reportDeadlineAt`(법정 +5영업일 제출 기한=DB `due_at`)을 포함(run3 D12 — 위임 경로에서 SLA 뱃지·기간 필터가 항상 '-'/빈 목록이던 결함 해소); `slaStatus`는 back-office 가 `reportDeadlineAt` 로 파생(가정 G8, §3.6). **tipping-off 통제(설계서 §19.2a)**: `reportType=STR` 조회 시 COMPLIANCE 전담 role 보유자만 허용 — scope에 `COMPLIANCE` role이 없으면 `403 AML.FORBIDDEN_SCOPE`. 운영자 화면에 정보누설금지(tipping-off) 경고 배너 표시 필요. 열람 이벤트는 `RAW_DATA_ACCESS` 감사 기록 | `aml_regulatory_reports` |
 | POST | `/api/v1/admin/aml/reports` | `aml:case:update` | — | 보고 초안 생성(DRAFT) | `aml_regulatory_reports` |
-| POST | `/api/v1/admin/aml/reports/{reportId}:submit` | `aml:case:update` | 🔒4-eyes(REPORTING_OFFICER) | STR/CTR/Travel Rule 제출 | `aml_regulatory_reports`,`aml_approvals` |
+| POST | `/api/v1/admin/aml/reports/{reportId}:submit` | `aml:case:update` | 🔒4-eyes(REPORTING_OFFICER) | STR/CTR 제출 | `aml_regulatory_reports`,`aml_approvals` |
 | POST | `/api/v1/admin/aml/reports/{reportId}:reject` | `aml:case:update` | 🔒4-eyes(REPORTING_OFFICER) | 보고 기각(`REJECTED` 전이) — **사유 코드(`reasonCode`) 필수**, 자기승인 금지(설계서 §14.1a) | `aml_regulatory_reports`,`aml_approvals` |
 | POST | `/api/v1/admin/aml/reports/{reportId}:cancel` | `aml:case:update` | 🔒4-eyes(REPORTING_OFFICER) | 보고 취소(`CANCELLED` 전이) — **사유 코드(`reasonCode`) 필수**, CTR 제외 처리(§14.3) 시 `ctrExemptionCode` 병기(설계서 §14.1a) | `aml_regulatory_reports`,`aml_approvals` |
 | GET | `/api/v1/admin/aml/reports/stats/str-delay?period=7d\|30d\|90d` | `aml:case:read` + **`COMPLIANCE` role 필수** | — | STR 보고 지연일수 분포 집계 원천(PRD §12-B.3 ①). 보고별 candidate(`created_at`)→제출(`submitted_at`) 경과를 법정 SLA(§14.4 BR-006) 대비 상대 버킷 `{ON_TIME,D+1~3,D+4~7,D+8~14,D+15+}`으로 분류. **tipping-off 통제(§19.2a)**: COMPLIANCE 전담 role 필수(없으면 `403 AML.FORBIDDEN_SCOPE`), 열람은 `RAW_DATA_ACCESS` 감사. 응답은 집계 카운트만(보고 행·PII 미노출). 0건 → 빈 분포(honest, seed 없음). 응답 DTO §3.6 `DelayBucket[]` (T4 AML-ENG-04 — **확정**) | `aml_regulatory_reports` |
 | GET | `/api/v1/admin/aml/reports/stats/unreported-reasons?period=7d\|30d\|90d` | `aml:case:read` + **`COMPLIANCE` role 필수** | — | STR 미보고(종결 비제출=`REJECTED`/`CANCELLED`) 사유 분포 집계 원천(PRD §12-B.3 ①). 종결 시 영속된 `closure_reason_code` 빈도(미영속 legacy = `UNSPECIFIED` 버킷, 소급 seed 없음). **tipping-off 통제(§19.2a)**: COMPLIANCE 전담 role 필수, `RAW_DATA_ACCESS` 감사. 응답 DTO §3.6 `UnreportedReason[]` (T4 AML-ENG-04 — **확정**) | `aml_regulatory_reports` |
-| GET | `/api/v1/admin/aml/travel-rule/transfers?riskStatus&completenessStatus&from&to` | `aml:case:read` | — | Travel Rule exception 큐(필터/응답 DTO §3.14, riskStatus 4종·completenessStatus 4종) | `aml_travel_rule_transfers` |
-| POST | `/api/v1/admin/aml/travel-rule/transfers/{transferRef}:resolve-exception` | `aml:case:update` | 🔒4-eyes | Travel Rule exception 확정 | `aml_travel_rule_transfers`,`aml_approvals` |
 
 #### CTR/STR 룰·임계 관리 (§14 — bo-api 관리 콘솔, CTR/STR 모니터링 통합 P4)
 > **read overview(`GET /api/v1/bo/aml/stats/report-rules`, §3.6a)와 별개**: 아래는 **룰 활성화 파이프라인·규제 임계 4-eyes 변경**을 담당하는 관리 엔드포인트다(통계 개요는 집계 read-only, 여기는 상태 전이·정책 변경). 실제 구현: `AmlReportRuleController`·`AmlCtrThresholdController`(bo-api).
@@ -419,9 +417,9 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | GET | `/api/v1/admin/aml/country-risk/import-status` | `aml:admin:policy` | — | **국가위험 일일 수집 상태**(소스 메타 + 최근 run diff 10건, §3.12 `CountryRiskImportStatusDto`) — 활성 제공자(EU_COMMISSION 기본/FATF 대안) 병기 | `aml_country_risk_sources`,`aml_country_risk_import_runs` |
 | POST | `/api/v1/admin/aml/country-risk:import` | `aml:admin:policy` | — (시스템 provenance 자동 적용 — 결재 없음) | **국가위험 즉시 수집(수동 트리거)** — 동기 실행, 응답 §3.12 `CountryRiskImportResultDto`(SyncResult) | `aml_country_risk`(+`aml_country_risk_sources`,`aml_country_risk_import_runs`) |
 | POST | `/api/v1/admin/aml/country-risk:change` | `aml:admin:policy` | 🔒4-eyes(subjectType=`COUNTRY_RISK`) | 국가위험 변경 상신(§13.4 'country risk 변경') | `aml_approvals` |
-| POST | `/api/v1/admin/aml/policy-packs:change` | `aml:admin:policy` | 🔒4-eyes(subjectType=`POLICY_PACK`) | tenant policy pack 변경 상신(STR/CTR/Travel Rule 기준금액·effective version, 설계서 §14.3·§19.1) | `aml_approvals`(+`aml_tenants.policy_pack_code`) |
+| POST | `/api/v1/admin/aml/policy-packs:change` | `aml:admin:policy` | 🔒4-eyes(subjectType=`POLICY_PACK`) | tenant policy pack 변경 상신(STR/CTR 기준금액·effective version, 설계서 §14.3·§19.1) | `aml_approvals`(+`aml_tenants.policy_pack_code`) |
 
-> `country-risk:change`·`policy-packs:change`는 결재 상신 진입점이다. 상신 시 §3.7 `subjectType=COUNTRY_RISK`/`POLICY_PACK` 결재가 생성되며(`202 + approvalId`), 승인(checker) 후 실행(EXECUTED) 시점에 정책 store(국가위험 등급표 / `aml_tenants.policy_pack_code` effective version)에 반영된다. policy pack 기준금액(CTR 고액현금거래·STR·Travel Rule)은 법령·감독규정 변경 가능성이 있어 effective version으로 관리한다(설계서 §14.3).
+> `country-risk:change`·`policy-packs:change`는 결재 상신 진입점이다. 상신 시 §3.7 `subjectType=COUNTRY_RISK`/`POLICY_PACK` 결재가 생성되며(`202 + approvalId`), 승인(checker) 후 실행(EXECUTED) 시점에 정책 store(국가위험 등급표 / `aml_tenants.policy_pack_code` effective version)에 반영된다. policy pack 기준금액(CTR 고액현금거래·STR)은 법령·감독규정 변경 가능성이 있어 effective version으로 관리한다(설계서 §14.3).
 >
 > **국가위험 일일 자동 수집(country-risk-daily-import, DB §3.22c·V16·V18)**: 일일 스케줄러(`CountryRiskImportScheduler`, cron 기본 `0 40 3 * * *`·`aml.country-risk.import.enabled` 기본 false·single-flight)와 수동 트리거(`:import`)가 동일 유스케이스(`SyncCountryRiskUseCase.sync`)를 실행한다. **수집 소스는 제공자 선택형(`aml.country-risk.feed.provider`) — 기본 `EU_COMMISSION`(EU 집행위 고위험 제3국 페이지, 봇 차단 없음), 대안 `FATF`(black/grey 페이지; 현재 HTTP 403 Akamai 봇 차단으로 수집 불가라 대안으로 강등)**:
 > - **EU_COMMISSION(기본)** — 단일 고위험 목록 → 전부 `HIGH`(basis `EU_HIGH_RISK_THIRD_COUNTRY`), provenance `EU_COMMISSION`, 결정적 국가명→ISO-2 매핑 26개국(`EuHighRiskCountryIso`, 미래 신규 미매핑 시 skip+run diff `unmapped` 기록), canonical `eu-<hash12>`.
@@ -571,7 +569,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | `isOverride` | boolean | 수동 등급 조정 여부(DB `is_override`, 4-eyes 대상) |
 | `evaluatedAt` | string(date-time) | 평가 시각(DB `evaluated_at`) |
 | `inputDataAsOf` | string(date-time) | nullable. **입력 데이터 기준시점**(평가에 사용된 원천 데이터의 as-of 시점). 엔진 응답에 있으면 passthrough, 없으면 best-effort(`evaluatedAt` 대체). RA 상세·점수 목록(`GET .../risk-scores`, §2.7) 응답에 포함 |
-| `policyPackVersion` | string | nullable. **정책팩 버전**(평가 시점 적용 Policy Pack(STR/CTR/Travel Rule 기준) effective version). 엔진 응답에 있으면 passthrough, 없으면 `null`(stub 상수). RA 상세·점수 목록(§2.7) 응답에 포함 |
+| `policyPackVersion` | string | nullable. **정책팩 버전**(평가 시점 적용 Policy Pack(STR/CTR 기준) effective version). 엔진 응답에 있으면 passthrough, 없으면 `null`(stub 상수). RA 상세·점수 목록(§2.7) 응답에 포함 |
 | `scenario` | enum | **평가 시나리오**(`ONBOARDING`/`ONGOING`, DB §3.9 `aml_risk_models.scenario`). `ONBOARDING`=1차·회원가입 CDD 완료 시점, `ONGOING`=2차·상시(STR/CTR 발동 시 거래 가중 재평가). 엔진 응답에 값이 없으면 bo-api 는 `ONBOARDING` 으로 안전 기본 처리(graceful) |
 | `reassessmentAlerts` | array&lt;object&gt; | **2차(ONGOING) 재평가를 유발한 발동 STR/CTR 알림 계보**(재평가 사유). 각 원소 `{ alertId(string — 참조 토큰), ruleCode(string — 룰 코드 enum), severity(string), detectedAt(string(date-time)) }`. 엔진 `factorBreakdown.triggerAlerts` 파생(V12 parameters `trigger.families [STR,CTR]`). 1차(ONBOARDING) 행은 빈 배열. raw PII 없음(마스킹 토큰·enum·시각만) |
 | `reviewShortened` | object\|null | **재이행 주기 단축(from→to)** — 2차 재평가가 재이행 주기를 앞당긴 경우 `{ from(string(date-time) — 단축 전 `next_review_due_at`), to(string(date-time) — 단축 후) }`. 엔진 `factorBreakdown.reviewShortened` 파생, **앞당기기만**(산출 주기가 기존 예정일보다 늦어 min-clamp 로 유지되면 `null`). 1차 행은 `null` |
@@ -845,7 +843,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `approvalId` | string(uuid) | PK |
-| `subjectType` | enum | `WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL`/`TM_SCENARIO`/`RISK_OVERRIDE`/`EDD_CLOSE`/`STR_SUBMIT`/`CTR_SUBMIT`/`TRAVEL_RULE_EXCEPTION`/`WATCHLIST_IMPORT`/`COUNTRY_RISK`/`POLICY_PACK`/`SECRET_CHANGE`/`RELATIONSHIP_REJECT`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`/`IRA_SUBMIT`/`HIGH_RISK_REGISTRY`/`PEP_APPROVAL`/`CTR_THRESHOLD`/`HRR_REGISTRATION` (총 **21종**. `TM_SCENARIO`=`tm-scenarios/{code}:activate`🔒 결재. `CHECKLIST_CHANGE`=CDD/EDD checklist 정책 변경. `PERIODIC_REVIEW_CHANGE`=periodic review 주기 변경. `IRA_SUBMIT`=기관위험평가(IRA) 회차 제출/취소(`SUBMIT`\|`reportId` / `CANCEL`\|`reportId` subjectRef 접두, T1 AML-ENG-01·부록 E v6.0-2 확정). `HIGH_RISK_REGISTRY`=당연고위험 레지스트리 참조 리스트 변경(`UPDATE`\|`<version>` subjectRef, 전체 staged payload drift guard, 결재 EXECUTED 시 적용 + RA 강제 상향 트리거, T2 AML-ENG-02·부록 E v7.0 확정). `PEP_APPROVAL`=PEP(정치적 주요인물) 경영진 승인(승인선 `EXECUTIVE_APPROVAL`, subjectRef=customer_ref, staged payload `tenant\|customerRef\|action=PEP` drift guard, 결재 EXECUTED 시 `aml_customers.is_pep=TRUE`+`PEP_INDIVIDUALS` 등재(tier HIGH)+RA HIGH 강제 상향 폐루프, 거래 허용+EDD). `CTR_THRESHOLD`=CTR 규제 임계 변경(엔진 결재 대상, 승인선 `REPORTING_OFFICER`, subjectRef=currency — §2.7 CTR/STR 룰·임계 관리, DB V23). `HRR_REGISTRATION`=RA 당연고위험 회원 등재 승인(승인선 `EXECUTIVE_APPROVAL` 고위경영진 수동승인, subjectRef=customerRef — RA `mandatoryHighRisk` CUSTOMER 산출 시 엔진 자동 상신(maker `system:ra-engine`) + RA 상세 수동 상신 `POST .../high-risk-registry/registrations`(§2), 이미 등재/PENDING 멱등 no-op, 결재 EXECUTED 시에만 `RA_HIGH_RISK_CUSTOMERS` 등재+RA 강제 상향, DB V28). §2.7·PRD §11.1 동기화. DB §5.16 동기화 대상) |
+| `subjectType` | enum | `WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL`/`TM_SCENARIO`/`RISK_OVERRIDE`/`EDD_CLOSE`/`STR_SUBMIT`/`CTR_SUBMIT`/`WATCHLIST_IMPORT`/`COUNTRY_RISK`/`POLICY_PACK`/`SECRET_CHANGE`/`RELATIONSHIP_REJECT`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`/`IRA_SUBMIT`/`HIGH_RISK_REGISTRY`/`PEP_APPROVAL`/`CTR_THRESHOLD`/`HRR_REGISTRATION` (총 **20종**. `TM_SCENARIO`=`tm-scenarios/{code}:activate`🔒 결재. `CHECKLIST_CHANGE`=CDD/EDD checklist 정책 변경. `PERIODIC_REVIEW_CHANGE`=periodic review 주기 변경. `IRA_SUBMIT`=기관위험평가(IRA) 회차 제출/취소(`SUBMIT`\|`reportId` / `CANCEL`\|`reportId` subjectRef 접두, T1 AML-ENG-01·부록 E v6.0-2 확정). `HIGH_RISK_REGISTRY`=당연고위험 레지스트리 참조 리스트 변경(`UPDATE`\|`<version>` subjectRef, 전체 staged payload drift guard, 결재 EXECUTED 시 적용 + RA 강제 상향 트리거, T2 AML-ENG-02·부록 E v7.0 확정). `PEP_APPROVAL`=PEP(정치적 주요인물) 경영진 승인(승인선 `EXECUTIVE_APPROVAL`, subjectRef=customer_ref, staged payload `tenant\|customerRef\|action=PEP` drift guard, 결재 EXECUTED 시 `aml_customers.is_pep=TRUE`+`PEP_INDIVIDUALS` 등재(tier HIGH)+RA HIGH 강제 상향 폐루프, 거래 허용+EDD). `CTR_THRESHOLD`=CTR 규제 임계 변경(엔진 결재 대상, 승인선 `REPORTING_OFFICER`, subjectRef=currency — §2.7 CTR/STR 룰·임계 관리, DB V23). `HRR_REGISTRATION`=RA 당연고위험 회원 등재 승인(승인선 `EXECUTIVE_APPROVAL` 고위경영진 수동승인, subjectRef=customerRef — RA `mandatoryHighRisk` CUSTOMER 산출 시 엔진 자동 상신(maker `system:ra-engine`) + RA 상세 수동 상신 `POST .../high-risk-registry/registrations`(§2), 이미 등재/PENDING 멱등 no-op, 결재 EXECUTED 시에만 `RA_HIGH_RISK_CUSTOMERS` 등재+RA 강제 상향, DB V28). §2.7·PRD §11.1 동기화. DB §5.16 동기화 대상) |
 | `subjectRef` | string | 대상(case_id/report_id 등) |
 | `approvalLine` | enum | §5.12 approval_line |
 | `status` | enum | §5.13 approval_status **7종(API 노출, `DRAFT` 제외)**: `SUBMITTED`/`APPROVED`/`REJECTED`/`CANCELLED`/`EXPIRED`/`EXECUTED`/`EXECUTION_FAILED`. `DRAFT`는 내부 엔진 전이 상태로 외부 미노출(§1.5) |
@@ -869,7 +867,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 
 | 필드 | 타입 | R | 설명 |
 |---|---|---|---|
-| `exportType` | enum | R | `CDD_EDD`/`WLF_REGISTER`/`RA_REPORT`/`TM_HISTORY`/`STR_EVIDENCE`/`CTR_EVIDENCE`/`TRAVEL_RULE`/`WATCHLIST_CHANGE`/`VENDOR_CROSSREF`/`PII_ACCESS` |
+| `exportType` | enum | R | `CDD_EDD`/`WLF_REGISTER`/`RA_REPORT`/`TM_HISTORY`/`STR_EVIDENCE`/`CTR_EVIDENCE`/`WATCHLIST_CHANGE`/`VENDOR_CROSSREF`/`PII_ACCESS` |
 | `format` | enum | R | `CSV`/`EXCEL`/`PDF`/`API` |
 | `filterParams` | object | R | 기간/필터(재생성 query snapshot) |
 | `reason` | string | R | export 사유(감사) |
@@ -945,7 +943,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `transactionRef` | string | — | 관련 거래 |
 | `severity` | enum | R | `LOW`/`MEDIUM`/`HIGH`/`CRITICAL` |
 | `suggestedCaseType` | enum | — | 기본 `STR_REVIEW`(§14.2) |
-| `action` | enum | — | FDS handoff action verb(`OPEN_AML_CASE`/`REGULATORY_REPORT`/`REQUEST_TRAVEL_RULE_INFO`). `OPEN_AML_CASE`는 EDD review로 라우팅 |
+| `action` | enum | — | FDS handoff action verb(`OPEN_AML_CASE`/`REGULATORY_REPORT`). `OPEN_AML_CASE`는 EDD review로 라우팅 |
 | `dataScope` | string | — | FDS `workspaceId`에서 변환된 AML data-scope |
 | `evidence` | object | — | FDS decision feature |
 
@@ -1019,32 +1017,16 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | 필드 | 타입 | R | 설명 |
 |---|---|---|---|
 | `policyPackCode` | string | R | 대상 pack(`KR_DEFAULT` 등, DB `aml_tenants.policy_pack_code`) |
-| `parameters` | object | R | STR/CTR/Travel Rule 기준금액·보고 대상·임계치(effective version 관리, 설계서 §14.3) |
+| `parameters` | object | R | STR/CTR 기준금액·보고 대상·임계치(effective version 관리, 설계서 §14.3) |
 | `effectiveFrom` | string(date-time) | — | 적용 시점(미지정 시 승인·실행 시점) |
 | `reason` | string | R | 변경 사유(감사) |
 | `makerId` | string | R | 상신자 |
 
 → §3.7 `subjectType=POLICY_PACK` 결재 상신. 응답 `{ approvalId, status: SUBMITTED }`. 실행 시 tenant policy pack effective version 갱신.
 
-### 3.14 TravelRuleTransferDto / 필터 (Admin, DB `aml_travel_rule_transfers`)
+### 3.14 (제거됨 — Travel Rule 전면 제거, 2026-07-09, aml V31·bo-api V14)
 
-`GET /admin/aml/travel-rule/transfers` 필터 쿼리: `?riskStatus=&completenessStatus=&from=&to=`(+ 페이지·정렬). 인덱스 `ix_trt_risk`(tenant_id, risk_status, completeness_status) 기반.
-
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| `transferRef` | string | DB `transfer_ref`(PK 일부) |
-| `originatorRef` / `beneficiaryRef` | string | 송·수신 고객 ref(masked 토큰, 원문 미노출) |
-| `assetCode` / `chain` | string | 가상자산 코드·체인 |
-| `walletAddressHash` | string | 지갑주소 HMAC(원문 미저장, DB `wallet_address_hash`) |
-| `amount` | string(decimal) | NUMERIC(24,8) 호환 문자열 |
-| `amountMinor` | integer | 통화 최소단위 정수 병행(DB `amount_minor`) |
-| `originatorVasp` / `beneficiaryVasp` | string | 송·수신 VASP |
-| `completenessStatus` | enum | **§5.22 정본 4종**: `COMPLETE`/`MISSING_ORIGINATOR`/`MISSING_BENEFICIARY`/`INCOMPLETE` |
-| `riskStatus` | enum | **§5.15 정본 4종**: `CLEAR`/`SANCTIONED_ADDRESS`/`MIXER_EXPOSURE`/`HIGH_RISK`. integration의 `REVIEW`는 `HIGH_RISK`로 정규화(DB §5.15) |
-| `exceptionReason` | string | exception 처리 사유(4-eyes resolve 후, DB `exception_reason`) |
-| `createdAt` | string(date-time) | 수신 시각 |
-
-> exception 큐 트리거: `completenessStatus=INCOMPLETE` 또는 `riskStatus IN (HIGH_RISK, SANCTIONED_ADDRESS, MIXER_EXPOSURE)`(DB §3.14·§5.15·§5.22). `:resolve-exception`(🔒4-eyes)은 §3.7 `subjectType=TRAVEL_RULE_EXCEPTION` 결재.
+> 구 `TravelRuleTransferDto` / travel-rule 필터·exception 큐 DTO. Travel Rule 기능 전면 제거(코드=truth, aegis-aml `feature/remove-travel-rule`)로 `aml_travel_rule_transfers` 테이블·`TravelRuleTransferDto`·`CompletenessStatus`·`TravelRuleRiskStatus` enum이 삭제됐다. 섹션 번호는 타 문서 § 참조 보존을 위해 유지한다.
 
 ### 3.15 SimulationResponse (Admin, RA/TM simulate 응답)
 
@@ -1468,23 +1450,6 @@ components:
         gracePeriodDays: { type: integer }
         reason: { type: string }
         makerId: { type: string }
-    TravelRuleTransferDto:
-      type: object
-      properties:
-        transferRef: { type: string }
-        originatorRef: { type: string }
-        beneficiaryRef: { type: string }
-        assetCode: { type: string }
-        chain: { type: string }
-        walletAddressHash: { type: string }
-        amount: { type: string }
-        amountMinor: { type: integer, format: int64 }
-        originatorVasp: { type: string }
-        beneficiaryVasp: { type: string }
-        completenessStatus: { type: string, enum: [COMPLETE, MISSING_ORIGINATOR, MISSING_BENEFICIARY, INCOMPLETE] }
-        riskStatus: { type: string, enum: [CLEAR, SANCTIONED_ADDRESS, MIXER_EXPOSURE, HIGH_RISK] }
-        exceptionReason: { type: string }
-        createdAt: { type: string, format: date-time }
     EventCategory:
       type: string
       enum:
@@ -1734,29 +1699,6 @@ paths:
                 type: object
                 properties:
                   data: { $ref: '#/components/schemas/ApprovalSubmittedResponse' }
-  /api/v1/admin/aml/travel-rule/transfers:
-    get:
-      summary: Travel Rule exception 큐 조회 (riskStatus 4종·completenessStatus 4종 필터)
-      operationId: listTravelRuleTransfers
-      security: [ { OAuth2: [aml:case:read] } ]
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - { name: riskStatus, in: query, required: false, schema: { type: string, enum: [CLEAR, SANCTIONED_ADDRESS, MIXER_EXPOSURE, HIGH_RISK] } }
-        - { name: completenessStatus, in: query, required: false, schema: { type: string, enum: [COMPLETE, MISSING_ORIGINATOR, MISSING_BENEFICIARY, INCOMPLETE] } }
-        - { name: from, in: query, required: false, schema: { type: string, format: date-time } }
-        - { name: to, in: query, required: false, schema: { type: string, format: date-time } }
-        - { name: page, in: query, required: false, schema: { type: integer } }
-        - { name: size, in: query, required: false, schema: { type: integer } }
-      responses:
-        '200':
-          description: exception 큐 목록
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data: { type: array, items: { $ref: '#/components/schemas/TravelRuleTransferDto' } }
-                  page: { $ref: '#/components/schemas/PageMeta' }
   /api/v1/admin/aml/ra-models/{modelCode}/simulate:
     post:
       summary: RA 모델 sample population simulation (분석 설정, 결재 불필요)
@@ -1967,7 +1909,6 @@ paths:
 | TM alert backlog / scenario 관리 | `GET /aml/alerts/{id}`, `.../tm-scenarios/{code}:activate`(🔒) |
 | case SLA / CDD·EDD 처리 | `GET /admin/aml/cdd/cases`, `PATCH .../{id}`, `.../{id}:close`(🔒) |
 | STR/CTR 후보 현황 / 제출 | `GET /admin/aml/reports`, `.../{id}:submit`(🔒), `.../{id}:reject`(🔒), `.../{id}:cancel`(🔒) |
-| Travel Rule exception | `GET .../travel-rule/transfers`, `.../{ref}:resolve-exception`(🔒) |
 | 결재 대기함 | `GET /admin/aml/approvals?status=SUBMITTED`, `:approve`/`:reject` |
 | audit export | `GET /admin/aml/audit-events`, `POST /evidence/aml/exports` |
 
@@ -1983,7 +1924,7 @@ paths:
 | raw PII 미노출(마스킹) | DTO에 `*Ref`/`*Hash`만, secretRef 마스킹, PII reveal 별도 scope+감사(§1.6, §3) |
 | 4-eyes(작성자≠승인자) | 🔒 표기 + `aml_approvals` maker≠checker + 결재 흐름(§1.5, §3.7) + 트리거 등재표(§10, 설계서 §13.4 대상 ↔ subjectType 1:1) |
 | 정책 자율운영(§2.6: checklist·periodic review·country risk·policy pack) | admin 정책 엔드포인트 §2.7(CDD/EDD checklist·periodic-review-policy·country-risk·policy-packs) 신설, 변경은 🔒4-eyes(§10) |
-| Policy Pack STR/CTR/Travel Rule | reports/travel-rule 엔드포인트·report_type enum(§2.7, §3.6) |
+| Policy Pack STR/CTR | reports 엔드포인트·report_type enum(§2.7, §3.6) |
 | 표준 에러·페이지네이션·멱등·버저닝 | §1.2~§1.4, §4(HTTP 상태코드 정본) |
 | DB 명칭(테이블·컬럼·enum) | 식별자·enum 모두 DB §3/§5와 1:1(각 표 DB 열·각주). `payload_hash` NOT NULL — **서버 자동계산(2026-06-08)으로 §3.1 `payloadHash` optional 전환**(미제공 시 ingest 어댑터 sha256 자동 INSERT). `CaseDto.originFdsCaseRef`·`RegulatoryReportDto.approvalId`·`ScreenResponse.targetRef/targetType/decidedBy/decidedAt` DB 컬럼 1:1 추가. `WatchlistEntryDto`·`CustomerProfileDto` 신설(DB §3.7·§3.3·§3.4 정합). `subjectType` enum 16종 확정(CHECKLIST_CHANGE·PERIODIC_REVIEW_CHANGE 추가, DB §5.16 동기화 대상). `EventCategory` 10종 OpenAPI schema 신설. |
 | Webhook 콜백(outbound) | §8(3종·envelope·`X-Signature` HMAC·재시도/멱등) — 설계서 §15.7 'Webhook API' 정본 |
@@ -2002,7 +1943,7 @@ paths:
 |---|---|---|---|
 | `AmlScreeningResolved` | WLF 판정 확정(TRUE_MATCH/FALSE_POSITIVE 등 결재 EXECUTED) | Screening | `screeningId`,`targetRef`,`status`(§5.5),`watchlistSourceType`,`reasonCodes`[] |
 | `AmlCaseStatusChanged` | case 상태 전이 | Case Mgmt | `caseId`,`caseType`(§5.8),`fromStatus`,`toStatus`(§5.9),`closeReason`(nullable) |
-| `AmlReportSubmitted` | STR/CTR/Travel Rule 제출·FIU 회신 결과 | Reporting | `reportId`,`reportType`(§5.10),`status`(§5.11: SUBMITTED/ACKNOWLEDGED/SUBMISSION_FAILED/REJECTED — FIU 회신 폐루프, 설계서 §14.1a),`submittedRef`(nullable),`fiuAckRef`(nullable),`submissionErrorCode`(nullable) |
+| `AmlReportSubmitted` | STR/CTR 제출·FIU 회신 결과 | Reporting | `reportId`,`reportType`(§5.10),`status`(§5.11: SUBMITTED/ACKNOWLEDGED/SUBMISSION_FAILED/REJECTED — FIU 회신 폐루프, 설계서 §14.1a),`submittedRef`(nullable),`fiuAckRef`(nullable),`submissionErrorCode`(nullable) |
 
 > 3종은 정본 콜백 집합. enum 코드값은 DB §5와 동일. payload는 token/hash·마스킹만(원문 미포함).
 
@@ -2081,7 +2022,6 @@ paths:
 | `POST .../reports/{id}:submit` (`reportType=STR`) | `STR_SUBMIT` | STR 제출 승인(COMPLIANCE 전담 4-eyes, tipping-off 통제 §19.2a) | `aml:case:update` |
 | `POST .../reports/{id}:submit` (`reportType=CTR`) | `CTR_SUBMIT` | CTR 제출 승인(REPORTING_OFFICER 4-eyes, CTR 제외=`ctrExemptionCode` 필수 §14.3) | `aml:case:update` |
 | `POST .../reports/{id}:reject`·`:cancel` | `STR_SUBMIT`/`CTR_SUBMIT`(`reportType` 분기) | 보고 기각·취소 — 사유 코드(`reasonCode`) 필수, REPORTING_OFFICER 4-eyes·자기승인 금지(§14.1a, CTR 제외 §14.3 포함) | `aml:case:update` |
-| `POST .../travel-rule/transfers/{ref}:resolve-exception` | `TRAVEL_RULE_EXCEPTION` | Travel Rule exception 확정 | `aml:case:update` |
 | `PUT .../cdd/checklists/{id}` | **`CHECKLIST_CHANGE`** | **CDD/EDD checklist 변경**(§13.4) | `aml:admin:policy` |
 | `PUT .../cdd/periodic-review-policy` | **`PERIODIC_REVIEW_CHANGE`** | **periodic review 주기 변경**(§2.6·§13.4) | `aml:admin:policy` |
 | `POST .../country-risk:change` | **`COUNTRY_RISK`** | **country risk 변경**(§13.4) | `aml:admin:policy` |
@@ -2138,6 +2078,7 @@ eAMLA 제출은 **raw PII 미전송** — 토큰화된 보고 참조만 전달�
 ## 변경 이력
 
 | 일자 | 변경 | 비고 |
+| 2026-07-09 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule, aml V31·bo-api V14).** (1) **§2.7 Regulatory Reporting 표에서 travel-rule 엔드포인트 2행 삭제** — `GET .../travel-rule/transfers`·`POST .../travel-rule/transfers/{ref}:resolve-exception` 제거. (2) **§3.7 `ApprovalDto.subjectType` 21→20종** — `TRAVEL_RULE_EXCEPTION` enum 행 제거(`ApprovalSubjectType` 20종 코드 정합). (3) **§3.8 `EvidenceExportRequest.exportType`에서 `TRAVEL_RULE` 제거**(`ExportType` 9종). (4) **§3.14 `TravelRuleTransferDto` 섹션을 제거 스텁으로 대체** — `aml_travel_rule_transfers` 테이블·`TravelRuleTransferDto`·`CompletenessStatus`·`TravelRuleRiskStatus` enum 삭제, 섹션 번호는 타 문서 § 참조 보존 위해 유지. (5) **§3.10 FdsEscalation `action` enum에서 `REQUEST_TRAVEL_RULE_INFO` 제거**(fds `ActionType` 22종 정합, `OPEN_AML_CASE`/`REGULATORY_REPORT` 위임 유지). (6) **§5 OpenAPI에서 `TravelRuleTransferDto` schema·`/travel-rule/transfers` path 삭제**. (7) **§6 BO 매핑 `Travel Rule exception` 행·§7 동기화 `Policy Pack STR/CTR/Travel Rule`·§8 `AmlReportSubmitted`·§10 4-eyes `TRAVEL_RULE_EXCEPTION` 행·policy pack/reports 제출 서술의 "STR/CTR/Travel Rule"→"STR/CTR"** 전수 정정. 유지: FATF R.16 당사자 정보 요건(`counterparty` 인입 계약 필수 규칙 — CROSS_BORDER_REMITTANCE)은 규제 근거·라이브 검증 규칙이라 존치(422 규칙 ⑦). | api-designer. 코드=truth. 근거=aegis-aml 84997e1(feature/remove-travel-rule)·삭제된 aml `TravelRuleController`·bo-api `AmlTravelRuleController`·`ApprovalSubjectType`(20)·`CaseType`(11)·`ReportType`(6)·`ExportType`(9)·`EventFamily`(19)·`CompletenessStatus`/`TravelRuleRiskStatus` 삭제·Flyway aml V31·bo-api V14. |
 | 2026-07-08 | **알림→케이스 트리아지·처분(disposition) 폐루프 API 역전파(코드=truth, feature/aml-fds-case-triage-disposition, aml-svc V30·bo-api V13).** (1) **§2.4 TM API 표에 알림 lifecycle 4행 신설** — `POST /api/v1/aml/alerts/{alertId}:triage`(`DETECTED`→`TRIAGED`)·`:dismiss`(`DETECTED`/`TRIAGED`→`DISMISSED`, **optional body `{reason, actor}`** — 엔진 하위호환 optional, `reason`/`actor` 지정 시 `disposition_reason`/`disposition_actor`(V30) 영속)·`:escalate`(`TRIAGED`→`ESCALATED`, 201 케이스)·`:recommend-str`(`TRIAGED`→`STR_RECOMMENDED`, 201 STR 케이스+아웃박스), 전부 scope `aml:case:update`·불법 전이 409 `AML.STATE_CONFLICT` + **알림 lifecycle 상태기계 note**(6종 종결값·`dispositionReason` DISMISSED 전이 한정 불변식·4-eyes 비대상 G2). (2) **§3.4a `AlertDto`에 `dispositionReason`/`dispositionActor` 2행 신설** — DB `disposition_reason`(VARCHAR(64))·`disposition_actor`(VARCHAR(128)) V30 1:1, DISMISSED 에서만 non-null, 오탐율(§12-B.3) 실집계 근거. (3) **§2.5a bo-api 위임 표에 알림 처분 4행 신설** — `:triage`(body `AlertTriageRequest{actor?}`)·`:dismiss`(`AlertDismissRequest{reason 필수 @NotBlank, actor?}` — **bo-api 계층 사유 필수 강제, 공백 시 400, G1**)·`:escalate`·`:recommend-str`(`AlertHandOffRequest{caseType?, actor?}`, 201 caseId), 응답 `AlertActionResponse{alertId,status,caseId?,caseStatus?}` + **위임 4종·409 표면화 계약 note**(stub↔위임 동형·prod fail-closed G7·감사 4종 V13·`mapError` 상태 토큰만 구조화 G8). (4) **§2.7 케이스 `:close` 행 일반화(라이브 검증 추가 수정, 커밋 fbb0673)** — `🔒4-eyes(EDD 종결)`→`🔒4-eyes(EDD_CLOSE)`, 종결 대상을 **EDD_REVIEW 전용에서 조사 케이스 일반(EDD_REVIEW·STR_REVIEW·SAR_REVIEW·CDD)으로 정정**. 알림 트리아지·처분 폐루프에서 전환된 STR_REVIEW 케이스가 `:close` 시 400 "case is not an EDD_REVIEW case" 로 거부되던 결함 해소 — 엔진 `Case.closeApproved`(구 `closeEdd`)가 케이스 유형 가드 없이 존재·비종결 상태 불변식만 강제하고, `CddEddService.submitEddClose` 도 EDD_REVIEW 전용 가드 제거(존재·비종결 검증 유지). 회원원장 EDD 종료 이력(`recordEddClosed`)은 EDD_REVIEW 에만 기록(알림 파생 케이스 제외). | aegis-java-implementer(spec). 코드=truth·가정 G1~G3. 근거=aml-svc `adapter/in/rest/AlertController`(`:dismiss` DismissRequest{reason,actor}·AlertDto.dispositionReason/Actor)·`domain/Alert`(dismiss(reason,actor) DISMISSED 한정 불변식)·`domain/Case`(closeApproved 유형 가드 제거)·`application/usecase/CddEddService`(submitEddClose·approveEddClose EDD_REVIEW 이력 한정)·`db/migration/V30__alert_disposition_reason.sql`, bo-api `aml/tm/controller/AmlTmController`(4 액션)·`aml/tm/service/AmlTmService`(위임·stub·감사 4종·prod fail-closed)·`proxy/AmlEngineClient`(409 STATE_CONFLICT 상태 토큰 구조화)·`db/migration/V13__alert_disposition_audit_events.sql`. DB §02-aml §마이그레이션(V30)·plan §02 §7.1·§8.1·§12-B.3 동기화. |
 | 2026-07-07 | **RA 당연고위험 등재 폐루프 §3.7·§10 동기화(코드=truth, feature/aml-hrr-ra-registration, V28).** ① **§3.7 `ApprovalDto.subjectType` 19→21종** — 기등재 누락이던 `CTR_THRESHOLD`(V23, §2.7 기술과 enum 행 사이 드리프트 해소)와 신규 `HRR_REGISTRATION`(RA 당연고위험 회원 등재 승인, 승인선 `EXECUTIVE_APPROVAL` 고위경영진 수동승인)을 enum 행에 등재. `HRR_REGISTRATION` 상신 경로 2원화: RA 평가가 `mandatoryHighRisk=true` CUSTOMER 산출 시 **엔진 자동 상신**(maker `system:ra-engine`, 멱등 no-op 재평가 루프 종료) + RA 상세 화면 **수동 상신**(`POST .../high-risk-registry/registrations`) — 승인 EXECUTED 시에만 `RA_HIGH_RISK_CUSTOMERS` 참조 리스트 등재+RA 강제 상향 확정. ② **§10 4-eyes 등재표에 `HRR_REGISTRATION` 행 추가**(scope `aml:admin:high-risk-registry`). ③ 승인 히스토리는 공통 결재함 `?subjectType=HIGH_RISK_REGISTRY\|HRR_REGISTRATION` 재사용(전용 엔드포인트 미신설). | aegis-java-implementer. 코드=truth. 근거=aml-svc `ApprovalSubjectType`(21)·`ReferenceListType`(5)·`RiskAssessmentService#submitHighRiskRegistrationIfMandatory`·`HighRiskCustomerRegistrationService`·`ApprovalLineResolver`(HRR_REGISTRATION→EXECUTIVE_APPROVAL)·`V28`, bo-api `AmlApprovalDtos.SubjectType`(23)·`V11`(감사 `HRR_REGISTRATION_SUBMITTED`+라우팅 seed), bo-web `lib/aml-hrr.ts`(5종 fail-soft)·`HrrRegistrationSection`. DB §5.16/§5.33/§7(V28)·PRD §12-B.6·§03 §4.2 동기화. |
 | 2026-07-07 | **HRR 등재 위임 경로 멱등 no-op 계약 명문화(코드=truth, fix-20260707-hrr-registration-delegate-noop).** §2 HRR admin surface 표에 ① `POST .../high-risk-registry/registrations`(🔒 `HRR_REGISTRATION`·승인선 `EXECUTIVE_APPROVAL` — 신규 상신 `202 status=SUBMITTED`, **멱등 no-op(이미 등재/PENDING) `200 status=NOOP`·approvalId=null**) ② `GET .../high-risk-registry/registrations/{customerRef}`(등재 상태 read-back — `{registered, pending, pendingApprovalId}`) 2행 신설 + **위임 경로 멱등 no-op 계약 note** 추가. **결함**: bo-api 위임 분기가 엔진 `status=NOOP` 을 무시하고 `approvalId=null` 이면 무조건 `502 BAD_GATEWAY` 로 변환 → RA 재평가가 이미 등재/PENDING 회원을 재상신하면 stub(정상 no-op)과 발산·재평가 루프 종료 불변식 A6 붕괴. **수정**: `status=NOOP` 을 정상 no-op 으로 매핑(502 미발생), `status` 부재 + approvalId null 인 진짜 오류만 502 유지, stub↔위임 대칭. **가정 A(§미정의)**: 엔진 no-op 응답에 alreadyRegistered vs pending 세분 플래그 부재 → no-op 직후 `registration-state` read-back 으로 판별(read-back 실패 시 보수적 `pending=true` 폴백). | aegis-java-implementer. 코드=truth. 근거=aml-svc `HighRiskRegistryAdminController.submitRegistration`(200 NOOP)·`registrationState`, bo-api `AmlHighRiskRegistryService.submitRegistration`(status=NOOP 분기·`readBackRegistrationState`·`EngineRegistrationState`) + `AmlHrrRegistrationServiceTest`(위임 no-op registered/pending·read-back 실패 폴백·진짜오류 502 회귀). |

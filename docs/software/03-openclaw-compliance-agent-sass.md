@@ -93,7 +93,7 @@ Compliance Operations Agent는 FDS/AML core의 일부가 아니라 **운영 계�
 | 계층 | 역할 |
 |---|---|
 | FDS SaaS | 이상거래 탐지, rule decision, action, case, evidence |
-| AML SaaS | WLF, RA, TM, CDD/EDD, STR/Travel Rule, case, evidence (CTR은 업권 적용 시) |
+| AML SaaS | WLF, RA, TM, CDD/EDD, STR, case, evidence (CTR은 업권 적용 시) |
 | Compliance Agent | 모니터링, 요약, 우선순위화, 초안 생성, 승인 요청, 운영 알림 (개념 · 미구현) |
 
 Agent는 FDS/AML 판단의 원천이 아니다. 판단 원천은 항상 FDS/AML core의 rule/model/case/evidence store다. Agent는 이를 읽고 정리하거나 초안을 만들며, 조치가 필요한 경우 준법감시실의 승인을 요청한다.

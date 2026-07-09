@@ -3,11 +3,11 @@
 > **시스템 그라운딩**: 본 명세는 **hanpass-ph AML/FDS RegOps** 의 FDS 엔진(fds-svc) 연동 정본이다. 단일 운영 테넌트는 **`tenant_demo`(= hanpass-ph)** 이며(멀티테넌트 인프라 키 `tenant_id`/`workspace_id`/아웃박스 scope 는 코드 truth 로 유지하되 실제 운영 행은 hanpass-ph 단일 테넌트), 거래 이벤트는 **hanpass-ph 5 거래 채널**(`CROSS_BORDER_REMIT`(해외송금) · `DOMESTIC_REMIT`(국내송금) · `CASH_IN`(월렛충전) · `WALLET_PAYMENT`(월렛결제) · `WALLET_WITHDRAWAL`(월렛/ATM 출금))과 hanpass eventType taxonomy(`remit.*` · `domestic.*` · `wallet.*`)로만 인입된다. 닫힌 enum(`channel_type` 21종 · `event_family` 19종 · `transaction_type` 12종)의 비-hanpass 멤버(카드 `CARD_*`/`PG_PAYMENT`, 가상자산 `CRYPTO_*`/`EXCHANGE_TRADE`, 무역 `TRADE_PAYMENT`, 이커머스/마켓플레이스/B2B `*_ECOMMERCE_*`/`MARKETPLACE_*`/`B2B_*`)는 **삭제하지 않고 코드에 보존하되 hanpass-ph 미사용**(Phase 7 이후 확장 슬롯)임을 명시한다.
 
 > 정본: `.claude/skills/_shared/target-architecture.md` (4서비스 모노레포 · 비동기 SQS · 서비스 경계 · 멀티테넌시 tenant/workspace/data-scope · PII 마스킹 · 4-eyes · 한국 Policy Pack).
-> 입력 설계서: `docs/software/01-fdsSvc-sass.md` v1.9 (§8 Canonical Event Taxonomy, §11.2 action_type 23종·§11.2a 별칭 매핑, §11 Action/Case/결재, §11.5 subject_kind **9종**(POLICY_PACK 포함), §11.6.1 case_status·REOPEN 전이, §11.6.1a close_reason **8종**(`FP_THRESHOLD`/`FP_NORMAL_PATTERN`/`FP_DATA_QUALITY`/`CONFIRMED_FRAUD`/`CONFIRMED_MULE`/`CONFIRMED_ATO`/`ESCALATED_AML`/`OTHER`), §11.6.11 `deployment_model`(3종)·§11.6.11a `onboarding_status`(8종) 상태머신, §12 외부 시스템 연동, §12.8 서비스 관리=배포 유형+온보딩, §13 배포 모델·온보딩 프로비저닝·멀티테넌시 키 재정의, §16 PII/규제, §16.2 named 규제 팩 카탈로그).
-> 입력 DB: `docs/design/db/01-fds-db.md` **v2.0** (스키마 `fds`, 멀티테넌시 `tenant_id/workspace_id/data_scope`, enum 코드값 §4, action_type 23종 정본 §4.8, close_reason 8종 §4.11, subject_kind **9종** §5.23, `fds_actions` outbox §5.12(`next_attempt_at` 백오프), `fds_cases.aml_case_id` §5.13, `fds_idempotency_keys` §5.33, **배포 모델 `fds_tenants.deployment_model`(3종, §4.1/§5.1)·`onboarding_status`(8종, §4.1a 상태머신)·`default_region`·`infra_ref`, 구 `isolation_mode` 폐기**, **corridor 4컬럼 `send_country`/`receive_country`/`send_currency`/`receive_currency` §5.5(Flyway V16)**, `fds_webhook_outbox` §5.35, **저장소 Flyway 실제 파일 매핑 §8**(배포/규제 팩 전환=`V2__phase1_foundation.sql`, V16 ph_data_grounding, V17/V18 데모 시드)).
-> 입력 API: `docs/design/api/01-fds-api.md` v2.0 (base path `/api/v1`, 헤더 `Tenant-Id/Workspace-Id/Source-System/Idempotency-Key`, scope 11종(전체 `fds:` prefix 통일), `ActionType` 23종 정본, `amlCaseRef`, `SubjectKind` **9종**(POLICY_PACK 포함, §1.1·§5.12·§8·§13), `DeploymentModel`(3종)·`OnboardingStatus`(8종)·`TenantDto`(`deploymentModel`/`onboardingStatus`/`region`/`infraRef`, `isolationMode` 폐기), 운영자 집계·온보딩 API는 bo-api 소유·엔진 API 미포함).
+> 입력 설계서: `docs/software/01-fdsSvc-sass.md` v1.9 (§8 Canonical Event Taxonomy, §11.2 action_type 22종·§11.2a 별칭 매핑, §11 Action/Case/결재, §11.5 subject_kind **9종**(POLICY_PACK 포함), §11.6.1 case_status·REOPEN 전이, §11.6.1a close_reason **8종**(`FP_THRESHOLD`/`FP_NORMAL_PATTERN`/`FP_DATA_QUALITY`/`CONFIRMED_FRAUD`/`CONFIRMED_MULE`/`CONFIRMED_ATO`/`ESCALATED_AML`/`OTHER`), §11.6.11 `deployment_model`(3종)·§11.6.11a `onboarding_status`(8종) 상태머신, §12 외부 시스템 연동, §12.8 서비스 관리=배포 유형+온보딩, §13 배포 모델·온보딩 프로비저닝·멀티테넌시 키 재정의, §16 PII/규제, §16.2 named 규제 팩 카탈로그).
+> 입력 DB: `docs/design/db/01-fds-db.md` **v2.0** (스키마 `fds`, 멀티테넌시 `tenant_id/workspace_id/data_scope`, enum 코드값 §4, action_type 22종 정본 §4.8, close_reason 8종 §4.11, subject_kind **9종** §5.23, `fds_actions` outbox §5.12(`next_attempt_at` 백오프), `fds_cases.aml_case_id` §5.13, `fds_idempotency_keys` §5.33, **배포 모델 `fds_tenants.deployment_model`(3종, §4.1/§5.1)·`onboarding_status`(8종, §4.1a 상태머신)·`default_region`·`infra_ref`, 구 `isolation_mode` 폐기**, **corridor 4컬럼 `send_country`/`receive_country`/`send_currency`/`receive_currency` §5.5(Flyway V16)**, `fds_webhook_outbox` §5.35, **저장소 Flyway 실제 파일 매핑 §8**(배포/규제 팩 전환=`V2__phase1_foundation.sql`, V16 ph_data_grounding, V17/V18 데모 시드)).
+> 입력 API: `docs/design/api/01-fds-api.md` v2.0 (base path `/api/v1`, 헤더 `Tenant-Id/Workspace-Id/Source-System/Idempotency-Key`, scope 11종(전체 `fds:` prefix 통일), `ActionType` 22종 정본, `amlCaseRef`, `SubjectKind` **9종**(POLICY_PACK 포함, §1.1·§5.12·§8·§13), `DeploymentModel`(3종)·`OnboardingStatus`(8종)·`TenantDto`(`deploymentModel`/`onboardingStatus`/`region`/`infraRef`, `isolationMode` 폐기), 운영자 집계·온보딩 API는 bo-api 소유·엔진 API 미포함).
 > 코드 truth(패키지 `com.aegis.fds`): `adapter/in/sqs`(`ActionResultConsumer`·`AmlFeedbackConsumer`, `@Profile("aws")`, 헤더 `idempotencyKey/correlationId/traceparent`), `adapter/out/messaging`(`SqsEventQueuePublisher`·`SqsActionRelayPublisher`·`SqsAmlHandoffPublisher` + in-memory 대응; FIFO `messageGroupId`+`messageDeduplicationId`, message attributes `eventType/source/idempotencyKey`), `adapter/out/webhook`(`HttpWebhookSenderAdapter` 서명 POST), `adapter/in/scheduled`(`ActionRelayScheduler`·`WebhookRelayScheduler`, `@Profile("aws")`). 도메인 enum: `EventFamily`(19종, hanpass `REMIT`/`DOMESTIC`/`WALLET`)·`ChannelType`(21종, hanpass `CASH_IN`/`INBOUND_REMIT` 포함)·`TransactionType`(12종)·`WebhookEventName`(4종)/`WebhookEventFamily`(decision/case/action).
-> 책임 서비스: **`services/fds-svc`** (`com.aegis.fds.adapter.in.sqs` / `adapter.out.messaging`·`adapter.out.webhook` / `adapter.in.scheduled`). AML/STR/CTR/Travel Rule 본 처리는 **aml-svc**, 운영자 IAM·결재 집약·감사는 **bo-api**, UI는 **bo-web**(bo-api 경유).
+> 책임 서비스: **`services/fds-svc`** (`com.aegis.fds.adapter.in.sqs` / `adapter.out.messaging`·`adapter.out.webhook` / `adapter.in.scheduled`). AML/STR/CTR 본 처리는 **aml-svc**, 운영자 IAM·결재 집약·감사는 **bo-api**, UI는 **bo-web**(bo-api 경유).
 
 ## 목차
 1. [범위·원칙](#1-범위원칙)
@@ -18,7 +18,7 @@
 6. [멱등성·재처리·DLQ·순서보장](#6-멱등성재처리dlq순서보장)
 7. [커넥터·필드매핑 (원천→canonical)](#7-커넥터필드매핑-원천canonical)
 8. [아웃박스 상태머신·Capability 매트릭스](#8-아웃박스-상태머신capability-매트릭스)
-9. [규제 제출 흐름 (STR/CTR/Travel Rule) — aml-svc 위임](#9-규제-제출-흐름-strctrtravel-rule--aml-svc-위임)
+9. [규제 제출 흐름 (STR/CTR) — aml-svc 위임](#9-규제-제출-흐름-strctr--aml-svc-위임)
 10. [멀티테넌시 라우팅·PII 미전파](#10-멀티테넌시-라우팅pii-미전파)
 11. [관측성·재제출](#11-관측성재제출)
 12. [downstream 확정 명칭](#12-downstream-확정-명칭)
@@ -28,9 +28,9 @@
 
 ## 1. 범위·원칙
 
-- 본 문서는 **fds-svc의 비동기 메시지 경계**(SQS in/out), **외부 커넥터 수집·정규화**, **action outbox 상태머신**, **규제 제출(STR/CTR/Travel Rule) 위임 흐름**을 확정한다.
+- 본 문서는 **fds-svc의 비동기 메시지 경계**(SQS in/out), **외부 커넥터 수집·정규화**, **action outbox 상태머신**, **규제 제출(STR/CTR) 위임 흐름**을 확정한다.
 - 모든 이벤트·메시지·아웃박스 필드는 DB 설계서(`01-fds-db.md`)의 컬럼·enum과 API 설계서(`01-fds-api.md`)의 DTO·헤더와 **100% 동일 명칭**을 사용한다. 신규 명칭은 도입하지 않는다. `fds_cases.aml_case_id`(= API `amlCaseRef`)는 DB §5.13 v1.1에서 정식 컬럼으로 확정되었으며 본 문서는 그 타입(`VARCHAR(96) NULL`)을 참조한다(§9, §12).
-- **직렬화 규약**: 모든 큐 메시지 키는 **camelCase**로 직렬화하고 DB 컬럼(snake_case)과 1:1 매핑한다(예 `errorCode`↔`error_code`). `action_type` 마스터는 **API `ActionType` enum 23종(전수)** 이 정본이며, 설계서 §15의 도메인 verb(`SUSPEND_MERCHANT`/`SEND_SECURITY_ALERT`/`OPEN_*_CASE`)는 §8.2 정규화 매핑으로 환원해 enum 코드로만 전파한다.
+- **직렬화 규약**: 모든 큐 메시지 키는 **camelCase**로 직렬화하고 DB 컬럼(snake_case)과 1:1 매핑한다(예 `errorCode`↔`error_code`). `action_type` 마스터는 **API `ActionType` enum 22종(전수)** 이 정본이며, 설계서 §15의 도메인 verb(`SUSPEND_MERCHANT`/`SEND_SECURITY_ALERT`/`OPEN_*_CASE`)는 §8.2 정규화 매핑으로 환원해 enum 코드로만 전파한다.
 - **운영자 집계 API 경계**: 대시보드·서비스 관리·감사 조회는 **bo-api**가 소유·집약·인증한다. fds-svc는 저수준 데이터 API·비동기 큐만 제공하며, 본 연동 명세는 운영자 집계 엔드포인트를 정의하지 않는다.
 - **비동기 SQS 전제**(정본 §3): ingest·action relay·규제 제출은 큐 기반. REST Push(`POST /api/v1/fds/events`)는 수신 후 내부 큐 `fds-events`로 적재(API §4.1과 정합). 실시간 `POST /api/v1/fds/decisions/evaluate`만 동기.
 - **raw PII 미전파**: 큐 페이로드·아웃박스·규제 위임 메시지에 원문 식별자/payload 금지. token/hash(`*_ref`, `*_hash`)·마스킹만 전파한다(설계서 §16.1, DB §7.1).
@@ -118,11 +118,11 @@ canonical `eventType` = `<family>.<verb>`. **hanpass-ph 인입 family 는 결제
 | `FdsCaseOpened` | webhook outbox(`fds_webhook_outbox`)→HTTP | Case Mgmt | hanpass-ph webhook | `fds_cases` origin 생성 | `caseId`,`caseType`,`priority`,`originDecisionId` |
 | `FdsCaseStatusChanged` | webhook outbox(`fds_webhook_outbox`)→HTTP | Case Mgmt | hanpass-ph webhook | `fds_cases` 상태 전이 | `caseId`,`fromStatus`,`toStatus`,`closeReason`(nullable, string(64), 8종: `FP_THRESHOLD`/`FP_NORMAL_PATTERN`/`FP_DATA_QUALITY`/`CONFIRMED_FRAUD`/`CONFIRMED_MULE`/`CONFIRMED_ATO`/`ESCALATED_AML`/`OTHER` — 설계서 §11.6.1a·DB §4.11) |
 | `fds.case.escalated` / `fds.decision.applied` | `aml-fds-decision` | Decision/Case → AML 위임 | **aml-svc** `FdsDecisionConsumer` | `fds.case.escalated`=FDS fraud case → STR 후보 / `fds.decision.applied`=FDS hold·block 결정 → AML EDD | `tenantId`,`eventType`,`eventId`(=멱등키 fdsEventId),`fdsCaseRef`,`fraudCaseRef`,`targetRef`,`transactionRef`,`action`,`severity`,`suggestedCaseType`,`dataScope` |
-| `FdsActionResult` | (내부 ack) | action adapter → fds-svc | Action relay | adapter 응답(SENT→ACKED/FAILED 전이) | `actionId`,`actionType`(action_type 23종, 필수),`status`(enum `action_status`, DB §4.9 / API §10 OpenAPI `ActionStatus` 7종, 통상 `ACKED`/`FAILED`),`errorCode`(nullable),`completedAt`(nullable, `completedAt`↔`completed_at`) |
+| `FdsActionResult` | (내부 ack) | action adapter → fds-svc | Action relay | adapter 응답(SENT→ACKED/FAILED 전이) | `actionId`,`actionType`(action_type 22종, 필수),`status`(enum `action_status`, DB §4.9 / API §10 OpenAPI `ActionStatus` 7종, 통상 `ACKED`/`FAILED`),`errorCode`(nullable),`completedAt`(nullable, `completedAt`↔`completed_at`) |
 
-> 콜백(webhook) 4종(`FdsDecisionCreated`/`FdsCaseOpened`/`FdsCaseStatusChanged`/`FdsActionResult`)의 핵심 payload·envelope는 **API §9.1/§9.2가 정본**이며 본 표는 이와 1:1 정렬한다. `FdsCaseOpened`(`priority`/`originDecisionId`)와 `FdsCaseStatusChanged`(`fromStatus`/`toStatus`/`closeReason`)는 별개 이벤트로 분리하고, `FdsActionResult`는 `actionType`(action_type 23종)을 필수 포함한다(`status`는 `action_status` enum 기준). 보조필드 `amlCaseRef`는 `data` 외 cross-ref 보존용으로만 사용한다(필수 payload 아님).
+> 콜백(webhook) 4종(`FdsDecisionCreated`/`FdsCaseOpened`/`FdsCaseStatusChanged`/`FdsActionResult`)의 핵심 payload·envelope는 **API §9.1/§9.2가 정본**이며 본 표는 이와 1:1 정렬한다. `FdsCaseOpened`(`priority`/`originDecisionId`)와 `FdsCaseStatusChanged`(`fromStatus`/`toStatus`/`closeReason`)는 별개 이벤트로 분리하고, `FdsActionResult`는 `actionType`(action_type 22종)을 필수 포함한다(`status`는 `action_status` enum 기준). 보조필드 `amlCaseRef`는 `data` 외 cross-ref 보존용으로만 사용한다(필수 payload 아님).
 > 모든 outbound 메시지 키는 **camelCase 직렬화**이며 DB 컬럼(snake_case)과 1:1 매핑한다(`errorCode`↔`error_code`, `fromStatus`↔`from_status`, `toStatus`↔`to_status`, `closeReason`↔`close_reason`, `originDecisionId`↔`origin_decision_id`).
-> **`recommendedActions`는 DB 컬럼 1:1 매핑이 아니다.** 정본 `fds_decisions`(DB §5.10)에는 `recommended_actions` 컬럼이 존재하지 않는다 — recommended action은 별도 저장 방식으로, 해당 decision으로 생성된 **`fds_actions` outbox row(DB §5.12)의 `action_type` 집합을 webhook 시점에 투영(projection)**한 **파생 배열**이다(`fds_actions.decision_id = fds_decisions.decision_id`로 조인). 각 원소는 enum `action_type`(23종, DB §4.8) 코드값만 사용하며, 도메인 verb(`SUSPEND_MERCHANT`/`SEND_SECURITY_ALERT`)는 §8.2 정규화 매핑으로 환원해 enum 코드로만 전파한다. (decision의 정본 저장은 `decision`/`matched_rules`/`feature_snapshot`(DB §5.10) + `fds_decision_reasons`(§5.11) + `fds_actions`(§5.12)로 분산되며, 단일 `recommended_actions` 컬럼은 없다.)
+> **`recommendedActions`는 DB 컬럼 1:1 매핑이 아니다.** 정본 `fds_decisions`(DB §5.10)에는 `recommended_actions` 컬럼이 존재하지 않는다 — recommended action은 별도 저장 방식으로, 해당 decision으로 생성된 **`fds_actions` outbox row(DB §5.12)의 `action_type` 집합을 webhook 시점에 투영(projection)**한 **파생 배열**이다(`fds_actions.decision_id = fds_decisions.decision_id`로 조인). 각 원소는 enum `action_type`(22종, DB §4.8) 코드값만 사용하며, 도메인 verb(`SUSPEND_MERCHANT`/`SEND_SECURITY_ALERT`)는 §8.2 정규화 매핑으로 환원해 enum 코드로만 전파한다. (decision의 정본 저장은 `decision`/`matched_rules`/`feature_snapshot`(DB §5.10) + `fds_decision_reasons`(§5.11) + `fds_actions`(§5.12)로 분산되며, 단일 `recommended_actions` 컬럼은 없다.)
 
 ---
 
@@ -209,8 +209,8 @@ canonical `eventType` = `<family>.<verb>`. **hanpass-ph 인입 family 는 결제
 }
 ```
 
-- `actionType` ∈ enum `action_type`(DB §4.8, 23종). `targetRef`는 token. 자금/규제성 action은 `approvalRequestId` 필수(미승인 시 발행 금지, §8). **비자금성 action은 `approvalRequestId=null`**(API §5.7 ActionResponse와 동일, nullable).
-- 응답(adapter→fds-svc) `FdsActionResult`: `{ "actionId", "actionType", "status": "ACKED|FAILED", "errorCode", "completedAt" }` → `fds_actions.status`/`completed_at`/`error_code` 갱신. `actionType`(action_type 23종)은 **필수**, `status`는 `action_status` enum(DB §4.9 / API §10 OpenAPI `ActionStatus` 7종) 기준이다(API §9.1 정합). 키는 camelCase(`errorCode`↔`error_code`, `completedAt`↔`completed_at`).
+- `actionType` ∈ enum `action_type`(DB §4.8, 22종). `targetRef`는 token. 자금/규제성 action은 `approvalRequestId` 필수(미승인 시 발행 금지, §8). **비자금성 action은 `approvalRequestId=null`**(API §5.7 ActionResponse와 동일, nullable).
+- 응답(adapter→fds-svc) `FdsActionResult`: `{ "actionId", "actionType", "status": "ACKED|FAILED", "errorCode", "completedAt" }` → `fds_actions.status`/`completed_at`/`error_code` 갱신. `actionType`(action_type 22종)은 **필수**, `status`는 `action_status` enum(DB §4.9 / API §10 OpenAPI `ActionStatus` 7종) 기준이다(API §9.1 정합). 키는 camelCase(`errorCode`↔`error_code`, `completedAt`↔`completed_at`).
 
 ### 4.4 FDS→AML 핸드오프 (`aml-fds-decision`) — aml-svc 위임 (raw PII 미전파)
 
@@ -358,7 +358,7 @@ sequenceDiagram
     CORE->>DB: insert fds_cases(case_type=AML_REVIEW, status=OPEN, aml_case_id=NULL)
     CORE->>QH: fds.case.escalated(eventId=fdsEventId, fdsCaseRef, targetRef, action, severity, suggestedCaseType, dataScope)
     QH->>AML: deliver (group=tenant:eventId, dedupId=eventId)
-    AML->>AML: 멱등(tenant_id, origin_fds_case_ref, fds_event_id) + 본 케이스 생성 + sanction/PEP + STR/CTR/Travel Rule
+    AML->>AML: 멱등(tenant_id, origin_fds_case_ref, fds_event_id) + 본 케이스 생성 + sanction/PEP + STR/CTR
     AML-->>CORE: ack(amlCaseRef)
     CORE->>DB: update fds_cases.aml_case_id = amlCaseRef
 ```
@@ -513,7 +513,7 @@ stateDiagram-v2
 
 ### 8.2 Capability 매트릭스 (action_type × control_capability, 설계서 §9.4/§11.2)
 
-action 발행 전 대상 `target_system`의 capability(`fds_source_systems` 또는 tenant capability 설정) 검증. 미지원 시 **`OPEN_CASE`로 강등**(case-only). `action_type` 은 닫힌 enum(23종, 코드 truth)이며 본 매트릭스는 전수를 보존한다. **hanpass-ph(`tenant_demo`)가 실제 발행하는 action 은 송금·월렛 도메인 중심**(`HOLD_FUNDS`/`RELEASE_HOLD`/`BLOCK_TRANSACTION`/`BLOCK_WITHDRAWAL`/`CANCEL_TRANSACTION`/`SUSPEND_ACCOUNT`/`SUSPEND_INSTRUMENT`/`OPEN_CASE`/`OPEN_AML_CASE`/`SEND_ALERT`/`REGULATORY_REPORT` 등)이고, 카드 승인(`DECLINE_AUTHORIZATION`)·가맹점/셀러(`SUSPEND_MERCHANT`/`SUSPEND_SELLER_PAYOUT`/`INCREASE_RESERVE`)·거래소(Travel Rule)는 enum 보존하되 **hanpass-ph 미사용**(Phase 7 확장 슬롯).
+action 발행 전 대상 `target_system`의 capability(`fds_source_systems` 또는 tenant capability 설정) 검증. 미지원 시 **`OPEN_CASE`로 강등**(case-only). `action_type` 은 닫힌 enum(22종, 코드 truth)이며 본 매트릭스는 전수를 보존한다. **hanpass-ph(`tenant_demo`)가 실제 발행하는 action 은 송금·월렛 도메인 중심**(`HOLD_FUNDS`/`RELEASE_HOLD`/`BLOCK_TRANSACTION`/`BLOCK_WITHDRAWAL`/`CANCEL_TRANSACTION`/`SUSPEND_ACCOUNT`/`SUSPEND_INSTRUMENT`/`OPEN_CASE`/`OPEN_AML_CASE`/`SEND_ALERT`/`REGULATORY_REPORT` 등)이고, 카드 승인(`DECLINE_AUTHORIZATION`)·가맹점/셀러(`SUSPEND_MERCHANT`/`SUSPEND_SELLER_PAYOUT`/`INCREASE_RESERVE`)는 enum 보존하되 **hanpass-ph 미사용**(Phase 7 확장 슬롯).
 
 | action_type | 요구 capability | 미지원 시 |
 |---|---|---|
@@ -528,9 +528,9 @@ action 발행 전 대상 `target_system`의 capability(`fds_source_systems` 또�
 | `SUSPEND_MERCHANT`(도메인 verb → `SUSPEND_INSTRUMENT`, `targetRef`=merchant/seller token) | `CAN_SUSPEND_INSTRUMENT` | `OPEN_CASE` + `case_type=MERCHANT_RISK` |
 | `SUSPEND_SELLER_PAYOUT` / `INCREASE_RESERVE` | `CAN_HOLD_FUNDS` | `OPEN_CASE` |
 | `OPEN_CASE` / `OPEN_AML_CASE` / `SEND_ALERT` / `ADD_TO_GROUP` / `REQUEST_ADDITIONAL_DOCUMENT` / `REQUIRE_SECOND_APPROVAL` | `CAN_OPEN_CASE_ONLY` (항상 가능) | — |
-| `REGULATORY_REPORT` / `REQUEST_TRAVEL_RULE_INFO` | aml-svc 위임(§9) | `aml-fds-decision` 큐 |
+| `REGULATORY_REPORT` | aml-svc 위임(§9) | `aml-fds-decision` 큐 |
 
-> `SUSPEND_MERCHANT`·`SEND_SECURITY_ALERT`(§15.5/§15.8/§15.11 도메인 verb)는 정본 `action_type` enum(23종)에 독립 코드로 존재하지 않는다. 정규화 매핑(설계서 §11.2a / DB §4.8 주석 / API §3 action_type 마스터 규약)에 따라 `SUSPEND_MERCHANT`=`SUSPEND_INSTRUMENT`(대상=`MERCHANT_ACCOUNT`), `SEND_SECURITY_ALERT`=`SEND_ALERT`로 환원해 `fds_actions.action_type`에 저장한다. 자동 제어 불가 tenant는 `OPEN_CASE`(`case_type=MERCHANT_RISK`)로 강등한다.
+> `SUSPEND_MERCHANT`·`SEND_SECURITY_ALERT`(§15.5/§15.8/§15.11 도메인 verb)는 정본 `action_type` enum(22종)에 독립 코드로 존재하지 않는다. 정규화 매핑(설계서 §11.2a / DB §4.8 주석 / API §3 action_type 마스터 규약)에 따라 `SUSPEND_MERCHANT`=`SUSPEND_INSTRUMENT`(대상=`MERCHANT_ACCOUNT`), `SEND_SECURITY_ALERT`=`SEND_ALERT`로 환원해 `fds_actions.action_type`에 저장한다. 자동 제어 불가 tenant는 `OPEN_CASE`(`case_type=MERCHANT_RISK`)로 강등한다.
 
 ### 8.3 4-eyes 게이트 (설계서 §11.4/§11.5, API §8 정합)
 
@@ -550,9 +550,9 @@ action 발행 전 대상 `target_system`의 capability(`fds_source_systems` 또�
 
 ---
 
-## 9. 규제 제출 흐름 (STR/CTR/Travel Rule) — aml-svc 위임
+## 9. 규제 제출 흐름 (STR/CTR) — aml-svc 위임
 
-설계서 §11.3·§16.2(특금법 STR/CTR, 가상자산 Travel Rule)·DB §9 서비스 경계를 따른다. **fds-svc는 후보(origin)만 생성, 본 제출·증빙·재제출은 aml-svc 소유.**
+설계서 §11.3·§16.2(특금법 STR/CTR)·DB §9 서비스 경계를 따른다. **fds-svc는 후보(origin)만 생성, 본 제출·증빙·재제출은 aml-svc 소유.**
 
 ### 9.1 `fds_cases.aml_case_id` 확정 (open decision 해소)
 
@@ -565,19 +565,18 @@ action 발행 전 대상 `target_system`의 capability(`fds_source_systems` 또�
 |---|---|---|---|---|
 | `STR` | `AML_REVIEW` | `STRUCTURING`,`SANCTION_HIT` | 특금법 의심거래보고 | 사용(송금/월렛) |
 | `CTR` | `AML_REVIEW` | 고액현금(임계 초과) | 특금법 고액현금거래보고 | 사용 |
-| `TRAVEL_RULE` | `CRYPTO_TRAVEL_RULE` | `TRAVEL_RULE_MISSING`,`CRYPTO_ADDRESS_RISK` | 가상자산 Travel Rule | **미사용**(`case_type` enum 보존, 가상자산 미취급) |
 
-> `CRYPTO_TRAVEL_RULE` 은 `CaseType` 닫힌 enum 멤버(코드 truth)로 **삭제하지 않고 보존**하되, hanpass-ph 는 가상자산을 취급하지 않으므로 운영(`tenant_demo`)에서 발생하지 않는다(Phase 7 확장 슬롯).
+> `reportKind` 는 `STR`/`CTR` 2종이다(코드 truth: fds `CaseType` 10종에 Travel Rule 케이스 타입 없음, aml `ReportType` 6종 = `STR`/`CTR`/`EDD_REGISTER`/`WLF_REGISTER`/`RA_REPORT`/`AUDIT_EXPORT`). 구 가상자산 Travel Rule(`TRAVEL_RULE`·`CRYPTO_TRAVEL_RULE`)은 Travel Rule 기능 전면 제거(aegis-aml 84997e1, fds V9·aml V31 DROP)로 enum·스키마에서 삭제됐다.
 
 ### 9.3 흐름·증빙·재제출
 
 1. fds-svc: rule hit → `fds_decisions`(REPORT/FREEZE) → `fds_cases`(origin, `aml_case_id=NULL`) → `aml-fds-decision` 발행(`fds.case.escalated`/`fds.decision.applied`, §4.4). **token/hash·base 금액만, 원문 미전파.**
-2. aml-svc: 본 케이스 생성·sanction/PEP·STR/CTR/Travel Rule 제출 → `amlCaseRef` ack.
+2. aml-svc: 본 케이스 생성·sanction/PEP·STR/CTR 제출 → `amlCaseRef` ack.
 3. fds-svc: `fds_cases.aml_case_id=amlCaseRef` 기록 + `fds_case_events`(event_kind `STATUS_CHANGE`) append.
 4. **증빙**: 제출 증적은 aml-svc 소유. fds-svc는 `evidenceHash`·`input_event_hash`·`feature_snapshot`·`payload_hash`를 cross-ref로 보존(`fds_evidence_exports`로 export 가능, export 최종본은 4-eyes).
 5. **재제출**: aml-svc 제출 실패/반려 시 `aml-fds-decision` 멱등 재발행(키=eventId=fdsEventId). fds-svc는 신규 case 생성 없이 동일 origin에 재handoff. DLQ 진입 시 §6.3 replay.
 
-> fds-svc API에서 AML/Travel Rule 본 처리 시도는 `FDS-AML-DELEGATED`(409)로 거부(API §6).
+> fds-svc API에서 AML 본 처리 시도는 `FDS-AML-DELEGATED`(409)로 거부(API §6).
 
 ---
 
@@ -665,12 +664,12 @@ PRD·PPT·tasks가 그대로 참조할 연동 명칭을 확정한다.
 - **입력 버전 핀**: 설계서 v1.9 / DB **v2.0** / API **v2.6** / Integration **v2.6**(본 문서, hanpass-ph 그라운딩).
 - **큐(논리명, 코드 truth)**: `fds-events.fifo`(FIFO, in, `SqsEventQueuePublisher`/`EventQueueConsumer`) · `fds-actions.fifo`(FIFO, out, `SqsActionRelayPublisher`) · `fds-action-results.fifo`(FIFO, in ack, `ActionResultConsumer`) · `aml-fds-decision`(FIFO, out→aml-svc `FdsDecisionConsumer`, `SqsAmlHandoffPublisher`, 정본 계약=AML §3.2) · `aml-fds-feedback`(in, `AmlFeedbackConsumer`). 각 `*-dlq`. **webhook 콜백은 SQS 큐가 아니라 DB 트랜잭셔널 아웃박스 `fds_webhook_outbox`→`HttpWebhookSenderAdapter` HTTP POST**(§6.2.2). **외부 결정은 REST `POST /api/v1/fds/external-decisions` 단일**(SQS `fds-vendor-ingest` 큐 미존재).
 - **메시지 타입**: `IngestEventMessage` / `FdsActionRequested` / `FdsActionResult` / `fds.case.escalated`·`fds.decision.applied`(`aml-fds-decision`, AML §3.2 봉투) / `FdsDecisionCreated` / `FdsCaseOpened` / `FdsCaseStatusChanged` / `ExternalDecisionMessage`.
-- **`FdsActionResult` 필드**: `actionId` / `actionType`(action_type 23종, 필수) / `status`(action_status) / `errorCode`(nullable, `errorCode`↔`error_code`) / `completedAt`(nullable, `completedAt`↔`completed_at`).
+- **`FdsActionResult` 필드**: `actionId` / `actionType`(action_type 22종, 필수) / `status`(action_status) / `errorCode`(nullable, `errorCode`↔`error_code`) / `completedAt`(nullable, `completedAt`↔`completed_at`).
 - **공통 envelope 키(입력/전송)**: `tenantId`,`workspaceId`,`sourceSystem`,`schemaVersion`,`idempotencyKey`,`messageVersion`(`v1`),`correlationId`,`traceparent`,`eventType`,`eventId`(필수, →`event_id` PK),`occurredAt`(필수, →`occurred_at`). `eventFamily`는 **전송 필드가 아니라 `eventType` 접두에서 서버가 도출**해 DB `event_family`로 저장하는 읽기전용 파생값이다(API §5.1 IngestEventRequest와 입력 필드 일치, §4.1/§4.2).
 - **Webhook 콜백 계약(API §9 정본)**: envelope = `schemaVersion`/`eventFamily`(**콜백 그룹핑** enum `decision`/`case`/`action`, 서버 파생 — canonical `event_family` 16종과 동일 키명·별개 값 도메인, §4.5)/`eventName`/`eventId`/`tenantId`/`workspaceId`/`occurredAt`/`traceId` + `data{}` 래퍼. payload: `FdsDecisionCreated`=`decisionId`/`decision`/`reasonCodes`/`riskScore`/`recommendedActions`, `FdsCaseOpened`=`caseId`/`caseType`/`priority`/`originDecisionId`, `FdsCaseStatusChanged`=`caseId`/`fromStatus`/`toStatus`/`closeReason`(**nullable, string(64), 8종**: `FP_THRESHOLD`/`FP_NORMAL_PATTERN`/`FP_DATA_QUALITY`/`CONFIRMED_FRAUD`/`CONFIRMED_MULE`/`CONFIRMED_ATO`/`ESCALATED_AML`/`OTHER` — 설계서 §11.6.1a·DB §4.11), `FdsActionResult`=`actionId`/`actionType`(필수)/`status`(action_status)/`errorCode`(nullable). 키 전부 camelCase(`errorCode`↔`error_code`, `fromStatus`↔`from_status`, `originDecisionId`↔`origin_decision_id`, `closeReason`↔`close_reason`).
 - **FIFO 규약**: `messageDeduplicationId = idempotencyKey`, `messageGroupId = tenantId:workspaceId:<orderKey>`(events=transactionRef, actions=targetRef). **`aml-fds-decision`은 `messageDeduplicationId = eventId`(=fdsEventId), `messageGroupId = tenantId:eventId`**(AML §3.2 멱등 계약 — 소비측 partial UNIQUE `(tenant_id, origin_fds_case_ref, fds_event_id) WHERE source_origin='FDS'`).
 - **outbox 상태**: `action_status` = `PENDING`/`APPROVAL_REQUIRED`/`APPROVED`/`SENT`/`ACKED`/`FAILED`/`CANCELLED`(+sandbox shadow 미발행).
-- **AML cross-ref 확정**: `fds_cases.aml_case_id VARCHAR(96) NULL` = API/ack `amlCaseRef`. **FDS→AML 핸드오프 봉투는 AML §3.2 정본 계약**(`aml-fds-decision`): `eventType` ∈ `fds.case.escalated`/`fds.decision.applied`, 키 = `tenantId`·`eventType`·`eventId`(=멱등키 fdsEventId)·`fdsCaseRef`·`fraudCaseRef`·`targetRef`·`transactionRef`·`action`·`severity`·`suggestedCaseType`·`dataScope`(소비측 `workspaceId`→`dataScope` 변환). 규제 제출 종류 `reportKind` ∈ `STR`/`CTR`/`TRAVEL_RULE`은 §9.2 fds-svc 내부 origin 분류이며 봉투 키가 아니다.
+- **AML cross-ref 확정**: `fds_cases.aml_case_id VARCHAR(96) NULL` = API/ack `amlCaseRef`. **FDS→AML 핸드오프 봉투는 AML §3.2 정본 계약**(`aml-fds-decision`): `eventType` ∈ `fds.case.escalated`/`fds.decision.applied`, 키 = `tenantId`·`eventType`·`eventId`(=멱등키 fdsEventId)·`fdsCaseRef`·`fraudCaseRef`·`targetRef`·`transactionRef`·`action`·`severity`·`suggestedCaseType`·`dataScope`(소비측 `workspaceId`→`dataScope` 변환). 규제 제출 종류 `reportKind` ∈ `STR`/`CTR`은 §9.2 fds-svc 내부 origin 분류이며 봉투 키가 아니다.
 - **DLQ 사유 코드**: `FDS-PII-REJECTED`,`FDS-SCHEMA-UNKNOWN`,`FDS-VALIDATION-002`,`ADAPTER_TIMEOUT`,`ADAPTER_REJECTED`.
 - **재제출**: `POST /api/v1/admin/fds/connectors/{connectorId}/replay`(DLQ/connector replay), reconciliation `export_kind=CONNECTOR_RECON`.
 - **PII 미전파**: 모든 큐 token/hash·마스킹, raw payload·secret 원문 금지.
@@ -685,6 +684,7 @@ PRD·PPT·tasks가 그대로 참조할 연동 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-09 | v2.8 | **Travel Rule 기능 전면 제거 정합(코드=truth).** (1) 헤더·개요·§1 원칙에서 `AML/STR/CTR/Travel Rule`→`AML/STR/CTR`. (2) §9 제목·TOC `규제 제출 흐름 (STR/CTR/Travel Rule)`→`(STR/CTR)`, 앵커 동기화. (3) §8.2 capability 매트릭스 — `ActionType` 23종→**22종**(코드 truth `ActionType` `REQUEST_TRAVEL_RULE_INFO` 제거), `REGULATORY_REPORT` / `REQUEST_TRAVEL_RULE_INFO` 행에서 travel action 제거, 거래소(Travel Rule) 미사용 서술 제거. 헤더·§1·§3.2·§4.3·§12 downstream 의 action_type "23종" 전수를 22종으로 정정. (4) §9.2 reportKind 표에서 `TRAVEL_RULE`/`CRYPTO_TRAVEL_RULE` 행 제거(fds `CaseType` 10종에 travel 케이스 없음·aml `ReportType` 6종=STR/CTR/EDD_REGISTER/WLF_REGISTER/RA_REPORT/AUDIT_EXPORT) + "enum 보존" 서술을 삭제 정정으로 교체. (5) §5.3 시퀀스·§9.3 흐름·§12 downstream 의 `STR/CTR/Travel Rule`→`STR/CTR`, `reportKind ∈ STR/CTR/TRAVEL_RULE`→`STR/CTR`, `FDS-AML-DELEGATED` 서술 현행화. **OPEN_AML_CASE/REGULATORY_REPORT aml-svc 위임 흐름 자체는 유지**(Travel Rule 만 제거). 과거 changelog 행은 역사 기록으로 보존. | 코드=truth. 근거=aegis-aml 84997e1(feature/remove-travel-rule)·fds `DecisionActionRouter`/`ActionType`(22종)·`CaseType`(10종)·aml `EventFamily`(19종)/`ReportType`(6종)·V31/V9/V14 DROP 마이그레이션. integration-designer |
 | 2026-07-02 | v2.7 | **데모 동일 거래 FDS+AML 양쪽 인입 명문화(데이터 정직화, 코드=truth, feature/fds-demo-data-honesty, 기능정의서 v6.10 · AML §7.1 BR-DEMO-HONESTY).** §4.1 에 **데모 동일 거래 양쪽 인입 note 신설** — 데모 시뮬레이터가 하나의 거래를 FDS·AML 양쪽에 동일 nested `transaction` 객체(`memberRef`·`transactionRef`·`channel`·`amount`·`currency`·`corridor`·`receiverName`·`receiverCountry`·`senderHolderName`)로 전송, FDS `FdsIngestTestController.TestEvent`→`ingestLiveDecision`(payload `transactionRef` 원문·실 룰 평가, 조작 `txn-live-{seq}`·hash 파생 폐기)·AML `AmlTmService.ingestLiveTransaction` 이 동일 거래를 소비 → 한 거래가 FDS 판정·AML 알림에 동일 `transactionRef`(핸드오프 `aml-fds-decision` `fdsDecisionRef` 정합). seed 판정/케이스 픽스처 폐기(인입 0=빈 목록). 비-prod 전용(위임/prod 불변). DB 스키마·규제 임계·멀티테넌트 인프라 키 불변. | integration-designer. 근거=bo-api `FdsIngestTestController.TestEvent`·`FdsDecisionCaseStubService.ingestLiveDecision`, `tools/aml-ingest-simulator`(FDS+AML 동일 transaction). API §5.1(데모 인입 이벤트)·기능정의서 §8.2/§11.1 BR-005·AML integration §4.1 동기화. |
 | 2026-06-30 | v2.6 | **hanpass-ph 그라운딩 + 코드 truth 정합(fds-svc 소스 기준).** (1) 헤더에 시스템 그라운딩 주석 추가(단일 운영 테넌트 `tenant_demo`=hanpass-ph, 5 거래 채널, 닫힌 enum 비-hanpass 멤버는 보존·미사용 명시). (2) §3 이벤트 카탈로그를 hanpass eventType taxonomy(`remit.*`/`domestic.*`/`wallet.*`/`member.*`)로 재작성 — `EventFamily` `REMIT`/`DOMESTIC`/`WALLET`(Flyway V21)·`transaction_type` 매핑(REMITTANCE/TRANSFER/CHARGE/PAYMENT/WITHDRAWAL)·소스 7종 한정(`member`/`walletchg`/`domestic`/`remit`/`wallet`/`tx-history`/`inbound`-svc). 비-hanpass family(card/trade/crypto/ecommerce/market)·§15 도메인 verb 정규화 표 **제거**(hanpass 미사용 보존 주석으로 대체). (3) **코드 truth 정합**: webhook 콜백은 SQS `fds-webhook` 큐가 아니라 **DB 트랜잭셔널 아웃박스 `fds_webhook_outbox`→`HttpWebhookSenderAdapter` HTTP POST**(§2 표·mermaid·§3.2·§4.5·§6.2·§6.4·§12)·webhook `MAX_RETRIES`=8→**5**(`RelayWebhookUseCase`)·외부 결정은 **REST `POST /fds/external-decisions` 단일**(SQS `fds-vendor-ingest` 큐·`FdsExternalDecisionConsumer` 미존재, §4.6·§7.3)·실제 publisher/consumer 클래스명(`SqsEventQueuePublisher`/`SqsActionRelayPublisher`/`SqsAmlHandoffPublisher`/`EventQueueConsumer`/`ActionResultConsumer`/`AmlFeedbackConsumer`)·`FdsEventsConsumer`→`EventQueueConsumer`·`fds-action-results.fifo`·`aml-fds-feedback` 인입 추가·패키지 `com.hanpass.fds`→**`com.aegis.fds`**. (4) 예시 식별자 `tenant_bank_a`/`tenant_exch_c`→`tenant_demo`, `targetSystem` core-banking→wallet-svc, 핸드오프 `action` `ESCALATE_STR`→`OPEN_AML_CASE`(ActionType 정합), `eventType` `transaction.requested`→`remit.transfer.requested`. (5) §8.2 capability·§9.2 reportKind 닫힌 enum 보존 + hanpass 사용/미사용 주석. **규제(CTR/STR) 임계·기한·멀티테넌트 인프라 키 불변.** | integration-designer |
 | 2026-06-24 | v2.5 | **FDS→AML 핸드오프 큐/봉투를 AML 정본(`aml-fds-decision`·`fds.case.escalated`)으로 정합(코드=truth).** 큐명 `fds-aml-handoff`→**`aml-fds-decision`**(DLQ·메트릭·FIFO group 동반), 봉투 `FdsAmlHandoff`→**`fds.case.escalated`/`fds.decision.applied`**(키 `tenantId`·`eventType`·`eventId`(=멱등키 fdsEventId)·`fdsCaseRef`·`fraudCaseRef`·`targetRef`·`transactionRef`·`action`·`severity`·`suggestedCaseType`·`dataScope`). §2 토폴로지·§3.2 outbound 표·§4.4 스키마·§5.3 시퀀스·§6.2 재시도·§8.2·§9.3·§11.1 메트릭·§12 downstream 일괄 갱신. 멱등=SQS dedupId `eventId`(fdsEventId)+소비측 partial UNIQUE `(tenant_id, origin_fds_case_ref, fds_event_id) WHERE source_origin='FDS'`, 멀티테넌시=`workspaceId`→`dataScope` 봉투 전파(소비측 변환). aml-svc `FdsDecisionConsumer` 소비 키 8종과 1:1. 정본=`02-aml-integration.md` §3.2(D-07)와 **단일 계약 정합**(상호 참조). | integration-designer |

@@ -5,7 +5,7 @@
 > 입력 설계서: `docs/software/01-fdsSvc-sass.md` (§6.2 헥사고날 `adapter/in/rest`, §11 action/case/결재, §12.8 Public API, §13 멀티테넌시, §16 PII/규제).
 > 입력 DB: `docs/design/db/01-fds-db.md` (스키마 `fds`, 멀티테넌시 `tenant_id/workspace_id/data_scope`, enum 코드값 §4, 컬럼/타입 §5, `subject_kind` 10종 `CASE_CLOSE`·`POLICY_PACK`·`RULE_PARAM` 포함 §5.23, `fds_cases.aml_case_id` §5.13, **배포 모델 `fds_tenants.deployment_model`(3종)·`onboarding_status`(8종)·`default_region`·`infra_ref` §4.1·§5.1, 구 `isolation_mode` 폐기**, `close_reason` 8종 §4.11, `compliance_policy` JSONB §5.1, **`transaction_type` 폐쇄 enum 12종 §4.19**, `channel_type` §4.4, corridor 컬럼 §5.5).
 > 코드 정본: **`services/fds-svc`** (`com.aegis.fds.adapter.in.rest` 전 컨트롤러·DTO, `com.aegis.fds.domain.enums.ChannelType`·`EventFamily`, Flyway `V17`/`V20`/`V22` 데모 룰). 본 문서의 엔드포인트·요청/응답 DTO·enum은 이 저장소와 1:1 일치한다(추측 금지).
-> 책임 서비스: **`services/fds-svc`**. AML/STR/CTR/Travel Rule 본 케이스는 `aml-svc`, 운영자 IAM·결재 집약·감사는 `bo-api`. **bo-web은 bo-api만 호출(엔진 직접호출 금지)**.
+> 책임 서비스: **`services/fds-svc`**. AML/STR/CTR 본 케이스는 `aml-svc`, 운영자 IAM·결재 집약·감사는 `bo-api`. **bo-web은 bo-api만 호출(엔진 직접호출 금지)**.
 
 ## 목차
 1. [범위·원칙](#1-범위원칙)
@@ -32,16 +32,16 @@
   - **Admin API** — `/api/v1/admin/fds/**`. **bo-api만** 호출(운영자 토큰 위임). bo-web → bo-api → fds-svc admin API 경로만 허용.
 - API path는 정본 버저닝 규약 `/api/v1`을 사용한다(설계서 §12 예시의 `/v1/...`은 게이트웨이 prefix 생략형이며, 본 명세는 `/api/v1`로 정규화).
 - 모든 식별자·금액·enum은 DB 설계서(`01-fds-db.md` §4, §5)와 100% 일치. raw PII는 응답 DTO에 미노출(token/hash/마스킹).
-- fds-svc는 `OPEN_AML_CASE`/`REGULATORY_REPORT`/`REQUEST_TRAVEL_RULE_INFO` **후보만 생성**하고 본 처리는 aml-svc로 위임(§12). 본 API는 후보 등록·cross-ref 조회만 제공.
+- fds-svc는 `OPEN_AML_CASE`/`REGULATORY_REPORT` **후보만 생성**하고 본 처리는 aml-svc로 위임(§12). 본 API는 후보 등록·cross-ref 조회만 제공.
 
 ### 1.1 정본 확정 (이 문서가 진실의 출처)
 
 정본 위계는 `_shared/target-architecture.md` + 설계서(`docs/software`)·DB(`docs/design/db`)·API(`docs/design/api`)이며, 파생(integration·tasks·PRD·PPT)은 이를 따른다. 본 API 명세는 다음 항목의 **정본**이다.
 
-- **action_type 마스터 = API `ActionType` enum 23종(전수, §5.7·§7·§10 OpenAPI)**. 설계서 §11.2는 이 23종으로 동기화한다. 설계서 §15의 verb는 정규 매핑(`OPEN_*_CASE`=`OPEN_CASE`+`case_type`, `SUSPEND_MERCHANT`=`SUSPEND_INSTRUMENT`, `SEND_SECURITY_ALERT`=`SEND_ALERT`)으로 흡수한다. `HOLD_TRANSACTION`은 비정본 — 자금 hold는 `HOLD_FUNDS`, 송금 차단은 `BLOCK_TRANSACTION`.
+- **action_type 마스터 = API `ActionType` enum 22종(전수, §5.7·§7·§10 OpenAPI)**. 설계서 §11.2는 이 22종으로 동기화한다. 설계서 §15의 verb는 정규 매핑(`OPEN_*_CASE`=`OPEN_CASE`+`case_type`, `SUSPEND_MERCHANT`=`SUSPEND_INSTRUMENT`, `SEND_SECURITY_ALERT`=`SEND_ALERT`)으로 흡수한다. `HOLD_TRANSACTION`은 비정본 — 자금 hold는 `HOLD_FUNDS`, 송금 차단은 `BLOCK_TRANSACTION`.
 - **HTTP 상태코드 = 본 API 명세 §6이 정본**. PRD/PPT는 §6 매핑을 따른다(중복=400 `FDS-VALIDATION-001`, 결재 누락=409 `FDS-APPROVAL-REQUIRED`, maker=checker=409 `FDS-APPROVAL-SELF`, raw PII=422 `FDS-PII-REJECTED`, rate limit=429 `FDS-RATE-LIMIT`).
 - **4-eyes `subjectKind` = DB 정본 `fds_approval_requests.subject_kind` 10종(§5.23)과 1:1**. `ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`/`POLICY_PACK`/`RULE_PARAM`. **case 종결(`POST /fds/cases/{caseId}/close`)은 `CASE_CLOSE`(subjectRef=`case_id`)로 매핑**하고, **규제 팩 토글 변경(`PUT /api/v1/bo/fds/tenants/{tenantId}` compliance_policy)은 `POLICY_PACK`(subjectRef=`tenant_id`, 설계서 §16.2)로 매핑**하며, **룰 변수 편집(`POST /admin/fds/rules/{ruleId}:update-params`)은 `RULE_PARAM`(subjectRef=`rule_id`)으로 매핑**한다. integration·tasks는 이 10종을 따른다.
-- **Webhook 콜백 계약 = §9가 정본**. 4종(`FdsDecisionCreated`/`FdsCaseOpened`/`FdsCaseStatusChanged`/`FdsActionResult`)·핵심 payload·envelope·`X-Signature` HMAC·재시도/멱등을 §9로 확정한다. `FdsActionResult`는 `actionType`(action_type 23종)을 **필수 포함**하고 `status`는 action_status enum 기준이다. integration §3.2·§4.x는 §9.1 핵심 키와 1:1 정렬한다.
+- **Webhook 콜백 계약 = §9가 정본**. 4종(`FdsDecisionCreated`/`FdsCaseOpened`/`FdsCaseStatusChanged`/`FdsActionResult`)·핵심 payload·envelope·`X-Signature` HMAC·재시도/멱등을 §9로 확정한다. `FdsActionResult`는 `actionType`(action_type 22종)을 **필수 포함**하고 `status`는 action_status enum 기준이다. integration §3.2·§4.x는 §9.1 핵심 키와 1:1 정렬한다.
 - **운영자 집계 API 소유 경계 = bo-api(§12)**. 대시보드(플랫폼·서비스별)·서비스 관리(목록/상세/등록/설정)·감사 조회 화면이 호출하는 집계 엔드포인트는 **bo-api가 소유·집약·인증**한다. fds-svc/aml-svc는 저수준 데이터 API만 제공하며, **본 엔진 API 명세(§4)에는 운영자 집계 엔드포인트(대시보드/서비스/감사)를 추가하지 않는다**. PRD/PPT의 해당 화면은 호출 대상을 bo-api로 명시한다.
 
 ---
@@ -405,7 +405,7 @@ FundingDto(△, 중립 WALLET_TOPUP §6.4 `funding` 블록): `fundingInstrumentT
 | 필드 | 타입 | 매핑 |
 |---|---|---|
 | caseId | uuid | `case_id` |
-| caseType | enum case_type (11종) | `case_type` |
+| caseType | enum case_type (10종) | `case_type` |
 | subjectRef / transactionRef | string(token) | 동일 |
 | originDecisionId | uuid | `origin_decision_id` |
 | status | enum case_status | `status` |
@@ -424,12 +424,12 @@ FundingDto(△, 중립 WALLET_TOPUP §6.4 `funding` 블록): `fundingInstrumentT
 ### 5.7 CaseActionRequest (POST /fds/cases/{caseId}/actions) — `fds_actions`
 | 필드 | 타입 | 필수 | 매핑 |
 |---|---|---|---|
-| actionType | enum action_type (23종) | ● | `action_type` |
+| actionType | enum action_type (22종) | ● | `action_type` |
 | targetSystem | string(64) | △ | `target_system` |
 | targetRef | string(token) | △ | `target_ref` |
 | reason | string | ● | (감사) |
 
-응답 ActionResponse: `actionId`(uuid), `decisionId`(uuid, nullable), `caseId`(uuid, nullable), `actionType`(enum action_type 23종, 필수 — `fds_actions.action_type` DB §5.12 매핑), `targetSystem`, `targetRef`, `status`(enum action_status), `approvalRequestId`(uuid, null 가능), `idempotencyKey`, `retryCount`, `errorCode`, `requestedAt`, `completedAt`. `GET /fds/actions`/`GET /fds/actions/{actionId}` 응답도 동일 스키마(§10 `ActionResponse`).
+응답 ActionResponse: `actionId`(uuid), `decisionId`(uuid, nullable), `caseId`(uuid, nullable), `actionType`(enum action_type 22종, 필수 — `fds_actions.action_type` DB §5.12 매핑), `targetSystem`, `targetRef`, `status`(enum action_status), `approvalRequestId`(uuid, null 가능), `idempotencyKey`, `retryCount`, `errorCode`, `requestedAt`, `completedAt`. `GET /fds/actions`/`GET /fds/actions/{actionId}` 응답도 동일 스키마(§10 `ActionResponse`).
 
 ### 5.8 RuleDto / RuleUpsertRequest — `fds_rules`
 | 필드 | 타입 | 필수 | 매핑 |
@@ -698,7 +698,7 @@ tenant 알림 채널 1건(설계서 §13.2 alert channel, PRD TNT-002 ⑤). GET�
 | `FDS-APPROVAL-REQUIRED` | 409 | 결재 없이 실행 시도 | Action/Rule/Group/Credential/SourceSystem/MerchantNormalize |
 | `FDS-APPROVAL-SELF` | 409 | maker=checker 승인 시도 | Approval |
 | `FDS-APPROVAL-PAYLOAD-CHANGED` | 409 | 승인 후 payload_hash 변경 | Approval/실행 |
-| `FDS-AML-DELEGATED` | 409 | AML/Travel Rule 본 처리는 aml-svc 위임 대상 | Case |
+| `FDS-AML-DELEGATED` | 409 | AML 본 처리는 aml-svc 위임 대상 | Case |
 | `FDS-FAIL-CLOSED` | 503 | 평가 불가 + fail-closed 정책 | Decision |
 | `FDS-RATE-LIMIT` | 429 | rate limit 초과 | 전체 |
 
@@ -712,7 +712,7 @@ tenant 알림 채널 1건(설계서 §13.2 alert channel, PRD TNT-002 ⑤). GET�
 ### 7.2 reasonCodes 예시 (`fds_decision_reasons.reason_code`) — hanpass-ph
 송금·월렛 도메인 reasonCode 예시: `HIGH_AMOUNT_PHP_EQUIVALENT`(PHP 환산 고액, §3.5.3) · `NEW_BENEFICIARY`(신규 수취인) · `TRANSFER_VELOCITY`(송금 속도) · `STRUCTURING`(분할입금, DOMESTIC velocity) · `MULE_ACCOUNT_GROUP`(머니뮬 그룹) · `GEO_MISMATCH`(corridor 불일치) · `SANCTION_HIT`(제재 적중) · `WALLET_WITHDRAWAL_ANOMALY`(월렛출금 이상) · `WATCHLIST_HIT`(워치리스트). reason_code는 free-form 허용하되 catalog 권장. (카드/crypto/무역/seller 등 비-hanpass reasonCode는 운영 미사용.)
 
-> recommendedActions는 enum action_type(23종) 코드값으로만 반환.
+> recommendedActions는 enum action_type(22종) 코드값으로만 반환.
 
 ---
 
@@ -751,9 +751,9 @@ tenant 알림 채널 1건(설계서 §13.2 alert channel, PRD TNT-002 ⑤). GET�
 | `FdsDecisionCreated` | decision 생성 | Decision Engine | `decisionId`,`decision`,`reasonCodes`,`riskScore`,`recommendedActions`(action_type[]) |
 | `FdsCaseOpened` | case origin 생성 | Case Mgmt | `caseId`,`caseType`,`priority`,`originDecisionId` |
 | `FdsCaseStatusChanged` | case 상태 전이 | Case Mgmt | `caseId`,`fromStatus`,`toStatus`,`closeReason`(nullable) |
-| `FdsActionResult` | action relay 결과(SENT→ACKED/FAILED 전이) | Action relay | `actionId`,`actionType`(action_type 23종, 필수),`status`(enum action_status: §10 OpenAPI `ActionStatus` 7종 / DB §4.9, 통상 `ACKED`/`FAILED`),`errorCode`(nullable) |
+| `FdsActionResult` | action relay 결과(SENT→ACKED/FAILED 전이) | Action relay | `actionId`,`actionType`(action_type 22종, 필수),`status`(enum action_status: §10 OpenAPI `ActionStatus` 7종 / DB §4.9, 통상 `ACKED`/`FAILED`),`errorCode`(nullable) |
 
-> 4종은 정본 콜백 집합. enum 코드값은 DB §4와 동일(action_type 23종·case_type·action_status·case_status). raw PII 미포함(token/hash·마스킹만).
+> 4종은 정본 콜백 집합. enum 코드값은 DB §4와 동일(action_type 22종·case_type·action_status·case_status). raw PII 미포함(token/hash·마스킹만).
 
 ### 9.2 공통 envelope
 ```json
@@ -867,16 +867,16 @@ components:
         SUSPEND_INSTRUMENT, HOLD_SETTLEMENT, SUSPEND_SELLER_PAYOUT, INCREASE_RESERVE,
         REQUEST_ADDITIONAL_DOCUMENT, ADD_TO_GROUP, OPEN_CASE, SEND_ALERT,
         REQUIRE_SECOND_APPROVAL, BLOCK_WITHDRAWAL, SUSPEND_API_KEY,
-        SUSPEND_EMPLOYEE_SESSION, REQUEST_TRAVEL_RULE_INFO, OPEN_AML_CASE, REGULATORY_REPORT]
+        SUSPEND_EMPLOYEE_SESSION, OPEN_AML_CASE, REGULATORY_REPORT]
     CaseType:
       type: string
       description: >
-        case 유형(fds_cases.case_type, 도메인 CaseType enum 11종 — 코드 정본).
+        case 유형(fds_cases.case_type, 도메인 CaseType enum 10종 — 코드 정본).
         hanpass-ph 운영 대상은 FRAUD_REVIEW/AML_REVIEW/MULE_ACCOUNT_REVIEW/INTERNAL_AUDIT/REGULATORY_REPORT.
-        CRYPTO_TRAVEL_RULE/TRADE_FINANCE_REVIEW/ECOMMERCE_SETTLEMENT_REVIEW/B2B_INVOICE_REVIEW/CHARGEBACK_REVIEW/MERCHANT_RISK는
+        TRADE_FINANCE_REVIEW/ECOMMERCE_SETTLEMENT_REVIEW/B2B_INVOICE_REVIEW/CHARGEBACK_REVIEW/MERCHANT_RISK는
         닫힌 enum 멤버로 보존하나 hanpass-ph는 미사용(비-hanpass 도메인).
       enum: [FRAUD_REVIEW, AML_REVIEW, CHARGEBACK_REVIEW, MULE_ACCOUNT_REVIEW,
-        CRYPTO_TRAVEL_RULE, INTERNAL_AUDIT, MERCHANT_RISK, REGULATORY_REPORT,
+        INTERNAL_AUDIT, MERCHANT_RISK, REGULATORY_REPORT,
         TRADE_FINANCE_REVIEW, ECOMMERCE_SETTLEMENT_REVIEW, B2B_INVOICE_REVIEW]
     SubjectKind:
       type: string
@@ -1546,7 +1546,7 @@ bo-web(Next.js)은 **bo-api 경유로만** 아래 API를 호출한다(엔진 직
 
 - **bo-web → bo-api → fds-svc**. bo-web의 fds-svc·aml-svc 직접호출 금지(정본 §3, §4).
 - **운영자 집계 API 소유 경계(정본 결정)**: **대시보드(플랫폼·서비스별)·서비스 관리(목록/상세/등록/설정)·감사 조회는 bo-api가 소유·집약·인증**한다. fds-svc/aml-svc는 **저수준 데이터 API만** 제공한다. 따라서 본 엔진 API 명세(§4)에는 운영자 집계 엔드포인트(대시보드/서비스/감사)를 **추가하지 않는다**. PRD/PPT의 해당 화면은 호출 대상을 bo-api(`/api/v1/bo/**`)로 명시한다(§11.2).
-- **AML/STR/CTR/Travel Rule 본 처리**: fds-svc는 후보 action(`OPEN_AML_CASE`/`REGULATORY_REPORT`/`REQUEST_TRAVEL_RULE_INFO`)·origin case만 생성하고, 본 케이스·sanction/PEP·규제보고는 **aml-svc**가 별도 API로 처리. fds 응답은 `amlCaseRef` cross-ref만 노출(integration 명세에서 `fds_cases.aml_case_id` 확정).
+- **AML/STR/CTR 본 처리**: fds-svc는 후보 action(`OPEN_AML_CASE`/`REGULATORY_REPORT`)·origin case만 생성하고, 본 케이스·sanction/PEP·규제보고는 **aml-svc**가 별도 API로 처리. fds 응답은 `amlCaseRef` cross-ref만 노출(integration 명세에서 `fds_cases.aml_case_id` 확정).
 - **운영자 IAM·승인 라인 정책**: bo-api 소유. fds-svc는 엔진 측 결재 게이트(`fds_approval_requests`/`fds_approval_steps`)와 엔진 감사(`fds_audit_logs`)만 보유.
 - **data-scope**: bo-api가 운영자 토큰 scope를 fds-svc 조회 IN 필터로 주입. fds-svc는 scope 밖 row 접근을 `FDS-DATASCOPE-DENIED`로 차단.
 
@@ -1561,7 +1561,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 - **핵심 엔드포인트**: `POST /fds/events`, `POST /fds/decisions/evaluate`, `GET/PATCH /fds/cases/{caseId}`, `POST /fds/cases/{caseId}/actions`, `POST /evidence/fds/exports`, `POST /admin/fds/rules/simulations`, `POST /admin/fds/rules/{ruleId}/activate`, `POST /admin/fds/approvals/{approvalRequestId}/approve`.
 - **OAuth2 scope**: `fds:event:write`/`fds:decision:evaluate`/`fds:case:read`/`fds:case:update`/`fds:evidence:export`/`fds:rule:simulate`/`fds:action:write`/`fds:admin:rule`/`fds:admin:group`/`fds:admin:source-system`/`fds:admin:credential` (전체 11종 `fds:` prefix 형식, §2.3 정본과 동일).
 - **에러 코드 prefix**: `FDS-*`(§6). 표준 envelope(RFC7807 + `code`/`traceId`).
-- **응답 enum**: decision 8종·**action_type 23종(API `ActionType` enum이 마스터 정본 §1.1)**·case_type 11종은 DB enum 코드값과 동일(§4 DB). `HOLD_TRANSACTION`은 비정본(→`HOLD_FUNDS`/`BLOCK_TRANSACTION`).
+- **응답 enum**: decision 8종·**action_type 22종(API `ActionType` enum이 마스터 정본 §1.1)**·case_type 10종은 DB enum 코드값과 동일(§4 DB). `HOLD_TRANSACTION`은 비정본(→`HOLD_FUNDS`/`BLOCK_TRANSACTION`).
 - **HTTP 상태코드**: 본 §6이 정본. 중복=400, 결재 누락=409, maker=checker=409, raw PII=422, rate limit=429.
 - **DecisionResponse 필수 필드**: `matchedRules`(RuleRef[]: `ruleId`,`versionNo`) 포함(§5.4·§10 OpenAPI, DB `fds_decisions.matched_rules`).
 - **Webhook 콜백(outbound)**: `FdsDecisionCreated`·`FdsCaseOpened`·`FdsCaseStatusChanged`·`FdsActionResult` 4종, `X-Signature: hmac-sha256`, `eventId` 멱등, 지수 backoff 재시도(§9).
@@ -1576,6 +1576,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-09 | v3.8 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule).** fds-svc `ActionType` **23종→22종**(`REQUEST_TRAVEL_RULE_INFO` 제거) — §1.1 원칙·§4.4 CaseActionRequest·§5.7 `ActionResponse`·§7 recommendedActions·§9.1 `FdsActionResult`·§10 OpenAPI `ActionType` enum·§13 downstream 전수 갱신. fds-svc `CaseType` **11종→10종**(`CRYPTO_TRAVEL_RULE` 제거) — §5.5 `CaseDto`·§10 OpenAPI `CaseType` enum/설명·§13 downstream 갱신. §1 위임 서술·§6 `FDS-AML-DELEGATED`·§12 위임 서술에서 "AML/Travel Rule"→"AML", `REQUEST_TRAVEL_RULE_INFO` 후보 action 제거(`OPEN_AML_CASE`/`REGULATORY_REPORT` 위임은 유지). bo-api/bo-web `travelRuleReference` 삭제(RuleRef.reference travel MISSING_FIELD 본문 소멸 — `MISSING_FIELD`는 데이터품질 reasonCode로 잔존, RuleRef reference variant 주석 불변). FATF R.16 party 정보 요건(originator/counterparty 필드 근거)은 규제 근거로 유지. §5.4·§5.5 엔진 계약 나머지 무변경. | api-designer. 코드=truth. 근거=aegis-aml 84997e1(feature/remove-travel-rule)·삭제된 fds `ActionType`(REQUEST_TRAVEL_RULE_INFO)·`CaseType`(CRYPTO_TRAVEL_RULE)·Flyway V9 DROP. |
 | 2026-07-08 | v3.7 | **bo-api 케이스 종결 위임 wire 계약 역전파(코드=truth, feature/aml-fds-case-triage-disposition, 라이브 검증 7fca1a0).** §4.4 케이스 API 표 아래에 **bo-api 케이스 종결 위임 계약 note** 신설 — bo-web 1클릭 "종결"의 BFF 계약 `CaseCloseRequest{closeReason, memo}` 를 엔진 `POST /fds/cases/{caseId}/close`(terminal `closedStatus` 필수·종결 전 `PENDING_APPROVAL` 경유 필수, §11.6 전이표)로 위임할 때 bo-api 가 ① `closeReason` 계열에서 `closedStatus` 파생(`FP_*`→`CLOSED_FALSE_POSITIVE`·`CONFIRMED_*`→`CLOSED_CONFIRMED`·`ESCALATED_AML`→`CLOSED_REPORTED`·`OTHER`→확정 계열 보수 기본값, DB §4.11) ② 상신 전 상태(`OPEN`/`ASSIGNED`→`IN_REVIEW`→`PENDING_APPROVAL`·`IN_REVIEW`/`ESCALATED`→`PENDING_APPROVAL`) 자동 선행(1클릭 유지·그 외 불법 전이 409 표면화) ③ `closeReason` 8종 검증 위임·스텁 공통화. 종결은 `CASE_CLOSE` 4-eyes(`COMPLIANCE_MANAGER`)라 응답 `pendingApproval`→`SUBMITTED`/else `CLOSED`, 비운영 스텁은 `CLOSED_<closeReason>` 자체 표기 유지. 엔진 계약(§4.4·§5.5·§8) 무변경 — bo-api 위임 어댑팅 계약만 명문화. | aegis-java-implementer(spec). 코드=truth. 근거=bo-api `fds/service/FdsDecisionCaseStubService.closeCase`(closedStatusFor·PENDING_APPROVAL 자동 선행·CLOSE_REASONS 검증). 설계서 §11.6·DB §4.11 참조. |
 | 2026-07-07 | v3.6 | **FDS 룰 변수(파라미터) 편집 4-eyes 폐루프 역전파(코드=truth, RULE_PARAM).** (1) §4.6 표에 `GET /admin/fds/rules/{ruleId}/params`(scope `fds:admin:rule`, 4-eyes —)·`POST /admin/fds/rules/{ruleId}:update-params`(scope `fds:admin:rule`, **4-eyes 필수**, 202+`approvalRequestId`) 2행 추가. (2) §5.9b DTO 절 신설 — `RuleParamsResponse`(`ruleId`/`params[]`/`pendingApprovalId`)·`RuleParamItem`(`key`/`label`/`unit`/`defaultValue`/`currentValue`/`min`/`max`/`integerOnly`/`editable`/`overridden`)·`UpdateRuleParamsRequest`(`params map<string,string>`/`reason`)·`UpdateRuleParamsResponse`(`approvalRequestId`)를 `RuleParamDtos` 코드와 1:1 기재. `unit`은 자유 텍스트. (3) §8 4-eyes 표에 `POST :update-params → RULE_PARAM(subjectRef=rule_id) → COMPLIANCE_MANAGER` 행 추가(코드 `RuleParamService`가 `ApprovalLine.COMPLIANCE_MANAGER`로 상신). (4) `subject_kind` 참조 전수 **9종→10종**(`RULE_PARAM` 추가) — 헤더·§1.1 원칙·§4.9 approvals 필터·§5.12 `ApprovalRequestDto`·OpenAPI `SubjectKind` enum·§13 downstream. | aegis-java-implementer. 코드=truth. 근거=fds-svc `adapter/in/rest/RuleAdminController`(listParams·updateParams)·`adapter/in/rest/dto/RuleParamDtos`·`application/usecase/RuleParamService`(RULE_PARAM 상신·`RULE_PARAM_UPDATE` 감사)·`domain/enums/SubjectKind`·`db/migration/V7__rule_param_overrides.sql`. |
 | 2026-07-06 | v3.5 | **FDS 룰 결재 상세 AS-IS/TO-BE 표시 역전파(코드=truth, fix/approval-as-is-to-be).** `ApprovalRequestDto.payloadJson`을 API/OpenAPI에 노출하고, RULE 활성화 payload에 `ruleName`·`statusBeforeSubmit`·`statusAfterSubmit`·`statusAfterApproval`·`simulationId`·`reason`, rollback payload에 `ruleName`·`fromVersion`·`toVersion`·`statusBeforeApproval`·`statusAfterApproval`·`reason`을 보존해 bo-api 결재함 `payloadDiff[{field,before,after}]`가 변경 전/후 표를 구성한다. raw PII/secret 미포함 불변. | aegis-java-implementer. 근거=fds-svc `ApprovalRequestDto`·`RuleAdminService`, bo-api `FdsApprovalStubService` 엔진/로컬 diff 파생, bo-web `FdsApprovals` 변경 전/후 컬럼. |

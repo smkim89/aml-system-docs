@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **6.13** | **2026-07-09** | **SM Kim** | **Travel Rule 기능 전면 제거(코드=truth, feature/remove-travel-rule, aegis-aml 84997e1, fds V9·aml V31·bo-api V14).** FDS·AML 양 도메인에서 Travel Rule 을 현 단계 불필요로 판단해 완전 삭제 — FDS 영향: ① **액션 제거** — `ActionType` 에서 `REQUEST_TRAVEL_RULE_INFO`(Travel Rule 정보 요청) 삭제, §10.1 ACT-001 조치 종류 23→**22종**(API `ActionType` 정본, DB §4 CHECK 재생성). ② **케이스 타입 제거** — `CaseType` 에서 `CRYPTO_TRAVEL_RULE`(송금 Travel Rule) 삭제, §11 케이스 유형·§1.6.2·§13.1 REG 화면 11→**10종**(fds_cases.case_type CHECK 재생성). ③ **탐지 룰·피처 제거** — §8.2 SFDS-DEC-001 `TRAVEL_RULE_MISSING` 룰·`crypto.travelRuleMissing` 피처·룰빌더 travel 시드 조건·`RuleRef.reference`(payoutMethod/requiredFields/missingFields) 참조 드릴인 제거. ④ **AML 위임 서술 정정** — "STR/CTR/Travel Rule" 위임 서술을 "STR/CTR" 로 정정(AML 규제 보고 위임 표면에서 Travel Rule 제외). ⑤ **규제 팩 정정** — §16.2 카탈로그의 `TRAVEL_RULE` 팩·PH_AMLC 등 규제 팩 서술의 Travel Rule 임계 병기 제거(PCI 팩은 유지). Flyway fds **V9__drop_travel_rule**(action_type·case_type CHECK 재생성 22/10 값·feature `crypto.travelRuleMissing` seed 제거). i18n(ko/en) travel 키 제거. 과거 이력(v6.9 payout-method·v3.6 ACT-001 23종 등)은 역사 기록으로 유지. | 근거=aegis-aml `services/{fds-svc,bo-api,bo-web}` 84997e1(`ActionType` 22종·`CaseType` 10종·`V9__drop_travel_rule.sql`·룰 빌더/피처/참조 삭제). §02 AML 정의서·§03 IAM 정의서·DB/API 정본 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **6.12** | **2026-07-08** | **SM Kim** | **§11.1 SFDS-CASE-001 BR-007a 신설 — 1클릭 케이스 종결 bo-api 위임 wire 계약(코드=truth, feature/aml-fds-case-triage-disposition, 라이브 검증 7fca1a0).** 화면 "종결"의 사유 코드·메모만 받는 1클릭 흐름을 엔진 종결 계약(terminal `closedStatus` 필수·종결 전 `PENDING_APPROVAL` 경유 필수, §1.6.1·설계서 §11.6)으로 잇기 위해 bo-api 위임 계층이 ① `closeReason` 계열→`closedStatus` 파생(`FP_*`→CLOSED_FALSE_POSITIVE·`CONFIRMED_*`→CLOSED_CONFIRMED·`ESCALATED_AML`→CLOSED_REPORTED·`OTHER`→확정 계열 보수 기본값, DB §4.11) ② 상신 전 상태(`OPEN`/`ASSIGNED`→`IN_REVIEW`→`PENDING_APPROVAL`·`IN_REVIEW`/`ESCALATED`→`PENDING_APPROVAL`) 자동 선행(불법 전이는 엔진 409 표면화) ③ closeReason 8종 검증 위임·스텁 공통화를 수행함을 명문화. 종결은 여전히 `CASE_CLOSE` 4-eyes(BR-001)로 종결상신(`SUBMITTED`) 후 다른 승인자 종결. 화면 정의·enum·엔진 계약 무변경 — bo-api 위임 어댑팅만 신설. | 근거=bo-api `fds/service/FdsDecisionCaseStubService.closeCase`(closedStatusFor·PENDING_APPROVAL 자동 선행·CLOSE_REASONS 검증). API §4.4(케이스 종결 위임 note)·설계서 §11.6·DB §4.11 상호 참조. 코드=truth. PPT 재빌드는 후속. |
 | **6.11** | **2026-07-07** | **SM Kim** | **룰 변수(파라미터) 편집 4-eyes 폐루프 신설 — 룰 상세에서 임계값·건수·윈도우 변수 수정 → `RULE_PARAM` 결재 → 승인 시 엔진 평가 즉시 반영(코드=truth, feature/fds-rule-param-editing).** ① **§6.2 SFDS-RULE-002 변수 편집 섹션 신설**: 룰 상세 하단 "임계·변수 편집" — 변수 카탈로그는 룰 `ruleJson` 수치 리프(임계금액·건수·윈도우분)에서 결정적 유도(`GET /api/v1/admin/fds/rules/{ruleId}/params`), 항목별 라벨·단위·기본값(리터럴)·현재 유효값(resolved: 오버라이드→전역 변수→리터럴)·min/max·정수전용·editable 노출. `[변경 상신]` = `POST .../rules/{ruleId}:update-params` 🔒 — **룰 단위 전체 셋 원자 제출**, 202 + `approvalRequestId`, 진행 중 결재 존재 시 pending 배지 + 재상신 차단. ② **결재 subject `RULE_PARAM` 신설**(subject_kind 9종→**10종**, 대상=`rule_id`) — §12.1 결재함·§16.5 4-eyes 표 동기화. 승인(EXECUTED) 시 엔진(fds-svc)이 `fds.fds_rule_param_overrides`(DB §5.36)에 override 셋 원자 적용, **엔진은 평가마다 룰·override 를 DB 신선 조회(캐시 없음)하므로 이후 인입 거래부터 새 임계 기준으로 탐지결정 산출**(폐루프). 반려·미승인 시 기존 리터럴 유지. ③ 검증 파이프라인: unknown key·read-only 변수·[min,max] 범위·정수전용 위반 상신 거부(400). ④ bo-web 파라미터 편집 폼은 AML 보고서 룰(REPORT_RULE_PARAM)과 공통 컴포넌트(`components/common/RuleParamEditForm`) 재사용. | 근거=fds-svc `RuleParamService`·`RuleParamCatalog`·`RuleEngine`(override resolve)·Flyway `V7__rule_param_overrides.sql`, bo-api `FdsRuleParamService`(위임+데모 stub 폐루프, V12), bo-web `FdsRuleDetail`·`RuleParamEditForm`·`useRuleParams/useUpdateRuleParams`. API §4.6·§5.9b / DB §5.36 상호 참조. 회귀 방어: local-ci `check_4eyes_contract` RULE_PARAM 폐루프 가드 + `RuleParamClosedLoopIntegrationTest`(Testcontainers, 변경 전/후 탐지결정 차이). |
 | **6.10** | **2026-07-02** | **SM Kim** | **데모 데이터 정직화 — FDS 판정을 실 인입 payload+실 룰 기반으로(코드=truth, feature/fds-demo-data-honesty · AML §7.1 BR-DEMO-HONESTY[기능정의서(AML) v9.27]의 FDS 확장).** §8.2 SFDS-DEC-002 **BR-005 신설**·§11.1 SFDS-CASE-001 **BR-005 신설**: (1) **동일 거래 양쪽 인입** — 시뮬레이터가 동일 nested `transaction` 객체(memberRef·transactionRef·channel·amount·currency·corridor·receiverName/Country·senderHolderName)를 FDS·AML 에 전송, `FdsIngestTestController.TestEvent` 가 payload 를 그대로 소비(기존 4필드만 소비→버려졌던 나머지 흡수). (2) **FDS 라이브 판정=실 payload+실 룰** — `ingestLiveDecision` 이 `transactionRef` 를 payload 원문 그대로 사용(조작 `txn-live-{seq}` 폐기), `FdsRuleCatalog` ACTIVE 룰을 실 거래 속성(금액밴드·채널·corridor·FDS 신호)으로 실평가해 ALLOW/REVIEW/BLOCK·발동 룰·점수 산출, hash 파생(seq→score/channel/amount/corridor) 전면 폐기 → **한 거래가 FDS 판정·AML 알림에 동일 `transactionRef`**. (3) 케이스 auto-open 실 판정 기반(4-eyes 유지)·룰 드릴다운 실근거/"상세 근거 미제공"(조작 금지)·**seed 픽스처(2 판정+2 케이스) 폐기**·인입 0=빈 목록(정직 문구)·엔진 위임·prod fail-closed 불변. | 근거=bo-api `FdsDecisionCaseStubService.ingestLiveDecision`(payload transactionRef·실 룰 평가)·`FdsIngestTestController.TestEvent`(nested transaction payload)·`FdsRuleCatalog`, bo-web `FdsDecisionInvestigation`·`FdsCaseManagement`. API §5(인입 이벤트 transaction payload)·integration(동일 transaction FDS+AML 전송)·AML §7.1 BR-DEMO-HONESTY 상호 참조. DB 불변. PPT 재빌드는 후속. |
@@ -102,7 +103,7 @@
 >
 > 운영 테넌트는 hanpass-ph 단일 서비스(내부 코드 `tenant_id = tenant_demo`)입니다. 내부 엔진(`com.aegis.fds`)은 멀티테넌시 키(`tenant_id`/`workspace_id`/`data_scope`)를 그대로 보유하므로(코드 truth — 서비스/워크스페이스 스위처·RLS) 본 문서는 그 구조를 유지하되, **운영 대상은 hanpass-ph(tenant_demo) 하나로 한정**해 서술합니다.
 
-> **서비스 경계(정본 §3, 설계서 §6.1)**: 본 백오피스 화면은 **`bo-web`(Next.js)** 가 렌더하고 **`bo-api`** 경유로만 데이터에 접근합니다(엔진 직접 호출 금지). 탐지·룰·결정·액션·케이스·결재 게이트는 **`fds-svc`** 엔진(`com.aegis.fds` 헥사고날)이, 운영자 IAM·승인 라인 정책·감사 집약은 `bo-api`가, **AML/STR/CTR/Travel Rule 본 케이스·sanction/PEP·규제보고 처리는 `aml-svc`** 가 담당합니다. FDS는 AML 후보(`OPEN_AML_CASE`/`REGULATORY_REPORT`/`REQUEST_TRAVEL_RULE_INFO`)·origin case만 생성하고 `amlCaseRef`(=`fds_cases.aml_case_id`) cross-ref만 노출합니다.
+> **서비스 경계(정본 §3, 설계서 §6.1)**: 본 백오피스 화면은 **`bo-web`(Next.js)** 가 렌더하고 **`bo-api`** 경유로만 데이터에 접근합니다(엔진 직접 호출 금지). 탐지·룰·결정·액션·케이스·결재 게이트는 **`fds-svc`** 엔진(`com.aegis.fds` 헥사고날)이, 운영자 IAM·승인 라인 정책·감사 집약은 `bo-api`가, **AML/STR/CTR 본 케이스·sanction/PEP·규제보고 처리는 `aml-svc`** 가 담당합니다. FDS는 AML 후보(`OPEN_AML_CASE`/`REGULATORY_REPORT`)·origin case만 생성하고 `amlCaseRef`(=`fds_cases.aml_case_id`) cross-ref만 노출합니다.
 >
 > **운영자 집계 API 소유 경계(정본)**: **대시보드(SFDS-DASH-001/002)·서비스 관리(SFDS-TNT-001/002/003)·감사 조회(SFDS-AUDIT-001)** 는 **`bo-api`가 소유·집약·인증**하는 운영자 집계 엔드포인트입니다. `fds-svc`/`aml-svc`는 저수준 데이터 API만 제공하며, 엔진 API 명세(`docs/design/api`)에는 운영자 집계 엔드포인트(대시보드/서비스/감사)를 두지 않습니다. 이들 화면의 호출 대상은 **bo-api 소유 경로 `/api/v1/bo/fds/*`**(대시보드/서비스/감사)이며, 과거 엔진 직접 경로 `/api/v1/admin/fds/dashboard|tenants|audit`는 **폐기**되었습니다(API §11.2·§12). 나머지 화면의 API 경로는 fds-svc 엔진 엔드포인트(`/api/v1/fds/*`, `/api/v1/admin/fds/*`)이며 bo-web은 항상 bo-api를 통해 호출합니다(§16.1 소유 열 참조).
 
@@ -118,7 +119,7 @@
 3. **룰 운영** — 5채널(월렛충전·국내송금·해외송금·월렛결제·ATM출금) feature catalog 기반 룰 정의(문장형 빌더/DSL 토글), 기준값 빠른 변경, 버전·4-eyes 결재·활성·롤백·중지(canary)
 4. **명단 운영** — 차단/허용/감시/뮬 네트워크 그룹(종류 9종: 회원·계좌·수단·단말기·가맹점·셀러·IP·이메일·상대방) 정의·등록·해제·연장
 5. **조사·조치** — 결정(Decision) 조회·판정 근거, 대상(Subject) 타임라인, 원본 이벤트 조회, 액션 아웃박스·Capability 매트릭스, 케이스 조사·종결(4-eyes)
-6. **규제·감사** — 한국 Policy Pack(STR/CTR/송금 Travel Rule, PH 운영 시 `PH_AMLC` 옵션 병기) 보고 후보 위임·추적, 운영 변경 감사 로그(append-only, 7년)
+6. **규제·감사** — 한국 Policy Pack(STR/CTR, PH 운영 시 `PH_AMLC` 옵션 병기) 보고 후보 위임·추적, 운영 변경 감사 로그(append-only, 7년)
 
 ### 1.2 플랫폼 구성요소 (관련 모듈)
 
@@ -199,7 +200,7 @@ DB 설계서(`01-fds-db.md` §5, 스키마 `fds`) 기준 주요 테이블입니�
 | `fds_evidence_exports` | 검사대응 export(`export_kind`·`export_format`·`export_status`·`manifest_hash`) | `tenant_id`, `export_id` |
 | `fds_audit_logs` | append-only 감사 로그(`trace_id`, 7년) | `tenant_id`, `audit_id` |
 
-> **AML 위임**: 별도 `fds_regulatory_reports` 테이블은 두지 않습니다. STR/CTR/Travel Rule 본 케이스·보고는 `aml-svc`가 보유하며, FDS는 `fds_cases`(origin) + `aml_case_id`(=`amlCaseRef`)로 cross-ref만 유지합니다.
+> **AML 위임**: 별도 `fds_regulatory_reports` 테이블은 두지 않습니다. STR/CTR 본 케이스·보고는 `aml-svc`가 보유하며, FDS는 `fds_cases`(origin) + `aml_case_id`(=`amlCaseRef`)로 cross-ref만 유지합니다.
 
 ### 1.5 룰 상태 머신 (백오피스 표시 기준)
 
@@ -257,13 +258,13 @@ stateDiagram-v2
 > 종결 상태 3종(`CLOSED_CONFIRMED`/`CLOSED_FALSE_POSITIVE`/`CLOSED_REPORTED`)은 화면에서 "사기 확정 종결 / 오탐 종결 / 보고 후 종결"로 표시합니다. `CLOSED_FALSE_POSITIVE`는 false positive feedback(`/feedback`)에 누적되어 룰 튜닝 근거가 됩니다. 케이스 상태 표시 용어는 전 화면에서 위 mermaid 라벨과 동일하게 **"신규(OPEN)"** 형식으로 통일합니다(§11.1 상태 컬럼 정합).
 > **재오픈(REOPEN)**: 종결 상태(`CLOSED_*`)에서 조사중(`IN_REVIEW`)으로 재오픈할 수 있습니다(설계서 §11.6.1 정본) — ① 재오픈 사유 입력 필수(모달), ② 책임자(`SFDS_CASE:APPROVE` 권한) 이상만 가능, ③ 자기가 종결(승인)한 건은 본인이 재오픈 불가(4-eyes), ④ 감사 로그 기록. 재오픈 횟수 제한 없음, 재오픈 시 SLA 재기산(§11.2 BR-006).
 
-#### 1.6.2 규제 보고 (STR/CTR/Travel Rule) — **aml-svc 위임**
+#### 1.6.2 규제 보고 (STR/CTR) — **aml-svc 위임**
 
-규제 보고의 **본 처리·결재·제출은 `aml-svc`** 가 담당합니다(정본 §4). FDS는 `caseType IN (AML_REVIEW, CRYPTO_TRAVEL_RULE, REGULATORY_REPORT)` origin case와 후보 action(`OPEN_AML_CASE`/`REGULATORY_REPORT`/`REQUEST_TRAVEL_RULE_INFO`)만 생성하고(hanpass-ph는 KR→PH 송금 Travel Rule 위주 — `CRYPTO_TRAVEL_RULE`는 enum 보존, 가상자산 채널 미운영), `fds-aml-handoff` 큐로 위임한 뒤 `amlCaseRef`(=`fds_cases.aml_case_id`)로 진행 상태를 cross-ref 표시합니다. 결재(`DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED`, `approval_status` DB §4.12) 상태머신과 관할 제출 화면은 **AML 기능정의서(`docs/plan/02-aml-sass-functional-spec.md`)** 소관입니다.
+규제 보고의 **본 처리·결재·제출은 `aml-svc`** 가 담당합니다(정본 §4). FDS는 `caseType IN (AML_REVIEW, REGULATORY_REPORT)` origin case와 후보 action(`OPEN_AML_CASE`/`REGULATORY_REPORT`)만 생성하고, `fds-aml-handoff` 큐로 위임한 뒤 `amlCaseRef`(=`fds_cases.aml_case_id`)로 진행 상태를 cross-ref 표시합니다(2026-07-09 Travel Rule 전면 제거 — `CRYPTO_TRAVEL_RULE` 케이스 타입·`REQUEST_TRAVEL_RULE_INFO` 액션 삭제, fds V9). 결재(`DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED`, `approval_status` DB §4.12) 상태머신과 관할 제출 화면은 **AML 기능정의서(`docs/plan/02-aml-sass-functional-spec.md`)** 소관입니다.
 
 ```mermaid
 flowchart LR
-    FDS["fds-svc: REGULATORY_REPORT/OPEN_AML_CASE 후보 + origin case"] -->|fds-aml-handoff (amlCaseRef)| AML["aml-svc: STR/CTR/Travel Rule 본 처리·4-eyes 결재·관할 제출"]
+    FDS["fds-svc: REGULATORY_REPORT/OPEN_AML_CASE 후보 + origin case"] -->|fds-aml-handoff (amlCaseRef)| AML["aml-svc: STR/CTR 본 처리·4-eyes 결재·관할 제출"]
     AML -.상태 cross-ref.-> FDS
 ```
 
@@ -634,7 +635,7 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 │  특금법 (AML/CFT)        ● ON  [▸끄기]    의심거래·고액현금 보고(STR/CTR)    │
 │  개인정보보호법          ● ON  [▸끄기]    개인정보 침해 대응 보고           │
 │  내부통제기준            ● ON  [▸끄기]    내부 감사 케이스 생성             │
-│  Travel Rule / PCI       ○ OFF [▸켜기]*   *가상자산·카드 계약 후 활성화      │
+│  가상자산 / PCI          ○ OFF [▸켜기]*   *가상자산·카드 계약 후 활성화      │
 │                                                                            │
 │  ─ 변경 스테이징(미저장) · 일괄 상신 ──────────────────────────────────── │
 │  스테이징된 토글 변경 → 영향 미리보기: STR 6건 · CTR 2건 (즉시 반영 아님)  │
@@ -646,8 +647,8 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 
 | 항목 (괄호=내부 코드) | 설명 |
 |------|------|
-| 적용 규제 팩 (`compliance_policy`) | **미리 정의된 관할별 규제 팩 카탈로그** — 한국 기본(`KR_BASE`·잠금)·전자금융거래법(`EFIN`)·특금법(`SPECIAL_AML`)·개인정보보호법(`PIPA`)·내부통제기준(`INTERNAL_CONTROL`)·Travel Rule(`TRAVEL_RULE`)/PCI(`PCI`) (설계서 §16.2 카탈로그) — 서비스별 **토글로 활성(ON)/비활성(OFF)** |
-| 토글 상태 | 팩별 ON/OFF. 한국 기본팩은 **ON 잠금(끄기 불가)**, Travel Rule/PCI는 도메인 계약 후에만 ON 가능 |
+| 적용 규제 팩 (`compliance_policy`) | **미리 정의된 관할별 규제 팩 카탈로그** — 한국 기본(`KR_BASE`·잠금)·전자금융거래법(`EFIN`)·특금법(`SPECIAL_AML`)·개인정보보호법(`PIPA`)·내부통제기준(`INTERNAL_CONTROL`)·PCI(`PCI`) (설계서 §16.2 카탈로그 — 구 `TRAVEL_RULE` 팩은 2026-07-09 Travel Rule 전면 제거로 삭제, bo-web `POLICY_PACKS` 5종 정본) — 서비스별 **토글로 활성(ON)/비활성(OFF)** |
+| 토글 상태 | 팩별 ON/OFF. 한국 기본팩은 **ON 잠금(끄기 불가)**, PCI(`PCI`)는 도메인 계약 후에만 ON 가능 |
 | 트리거·보고 양식 | 각 팩이 생성하는 보고 유형 및 양식 포맷(읽기) |
 | 변경 스테이징 | 토글 변경을 즉시 반영하지 않고 스테이징 → 영향받는 STR/CTR 보고 건수 미리보기 → 일괄 상신 |
 | 규제 보고 드릴다운 | `[→ SFDS-REG-001 규제 보고]` — 각 팩이 생성하는 보고 후보 큐로 이동(읽기) |
@@ -656,7 +657,7 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 
 - **BR-001**: 규제 팩은 **미리 정의된 카탈로그**이며 화면은 서비스별 **토글(ON/OFF) 활성화 뷰**다. 토글 변경은 `SFDS_TENANT:ADMIN` 전용.
 - **BR-002**: 토글은 **즉시 반영하지 않고 스테이징**한다 → 영향받는 보고 유형·건수(STR/CTR)를 미리보기로 표시 → **스테이징된 변경을 일괄 `[변경 상신]`**(개별 토글마다 상신 아님) → **4-eyes 결재**(`subjectKind=POLICY_PACK`, 대상=`tenant_id`, 기본 라인 `COMPLIANCE_MANAGER` · 설계서 §11.5·§16.2, API §8) 승인 후 effective. 팩 변경은 규제 보고 큐(SFDS-REG-001) 양식·트리거에 반영된다.
-- **BR-003**: 한국 기본팩은 **ON 잠금**(최소 규제 요건·비활성화 불가). Travel Rule / PCI는 해당 비즈니스 도메인 **계약 후에만 토글 ON 가능**(미계약 시 비활성).
+- **BR-003**: 한국 기본팩은 **ON 잠금**(최소 규제 요건·비활성화 불가). PCI(`PCI`)는 해당 비즈니스 도메인 **계약 후에만 토글 ON 가능**(미계약 시 비활성).
 - **BR-004**: Policy Pack 토글·상신·결재 이력은 감사 로그(SFDS-AUDIT-001)에 기록.
 - **BR-005**: 각 팩이 생성하는 보고 후보 큐는 `[→ SFDS-REG-001 규제 보고]` 드릴다운으로 이동(읽기). 팩 토글이 보고 양식·트리거에 미치는 영향을 SFDS-REG-001에서 확인.
 - **BR-006(모델 차이 — 의도된 설계)**: FDS는 **법령·관할별 규제 팩을 개별 토글하는 카탈로그 모델**이다. **AML 정책팩(AML 기능정의서 §13.2 ④)은 단일 `KR_DEFAULT` baseline 번들(필수·잠금) + 국가·업권 확장 plugin** 모델로, 서비스별 규제 책임 범위 차이에 따른 **의도된 구조 차이**다(AML PRD §13.2 ④ BR-005 참조).
@@ -734,7 +735,7 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 │ 데이터 보존 *   거래·결정 [13]개월 hot / [7]년 cold · 감사 [7]년          │
 │ 마스킹 정책 *   [✓] 민감 식별자 토큰/해시만 저장 (원문 미저장)            │
 │ Policy Pack *   [✓] 한국 기본팩(잠금) [✓] 전자금융거래법 [✓] 특금법         │
-│                 [✓] 개인정보보호법 [✓] 내부통제기준 │ 추가(계약 후): [ ] Travel Rule [ ] PCI │
+│                 [✓] 개인정보보호법 [✓] 내부통제기준 │ 추가(계약 후): [ ] 가상자산 [ ] PCI │
 │ 알림 채널       [Slack #risk-bank-a___] [ops-bank-a@___]                  │
 │ 망 연계         (●) 인터넷(서명)  ( ) 전용선(VPN)                         │
 │                                                       [취소] [등록]      │
@@ -753,7 +754,7 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 | `region` | 데이터 레지던시 리전. 한국 기본, 해외는 별도 동의·계약 |
 | `dataRetention` | 거래·결정 hot/cold 기간, 감사 보존(최소 7년) |
 | `maskingPolicy` | 민감 식별자 토큰/해시 저장 원칙 |
-| `compliance_policy` | 규제 팩 토글 상태(JSONB) — 한국 기본(`KR_BASE`·잠금) + 기본 ON 4팩(`EFIN`·`SPECIAL_AML`·`PIPA`·`INTERNAL_CONTROL`) + 계약 게이트(`TRAVEL_RULE`/`PCI`), 설계서 §16.2 카탈로그 |
+| `compliance_policy` | 규제 팩 토글 상태(JSONB) — 한국 기본(`KR_BASE`·잠금) + 기본 ON 4팩(`EFIN`·`SPECIAL_AML`·`PIPA`·`INTERNAL_CONTROL`) + 계약 게이트(`PCI`) (구 `TRAVEL_RULE` 팩은 2026-07-09 Travel Rule 전면 제거로 삭제), 설계서 §16.2 카탈로그 |
 | `alertChannel` | Slack·이메일·웹훅 |
 | `networkLink` | 인터넷(서명) / 전용선(VPN) |
 
@@ -1787,7 +1788,7 @@ sequenceDiagram
 | 컬럼(표시) | 설명 (괄호=내부 코드) |
 |------|------|
 | 발행시각 | 액션 발행 시각(`requested_at`) |
-| 조치 종류 | 승인 거부(`DECLINE_AUTHORIZATION`) / 거래 차단(`BLOCK_TRANSACTION`) / 자금 보류(`HOLD_FUNDS`) / 보류 연장(`EXTEND_HOLD`) / 보류 해제(`RELEASE_HOLD`) / 거래 취소(`CANCEL_TRANSACTION`) / 거래 역행(`REQUEST_REVERSAL`) / 계정 정지(`SUSPEND_ACCOUNT`) / 수단 정지(`SUSPEND_INSTRUMENT`) / 정산 보류(`HOLD_SETTLEMENT`) / 셀러 지급정지(`SUSPEND_SELLER_PAYOUT`) / 유보금 증액(`INCREASE_RESERVE`) / 증빙 요청(`REQUEST_ADDITIONAL_DOCUMENT`) / 명단 추가(`ADD_TO_GROUP`) / 케이스 개설(`OPEN_CASE`) / 알림 발송(`SEND_ALERT`) / 2차 승인 요청(`REQUIRE_SECOND_APPROVAL`) / 출금 차단(`BLOCK_WITHDRAWAL`) / API 키 정지(`SUSPEND_API_KEY`) / 직원 세션 정지(`SUSPEND_EMPLOYEE_SESSION`) / Travel Rule 정보 요청(`REQUEST_TRAVEL_RULE_INFO`) / AML 케이스 개설(`OPEN_AML_CASE`) / 규제 보고(`REGULATORY_REPORT`) — 총 **23종** (API `ActionType` enum 정본) |
+| 조치 종류 | 승인 거부(`DECLINE_AUTHORIZATION`) / 거래 차단(`BLOCK_TRANSACTION`) / 자금 보류(`HOLD_FUNDS`) / 보류 연장(`EXTEND_HOLD`) / 보류 해제(`RELEASE_HOLD`) / 거래 취소(`CANCEL_TRANSACTION`) / 거래 역행(`REQUEST_REVERSAL`) / 계정 정지(`SUSPEND_ACCOUNT`) / 수단 정지(`SUSPEND_INSTRUMENT`) / 정산 보류(`HOLD_SETTLEMENT`) / 셀러 지급정지(`SUSPEND_SELLER_PAYOUT`) / 유보금 증액(`INCREASE_RESERVE`) / 증빙 요청(`REQUEST_ADDITIONAL_DOCUMENT`) / 명단 추가(`ADD_TO_GROUP`) / 케이스 개설(`OPEN_CASE`) / 알림 발송(`SEND_ALERT`) / 2차 승인 요청(`REQUIRE_SECOND_APPROVAL`) / 출금 차단(`BLOCK_WITHDRAWAL`) / API 키 정지(`SUSPEND_API_KEY`) / 직원 세션 정지(`SUSPEND_EMPLOYEE_SESSION`) / AML 케이스 개설(`OPEN_AML_CASE`) / 규제 보고(`REGULATORY_REPORT`) — 총 **22종** (API `ActionType` enum 정본 — 2026-07-09 `REQUEST_TRAVEL_RULE_INFO` 제거, fds V9) |
 | 대상 시스템 | 조치 전달 대상(`target_system`) |
 | 상태 | 대기 / 결재대기 / 승인됨 / 발행 / 수신확인 / 실패 / 취소 (`PENDING/APPROVAL_REQUIRED/APPROVED/SENT/ACKED/FAILED/CANCELLED`, `action_status` DB §4.9). 재시도 한계 초과분은 DLQ(`fds-actions-dlq`)로 이동 |
 | 오류 | 실패 사유(`error_code`)·재시도 횟수(`retry_count`) 요약 |
@@ -1880,7 +1881,7 @@ sequenceDiagram
 | 컬럼(표시) | 설명 (괄호=내부 코드 `§11.3`) |
 |------|------|
 | 케이스 번호 | 케이스 식별자(`case_id`) |
-| 유형 | (`case_type` enum 정본, DB §4.11) — hanpass-ph 운영: **이상거래 조사**(`FRAUD_REVIEW`) / **AML 조사**(`AML_REVIEW`) / **대포통장 조사**(`MULE_ACCOUNT_REVIEW`) / **규제 보고**(`REGULATORY_REPORT`) / 송금 Travel Rule(`CRYPTO_TRAVEL_RULE`, enum 보존·가상자산 미운영) / Chargeback(`CHARGEBACK_REVIEW`) / 내부 감사(`INTERNAL_AUDIT`) / 가맹점 리스크(`MERCHANT_RISK`). 무역금융·이커머스 정산·B2B 인보이스(`TRADE_FINANCE_REVIEW/ECOMMERCE_SETTLEMENT_REVIEW/B2B_INVOICE_REVIEW`)는 Phase 7 enum 보존·**hanpass-ph 미사용** |
+| 유형 | (`case_type` enum 정본 **10종**, DB §4.11 — 2026-07-09 `CRYPTO_TRAVEL_RULE` 제거, fds V9) — hanpass-ph 운영: **이상거래 조사**(`FRAUD_REVIEW`) / **AML 조사**(`AML_REVIEW`) / **대포통장 조사**(`MULE_ACCOUNT_REVIEW`) / **규제 보고**(`REGULATORY_REPORT`) / Chargeback(`CHARGEBACK_REVIEW`) / 내부 감사(`INTERNAL_AUDIT`) / 가맹점 리스크(`MERCHANT_RISK`). 무역금융·이커머스 정산·B2B 인보이스(`TRADE_FINANCE_REVIEW/ECOMMERCE_SETTLEMENT_REVIEW/B2B_INVOICE_REVIEW`)는 Phase 7 enum 보존·**hanpass-ph 미사용** |
 | 대상 | subject 또는 actor(`subject_ref`, 내부 감사는 actor). **SubjectKey 컴포넌트로 일관 표시**(마스킹 + 클릭 시 `/aml/subjects/{token}` 360 딥링크, `§1.7`·SFDS-DEC/EVT 공통) |
 | 우선순위 | 치명 / 높음 / 중간 / 낮음 (`CRITICAL/HIGH/MEDIUM/LOW`, `case_priority` 4종 DB §4.11) |
 | 담당자 | 배정 분석가(`assigned_to`), 미배정 표시 |
@@ -2020,15 +2021,14 @@ sequenceDiagram
 
 ## 13. 규제 보고 (Policy Pack) — FDS origin / aml-svc 위임
 
-> **책임 경계(정본 §4)**: STR/CTR/Travel Rule 보고의 **본 처리(보고서 작성·4-eyes 결재·관할 규제기관 제출·접수번호 보존)는 `aml-svc`** 소관입니다. FDS는 **후보 생성·트리거·origin case·cross-ref 표시**만 담당하며, 보고를 `fds-aml-handoff`(FIFO) 큐로 `amlCaseRef`(=`fds_cases.aml_case_id`)와 함께 위임합니다. 따라서 본 절의 화면(SFDS-REG-001/002)은 **FDS 백오피스에서 "어떤 거래가 어떤 룰로 규제 보고 후보가 됐고, aml-svc에서 현재 어떤 상태인지"를 모니터링·추적**하는 뷰이며, 실제 보고서 결재·제출 워크플로 상세는 **AML 기능정의서(`docs/plan/02-aml-sass-functional-spec.md`)** 를 정본으로 합니다.
+> **책임 경계(정본 §4)**: STR/CTR 보고의 **본 처리(보고서 작성·4-eyes 결재·관할 규제기관 제출·접수번호 보존)는 `aml-svc`** 소관입니다. FDS는 **후보 생성·트리거·origin case·cross-ref 표시**만 담당하며, 보고를 `fds-aml-handoff`(FIFO) 큐로 `amlCaseRef`(=`fds_cases.aml_case_id`)와 함께 위임합니다. 따라서 본 절의 화면(SFDS-REG-001/002)은 **FDS 백오피스에서 "어떤 거래가 어떤 룰로 규제 보고 후보가 됐고, aml-svc에서 현재 어떤 상태인지"를 모니터링·추적**하는 뷰이며, 실제 보고서 결재·제출 워크플로 상세는 **AML 기능정의서(`docs/plan/02-aml-sass-functional-spec.md`)** 를 정본으로 합니다.
 
-한국 Policy Pack(`§16.2`)을 기본으로 STR/CTR/Travel Rule 후보를 자동 생성합니다. 서비스별 관할에 따라 양식·트리거가 plugin 으로 적용됩니다(`§16.4`).
+한국 Policy Pack(`§16.2`)을 기본으로 STR/CTR 후보를 자동 생성합니다. 서비스별 관할에 따라 양식·트리거가 plugin 으로 적용됩니다(`§16.4`). (2026-07-09 Travel Rule 전면 제거 — `CRYPTO_TRAVEL_RULE` 케이스 타입·Travel Rule 보고 유형 삭제, fds V9.)
 
 | 유형 | 명칭 | 트리거 기준 | 설명 |
 |------|------|------------|------|
 | **CTR** | 고액 현금성 거래 보고 | **금액 기준 (자동)** | 단일/누계가 기준 금액 이상이면 정상 거래라도 의무 보고 |
 | **STR** | 의심 거래 보고 | **사유 기준 (금액 무관)** | 소득 대비 과다·분할·제3자 자금 등 의심 정황 시 보고 |
-| **Travel Rule** | 송금 송수신 정보 제공 | **국경 간 송금 (특금법)** | 일정 금액 이상 송금 시 송수신자 정보 제공 의무 (hanpass-ph는 KR→PH 송금 대상 — `CRYPTO_TRAVEL_RULE` enum 보존, 가상자산 채널 미운영) |
 
 > **PEP·제재대상(SANCTION) 책임 경계**: 정치적 주요인물(PEP)·제재대상 명단은 외부 명단 DB 대조가 필요한 항목으로 **외부 스크리닝(서비스 KYC/WLF) 소관**입니다. FDS 는 그 결과 reference 만 평가 입력으로 사용하며, STR 사유 카탈로그에는 포함하지 않습니다(`§5.2`).
 
@@ -2038,7 +2038,7 @@ sequenceDiagram
 |------|------|
 | **기능 ID** | SFDS-REG-001 |
 | **권한** | `SFDS_REG:AUTHOR` (검토) / `SFDS_REG:READ` (조회) |
-| **API** | `GET /api/v1/fds/cases?caseType=REGULATORY_REPORT,AML_REVIEW,CRYPTO_TRAVEL_RULE` (FDS origin) → 본 처리·제출은 **aml-svc** API |
+| **API** | `GET /api/v1/fds/cases?caseType=REGULATORY_REPORT,AML_REVIEW` (FDS origin) → 본 처리·제출은 **aml-svc** API |
 
 #### 화면 레이아웃
 
@@ -2052,12 +2052,11 @@ sequenceDiagram
 │ ────────────┼────┼─────────┼───────────┼──────────────┼────────┼─────────┼│
 │ reg_rep_01..│CTR │ subj_x..│ ₱560,000  │ PH 월렛충전 고액 차단 │ 검토중 │07-10 17시│▶│
 │ reg_rep_02..│STR │ subj_y..│ —         │ PH 국내송금 분할입금 검토│ 검토중 │07-08 17시│▶│
-│ reg_rep_03..│TR  │ subj_z..│ $5,200    │ PH 해외송금 고액 검토 │ 작성   │07-11 17시│▶│
+│ reg_rep_03..│STR │ subj_z..│ —         │ PH 해외송금 제3자자금 검토│ 작성   │07-11 17시│▶│
 ├──────────────────────────────────────────────────────────────────────────┤
 │ [ 보고 유형 안내 ]                                                        │
 │  CTR  고액 현금성 — 기준 금액 이상이면 정상 거래도 의무 보고              │
 │  STR  의심 거래 — 금액 무관, 의심 정황(소득 불일치·분할·제3자) 시 보고     │
-│  TR   Travel Rule — KR→PH 송금 송수신자 정보 제공 의무                    │
 │  ※ PEP·제재 명단 대조는 외부 스크리닝(KYC/WLF) 소관                       │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -2067,7 +2066,7 @@ sequenceDiagram
 | 컬럼(표시) | 설명 |
 |------|------|
 | 보고(후보) 번호 | FDS origin case 식별자(`case_id`) + aml-svc cross-ref(`amlCaseRef`) |
-| 유형 | CTR / STR / Travel Rule(TR) (`case_type` = `REGULATORY_REPORT`/`AML_REVIEW`/`CRYPTO_TRAVEL_RULE`) |
+| 유형 | CTR / STR (`case_type` = `REGULATORY_REPORT`/`AML_REVIEW`) |
 | 대상 | subject(마스킹) |
 | 금액 | 보고 대상 금액·통화(STR 은 무관) |
 | 트리거 룰 | 후보를 생성한 룰(matched rule) |
@@ -2078,9 +2077,9 @@ sequenceDiagram
 
 - **BR-001**: 필터 `보고 유형 / 상태 / 기한 이전 / 대상`. 헤더에 기한 임박·24h 내·기한 초과 요약 카운트.
 - **BR-002**: 기한 임박(≤24h) 행 경고색, 초과 행 위험색 + 컴플라이언스 책임자 알림.
-- **BR-003**: CTR/STR/TR 구분 뱃지. 트리거 룰 표시. 행 클릭 → 상세(SFDS-REG-002).
+- **BR-003**: CTR/STR 구분 뱃지. 트리거 룰 표시. 행 클릭 → 상세(SFDS-REG-002).
 - **BR-004**: **보고 유형 안내** 범례를 노출하고, PEP·제재 명단 대조는 외부 스크리닝 소관임을 명시(`§5.2`).
-- **BR-005**: 적용 보고 유형은 서비스 Policy Pack 에 따라 달라짐(한국 기본 CTR/STR + Travel Rule 옵션). 미적용 유형은 큐에 표시 안 함.
+- **BR-005**: 적용 보고 유형은 서비스 Policy Pack 에 따라 달라짐(한국 기본 CTR/STR). 미적용 유형은 큐에 표시 안 함.
 
 ### 13.2 SFDS-REG-002 · 보고 후보 상세 / aml-svc 위임 추적
 
@@ -2090,7 +2089,7 @@ sequenceDiagram
 | **권한** | 조회 `SFDS_REG:READ` (FDS origin·트리거·근거). **보고서 검토·승인·제출은 aml-svc 권한** |
 | **API** | (FDS) `GET /api/v1/fds/cases/{caseId}` + `amlCaseRef` → (aml-svc) 보고 검토·승인·제출 API (AML PRD 소관) |
 
-> 본 화면은 FDS 백오피스에서 **후보 생성 근거(트리거 룰·집계값·기준값·연결 거래)와 aml-svc 위임 상태(`amlCaseRef`)** 를 추적합니다. **책임 경계**: 규제 보고 본 처리(STR/CTR/Travel Rule 의 실제 보고서 작성·4-eyes 결재·관할 제출)는 한국 Policy Pack 소관인 **aml-svc 위임** 영역으로, FDS 백오피스는 '보고 후보 식별 → aml-svc 핸드오프(`REGULATORY_REPORT` 액션) → 위임 후 상태 조회'까지만 담당합니다. 따라서 본 화면에는 **직접 결재·제출 버튼을 두지 않으며**, 보고서 작성·결재·제출은 aml-svc 화면(AML PRD)에서 수행하고 FDS 화면에는 `[aml-svc 보고서로 이동]` 딥링크만 둡니다.
+> 본 화면은 FDS 백오피스에서 **후보 생성 근거(트리거 룰·집계값·기준값·연결 거래)와 aml-svc 위임 상태(`amlCaseRef`)** 를 추적합니다. **책임 경계**: 규제 보고 본 처리(STR/CTR 의 실제 보고서 작성·4-eyes 결재·관할 제출)는 한국 Policy Pack 소관인 **aml-svc 위임** 영역으로, FDS 백오피스는 '보고 후보 식별 → aml-svc 핸드오프(`REGULATORY_REPORT` 액션) → 위임 후 상태 조회'까지만 담당합니다. 따라서 본 화면에는 **직접 결재·제출 버튼을 두지 않으며**, 보고서 작성·결재·제출은 aml-svc 화면(AML PRD)에서 수행하고 FDS 화면에는 `[aml-svc 보고서로 이동]` 딥링크만 둡니다.
 
 #### 화면 레이아웃
 
@@ -2363,7 +2362,7 @@ sequenceDiagram
 | D-05 | ML (외부 score / 내장 / 둘 다) | 초기 외부 score + 후속 내장 | 결정 상세(SFDS-DEC-002) 점수 표시·산출 로직 미노출(외부 소관) |
 | D-06 | raw payload (미저장 / 암호화 / 서비스별) | **미저장 기본**(`payload_hash`만) | 이벤트 조회(SFDS-EVT)·매핑(SFDS-MAP) 마스킹·미저장 표시 |
 | D-07 | connector SDK (Java / multi-language / no SDK) | Java + OpenAPI sample | 커넥터 등록(SFDS-CONN-003) 연동 방식·서명 안내 |
-| D-08 | crypto 지원 (별도 제품 / domain pack) | domain pack | 룰 도메인·케이스 유형(Travel Rule)·규제(TR) 포함 |
+| D-08 | crypto 지원 (별도 제품 / domain pack) | domain pack | 룰 도메인 포함 (2026-07-09 Travel Rule 케이스 유형·규제 유형·전용 규제 팩 제거, fds V9) |
 | D-09 | 내부 감사 지원 (별도 제품 / domain pack) | domain pack | 룰 도메인(내부감사)·케이스 유형(INTERNAL_AUDIT)·actor 기반 조사 포함 |
 | **D-14** | 실시간 판단 API 장애 정책 | domain별 tenant policy(`fail_policy`) | 커넥터/서비스 설정의 **장애정책**(`FAIL_CLOSED`/`FAIL_OPEN`/`CASE_ONLY`) 표시·결정 화면 상태 반영 |
 | AML cross-ref | `amlCaseRef` = `fds_cases.aml_case_id`(VARCHAR(96) NULL) | 확정 | 규제 보고(SFDS-REG)·케이스 화면의 aml-svc 위임 상태 cross-ref |

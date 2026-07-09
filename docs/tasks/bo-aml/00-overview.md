@@ -12,7 +12,7 @@
 | **S2 대시보드·고객사** | `02-stage2-tenant-dashboard.md` | AML-DASH-001 · AML-TNT-001/002(4탭 — 보고기관 패널·소스 인입 신호)/003 | 3~9 | S1 |
 | **S3 WLF·명단** | `03-stage3-wlf-watchlist.md` | AML-WLF-001/002/003/**004(2탭)** · AML-WL-001(3탭)/002/**003(2탭)** | 10~20 | S1 |
 | **S4 RA·CDD·정책 앞단** | `04-stage4-ra-cdd-policy.md` | AML-CTRY-001(2탭) · AML-RA-001(2탭)/003(3탭) · **AML-CDD-002(2탭)** · AML-RA-002(4탭) · **AML-HRR-001(2탭)** · AML-CDD-001(3탭) | 21~38 | S1 (S3 권장 — WLF 연계 표시) |
-| **S5 TM·케이스·규제 보고·TR** | `05-stage5-tm-case-report.md` | AML-TM-001(2탭)/002 · AML-CASE-001/002(4탭) · AML-REP-001(3탭)/002(3탭) · **AML-IRA-001(3탭)** · AML-TR-001(3탭) | 39~58 | S1·S3·S4 |
+| **S5 TM·케이스·규제 보고** | `05-stage5-tm-case-report.md` | AML-TM-001(2탭)/002 · AML-CASE-001/002(4탭) · AML-REP-001(3탭)/002(3탭) · **AML-IRA-001(3탭)** · ~~AML-TR-001(3탭)~~(제거됨 2026-07-09) | 39~58 | S1·S3·S4 |
 | **S6 정책팩·결재·통계·내부통제·감사·인입** | `06-stage6-approval-stat-audit-ingest.md` | AML-PP-001(2탭) · AML-APR-001 · **AML-STAT-001(2탭)** · **AML-EDU-001(2탭)** · AML-AUD-001(3탭) · **AML-ING-001(2탭)** | 59~70 | S1 (4-eyes 수렴점) |
 
 ```mermaid
@@ -52,7 +52,7 @@ graph LR
 | AML-REP-001 STR/CTR 후보 3탭 | 47~49 | §9.1 | S5 |
 | AML-REP-002 보고 상세 3탭(보고기관 헤더·의심유형·FIU 폐루프) | 50~52 | §12-A.8 | S5 |
 | **AML-IRA-001 기관 위험평가 지표 보고 3탭** | 53~55 | **§12-B.2** | S5 |
-| AML-TR-001 Travel Rule 3탭 | 56~58 | §10.1 | S5 |
+| ~~AML-TR-001 Travel Rule 3탭~~ 제거됨(2026-07-09 Travel Rule 전면 제거) | ~~56~58~~ | ~~§10.1~~ | ~~S5~~ |
 | AML-PP-001 Policy Pack 2탭 | 59~60 | §12-A.9 | S6 |
 | AML-APR-001 결재 대기함 | 61 | §11.1 | S6 |
 | **AML-STAT-001 STR·룰 효과성 2탭** | 62~63 | **§12-B.3** | S6 |

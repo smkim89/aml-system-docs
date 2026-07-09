@@ -202,17 +202,17 @@ stateDiagram-v2
 | `REPORT` | 규제 보고 후보 |
 
 ### 4.8 action_type (§11.2)
-> **정본 = API `ActionType` enum(전수 23종)**. 본 DB enum은 API 명세 `docs/design/api/01-fds-api.md` §9 `ActionType`과 1:1로 동기화한다(설계서 §11.2/§15의 서술이 어긋날 경우 API enum이 우선). 코드값은 DB 저장값.
+> **정본 = API `ActionType` enum(전수 22종)**. 본 DB enum은 API 명세 `docs/design/api/01-fds-api.md` §9 `ActionType`과 1:1로 동기화한다(설계서 §11.2/§15의 서술이 어긋날 경우 API enum이 우선). 코드값은 DB 저장값. **Travel Rule 기능 전면 제거(V9)로 `REQUEST_TRAVEL_RULE_INFO` 폐기**(구 23종→22종).
 
-`DECLINE_AUTHORIZATION` / `BLOCK_TRANSACTION` / `HOLD_FUNDS` / `EXTEND_HOLD` / `RELEASE_HOLD` / `CANCEL_TRANSACTION` / `REQUEST_REVERSAL` / `SUSPEND_ACCOUNT` / `SUSPEND_INSTRUMENT` / `HOLD_SETTLEMENT` / `SUSPEND_SELLER_PAYOUT` / `INCREASE_RESERVE` / `REQUEST_ADDITIONAL_DOCUMENT` / `ADD_TO_GROUP` / `OPEN_CASE` / `SEND_ALERT` / `REQUIRE_SECOND_APPROVAL` / `BLOCK_WITHDRAWAL` / `SUSPEND_API_KEY` / `SUSPEND_EMPLOYEE_SESSION` / `REQUEST_TRAVEL_RULE_INFO` / `OPEN_AML_CASE` / `REGULATORY_REPORT` (23종)
+`DECLINE_AUTHORIZATION` / `BLOCK_TRANSACTION` / `HOLD_FUNDS` / `EXTEND_HOLD` / `RELEASE_HOLD` / `CANCEL_TRANSACTION` / `REQUEST_REVERSAL` / `SUSPEND_ACCOUNT` / `SUSPEND_INSTRUMENT` / `HOLD_SETTLEMENT` / `SUSPEND_SELLER_PAYOUT` / `INCREASE_RESERVE` / `REQUEST_ADDITIONAL_DOCUMENT` / `ADD_TO_GROUP` / `OPEN_CASE` / `SEND_ALERT` / `REQUIRE_SECOND_APPROVAL` / `BLOCK_WITHDRAWAL` / `SUSPEND_API_KEY` / `SUSPEND_EMPLOYEE_SESSION` / `OPEN_AML_CASE` / `REGULATORY_REPORT` (22종)
 
-> 위임: `OPEN_AML_CASE`, `REGULATORY_REPORT`, `REQUEST_TRAVEL_RULE_INFO`는 fds-svc가 후보를 생성하나 실제 케이스/보고 처리는 **aml-svc**로 위임된다(§9).
+> 위임: `OPEN_AML_CASE`, `REGULATORY_REPORT`는 fds-svc가 후보를 생성하나 실제 케이스/보고 처리는 **aml-svc**로 위임된다(§9).
 >
 > **정규화 매핑(설계서 §15의 비정본 verb → 정본 enum)**: 설계서 §15에 흩어진 도메인별 'verb'는 본 enum에 다음으로 매핑하여 저장한다. 별도 코드값을 신설하지 않는다.
 > - `SUSPEND_MERCHANT`(§15.5 PG / §15.8 마켓플레이스) → `SUSPEND_INSTRUMENT` (대상 `target_ref`=merchant/seller token). 미지원 채널은 `OPEN_CASE` + `case_type=MERCHANT_RISK`로 강등.
 > - `SEND_SECURITY_ALERT`(§15.11 내부감사) → `SEND_ALERT`.
 > - `CHALLENGE`/`REVIEW`(§15.2/§15.5) → action 아님. decision enum(§4.7)으로 분류. 추가 인증 의도면 `SEND_ALERT`로 매핑.
-> - `OPEN_*_CASE`(`OPEN_CHARGEBACK_REVIEW`/`OPEN_MULE_ACCOUNT_CASE`/`OPEN_MERCHANT_RISK_CASE`/`OPEN_TRADE_FINANCE_CASE`/`OPEN_INTERNAL_AUDIT_CASE`/`OPEN_COMPLIANCE_CASE`) → `action_type=OPEN_CASE` + `case_type=<§4.10>` 조합. `OPEN_COMPLIANCE_CASE`(코인 룰 §10.2)는 `case_type=AML_REVIEW`(또는 Travel Rule 맥락 시 `CRYPTO_TRAVEL_RULE`)로 매핑.
+> - `OPEN_*_CASE`(`OPEN_CHARGEBACK_REVIEW`/`OPEN_MULE_ACCOUNT_CASE`/`OPEN_MERCHANT_RISK_CASE`/`OPEN_TRADE_FINANCE_CASE`/`OPEN_INTERNAL_AUDIT_CASE`/`OPEN_COMPLIANCE_CASE`) → `action_type=OPEN_CASE` + `case_type=<§4.10>` 조합. `OPEN_COMPLIANCE_CASE`(코인 룰 §10.2)는 `case_type=AML_REVIEW`로 매핑.
 
 ### 4.9 action_status (§14.5 outbox)
 `PENDING` / `APPROVAL_REQUIRED` / `APPROVED` / `SENT` / `ACKED` / `FAILED` / `CANCELLED`
@@ -220,7 +220,9 @@ stateDiagram-v2
 > **`ACKED` 전이 트리거**: `SENT → ACKED`는 외부 시스템 어댑터가 조치 수신확인(ack)을 보고할 때 전이된다 — `fds-actions` relay 후 결과 콜백(`FdsActionResult.status='ACKED'`)을 `ActionResultConsumer`(`aws` 프로파일)가 수신해 해당 outbox row를 멱등 전이(`Action.markAcked()`). ack 실패 보고는 `SENT → FAILED`(백오프 재시도, §5.12). `aws` 프로파일이 아닌 로컬/stub 환경에서는 ack 콜백 경로가 비활성이라 `SENT`에 머문다.
 
 ### 4.10 case_type (§11.3)
-`FRAUD_REVIEW` / `AML_REVIEW` / `CHARGEBACK_REVIEW` / `MULE_ACCOUNT_REVIEW` / `CRYPTO_TRAVEL_RULE` / `INTERNAL_AUDIT` / `MERCHANT_RISK` / `REGULATORY_REPORT` / `TRADE_FINANCE_REVIEW` / `ECOMMERCE_SETTLEMENT_REVIEW` / `B2B_INVOICE_REVIEW`
+> **Travel Rule 기능 전면 제거(V9)로 `CRYPTO_TRAVEL_RULE` 폐기**(구 11종→10종). `fds_cases_case_type_check` CHECK를 10종으로 재생성.
+
+`FRAUD_REVIEW` / `AML_REVIEW` / `CHARGEBACK_REVIEW` / `MULE_ACCOUNT_REVIEW` / `INTERNAL_AUDIT` / `MERCHANT_RISK` / `REGULATORY_REPORT` / `TRADE_FINANCE_REVIEW` / `ECOMMERCE_SETTLEMENT_REVIEW` / `B2B_INVOICE_REVIEW` (10종)
 
 ### 4.11 case_status / case_priority
 | 도메인 | 코드값 |
@@ -302,7 +304,7 @@ stateDiagram-v2
 | default_region | VARCHAR(32) | N | `'KR'` | | 기본 리전(한국 우선)·전용 배포 region |
 | infra_ref | VARCHAR(160) | Y | | | 배포 메타 참조(매니지드 IaC 워크스페이스/스택 ref, self-hosted 인스턴스/라이선스 ref). 발급·검증 방식은 P8 인프라 설계 확정 |
 | retention_policy | JSONB | Y | | | 보존정책 override |
-| compliance_policy | JSONB | N | `'{"base":"KR_BASE","packs":["EFIN","SPECIAL_AML","PIPA","INTERNAL_CONTROL"],"optional":[]}'` | 설계서 §16.2 | 규제 팩 토글 상태(named pack on/off). `base`=`KR_BASE` 필수·잠금(끄기 불가), `packs`=토글 ON, `optional`=Travel Rule/PCI(계약 후). 변경 4-eyes `subject_kind='POLICY_PACK'` |
+| compliance_policy | JSONB | N | `'{"base":"KR_BASE","packs":["EFIN","SPECIAL_AML","PIPA","INTERNAL_CONTROL"],"optional":[]}'` | 설계서 §16.2 | 규제 팩 토글 상태(named pack on/off). `base`=`KR_BASE` 필수·잠금(끄기 불가), `packs`=토글 ON, `optional`=PCI(계약 후). 변경 4-eyes `subject_kind='POLICY_PACK'` |
 | created_at | TIMESTAMPTZ | N | now() | | |
 | updated_at | TIMESTAMPTZ | N | now() | | |
 
@@ -352,7 +354,7 @@ stateDiagram-v2
 
 > **연동 키 매핑(§5.5·연동 §7.2 정본)**: member.`member_id`→`subject_ref`(tenant keyed HMAC), *.`wallet_transaction_id`/remit.`transfer_number`/walletchg.`charge_order_id`/domestic.`transaction_id`→`transaction_ref`, wallet.`wallet_id`→`account_ref`(instrument 보조키), remit.`account_hash`/domestic.(`proc_id`+`account_number`+`holder_name`)→`counterparty_ref`. **주의**: `member_id`는 `domestic-svc`만 `varchar(36)`, 그 외 `uuid` → 매핑 시 문자열 정규화 후 HMAC. **모든 원천 식별자는 token/keyed-HMAC로만 저장(원문 금지, §7).**
 >
-> **규제 레이어 병기(불변)**: 임계/기한/KoFIU 분류는 그대로 유지한다. PH 운영은 Policy Pack `PH_AMLC` 옵션(`PhRegulatoryThresholds`: CTR ₱500,000·Travel Rule ₱50,000·구조화 5BD·STR 5BD·near 0.90)으로 1줄 병기만 가능하며, **KR KoFIU 임계 숫자·기한을 교체하지 않는다.**
+> **규제 레이어 병기(불변)**: 임계/기한/KoFIU 분류는 그대로 유지한다. PH 운영은 Policy Pack `PH_AMLC` 옵션(`PhRegulatoryThresholds`: CTR ₱500,000·구조화 5BD·STR 5BD·near 0.90)으로 1줄 병기만 가능하며, **KR KoFIU 임계 숫자·기한을 교체하지 않는다.**
 
 ### 5.4 fds_schema_mappings
 원천 payload → canonical field 매핑(§5.1, §12.5 PII allowlist 포함).
@@ -529,7 +531,7 @@ decision API의 reason code 정규화(§12.8 reasonCodes).
 | created_by / updated_by | VARCHAR(128) | Y | | |
 | created_at / updated_at | TIMESTAMPTZ | N | now() | |
 
-> `case_type IN (AML_REVIEW, CRYPTO_TRAVEL_RULE, REGULATORY_REPORT)`는 fds-svc에서 발단(origin)만 기록하고, 실제 조사·STR/CTR/Travel Rule 처리는 **aml-svc**가 보유(§9). fds_cases는 cross-reference(`aml_case_id VARCHAR(96) NULL`)만 보존하며, aml-svc 소유 본 케이스를 가리키는 식별자다(저장 격리상 FK 미설정). API `amlCaseRef`↔DB `aml_case_id`, integration §9.1 동일 타입으로 확정.
+> `case_type IN (AML_REVIEW, REGULATORY_REPORT)`는 fds-svc에서 발단(origin)만 기록하고, 실제 조사·STR/CTR 처리는 **aml-svc**가 보유(§9). fds_cases는 cross-reference(`aml_case_id VARCHAR(96) NULL`)만 보존하며, aml-svc 소유 본 케이스를 가리키는 식별자다(저장 격리상 FK 미설정). API `amlCaseRef`↔DB `aml_case_id`, integration §9.1 동일 타입으로 확정.
 
 ### 5.14 fds_case_events
 case timeline(append-only).
@@ -930,7 +932,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 
 ## 8. Flyway 마이그레이션 순서
 
-스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V8, 누락 없음)이다.
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V9, 누락 없음)이다.
 
 | 버전 | 파일 | 내용(실제) | 비고 |
 |---|---|---|---|
@@ -942,6 +944,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | V6 | `V6__neutral_block_features.sql` | AML 중립 5 product(카드/잔액/충전/국내송금) 신호를 `fds_feature_catalog`에 upsert. 키: `merchant.mcc`, `merchant.country`, `card.scheme`, `card.issuerCountry`, `card.international`, `balance.before`, `balance.after`, `balance.delta`, `funding.instrumentType`, `funding.autoTopup`, `funding.manualApproval`, `transfer.accountHolderNameMatch`, `transfer.fundingSourceType` | additive seed |
 | V7 | `V7__rule_param_overrides.sql` | 룰 변수(파라미터) 편집 4-eyes 폐루프. 신규 테이블 `fds.fds_rule_param_overrides`(PK `(tenant_id, workspace_id, rule_id, param_key)`, `param_value numeric(20,6)`, `unit varchar(16)`, `updated_by`/`updated_at`, 인덱스 `ix_rule_param_overrides_rule`) + `fds_approval_requests.subject_kind` CHECK를 `RULE_PARAM` 추가로 재빌드(9종→10종). 승인 후 override set 원자 적용, 판정은 fresh read | additive |
 | V8 | `V8__remove_demo_pending_rules.sql` | **데모 결재대기(PENDING_APPROVAL) 룰 시드 제거(REST-only 인입 원칙, sim-rest-only-closed-loop)**: V2 시드의 데모 결재대기 룰 2건(`11111111-0000-4000-a000-0000000000a1` PH 해외송금 신규룰 검토·`…a2` PH 카드 CNP 임계 상향)과 연결 4-eyes 결재요청 2건(`payload_hash sha256:demo-pending-rule-1/2`)을 DELETE — FK 자식(approval_steps → rule_param_overrides → rule_versions → approval_requests → rules) 방어적 선삭제, 멱등. ACTIVE 룰 정본(`00000000-…` 시리즈·`11111111-…-000000000002` 월렛충전 차단룰)은 유지. 데모 결재 데이터는 이후 REST 4-eyes 폐루프로만 생성한다 | 정리(DELETE) |
+| V9 | `V9__drop_travel_rule.sql` | **Travel Rule 기능 전면 제거(feature/remove-travel-rule)**: (1) V2 seed 로 심어진 Travel Rule 피처 정의 `fds_feature_catalog.feature_key='crypto.travelRuleMissing'` DELETE. (2) 제거되는 enum 값 참조 잔존 row 정리(제약 재생성 선행) — `fds_actions` `action_type='REQUEST_TRAVEL_RULE_INFO'` · `fds_cases` `case_type='CRYPTO_TRAVEL_RULE'` DELETE. (3) `fds_actions_action_type_check` CHECK를 `DROP … ADD`로 **22종** 재생성(`REQUEST_TRAVEL_RULE_INFO` 제거). (4) `fds_cases_case_type_check` CHECK를 **10종** 재생성(`CRYPTO_TRAVEL_RULE` 제거). V1 baseline·V2 seed 는 수정 금지 원칙에 따라 travel 값을 그대로 담고(역사 기록), V9 가 신규 버전으로 제거. 운영에 잔존 이력 존재 시 아카이빙 후 적용. aml-svc 대칭 V31·bo-api V14 동반 | 정리(DELETE+CHECK 재생성) |
 
 > **consolidate 주의**: 2026-06-30 이전 문서의 구 phase 파일(V10~V22 등)은 현행 저장소에 실재하지 않는다. 해당 스키마·CHECK·demo seed 의미는 V1/V2 baseline·seed와 V3~V6 additive seed로 흡수되었으므로, 본 표가 Flyway 정본이다.
 
@@ -952,11 +955,11 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | 항목 | fds-svc (스키마 `fds`) | aml-svc (스키마 `aml`) | bo-api (스키마 `bo`) |
 |---|---|---|---|
 | canonical event / decision / action / rule | 소유 | — | 조회(admin API 경유) |
-| AML/STR/CTR/Travel Rule 케이스 | 발단 `fds_cases`(origin) + cross-ref만 | **본 케이스·sanction/PEP screening·규제보고 소유** | 결재·감사 집약 |
+| AML/STR/CTR 케이스 | 발단 `fds_cases`(origin) + cross-ref만 | **본 케이스·sanction/PEP screening·규제보고 소유** | 결재·감사 집약 |
 | 결재(maker-checker) 실행 권한·운영자 IAM | `fds_approval_requests`(엔진 측 게이트) | — | **운영자 인증·권한·승인 라인 IAM 소유** |
 | 감사 로그 | `fds_audit_logs`(엔진 동작) | aml 감사 | **운영자 행위 감사 집약** |
 
-- fds-svc의 `OPEN_AML_CASE`/`REGULATORY_REPORT`/`REQUEST_TRAVEL_RULE_INFO` action은 aml-svc로 위임. cross-ref 컬럼 `fds_cases.aml_case_id VARCHAR(96) NULL`을 본 DB가 정본으로 확정(§5.13); API `amlCaseRef`·integration §9.1·tasks는 이 타입을 인용한다.
+- fds-svc의 `OPEN_AML_CASE`/`REGULATORY_REPORT` action은 aml-svc로 위임. cross-ref 컬럼 `fds_cases.aml_case_id VARCHAR(96) NULL`을 본 DB가 정본으로 확정(§5.13); API `amlCaseRef`·integration §9.1·tasks는 이 타입을 인용한다.
 - **운영자 집계 API 소유 경계**: 대시보드·서비스 관리·감사 조회는 **bo-api**가 소유·집약·인증한다. fds-svc는 저수준 데이터(decision/action/case/rule/audit row) 조회 API만 제공하며, fds-svc API 명세에 운영자 집계 엔드포인트(대시보드/서비스/감사)를 두지 않는다. bo-api는 `fds_decisions`/`fds_cases`/`fds_audit_logs` 등을 `(tenant_id, workspace_id, data_scope)` 필터로 읽어 집계한다.
 - **서비스 관리(배포/온보딩) 소유 경계**: 서비스(테넌트) 등록은 격리 토글이 아니라 **배포 유형 선택 + 온보딩 신청·상태 관리**다. bo-api가 `deployment_model`/`onboarding_status` 기준으로 소유·집약하며, 온보딩 프로비저닝/상태조회/self-hosted 등록 콜백 엔드포인트(`POST/GET /api/v1/bo/fds/tenants/{tenantId}/onboarding/**`)는 **bo-api 전용**이다. fds-svc 엔진 API에는 온보딩 엔드포인트를 두지 않는다. `fds_tenants`의 `deployment_model`/`onboarding_status`/`infra_ref`/`default_region`은 fds-svc 스키마가 소유하되 운영 변경은 bo-api 온보딩 워크플로우가 트리거한다.
 - bo-web은 DB 미보유. bo-api 경유로만 `fds` 스키마 접근.
@@ -978,7 +981,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 - **배포/온보딩 메타(`fds_tenants`)**: `deployment_model`(`MANAGED_DEDICATED`/`SELF_HOSTED`/`SHARED`, 3종), `onboarding_status`(`REQUESTED`/`PROVISIONING`/`DEPLOYED`/`VERIFIED`/`ACTIVE`/`PACKAGE_ISSUED`/`CUSTOMER_DEPLOYED`/`REGISTERED`, 8종), `default_region`, `infra_ref`. 구 `isolation_mode` 컬럼·enum(`SHARED`/`SCHEMA`/`DB`) 폐기. API `DeploymentModel`/`OnboardingStatus` enum, `TenantDto.deploymentModel`/`onboardingStatus`/`region`/`infraRef` 필드와 1:1. 온보딩 엔드포인트는 bo-api 전용(`POST .../onboarding/provision`, `GET .../onboarding`, `POST .../onboarding/register`).
 - **핵심 테이블**: `fds_canonical_events`, `fds_decisions`, `fds_decision_reasons`, `fds_actions`, `fds_cases`, `fds_case_events`, `fds_rules`, `fds_rule_versions`, `fds_rule_simulations`, `fds_feature_catalog`, `fds_risk_groups`, `fds_risk_group_members`, `fds_approval_requests`, `fds_approval_steps`, `fds_api_credentials`, `fds_external_decisions`, `fds_evidence_exports`, `fds_audit_logs`, `fds_idempotency_keys`, `fds_business_documents`, `fds_commerce_orders`, `fds_settlements`, `fds_connector_offsets`, `fds_schema_mappings`, `fds_source_systems`, `fds_subjects`, `fds_accounts`, `fds_instruments`, `fds_transactions`, `fds_tenants`, `fds_workspaces`.
 - **PK 패턴**: `(tenant_id, workspace_id, <natural key>)`. decision/action/case/approval/export/audit는 `UUID` 식별자, event는 원천 `event_id`(VARCHAR).
-- **enum 코드값**: §4 전체(decision 8종, **action_type 23종 — API `ActionType` enum이 정본, §4.8과 1:1**, case_type 11종, instrument 12종, **channel_type 21종 closed**(`ChannelType.java`·`ck_fds_events_channel_type` CHECK; hanpass-ph 운영 채널은 `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`(+`INBOUND_REMIT`) 5(+1)유형으로 한정, §4.4), **event_family 19종**(`EventFamily.java`·`ck_fds_events_family` CHECK; `REMIT`/`DOMESTIC`/`WALLET` 포함, V21, §4.16), payment_rail 18종, capability 9종, approval_line 6종, approval_status 8종, **transaction_type 12종(§4.19, `fds_transactions.transaction_type` 폐쇄 CHECK)**, idempotency scope 4종(`EVENT`/`DECISION`/`ACTION`/`AML_FEEDBACK`, V19)). `subject_kind` **10종**(`CASE_CLOSE` case 종결 4-eyes + `POLICY_PACK` 규제 팩 토글 4-eyes + `RULE_PARAM` 룰 변수 편집 4-eyes(V7, 대상=`fds_rules.rule_id`) 포함, 설계서 §11.5).
+- **enum 코드값**: §4 전체(decision 8종, **action_type 22종 — API `ActionType` enum이 정본, §4.8과 1:1**(Travel Rule 제거 V9), case_type 10종(Travel Rule 제거 V9), instrument 12종, **channel_type 21종 closed**(`ChannelType.java`·`ck_fds_events_channel_type` CHECK; hanpass-ph 운영 채널은 `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`(+`INBOUND_REMIT`) 5(+1)유형으로 한정, §4.4), **event_family 19종**(`EventFamily.java`·`ck_fds_events_family` CHECK; `REMIT`/`DOMESTIC`/`WALLET` 포함, V21, §4.16), payment_rail 18종, capability 9종, approval_line 6종, approval_status 8종, **transaction_type 12종(§4.19, `fds_transactions.transaction_type` 폐쇄 CHECK)**, idempotency scope 4종(`EVENT`/`DECISION`/`ACTION`/`AML_FEEDBACK`, V19)). `subject_kind` **10종**(`CASE_CLOSE` case 종결 4-eyes + `POLICY_PACK` 규제 팩 토글 4-eyes + `RULE_PARAM` 룰 변수 편집 4-eyes(V7, 대상=`fds_rules.rule_id`) 포함, 설계서 §11.5).
 - **AML cross-ref 컬럼**: `fds_cases.aml_case_id VARCHAR(96) NULL`(API `amlCaseRef`, integration §9.1). FK 아님.
 - **금액 타입**: `NUMERIC(24,8)`, base/표시 통화 분리(`amount`/`amount_base`, `currency`/`base_currency`).
 - **증적 컬럼**: `payload_hash`, `input_event_hash`, `feature_snapshot`, `matched_rules`, `manifest_hash`, `evidence_hash`.
@@ -989,6 +992,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-09 | v3.4 | **Travel Rule 기능 전면 제거 반영(코드=truth, V9, feature/remove-travel-rule).** (1) §8 저장소 마이그레이션 표에 `V9__drop_travel_rule.sql`(1:1) 행 추가 + "현행 V1~V8, 누락 없음" → "V1~V9"로 정정. (2) §4.8 `action_type` **23종→22종**(`REQUEST_TRAVEL_RULE_INFO` 제거) + 위임 각주에서 제거(`OPEN_AML_CASE`/`REGULATORY_REPORT` 위임 유지). (3) §4.10 `case_type` **11종→10종**(`CRYPTO_TRAVEL_RULE` 제거) 및 §4.8 `OPEN_COMPLIANCE_CASE` 매핑 각주·§5.13 case_type 각주(532행)에서 Travel Rule 언급 제거. (4) §5.1 `compliance_policy.optional`=Travel Rule/PCI → **PCI**, §5.3a PH_AMLC 임계 병기에서 Travel Rule ₱50,000 제거. (5) §9 서비스 경계 표 "AML/STR/CTR/Travel Rule 케이스"→"AML/STR/CTR 케이스", 위임 서술에서 `REQUEST_TRAVEL_RULE_INFO` 제거, §10 downstream enum action_type 23종→22종·case_type 11종→10종 동기화. V1 baseline·V2 seed 의 travel 값은 수정 금지 원칙에 따라 역사 기록으로 보존하고 V9 가 신규 버전으로 제거한다. `crypto.travelRuleMissing` feature 정의도 V9 가 DELETE. aml-svc 대칭 V31(travel 테이블 DROP+enum CHECK 재생성)·bo-api V14(메뉴·결재라우팅·감사 allowlist 제거) 동반. | data-modeler. 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V9__drop_travel_rule.sql`·`domain/enums/ActionType`·`domain/enums/CaseType`·aegis-aml 84997e1. |
 | 2026-07-07 | v3.3 | **데모 결재대기 룰 시드 제거 반영(코드=truth, V8, feature/sim-rest-only-closed-loop).** §8 저장소 마이그레이션 표에 `V8__remove_demo_pending_rules.sql`(1:1) 행 추가 + "현행 V1~V7, 누락 없음" → "V1~V8"로 정정. 사용자 지시 '데모데이터 절대 금지, 모든 데이터는 시뮬레이터 REST 인입'에 따라 V2 시드의 데모 결재대기(PENDING_APPROVAL) 룰 2건·4-eyes 결재요청 2건을 DELETE(FK 자식 방어적 선삭제·멱등). ACTIVE 룰 정본은 유지 — 룰/정책은 평가 기준(구성 정본), 결재 "대기 건" 은 비즈니스 데이터로 분류. aml-svc 도 대칭으로 V29(데모 워치리스트·데모 결재 제거)를 얹음(02-aml-db.md §7). | 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V8__remove_demo_pending_rules.sql`·aegis-aml `scripts/demo_ingest.py`(`ensure_watchlists`)·CLAUDE.md §시뮬레이터. |
 | 2026-07-07 | v3.2 | **룰 변수(파라미터) 편집 4-eyes 폐루프 마이그레이션 반영(코드=truth, V7).** (1) §8 저장소 마이그레이션 표에 `V7__rule_param_overrides.sql`(1:1) 행 추가 + "현행 V1~V6, 누락 없음" → "V1~V7"로 정정. (2) §5.36 `fds_rule_param_overrides` 테이블 명세 신설(PK `(tenant_id, workspace_id, rule_id, param_key)`, `param_value numeric(20,6)`, `unit varchar(16)` 자유텍스트, `updated_by`/`updated_at`, 인덱스 `ix_rule_param_overrides_rule`). (3) §5.23 `fds_approval_requests.subject_kind` 9종 → **10종**(`RULE_PARAM` 추가, 대상=`fds_rules.rule_id`, V7가 CHECK를 `DROP … ADD`로 재빌드). (4) §10 downstream enum 노트 `subject_kind` 9종 → 10종 동기화. | aegis-java-implementer. 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V7__rule_param_overrides.sql`·`domain/enums/SubjectKind`(RULE_PARAM)·`application/usecase/RuleParamService`(override upsert·RULE_PARAM_UPDATE 감사)·API §5.9b·§8. |
 | 2026-07-04 | v3.1 | **중립(canonical) 수집 블록 feature 마이그레이션 반영(코드=truth, feature/aml-neutral-canonical-ingest, additive).** §8 저장소 마이그레이션 표에 신규 파일 `V6__neutral_block_features.sql`(1:1) 행 추가 — `fds_feature_catalog`에 AML 중립 5 product(카드/잔액/충전/국내송금) 신호 feature 13종을 `_global`/`default` scope `ON CONFLICT DO UPDATE` upsert(시드·DDL 아님). 신규 룰팩 INSERT 없음(기존 C1213 이 cmp 노드로 소비 "가능"까지가 목표). 키=`merchant.mcc`·`merchant.country`·`card.scheme`·`card.issuerCountry`·`card.international`·`balance.before`·`balance.after`·`balance.delta`·`funding.instrumentType`·`funding.autoTopup`·`funding.manualApproval`·`transfer.accountHolderNameMatch`·`transfer.fundingSourceType`. §5.20·API §5.1·`domain/rule/DomainFeatureKeys` 1:1. | aegis-java-implementer. 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V6__neutral_block_features.sql`·`domain/rule/DomainFeatureKeys`. |

@@ -223,7 +223,7 @@ watchlist source, country risk, WLF rule, RA model, TM scenario는 모두 versio
 
 ### 5.5 한국 policy pack 기본
 
-한국 시장 기본 pack은 특정금융정보법상 CDD/STR/CTR, 가상자산사업자 신고·Travel Rule, 개인정보보호법/신용정보법, 전자금융·보이스피싱 관련 운영 요구를 기준으로 한다. 국가별 확장은 별도 policy pack으로 추가한다.
+한국 시장 기본 pack은 특정금융정보법상 CDD/STR/CTR, 개인정보보호법/신용정보법, 전자금융·보이스피싱 관련 운영 요구를 기준으로 한다. 국가별 확장은 별도 policy pack으로 추가한다. (가상자산사업자 신고·Travel Rule 항목은 2026-07-09 Travel Rule 전면 제거로 baseline에서 제외됐다 — aegis-aml 84997e1, aml V31.)
 
 **기본 번들·확장 plugin 모델(필수 baseline + 토글 확장).** 한국 기본 pack(`KR_DEFAULT`)은 **필수 baseline**으로, 위 영역(CDD/STR/CTR·개인정보·전자금융 등)을 **하나의 번들로 일괄 적용**한다. 이 baseline은 AML 최소 규제 요건이므로 **비활성화하거나 개별 영역을 끌 수 없다(잠금)**. CTR 기준금액·고위험 임계 등은 baseline의 **parameter**로, effective version + 4-eyes(`POLICY_PACK`)로만 변경한다(§14.3). hanpass-ph는 `KR_DEFAULT` 단일 baseline으로 운영하며, 국가·업권 plugin 토글 구조는 향후 확장을 위한 모델로 코드(`domain/policy/PolicyPack`)에 존재한다. 이 모델은 백오피스 Policy Pack 관리 화면(AML 기능정의서 §13.2 ④·§12-A.9)의 정본이다. (FDS는 법령·관할별 규제 팩을 개별 토글하는 카탈로그 모델로, 서비스별 규제 책임 범위 차이에 따른 의도된 구조 차이다.)
 
@@ -335,7 +335,8 @@ com.aegis.aml
 │   ├── metering/       # UsageMetric (과금 metering)
 │   ├── webhook/        # WebhookSignature
 │   ├── vendor/         # DualRunComparison, VendorMigrationInventory (Legacy Bridge, 미활성)
-│   ├── commerce/·travelrule/  # advanced domain·Travel Rule (Phase 8 잔존, hanpass-ph 미사용)
+│   ├── commerce/       # advanced domain (Phase 8 잔존, hanpass-ph 미사용)
+│                        #   travelrule/ 는 제거됨(2026-07-09 Travel Rule 전면 제거, aegis-aml 84997e1 — aml V31)
 │   └── enums/          # EventFamily, TmScenario, CaseType, ScreeningStatus 등 닫힌 enum
 ├── application/
 │   ├── usecase/   # AmlEventIngestService, ScreenSubject·ReviewScreening·WhitelistFalsePositive,
@@ -435,7 +436,7 @@ AML은 단일 customer row만으로 부족하다. hanpass-ph는 회원, 대리�
 
 ### 8.1 최상위 event family
 
-최상위 event family는 코드 `EventFamily` enum(`com.aegis.aml.domain.enums.EventFamily`)이 정본이며 **20종**이다. `EventFamily.fromEventType()`이 `eventType`(`<family>.<verb>`)의 prefix를 strict allow-list로 검증해, 미등재 family는 ingest에서 `REJECTED`된다(canonical store 비오염, DB family CHECK V27과 1:1).
+최상위 event family는 코드 `EventFamily` enum(`com.aegis.aml.domain.enums.EventFamily`)이 정본이며 **19종**이다(2026-07-09 Travel Rule 전면 제거로 `TRAVEL_RULE` family 삭제 — aegis-aml 84997e1, aml V31). `EventFamily.fromEventType()`이 `eventType`(`<family>.<verb>`)의 prefix를 strict allow-list로 검증해, 미등재 family는 ingest에서 `REJECTED`된다(canonical store 비오염, DB family CHECK와 1:1).
 
 방향(Direction): **IN**=외부 source가 ingest API/queue로 보내는 인바운드 canonical event, **DERIVED**=엔진 내부 파생/재생, **OUT**=아웃박스 경유 아웃바운드(fds-svc·webhook·report submission). `isExternallyIngestable()`이 `false`인 `aml.*`·`case.*`는 외부 ingest 대상이 아니다(내부 파생/아웃바운드).
 
@@ -454,7 +455,6 @@ AML은 단일 customer row만으로 부족하다. hanpass-ph는 회원, 대리�
 | `TRADE` | `trade` | IN | ✕(미사용) | advanced domain(무역/TBML, Phase 8) |
 | `INVOICE` | `invoice` | IN | ✕(미사용) | advanced domain(B2B 인보이스) |
 | `CRYPTO` | `crypto` | IN | ✕(미사용) | advanced domain(가상자산) |
-| `TRAVEL_RULE` | `travel-rule` | IN | ✕(미사용) | advanced domain(Travel Rule) |
 | `SETTLEMENT` | `settlement` | IN | ✕(미사용) | advanced domain(정산) |
 | `ORDER` | `order` | IN | ✕(미사용) | advanced domain(이커머스 주문) |
 | `SELLER` | `seller` | IN | ✕(미사용) | advanced domain(마켓플레이스 셀러) |
@@ -464,7 +464,7 @@ AML은 단일 customer row만으로 부족하다. hanpass-ph는 회원, 대리�
 
 > **거래 운반(transaction-bearing).** `isTransactionBearing()` ⇒ `TRANSACTION`·`REMIT`·`DOMESTIC`·`WALLET`. 이 4종만 TM velocity 윈도우·자금 그래프 funnel에 합류한다(§12, fds-svc와 대칭). hanpass-ph 6채널(§4)은 이들 거래 payload의 `channelType` 값이다.
 >
-> **advanced domain·vendor 잔존.** `TRADE`/`INVOICE`/`CRYPTO`/`TRAVEL_RULE`/`SETTLEMENT`/`ORDER`/`SELLER`/`MARKET`/`INTERNAL`/`AUDIT`·`VENDOR`는 enum·DB family CHECK·projection 분기에 잔존하나 hanpass-ph 운영에서는 인입되지 않는다(Phase 8 advanced domain pack §21, Legacy Bridge §15.5 미활성). strict gate가 superset이어야 하므로 enum에는 유지된다.
+> **advanced domain·vendor 잔존.** `TRADE`/`INVOICE`/`CRYPTO`/`SETTLEMENT`/`ORDER`/`SELLER`/`MARKET`/`INTERNAL`/`AUDIT`·`VENDOR`는 enum·DB family CHECK·projection 분기에 잔존하나 hanpass-ph 운영에서는 인입되지 않는다(Phase 8 advanced domain pack §21, Legacy Bridge §15.5 미활성). strict gate가 superset이어야 하므로 enum에는 유지된다. (`TRAVEL_RULE` family 는 2026-07-09 Travel Rule 전면 제거로 삭제됨 — aegis-aml 84997e1, aml V31.)
 
 ### 8.2 Canonical AML event 예시
 
@@ -516,7 +516,7 @@ AML은 단일 customer row만으로 부족하다. hanpass-ph는 회원, 대리�
 }
 ```
 
-> hanpass-ph 해외송금 예시: 회원(sender, KR) → 수취인(receiver, PH), `channelType=CROSS_BORDER_REMIT`. `transaction.phpEquivalent`(PHP 환산 금액)는 TM 금액 임계 시나리오(§12.1, V28)의 feature이며, 부재 시 해당 시나리오는 발화하지 않는다(fail-safe). `requiresTravelRule`은 hanpass-ph 미사용(가상자산 비대상).
+> hanpass-ph 해외송금 예시: 회원(sender, KR) → 수취인(receiver, PH), `channelType=CROSS_BORDER_REMIT`. `transaction.phpEquivalent`(PHP 환산 금액)는 TM 금액 임계 시나리오(§12.1, V28)의 feature이며, 부재 시 해당 시나리오는 발화하지 않는다(fail-safe). (`requiresTravelRule` 필드는 2026-07-09 Travel Rule 전면 제거로 폐기됨 — aegis-aml 84997e1, aml V31.)
 
 ---
 
@@ -776,7 +776,7 @@ CDD는 고객·법인·셀러·merchant onboarding과 주기적 갱신의 기본
 | `UNUSUAL_TRANSACTION` | Unusual transaction | TM alert 상위 위험 |
 | `COMPLEX_OWNERSHIP` | Complex ownership | UBO 불명확 |
 | `TRADE_MISMATCH` | Trade mismatch | 무역 증빙 불일치 |
-| `CRYPTO_RISK` | Crypto risk | mixer, sanctioned address, Travel Rule missing |
+| `CRYPTO_RISK` | Crypto risk | mixer, sanctioned address |
 | `INTERNAL_OVERRIDE` | Internal override | 내부 승인 우회 |
 
 ### 13.3 Case type
@@ -790,13 +790,12 @@ CDD는 고객·법인·셀러·merchant onboarding과 주기적 갱신의 기본
 | `CTR_REVIEW` | 고액현금거래 보고 데이터 검토 | ✅ |
 | `MULE_ACCOUNT_REVIEW` | 대포통장·mule 계좌 검토 | ✅ |
 | `TBML_REVIEW` | 무역기반 자금세탁 검토 | ✕(미사용) |
-| `VASP_TRAVEL_RULE_REVIEW` | Travel Rule·지갑주소 검토 | ✕(미사용) |
 | `MERCHANT_AML_REVIEW` | 가맹점/셀러 AML 검토 | ✕(미사용) |
 | `INTERNAL_CONTROL_REVIEW` | 내부통제·직원 행위 검토 | ✕(미사용) |
 | `B2B_INVOICE_REVIEW` | B2B 인보이스 검토 | ✕(미사용) |
 | `ECOMMERCE_SETTLEMENT_REVIEW` | 이커머스 해외정산 검토 | ✕(미사용) |
 
-> `case_type` 정본 enum은 위 12종(DB §5.8과 1:1, 닫힌 집합). hanpass-ph 운영은 제재/PEP/EDD/STR/CTR/대포통장 case가 핵심이며, advanced domain case(TBML·VASP·가맹점·내부통제·B2B·이커머스)는 enum 잔존이나 미사용이다(Phase 8).
+> `case_type` 정본 enum은 위 11종(DB §5.8과 1:1, 닫힌 집합). hanpass-ph 운영은 제재/PEP/EDD/STR/CTR/대포통장 case가 핵심이며, advanced domain case(TBML·가맹점·내부통제·B2B·이커머스)는 enum 잔존이나 미사용이다(Phase 8). (`VASP_TRAVEL_RULE_REVIEW`는 2026-07-09 Travel Rule 전면 제거로 삭제됨 — aegis-aml 84997e1, aml V31.)
 
 ### 13.3a Case 상태머신 (case_status)
 
@@ -815,12 +814,12 @@ OPEN
 | `INVESTIGATING` | 조사 진행 |
 | `PENDING_APPROVAL` | 종결·보고·관계거절 등 4-eyes 결재 대기 |
 | `DISMISSED` | 위험 없음으로 종결 |
-| `REPORTED` | STR/CTR/Travel Rule 보고로 종결 |
+| `REPORTED` | STR/CTR 보고로 종결 |
 | `CLOSED` | 조치 완료 종결 |
 
 ### 13.4 4-eyes
 
-다음 작업은 4-eyes를 기본으로 한다. 각 작업은 결재 `subjectType`(API §3.7 enum 16종, DB §5.16과 1:1)에 매핑되며, API §10 4-eyes 트리거 등재표가 🔒 엔드포인트 ↔ subjectType ↔ 본 §13.4 대상을 1:1로 연결한다.
+다음 작업은 4-eyes를 기본으로 한다. 각 작업은 결재 `subjectType`(API §3.7 enum 15종, DB §5.16과 1:1)에 매핑되며, API §10 4-eyes 트리거 등재표가 🔒 엔드포인트 ↔ subjectType ↔ 본 §13.4 대상을 1:1로 연결한다. (`TRAVEL_RULE_EXCEPTION`은 2026-07-09 Travel Rule 전면 제거로 삭제됨 — aegis-aml 84997e1, aml V31.)
 
 | 4-eyes 대상 작업 | subjectType(API §3.7) |
 |---|---|
@@ -832,7 +831,6 @@ OPEN
 | EDD 승인·종결 | `EDD_CLOSE` |
 | STR 제출 승인 | `STR_SUBMIT` |
 | CTR 제출 승인 | `CTR_SUBMIT` |
-| Travel Rule exception 확정 | `TRAVEL_RULE_EXCEPTION` |
 | 명단 source import 적용 | `WATCHLIST_IMPORT` |
 | country risk 변경 | `COUNTRY_RISK` |
 | tenant policy pack 변경 | `POLICY_PACK` |
@@ -845,7 +843,7 @@ OPEN
 
 ### 13.5 결재 시스템
 
-`aml-svc`에는 hanpass-ph 준법감시 담당이 개발팀 또는 벤더 도움 없이 AML 업무를 운영하기 위한 결재 시스템이 필요하다. 결재 시스템은 case workflow와 분리된 공통 업무 통제 계층이며, WLF·RA·TM·CDD/EDD·STR/CTR·명단 관리에 모두 적용된다(Travel Rule exception은 닫힌 enum 잔존이나 hanpass-ph 미사용).
+`aml-svc`에는 hanpass-ph 준법감시 담당이 개발팀 또는 벤더 도움 없이 AML 업무를 운영하기 위한 결재 시스템이 필요하다. 결재 시스템은 case workflow와 분리된 공통 업무 통제 계층이며, WLF·RA·TM·CDD/EDD·STR/CTR·명단 관리에 모두 적용된다.
 
 결재 필요 여부는 다음 기준으로 결정한다.
 
@@ -856,7 +854,7 @@ OPEN
 | 내부 업무 생성 | case 생성, 담당자 배정 제안, 보완요청 ticket 생성 | 선택 |
 | 분석 설정 | simulation, score distribution review, 영향도 분석 | 불필요 |
 | 고객 영향 판정 | relationship reject, onboarding 보류 확정 | 필수 |
-| 규제 보고 | STR 제출, CTR 제출, Travel Rule exception 확정 | 필수 |
+| 규제 보고 | STR 제출, CTR 제출 | 필수 |
 | 고위험 판정 변경 | WLF true/false 확정, high-risk 하향, EDD 종결 | 필수 |
 | 정책 변경 | RA 모델 활성화, TM scenario 변경, CDD checklist 변경 | 필수 |
 | 명단·국가위험 | watchlist import 적용, country risk 변경, whitelist 등록 | 필수 |
@@ -864,7 +862,7 @@ OPEN
 
 결재 라인은 tenant별로 설정한다(approval_line enum 6종, DB §5.12 정본). `SELF_APPROVAL_DISABLED`(maker≠checker)는 결재 라인 enum 값이 아니라 전 결재에 적용되는 횡단 불변식이며 DB CHECK 제약(`maker_id <> checker_id`)으로 강제한다.
 
-> **결재 대상(subjectType) 정본.** 각 결재 건의 대상 유형은 `aml_approvals.subject_type`(DB §5.16) / API `ApprovalDto.subjectType`(§3.7) enum **16종**이 정본이다(목록·매핑은 §13.4 표 참조): `WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL`/`TM_SCENARIO`/`RISK_OVERRIDE`/`EDD_CLOSE`/`STR_SUBMIT`/`CTR_SUBMIT`/`TRAVEL_RULE_EXCEPTION`/`WATCHLIST_IMPORT`/`COUNTRY_RISK`/`POLICY_PACK`/`SECRET_CHANGE`/`RELATIONSHIP_REJECT`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`.
+> **결재 대상(subjectType) 정본.** 각 결재 건의 대상 유형은 `aml_approvals.subject_type`(DB §5.16) / API `ApprovalDto.subjectType`(§3.7) enum **15종**이 정본이다(목록·매핑은 §13.4 표 참조): `WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL`/`TM_SCENARIO`/`RISK_OVERRIDE`/`EDD_CLOSE`/`STR_SUBMIT`/`CTR_SUBMIT`/`WATCHLIST_IMPORT`/`COUNTRY_RISK`/`POLICY_PACK`/`SECRET_CHANGE`/`RELATIONSHIP_REJECT`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`. (`TRAVEL_RULE_EXCEPTION`은 2026-07-09 Travel Rule 전면 제거로 삭제됨 — aegis-aml 84997e1, aml V31.)
 
 | 결재 라인 | 사용처 |
 |---|---|
@@ -926,7 +924,8 @@ DISPATCHING -> FAILED -> (PENDING 재시도 | DLQ)
 | `WLF_REGISTER` | WLF Register | 제재/PEP screening 결과 (✅) |
 | `RA_REPORT` | RA Report | 고객위험평가 모델·점수·등급 분포 (✅) |
 | `AUDIT_EXPORT` | Audit Export | 검사 대응용 변경·판정 감사 (✅) |
-| `TRAVEL_RULE` | Travel Rule | 가상자산 이전 정보 보존·전달 증적 (✕ 미사용, 가상자산 비대상) |
+
+> `report_type` 정본 enum은 위 **6종**이다. `TRAVEL_RULE`은 2026-07-09 Travel Rule 전면 제거로 삭제됨(aegis-aml 84997e1, aml V31).
 
 ### 14.1a Report 상태머신 (report_status)
 
@@ -983,7 +982,8 @@ STR 후보는 hanpass-ph에서 다음 경로로 생성된다.
 | CTR 고액현금거래 기준금액 | `ctrThreshold` | 1거래 1천만원 이상 현금거래 | 특정금융정보법 고액현금거래보고(FIU 고시) |
 | RA 고위험 임계 | `raHighThreshold` | 0.75 (고위험 → EDD 자동 트리거) | 위험기반접근(RBA) 내부 기준(설계서 §5.2·§11) |
 | 분할 의심 임계 | `structuringThreshold` | 9,000만원 / 7일 | 분할거래 의심 모니터링 기준 |
-| Travel Rule 기준 | `travelRuleThreshold` | 100만원 상당 이상 | 특정금융정보법 VASP Travel Rule (✕ hanpass-ph 미사용 — 가상자산 비대상, parameter 잔존) |
+
+> `travelRuleThreshold` parameter 는 2026-07-09 Travel Rule 전면 제거로 삭제됨(aegis-aml 84997e1, aml V31).
 
 > CTR 기준 표기는 화면·문서 전수에서 **"1거래 1천만원 이상 현금거래(정책팩 정본 기준)"** 로 통일한다(PRD·PPT 표기 혼재 제거).
 
@@ -1327,7 +1327,7 @@ flowchart LR
 | `aml_tenants.onboarding_status` | `REQUESTED` / `PROVISIONING` / `DEPLOYED` / `VERIFIED` / `ACTIVE` / `PACKAGE_ISSUED` / `CUSTOMER_DEPLOYED` / `REGISTERED` | 온보딩 프로비저닝 상태머신(§16.0b) |
 | `aml_tenants.status` | `ONBOARDING` / `ACTIVE` / `SUSPENDED` / `OFFBOARDED` | 고객사 운영 생명주기(§16.0c, 4종 — DB §5.28b 정본) |
 | `aml_tenants.default_region` / `infra_ref` | `KR` 등 / Terraform stack·라이선스 ID | 배포 메타(§16.0) |
-| `aml_tenants.policy_pack_code` | `KR_DEFAULT` 등 | 적용 Policy Pack(STR/CTR/Travel Rule) |
+| `aml_tenants.policy_pack_code` | `KR_DEFAULT` 등 | 적용 Policy Pack(STR/CTR) |
 | `aml_entities.status` | `ACTIVE` / `SUSPENDED` / `CLOSED` | 법인 상태 |
 | `aml_source_systems.status` | `ACTIVE` / `DISABLED` | source 활성 상태 |
 
@@ -1589,24 +1589,9 @@ CREATE TABLE aml_business_documents (
   PRIMARY KEY (tenant_id, document_ref)
 );
 
-CREATE TABLE aml_travel_rule_transfers (
-  tenant_id VARCHAR(64) NOT NULL,
-  transfer_ref VARCHAR(256) NOT NULL,
-  originator_ref VARCHAR(256),
-  beneficiary_ref VARCHAR(256),
-  asset_code VARCHAR(32),
-  chain VARCHAR(32),                                     -- 체인(DB §3.14)
-  wallet_address_hash VARCHAR(256),                     -- 지갑주소 HMAC(원문 미저장, PII 처리, DB §3.14)
-  amount NUMERIC(24, 8),
-  amount_minor BIGINT,                                   -- 통화 최소단위 정수 병행(integration payload amountMinor, DB §3.14)
-  originator_vasp VARCHAR(128),
-  beneficiary_vasp VARCHAR(128),
-  completeness_status VARCHAR(32),                       -- §5.22(COMPLETE/MISSING_ORIGINATOR/MISSING_BENEFICIARY/INCOMPLETE)
-  risk_status VARCHAR(32),                               -- §5.15(CLEAR/SANCTIONED_ADDRESS/MIXER_EXPOSURE/HIGH_RISK)
-  exception_reason VARCHAR(256),                         -- exception 처리 사유(4-eyes, DB §3.14)
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (tenant_id, transfer_ref)
-);
+-- aml_travel_rule_transfers 테이블은 제거됨(2026-07-09 Travel Rule 전면 제거,
+--   aegis-aml 84997e1 — DROP TABLE 마이그레이션 aml V31). completeness_status/risk_status
+--   enum(구 §5.22/§5.15)·관련 도메인·API 포함 전면 삭제.
 ```
 
 ---
@@ -1851,7 +1836,6 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 - STR review
 - CTR evidence
-- Travel Rule evidence
 - report approval
 - audit export
 
@@ -1878,7 +1862,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 ### Phase 8. Advanced domain pack (hanpass-ph 미사용 잔존)
 
-> `domain/commerce`·`domain/travelrule`·관련 EventFamily/CaseType/TmScenario enum·DB 컬럼에 잔존하나 **hanpass-ph 운영 대상이 아니다**(§4·§8·§12). 송금/월렛 외 금융 도메인 확장 시 활성화하는 surface.
+> `domain/commerce`·관련 EventFamily/CaseType/TmScenario enum·DB 컬럼에 잔존하나 **hanpass-ph 운영 대상이 아니다**(§4·§8·§12). 송금/월렛 외 금융 도메인 확장 시 활성화하는 surface. (`domain/travelrule`·Travel Rule EventFamily/CaseType/ReportType·`aml_travel_rule_transfers`는 2026-07-09 Travel Rule 전면 제거로 삭제됨 — aegis-aml 84997e1, aml V31.)
 
 - trade payment / TBML
 - cross-border ecommerce settlement
@@ -1941,9 +1925,9 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 핵심 설계 결정은 다음 다섯 가지다.
 
-1. 회원·관계자·거래를 `AML Canonical Event`(`EventFamily` 20종 strict gate)와 `Customer/Relationship Graph`로 정규화한다.
+1. 회원·관계자·거래를 `AML Canonical Event`(`EventFamily` 19종 strict gate)와 `Customer/Relationship Graph`로 정규화한다.
 2. WLF(sender/receiver), RA, TM(phpEquivalent 시나리오), CDD/EDD, STR/CTR을 같은 case/evidence 기반 위에서 운영한다.
-3. 한국 특정금융정보법·전자금융·개인정보 규제 요구를 `KR_DEFAULT` baseline policy pack으로 제공한다(가상자산/Travel Rule parameter는 잔존하나 미사용).
+3. 한국 특정금융정보법·전자금융·개인정보 규제 요구를 `KR_DEFAULT` baseline policy pack으로 제공한다(Travel Rule은 2026-07-09 전면 제거 — aegis-aml 84997e1, aml V31).
 4. FIU·금융감독원·내부감사 대응에 필요한 `Evidence Pack`을 자동 생성한다.
 5. 멀티테넌트 격리 구조를 유지하되 운영 대상은 hanpass-ph(`tenant_demo`) 단일이며, advanced domain pack·legacy vendor bridge는 enum·스키마에 잔존하나 미활성이다(Phase 7·8).
 
@@ -1953,6 +1937,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-09 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule, aegis-aml 84997e1 — aml V31).** (1) §5.5 KR baseline에서 가상자산사업자 신고·Travel Rule 항목 제외. (2) §6.2 헥사고날 레이아웃 `domain/travelrule` 제거. (3) §8.1 `EventFamily` **20종→19종**(`TRAVEL_RULE` family 삭제)·§8.2 예시 `requiresTravelRule` 필드 폐기. (4) §13.2 EDD trigger `CRYPTO_RISK` 설명에서 Travel Rule 문구 제거·§13.3 `case_type` **12종→11종**(`VASP_TRAVEL_RULE_REVIEW` 삭제)·§13.3a `REPORTED` 설명 정정·§13.4/§13.5 4-eyes `subjectType` **16종→15종**(`TRAVEL_RULE_EXCEPTION` 삭제). (5) §14.1 `report_type` **7종→6종**(`TRAVEL_RULE` 삭제)·§14.3 `travelRuleThreshold` parameter 삭제. (6) §16 `policy_pack_code` 설명(STR/CTR)·§17.5 `aml_travel_rule_transfers` DDL 제거 스텁. (7) §21 Phase 5 'Travel Rule evidence'·Phase 8 `domain/travelrule` 삭제 주석·결론 요약 정정. 닫힌 enum 카운트 전수 정정. | system-architect. 코드=truth. 근거=`services/aml-svc`(EventFamily 19종·ReportType 6종·CaseType 11종·ApprovalSubjectType 20종·travelrule 도메인/UseCase/Controller/persistence 삭제)·migration V31(`DROP TABLE aml_travel_rule_transfers`). CRYPTO_OFF_RAMP TM 시나리오는 유지(dsl `crypto.travelRuleGap` 조건만 제거). |
 | 2026-07-04 | **알림 발동 근거 거래 전수 조회 표면 역전파(코드=truth, fix/aml-fds-spec-backprop).** §6.2 헥사고날에 in-port `QueryAlertRelatedTransactionsUseCase`(알림 발동 근거 거래 전수 페이징, API §2.4/§3.4d) + out-port `CanonicalEventWindowPort`(근거 윈도우 페이징)·`BankingCalendarPort` 추가. `adapter/in/rest` 엔드포인트 전수·응답 스키마 정본은 API §2.4/§3.4d 위임(본 레이아웃은 그룹 요약). 엔진 domain 무변경 — read-only 조회 표면. | aegis-spec. 코드=truth. 근거=aml-svc `application/port/in/QueryAlertRelatedTransactionsUseCase`·`application/usecase/AlertRelatedTransactionsService`·`application/port/out/CanonicalEventWindowPort`·`adapter/in/rest/AlertController`(`GET /alerts/{alertId}/related-transactions`). API §2.4/§3.4d 동기화. |
 | 2026-06-30 | **hanpass-ph 기준 재작성(코드 truth).** 본 설계서를 SaaS 다도메인 AML 일반화 → **hanpass-ph 단일 서비스 AML 엔진(`aml-svc`)** 정본으로 재정렬. (1) 제목·§1·§2 — 시스템=hanpass-ph AML, 비-hanpass 도메인(카드 PG·crypto·trade/TBML·ecommerce·B2B) 일반화 제거, fds/aml 관계 유지. (2) §3·§4 — Hanpass 참조구현을 코드 구성요소 매핑으로 교체, "지원 금융 도메인 15종" → hanpass-ph 거래 6채널(`CASH_IN`/`DOMESTIC_REMIT`/`CROSS_BORDER_REMIT`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`/`CARD_NOT_PRESENT`, V26). (3) §6.2 — 헥사고날 패키지 레이아웃을 실제 소스(`com.aegis.aml` domain/application/adapter) 기준으로 재작성. (4) §8.1 — event family를 코드 `EventFamily` enum **20종** 정본으로 교체(hanpass-ph `REMIT`/`DOMESTIC`/`WALLET` transaction-bearing, advanced/vendor는 미사용 잔존 명시). (5) §10.2a — 거래당 sender/receiver WLF(`transactionRef`) 신설. (6) §12.1 — `TmScenario` 10종 + 데모 ACTIVE 시나리오(phpEquivalent 임계, V19/V22/V26/V28)로 재작성. (7) §9/§10/§11/§13.3/§14.1 — 닫힌 enum의 hanpass-ph 미사용 값을 ✕ 표기. (8) §15.3~§15.5 — REST+SQS만, polling/CDC·legacy bridge 미사용 잔존. (9) §16 — 멀티테넌트 유지·운영=`tenant_demo` 단일 명시. (10) §18 — 도메인별 예시를 hanpass-ph 6채널로 교체. (11) Travel Rule/VASP·advanced domain·vendor 전수에 미사용 주석. | aegis-java-implementer. 근거=`services/aml-svc/src/main/java/com/aegis/aml`(EventFamily·TmScenario·ScreenSubjectUseCase·TmEvaluationService)·migration V19/V22/V26/V27/V28/V29. 닫힌 enum·DB 컬럼은 삭제 아닌 "잔존(미사용)" 표기 — 코드/DB 정본 보존. |
 | 2026-06-21 | **코드 기준 outbox aggregate_type 정합(이격 리포트 AML).** §15.8 `aml_outbox.aggregate_type` 허용값 5종→**6종**(`IRA_REPORT` 추가 — 구현 V13, IRA 제출 폐루프 enqueue). DB §3.15·integration §8.1 동기화. | system-architect. 근거=`aml-svc/.../db/migration/V13`. 이격18 반영. |
