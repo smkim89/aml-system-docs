@@ -223,6 +223,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | 메서드 | 경로 | scope | 멱등 | 설명 | DB |
 |---|---|---|---|---|---|
 | GET | `/api/v1/evidence/aml/customers/{customerRef}/profile` | `aml:evidence:export` | — | 고객 CDD/EDD/RA/WLF 프로필 evidence | 다중 |
+| GET | `/api/v1/evidence/aml/customers/{customerRef}/activity-summary` | `aml:evidence:export` | — | EDD 소득정합성 재료(최근 30일 건수·합계 + 관측기간 월평균, `ActivitySummaryDto`) | `aml_canonical_events` |
 | GET | `/api/v1/evidence/aml/cases/{caseId}/timeline` | `aml:evidence:export` | — | case timeline evidence | `aml_cases` |
 | GET | `/api/v1/evidence/aml/reports/str-candidates?from&to` | `aml:evidence:export` | — | STR 후보 기간 조회 | `aml_regulatory_reports` |
 | POST | `/api/v1/evidence/aml/exports` | `aml:evidence:export` | Y | evidence pack export 생성(manifest hash) | `aml_evidence_exports` |
@@ -917,6 +918,19 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 > raw PII(이름·주민번호·여권번호 원문) 미노출. 식별은 `customerRef`(토큰), 매칭 보조는 `*Hash`만(DB §2.2). PII 원문 접근은 `aml:pii:reveal` scope+감사 필요(§1.6).
 >
 > **bo-api 화면 aggregate `CustomerProfile.riskSummary.mandatoryHighRisk`(당연고위험) 파생(run5 #3).** 위 엔진 evidence `CustomerProfileDto` 는 mandatory(당연고위험 강제 상향) 필드를 싣지 않는다. bo-api 프로필 화면 aggregate(`GET /api/v1/bo/aml/customers/{ref}/profile`)는 동일 위임 컨텍스트의 RA read(`GET /aml/customers/{ref}/risk` → `RiskScoreResponse.{mandatoryHighRisk, mandatoryHighRiskReasons, forcedFloorEvidence}`, §3.3)를 재사용해 `riskSummary.mandatoryHighRisk`(**boolean\|null**) 를 합성한다 — `isPep=true` 면 사유에 `PEP` 포함, RA read 실패 시 `null`(미상, `false` 단정 금지). stub(비운영) 경로는 RA stub 을 단일 소스로 하여 프로필 등급·사유·재확인주기가 RA 상세(§3.3)와 일치한다(PEP 승인·RISK_OVERRIDE 폐루프 양 read 동형, run5 #4).
+
+`ActivitySummaryDto`(GET `/evidence/aml/customers/{customerRef}/activity-summary` 응답 — EDD 소득정합성 판단 재료, read-only 수치 집계, raw PII 미노출):
+
+| 필드(엔진 wire) | 타입 | 설명 |
+|---|---|---|
+| `recentCount` | integer(long) | 최근 30일 거래 건수(전건, 페이지 절단 없음) |
+| `recentSumPhp` | number | 최근 30일 거래 합계(PHP-equivalent, frozen `phpEquivalent`) |
+| `monthlyAvgPhp` | number | 관측기간 월평균 거래액 = (전 기간 Σ phpEquivalent) / 관측월수(관측월수=첫 거래~asOf 올림, 최소 1). **무거래 판정은 전 기간 관측 부재(첫 거래 없음) 기준** — 최근 30일 창 건수(recentCount)가 아니다. 최근 30일 무거래·과거 이력 보유 회원도 전 기간 정규화로 양수 산출(거래 0건이면 `0`) |
+| `observedMonths` | integer | 관측월수(첫 거래~asOf 올림, 최소 1; 거래 0건이면 `1`) |
+| `currency` | string | 금액 통화(항상 `PHP`) |
+| `windowDays` | integer | 최근 집계 창 일수(30) |
+
+> **위임 wire 필드명 정본(코드=truth).** 엔진 응답 필드명은 `recentSumPhp`·`monthlyAvgPhp`(금액에 `Php` 접미)이다. bo-api aggregate(`GET /api/v1/bo/aml/customers/{ref}/profile` → `transactionActivity`)는 이 wire 를 역직렬화하며 record 내부명(`recentSum`·`monthlyAvgAmount`)에 Jackson `@JsonProperty` 별칭(`recentSumPhp`·`monthlyAvgPhp`)을 부여해 매핑한다 — 별칭 미부여 시 두 금액이 null 로 매핑돼 위임 경로 EDD 소득정합성 신호(`incomeMultiple` = 월평균/신고소득 상한)가 상시 무력화된다. `recentCount`·`observedMonths`·`currency` 는 wire·record 필드명이 동일.
 
 `SourceSystemDto`: `{ sourceSystem, ingestMode(§5.14), schemaVersion, authMode(API_KEY_HMAC/OAUTH2/MTLS), failurePolicy(MANUAL_REVIEW/FAIL_CLOSED/DELAY_ALLOWED), status(enum 2종: `ACTIVE`/`DISABLED` — DB §3.2 `aml_source_systems.status` 정본), enabled, createdAt(date-time), updatedAt(date-time) }`. `secretRef`는 응답에서 마스킹.
 
