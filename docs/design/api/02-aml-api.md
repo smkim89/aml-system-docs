@@ -925,7 +925,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 |---|---|---|
 | `recentCount` | integer(long) | 최근 30일 거래 건수(전건, 페이지 절단 없음) |
 | `recentSumPhp` | number | 최근 30일 거래 합계(PHP-equivalent, frozen `phpEquivalent`) |
-| `monthlyAvgPhp` | number | 관측기간 월평균 거래액 = (전 기간 Σ phpEquivalent) / 관측월수(관측월수=첫 거래~asOf 올림, 최소 1). **무거래 판정은 전 기간 관측 부재(첫 거래 없음) 기준** — 최근 30일 창 건수(recentCount)가 아니다. 최근 30일 무거래·과거 이력 보유 회원도 전 기간 정규화로 양수 산출(거래 0건이면 `0`) |
+| `monthlyAvgPhp` | number | **최근 3개월 월평균 거래액**(업무 확정 20260709 — 관측기간 전 기간 정규화에서 변경) = (최근 90일 창 Σ phpEquivalent) / min(3, 관측월수). 관측 3개월 미만 신규 회원은 관측월수로 나눠 과소평가를 방지한다. **무거래 판정은 전 기간 관측 부재(첫 거래 없음) 기준** — 최근 30일 창 건수(recentCount)가 아니다. 최근 30일 무거래·과거 이력 보유 회원도 90일 창 정규화로 산출(거래 0건이면 `0`). 화면 표기 "최근 3개월 평균" |
 | `observedMonths` | integer | 관측월수(첫 거래~asOf 올림, 최소 1; 거래 0건이면 `1`) |
 | `currency` | string | 금액 통화(항상 `PHP`) |
 | `windowDays` | integer | 최근 집계 창 일수(30) |
