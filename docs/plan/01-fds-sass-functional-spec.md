@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **6.14** | **2026-07-09** | **SM Kim** | **§6.3 SFDS-RULE-003 룰 빌더 전면 개편 — 국적 차원 + 측정항목 기반 조건 + canonical DSL 컴파일(코드=truth, feature/fds-rule-nationality-metric-conditions, fds V10, aegis-aml 491f46e).** ① **고객 국적 차원 신설** — `전 국적(ALL)`(무조건) 또는 특정 ISO2 국적(후보 VN·PH·KR·TH·ID·MM·KH·NP) 선택, 특정 국적은 조건 트리 선두 `cmp customer.nationality = <ISO2>` 노드로 컴파일. ② **채널 범위 `전 채널` 선택지** — `channelScope` NULL(전채널 통합 평가, 목록/상세 표시도 NULL 그대로 + "전채널" 라벨, 기본 채널 치환 금지). ③ **측정항목 기반 조건 빌더** — 자유 텍스트 조건 입력을 폐기하고 공통 컴포넌트 `MetricConditionBuilder`(cmp: 카탈로그 select+valueType별 연산자+값 / velocity: count·sum·distinct_count+distinct 대상(수취국가·이용 채널)+차원 subject+시간창 10m/1h/6h/24h+임계값)로 교체, AND/OR 단층 결합(그룹 괄호 중첩은 쉬운 구성 미지원). ④ **canonical DSL 컴파일 단일 정본** — `buildRuleJson()` 순수 함수가 폼 상태를 엔진 `RuleDslParser` 그래머로 컴파일, DSL(JSON) 토글은 읽기 전용 미리보기(양방향 동기화 폐기), 과거 easy JSON(`stages`/`groupBy`/`thresholdParams`)은 엔진 `validateRuleJson` 거부. 매핑 표·와이어프레임·BR-002(카탈로그 select 만)·BR-003(윈도우 닫힌 집합)·BR-007(단방향 컴파일)·BR-008(DSL 미리보기+문자열 payload)·BR-010(단층 AND/OR·국적 선두 노드) 재작성. 신규 측정항목: `customer.nationality`·`customer.signupAgeDays`·`customer.kycAgeDays`(프로파일 스냅샷, DB V10)·`velocity.distinct_count.*`(API §5.8·DB §5.17). 인라인 시뮬·룰 추천 패널(BR-012/BR-013)은 불변. | 근거=bo-web `components/fds/FdsRuleBuilder.tsx`·`components/common/MetricConditionBuilder.tsx`·`lib/fds-rules.ts`(buildRuleJson·DISTINCT_FIELDS·METRIC_WINDOWS)·`lib/fds-rule-conditions.ts`, bo-api `FdsRuleGroupService`(toEnginePayload·fromEngine channelScope NULL 노출), fds-svc `RuleDslParser`·V10. 코드=truth. PPT 재빌드는 후속. |
 | **6.13** | **2026-07-09** | **SM Kim** | **Travel Rule 기능 전면 제거(코드=truth, feature/remove-travel-rule, aegis-aml 84997e1, fds V9·aml V31·bo-api V14).** FDS·AML 양 도메인에서 Travel Rule 을 현 단계 불필요로 판단해 완전 삭제 — FDS 영향: ① **액션 제거** — `ActionType` 에서 `REQUEST_TRAVEL_RULE_INFO`(Travel Rule 정보 요청) 삭제, §10.1 ACT-001 조치 종류 23→**22종**(API `ActionType` 정본, DB §4 CHECK 재생성). ② **케이스 타입 제거** — `CaseType` 에서 `CRYPTO_TRAVEL_RULE`(송금 Travel Rule) 삭제, §11 케이스 유형·§1.6.2·§13.1 REG 화면 11→**10종**(fds_cases.case_type CHECK 재생성). ③ **탐지 룰·피처 제거** — §8.2 SFDS-DEC-001 `TRAVEL_RULE_MISSING` 룰·`crypto.travelRuleMissing` 피처·룰빌더 travel 시드 조건·`RuleRef.reference`(payoutMethod/requiredFields/missingFields) 참조 드릴인 제거. ④ **AML 위임 서술 정정** — "STR/CTR/Travel Rule" 위임 서술을 "STR/CTR" 로 정정(AML 규제 보고 위임 표면에서 Travel Rule 제외). ⑤ **규제 팩 정정** — §16.2 카탈로그의 `TRAVEL_RULE` 팩·PH_AMLC 등 규제 팩 서술의 Travel Rule 임계 병기 제거(PCI 팩은 유지). Flyway fds **V9__drop_travel_rule**(action_type·case_type CHECK 재생성 22/10 값·feature `crypto.travelRuleMissing` seed 제거). i18n(ko/en) travel 키 제거. 과거 이력(v6.9 payout-method·v3.6 ACT-001 23종 등)은 역사 기록으로 유지. | 근거=aegis-aml `services/{fds-svc,bo-api,bo-web}` 84997e1(`ActionType` 22종·`CaseType` 10종·`V9__drop_travel_rule.sql`·룰 빌더/피처/참조 삭제). §02 AML 정의서·§03 IAM 정의서·DB/API 정본 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **6.12** | **2026-07-08** | **SM Kim** | **§11.1 SFDS-CASE-001 BR-007a 신설 — 1클릭 케이스 종결 bo-api 위임 wire 계약(코드=truth, feature/aml-fds-case-triage-disposition, 라이브 검증 7fca1a0).** 화면 "종결"의 사유 코드·메모만 받는 1클릭 흐름을 엔진 종결 계약(terminal `closedStatus` 필수·종결 전 `PENDING_APPROVAL` 경유 필수, §1.6.1·설계서 §11.6)으로 잇기 위해 bo-api 위임 계층이 ① `closeReason` 계열→`closedStatus` 파생(`FP_*`→CLOSED_FALSE_POSITIVE·`CONFIRMED_*`→CLOSED_CONFIRMED·`ESCALATED_AML`→CLOSED_REPORTED·`OTHER`→확정 계열 보수 기본값, DB §4.11) ② 상신 전 상태(`OPEN`/`ASSIGNED`→`IN_REVIEW`→`PENDING_APPROVAL`·`IN_REVIEW`/`ESCALATED`→`PENDING_APPROVAL`) 자동 선행(불법 전이는 엔진 409 표면화) ③ closeReason 8종 검증 위임·스텁 공통화를 수행함을 명문화. 종결은 여전히 `CASE_CLOSE` 4-eyes(BR-001)로 종결상신(`SUBMITTED`) 후 다른 승인자 종결. 화면 정의·enum·엔진 계약 무변경 — bo-api 위임 어댑팅만 신설. | 근거=bo-api `fds/service/FdsDecisionCaseStubService.closeCase`(closedStatusFor·PENDING_APPROVAL 자동 선행·CLOSE_REASONS 검증). API §4.4(케이스 종결 위임 note)·설계서 §11.6·DB §4.11 상호 참조. 코드=truth. PPT 재빌드는 후속. |
 | **6.11** | **2026-07-07** | **SM Kim** | **룰 변수(파라미터) 편집 4-eyes 폐루프 신설 — 룰 상세에서 임계값·건수·윈도우 변수 수정 → `RULE_PARAM` 결재 → 승인 시 엔진 평가 즉시 반영(코드=truth, feature/fds-rule-param-editing).** ① **§6.2 SFDS-RULE-002 변수 편집 섹션 신설**: 룰 상세 하단 "임계·변수 편집" — 변수 카탈로그는 룰 `ruleJson` 수치 리프(임계금액·건수·윈도우분)에서 결정적 유도(`GET /api/v1/admin/fds/rules/{ruleId}/params`), 항목별 라벨·단위·기본값(리터럴)·현재 유효값(resolved: 오버라이드→전역 변수→리터럴)·min/max·정수전용·editable 노출. `[변경 상신]` = `POST .../rules/{ruleId}:update-params` 🔒 — **룰 단위 전체 셋 원자 제출**, 202 + `approvalRequestId`, 진행 중 결재 존재 시 pending 배지 + 재상신 차단. ② **결재 subject `RULE_PARAM` 신설**(subject_kind 9종→**10종**, 대상=`rule_id`) — §12.1 결재함·§16.5 4-eyes 표 동기화. 승인(EXECUTED) 시 엔진(fds-svc)이 `fds.fds_rule_param_overrides`(DB §5.36)에 override 셋 원자 적용, **엔진은 평가마다 룰·override 를 DB 신선 조회(캐시 없음)하므로 이후 인입 거래부터 새 임계 기준으로 탐지결정 산출**(폐루프). 반려·미승인 시 기존 리터럴 유지. ③ 검증 파이프라인: unknown key·read-only 변수·[min,max] 범위·정수전용 위반 상신 거부(400). ④ bo-web 파라미터 편집 폼은 AML 보고서 룰(REPORT_RULE_PARAM)과 공통 컴포넌트(`components/common/RuleParamEditForm`) 재사용. | 근거=fds-svc `RuleParamService`·`RuleParamCatalog`·`RuleEngine`(override resolve)·Flyway `V7__rule_param_overrides.sql`, bo-api `FdsRuleParamService`(위임+데모 stub 폐루프, V12), bo-web `FdsRuleDetail`·`RuleParamEditForm`·`useRuleParams/useUpdateRuleParams`. API §4.6·§5.9b / DB §5.36 상호 참조. 회귀 방어: local-ci `check_4eyes_contract` RULE_PARAM 폐루프 가드 + `RuleParamClosedLoopIntegrationTest`(Testcontainers, 변경 전/후 탐지결정 차이). |
@@ -1200,7 +1201,7 @@ ver │ status      │ author        │ approver      │ activatedAt        �
 - **BR-005 (변수 편집 4-eyes)**: 임계·변수 편집 상신은 `SFDS_RULE:OPERATE` + `RULE_PARAM` 결재(대상=`rule_id`, §16.5) 필수 — 즉시 반영 아님(202). maker≠checker, 진행 중(`SUBMITTED`) 결재 존재 시 pending 배지 표시 + 재상신 차단. 승인 시 override 셋 원자 적용·반려 시 기존 값 유지, 전 과정 감사 기록.
 - **BR-006 (변수 검증)**: 상신 값은 서버 검증을 통과해야 한다 — unknown key·read-only(`editable=false`) 변수 거부, `[min,max]` 범위(inclusive)·정수전용(`integerOnly`) 위반 400. 룰 단위 편집 가능 변수 **전체 셋 원자 제출**(부분 제출로 인한 리프 간 정합 붕괴 방지).
 
-### 6.3 SFDS-RULE-003 · 룰 빌더 (멀티도메인, 문장형)
+### 6.3 SFDS-RULE-003 · 룰 빌더 (국적 차원 + 측정항목 조건, canonical DSL 컴파일)
 
 | 항목 | 내용 |
 |------|------|
@@ -1208,54 +1209,49 @@ ver │ status      │ author        │ approver      │ activatedAt        �
 | **권한** | `SFDS_RULE:AUTHOR` |
 | **API** | `[임시저장(DRAFT)]`=`POST /api/v1/admin/fds/rules` (초안 DRAFT) · `PUT /api/v1/admin/fds/rules/{ruleId}` (수정) · `GET /api/v1/admin/fds/feature-catalog`. `[인라인 시뮬레이션]`=`POST /api/v1/admin/fds/rules/simulations` (작성 중 `ruleJson` 즉시 백테스트, 결과 표시는 SFDS-RULE-006과 공통) · `[룰 추천]`=`POST /api/v1/admin/fds/rules/recommendations` (목표 적중률 → 단일 피처 임계값 역산, read-only). `[시뮬레이션 후 결재 상신]`=활성화 결재 게이트(SFDS-RULE-005) `POST /api/v1/admin/fds/rules/{ruleId}/activate` 🔒(4-eyes)로 이관(딥링크) — API §4.6 |
 
-#### 화면 레이아웃 (문장형 "쉬운 구성" + DSL 토글)
+#### 화면 레이아웃 ("쉬운 구성" + DSL(JSON) 읽기 토글)
 
-운영자는 변수명·필드명을 직접 입력하지 않고, **업무 용어 드롭다운과 값 입력으로 문장을 구성**합니다. ① hanpass-ph 채널(월렛충전·국내송금·해외송금·월렛결제·ATM출금)을 먼저 선택하면, 그에 맞는 ② 탐지 대상·③ 측정 항목(feature catalog `§10.1`)이 필터링됩니다. **⑥ 추가 조건에서는 여러 조건을 AND(모두 만족)/OR(하나라도)로 결합**하며, 각 조건은 `필드 + 연산자 + 값`으로 구성하고 그룹(괄호)으로 `(A AND B) OR C` 처럼 중첩할 수 있습니다. 하단 자연어 미리보기로 결합 논리를 확인한 뒤 결재를 상신합니다. 고급 사용자는 `DSL(JSON)` 토글로 내부 표현을 직접 편집합니다(`§19` D-03).
+운영자는 변수명·필드명을 직접 입력하지 않고 **엔진 측정항목 카탈로그(feature catalog `§10.1`)와 닫힌 선택지에서만 조건을 구성**합니다. 폼은 ① 기본 정보(룰 번호·이름·룰셋·평가 방식) ② **고객 국적 차원** — `전 국적(ALL)`(무조건) 또는 특정 국적(ISO 3166-1 alpha-2, hanpass-ph 주요 회원 국적 후보 VN·PH·KR·TH·ID·MM·KH·NP) ③ **채널 범위** — `전 채널`(= `channelScope` NULL, 전채널 통합 평가) 또는 특정 채널 ④ **탐지 조건** — 측정항목 기반 조건 행을 **모두 만족(AND) / 하나라도(OR)** 로 결합 ⑤ 탐지 시 동작(decision)으로 구성됩니다. 각 조건 행은 두 종류입니다 — **측정항목 비교(cmp)**: 측정항목(카탈로그 select) + 연산자(수치형 `=`/`≠`/`>`/`≥`/`<`/`≤`, 문자형 `=`/`≠`/`포함(IN)`) + 값 / **시간창 집계(velocity)**: 집계(건수 `count`·금액합계 `sum`·서로 다른 값 개수 `distinct_count`) + distinct 대상(수취국가·이용 채널 — `distinct_count` 에서만) + 차원(회원 `subject`) + 시간창(`10m`/`1h`/`6h`/`24h`) + 연산자 + 임계값. 화면 상태는 `buildRuleJson()` 순수 함수가 **canonical DSL(cmp/velocity + and/or)로 컴파일**하며(단일 정본), `DSL(JSON)` 토글은 컴파일 결과를 **읽기 전용**으로 확인하는 뷰입니다(`§19` D-03).
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ 룰 빌더 (업무 용어 기반) [서비스: hanpass-ph]  모드: [쉬운 구성] [DSL(JSON)]│
+│ 룰 빌더 [서비스: hanpass-ph]                 모드: [쉬운 구성] [DSL(JSON)] │
 ├──────────────────────────────────────────────────────────────────────────┤
-│ ruleNo* [__________]   이름* [____________________]                       │
-│ ① 채널* [해외송금 ▼]   탐지 시 동작* [검토 ▼]                            │
-│ 평가 방식 [즉시 ▼]    적용 시작* [2026-06-10 00:00]                       │
-├─ 조건 구성 (문장형) ───────────────────────────────────────────────────────┤
-│ ② 탐지 대상 기준 [회원별 ▼] (회원/계좌/수단/상대방/단말기/가맹점/셀러/직원)│
-│ ③ 측정 항목      [거래금액(PHP환산) ▼]  (금액합계/건수/서로다른상대방수/  │
-│                  거래금액·PHP환산/회랑별건수 …채널별)                     │
-│ ④ 집계 기간      [현재 거래]                                              │
-│ ⑤ 기준값(임계치) [280000] [PHP ▼]  이상이면 탐지                         │
-│ ⑥ 추가 조건   결합방식: (●) 모두 만족(AND)   ( ) 하나라도(OR)             │
-│   조건1 [수취 국가 ▼] [같음 ▼] [PH]                                [✕]    │
-│    └ AND                                                                   │
-│   조건2 [상대방 위험등급 ▼] [이상 ▼] [High]                        [✕]    │
-│   [+ 조건 추가]  [+ 그룹(괄호) 추가]              그룹 간 결합 [AND ▼]     │
-│ ⑦ 탐지 시 동작   [검토 ▼]  ☑ 컴플라이언스 케이스 자동 개설               │
+│ ruleNo* [CROSS_BORDER_FANOUT_NEW]  이름* [해외송금 수취국가 급증 시 차단]  │
+│ 룰셋 [기본 룰셋 ▼]                 평가 방식 [즉시 ▼] (즉시/사후)          │
+│ 고객 국적 [전 국적 ▼] (전 국적(ALL)/VN/PH/KR/TH/ID/MM/KH/NP)              │
+│ 채널 범위 [전 채널 ▼] (전 채널(channelScope NULL)/해외송금/국내송금/…)     │
+├─ ① 탐지 조건 (측정항목 카탈로그 기반) ─────────────────────────────────────┤
+│ 조건 결합: (●) 모두 만족(AND)   ( ) 하나라도(OR)                          │
+│ 조건1 [시간창 집계 ▼] 집계 [서로 다른 값 개수 ▼] 대상 [수취국가 ▼]  [✕]   │
+│        차원 [회원 ▼]  시간창 [24h ▼]  연산자 [> ▼]  임계값 [3]            │
+│ 조건2 [측정항목 비교 ▼] 측정항목 [가입 경과일 ▼] 연산자 [≤ ▼] 값 [30] [✕] │
+│ [+ 조건 추가]                                                              │
+│ ⑦ 탐지 시 동작 [차단 ▼]                                                   │
 ├────────────────────────────────────────────────────────────────────────── │
-│ [룰 미리보기 — 자연어]                                                    │
-│  해외송금에서, 회원별 거래금액(PHP환산)이 280,000 이상 이고,             │
-│  추가조건[수취 국가 PH AND 상대방 위험등급 High↑]                        │
-│  을 모두 만족하면 → 검토 + 컴플라이언스 케이스 자동 개설                 │
+│ [DSL(JSON) 토글 — 컴파일된 canonical 조건 트리 읽기 전용 미리보기]          │
+│  {"type":"and","conditions":[{"type":"velocity","agg":"distinct_count",   │
+│   "field":"receiveCountry","dimension":"subject","window":"24h",          │
+│   "op":">","value":3}, …]}                                                │
 │                     [임시저장(DRAFT)] [시뮬레이션 후 결재 상신(SUBMITTED)] │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### 화면(업무 용어) ↔ 내부 표현(DSL) 매핑 (`§8`, `§10`)
+#### 화면(업무 용어) ↔ 내부 표현(canonical DSL) 매핑 (`§8`, `§10`, API §5.8·DB §5.17)
 
-운영자에게는 좌측 "업무 용어"만 노출되며, 우측 "내부 표현(DSL)"은 시스템이 자동 변환·저장합니다.
+운영자에게는 좌측 "업무 용어"만 노출되며, 우측 canonical DSL 은 `buildRuleJson()`(단일 정본)이 자동 컴파일·저장합니다. 과거 easy JSON(`stages`/`groupBy`/`thresholdParams` 형식)은 엔진 `validateRuleJson`(`RuleDslParser`)이 **거부**하므로 더 이상 생성하지 않습니다.
 
-| 화면(업무 용어) | 내부 표현(DSL) |
+| 화면(업무 용어) | 내부 표현(canonical DSL / 룰 필드) |
 |-----------------|----------------|
-| ① 채널(hanpass-ph 5종) / 탐지 시 동작 / 평가 방식 | `channelType` / `action(decision)` / `evaluationMode` |
-| ② 탐지 대상 기준 — 회원별·계좌별·수단별·상대방별·단말기별·가맹점별·셀러별·직원별 | `groupBy` (subjectRef / accountRef / instrumentRef / counterpartyRef / deviceId / merchantRef / sellerRef / actorRef) |
-| ③ 측정 항목 — 거래금액(USD `amountBase`)·거래금액(PHP환산 `phpEquivalent`) / 건수 / 금액합계 / 서로다른상대방수 / 회랑별 건수 등 | `feature` + `operator` (`§10.1` feature catalog: Transaction(`amountBase`/`phpEquivalent`)·Velocity·Counterparty — hanpass-ph 5채널 대상) |
-| ④ 집계 기간 — 최근 N 시간/일 | `window.durationSeconds` |
-| ⑤ 기준값(임계치) — 금액·건수·점수 값 | `thresholdParams[]` |
-| ⑥ 추가 조건 — 여러 조건을 **AND(모두 만족)/OR(하나라도)** 로 결합. 각 조건 = 필드 + 연산자 + 값. 그룹(괄호)으로 `(A AND B) OR C` 중첩 결합 | `conditions[]` + `logicalOperator(AND/OR)`, 각 cond `{ field, op(GTE/LTE/LT/GT/EQ/IN/IS_NULL/IN_GROUP/NOT_IN_GROUP), value, groupRef? }`, 중첩 `conditionGroups[]{ logicalOperator, conditions[] }` |
-| ⑦ 탐지 시 동작 — 허용/기록만/검토/추가인증/승인거부/차단/자금보류/동결/규제보고 | `action(decision)` (`§11.1`) → action router `§11.2` 매핑 |
-| 케이스/그룹 자동 개설 체크 | `autoOpenCase` / `autoEnrollOnHit` |
-| 다단계(과거 집계 + 현재 거래) | `stages[]` (LOOKBACK / CURRENT) |
-| `쉬운 구성` ↔ `DSL(JSON)` 토글 | 문장형 폼 ↔ stages JSON 양방향 동기화 |
+| 룰 번호 / 이름 / 룰셋 / 평가 방식(즉시·사후) | `ruleNo`·`name`(rule_json 본문 옆 메타 — 엔진은 조건 트리만 파싱) / `ruleSetId` / `evaluationMode`(`INLINE_AND_ASYNC`/`ASYNC_ONLY`) |
+| 고객 국적 — 전 국적(ALL) 또는 특정 ISO2 코드 | ALL = 국적 노드 미생성(무조건) / 특정 국적 = 조건 트리 **선두 `{"type":"cmp","feature":"customer.nationality","op":"=","value":"<ISO2>"}`** 노드 추가 |
+| 채널 범위 — 전 채널 또는 특정 채널 | `channelScope` — 전 채널 = **NULL**(전채널 통합 평가, 기본값 치환 금지), 특정 채널 = enum channel_type 코드 |
+| ① 탐지 조건 결합 — 모두 만족(AND)/하나라도(OR) | 루트 `{"type":"and"\|"or","conditions":[…]}` (단층 결합 — 그룹(괄호) 중첩은 쉬운 구성 미지원, 필요 시 DSL 직접 관리) |
+| 조건 행(측정항목 비교) — 측정항목 + 연산자 + 값 | `{"type":"cmp","feature":"<카탈로그 featureKey>","op":"="/"!="/">"/">="/"<"/"<="/"IN","value":…}` — 연산자 선택지는 측정항목 `valueType`(수치형/문자형)에 따라 필터, `IN` 값은 콤마 분리 배열, ISO2 코드(VN 등)는 숫자 오인 파싱 방지 |
+| 조건 행(시간창 집계) — 집계(건수/금액합계/서로 다른 값 개수) + distinct 대상 + 차원 + 시간창 + 연산자 + 임계값 | `{"type":"velocity","agg":"count"\|"sum"\|"distinct_count","field":"receiveCountry"\|"channelType"(distinct_count 에서만),"dimension":"subject","window":"10m"\|"1h"\|"6h"\|"24h","op":…,"value":…}` — `field` 는 닫힌 집합(수취국가·이용 채널), `count`/`sum` 은 field 미포함 |
+| ⑦ 탐지 시 동작 — 허용/기록만/검토/추가인증/승인거부/차단/자금보류/동결/규제보고 | `decisionOutcome` (`§11.1`) → action router `§11.2` 매핑 |
+| `쉬운 구성` → `DSL(JSON)` 토글 | 폼 상태 → canonical 조건 트리 단방향 컴파일(`buildRuleJson()`), DSL 뷰는 **읽기 전용** 미리보기 |
+| 불완전 조건 행(측정항목 미선택·임계값 비수치·distinct 대상 미선택) | 컴파일에서 제외 — 조건 0개면 저장 차단 경고 |
 
 #### 빌더 하단 패널 (인라인 시뮬레이션 + 룰 추천)
 
@@ -1269,16 +1265,16 @@ ver │ status      │ author        │ approver      │ activatedAt        �
 #### 비즈니스 규칙
 
 - **BR-001**: `ruleId`/`ruleSetId` 는 immutable·unique(서비스·워크스페이스 내). ARCHIVED 룰 식별자도 재할당 금지 → `FDS-VALIDATION-001`(중복 룰 식별자). 표시명 변경은 `name`(displayName) 사용.
-- **BR-002**: ①~⑦ 업무 용어 선택값은 시스템이 내부 필드(feature catalog `§10.1`)로 변환·검증. ① 도메인/채널 선택에 맞지 않는 측정 항목은 목록에서 제외. 변환 불가/미존재 항목 선택 시 `FDS-VALIDATION-002`. 운영자는 필드명을 직접 입력하지 않음.
-- **BR-003**: ④ 집계 기간은 1초 ~ 30일 범위로만 선택.
+- **BR-002**: 업무 용어 선택값은 시스템이 내부 필드(feature catalog `§10.1`)로 변환·검증. 측정항목은 **카탈로그 select 만** 허용(자유 텍스트 필드 입력 제거 — `RuleDslParser` 폐그래머와 정합, 임의 field 주입 불가), distinct 대상·차원·시간창도 닫힌 집합에서만 선택. 변환 불가/미존재 항목 선택 시 `FDS-VALIDATION-002`. 운영자는 필드명을 직접 입력하지 않음.
+- **BR-003**: 시간창 집계(velocity)의 집계 기간은 엔진 사전계산 윈도우 **`10m`/`1h`/`6h`/`24h` 닫힌 집합**에서만 선택(자유 기간 입력 없음 — feature 프리컴퓨트 키와 1:1).
 - **BR-004**: ⑦ 동작 = 거래차단/승인거부 + 적용 시작이 24시간 이내이면 즉시 영향 **경고**(저장 가능, 확인 모달).
 - **BR-005**: 평가 방식 = 즉시(실시간) 선택 시 인라인 SLO 검증 — 과거 집계 단계는 사전집계 방식 강제, 인라인 중 대량 조회가 필요한 룰은 거부(`§5.2`). 추가 결재 필요.
 - **BR-006**: 실패 시에도 차단(fail-closed)은 명단/제재류 핵심 차단 룰만 허용 + 결재 필수(`§19` D-01).
-- **BR-007**: `쉬운 구성`(문장형)과 `DSL(JSON)` 양방향 동기화. JSON 스키마 위반은 저장 차단. 운영 화면 기본은 ‘쉬운 구성’, DSL 토글은 고급 사용자용.
-- **BR-008**: 하단 자연어 미리보기는 ①~⑦ 을 한 문장으로 렌더하여 결재 전 의미 확인.
+- **BR-007**: `쉬운 구성` 폼 상태가 유일한 편집 원천이며 `buildRuleJson()` 이 canonical DSL(cmp/velocity + and/or)로 **단방향 컴파일**한다(단일 정본). `DSL(JSON)` 토글은 컴파일 결과의 **읽기 전용 미리보기**(직접 편집 없음). 과거 easy JSON 형식(`stages`/`groupBy`/`thresholdParams`)은 엔진 `validateRuleJson` 이 거부 — JSON 스키마(폐그래머) 위반은 저장 차단. 운영 화면 기본은 '쉬운 구성'.
+- **BR-008**: `DSL(JSON)` 읽기 전용 미리보기로 컴파일된 조건 트리(국적 선두 cmp 노드 포함 여부·AND/OR 결합·velocity field)를 결재 전 확인한다. 저장/시뮬 payload 는 조건 트리에 `ruleNo`·`name` 메타를 동봉한 **JSON 직렬화 문자열**로 전송된다(엔진은 조건 트리만 파싱, API §5.8 위임 봉투).
 - **BR-009**: 룰은 **내부 머터리얼라이즈 상태만** 사용. 평가 중 외부 API 실시간 조회 항목(ML 점수·제재명단·주소 위험)은 측정 항목으로 직접 선택 불가 — ingest/enrichment 적재 값 또는 외부 스크리닝 결과 reference 만 사용(`§5.2`).
 - **BR-011 (버튼↔엔드포인트 경계)**: `[임시저장(DRAFT)]`은 본 화면 `POST /rules`(DRAFT 생성)·`PUT /rules/{ruleId}`(수정)로 처리한다. 하단 `[시뮬레이션 후 결재 상신(SUBMITTED)]`은 본 화면에서 직접 상신하지 않고 **활성화 결재 게이트(SFDS-RULE-005) `POST /rules/{ruleId}/activate` 🔒(4-eyes)** 로 이관(딥링크)되어 결재 요청(`fds_approval_requests`, `subjectKind=RULE`, `approval_status=상신(SUBMITTED)`)을 생성한다(`§6.5` BR-001, API §4.6).
-- **BR-010 (추가 조건 AND/OR 결합)**: ⑥ 추가 조건은 **여러 조건을 AND(모두 만족) 또는 OR(하나라도)로 결합**한다. 각 조건 = `필드 + 연산자(이상/이하/미만/초과/같음/포함/누락/명단 포함·제외) + 값`이며, **그룹(괄호)으로 `(A AND B) OR C` 중첩 결합**을 지원한다(`conditionGroups[]`). 기본 조건(①~⑤)과 추가 조건은 기본 **AND**로 결합하되 토글 가능. 빈 조건·필드 미선택은 저장 차단(`FDS-VALIDATION-002`), 자연어 미리보기는 결합 논리(AND/OR·괄호)를 한 문장으로 렌더한다.
+- **BR-010 (탐지 조건 AND/OR 결합)**: ① 탐지 조건은 **여러 조건 행을 AND(모두 만족) 또는 OR(하나라도) 단층 루트로 결합**한다(`{"type":"and"|"or","conditions":[…]}` — 조건이 1개여도 트리 유지, 엔진 MAX_DEPTH 16 이내). 각 행은 측정항목 비교(cmp: 측정항목+연산자+값) 또는 시간창 집계(velocity: 집계+distinct 대상+차원+시간창+연산자+임계값)이며, 특정 국적 선택 시 `customer.nationality` cmp 노드가 조건 트리 **선두에 AND 결합 대상으로 자동 추가**된다. 그룹(괄호) 중첩 결합은 쉬운 구성에서 미지원(엔진 DSL 은 중첩 and/or 를 지원하나 화면 컴파일러는 단층만 생성). 불완전 행(측정항목 미선택·비수치 임계값·distinct 대상 미선택)은 컴파일 제외, 조건 0개는 저장 차단 경고.
 - **BR-012 (인라인 시뮬레이션)**: 빌더 하단 ① 인라인 시뮬레이션은 작성 중(미저장 `ruleJson`) 조건을 기존 `POST /api/v1/admin/fds/rules/simulations`로 **즉시 백테스트**한다. 결과 표시는 **SFDS-RULE-006(룰 시뮬레이션)과 공통 컴포넌트**를 재사용한다(중복 화면 아님). read-only(결재 불필요)이며, 결과 비율은 **거래(이벤트) 기준**·표본 **최대 500건 근사**다.
 - **BR-013 (룰 추천)**: ② 룰 추천은 **수치형 피처 select + 목표 적중률(%) + 방향(이상=GTE/이하=LTE)** 입력으로 `POST /api/v1/admin/fds/rules/recommendations`를 호출해 **목표 적중률 percentile로 단일 피처 임계값을 역산**하고, 추천 임계값을 단일조건 룰로 **엔진 재평가**해 예상 적중률을 검증한다. 추천 임계값·예상 적중률·인접 대안(±1·2%p)을 제시하고, `[빌더에 적용]`으로 `featureKey`·`threshold`(=⑤ 기준값)를 폼에 주입한다. read-only(결재 불필요), 비율은 **거래 기준**·표본 **최대 500건 근사**, 비수치 피처/빈 표본은 graceful(`sampleSize=0`)이다. raw PII·개별 피처값은 미반환(집계·임계값만).
 
