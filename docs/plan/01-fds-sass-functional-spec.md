@@ -1248,12 +1248,12 @@ ver │ status      │ author        │ approver      │ activatedAt        �
 | 룰 번호 / 이름 / 룰셋 / 평가 방식(즉시·사후) | `ruleNo`·`name`(rule_json 본문 옆 메타 — 엔진은 조건 트리만 파싱) / `ruleSetId` / `evaluationMode`(`INLINE_AND_ASYNC`/`ASYNC_ONLY`) |
 | 고객 국적 — 전 국적(ALL) 또는 특정 ISO2 코드 | ALL = 국적 노드 미생성(무조건) / 특정 국적 = 조건 트리 **선두 `{"type":"cmp","feature":"customer.nationality","op":"=","value":"<ISO2>"}`** 노드 추가 |
 | 채널 범위 — 전 채널 또는 특정 채널 | `channelScope` — 전 채널 = **NULL**(전채널 통합 평가, 기본값 치환 금지), 특정 채널 = enum channel_type 코드 |
-| ① 탐지 조건 결합 — 모두 만족(AND)/하나라도(OR) | 루트 `{"type":"and"\|"or","conditions":[…]}` (단층 결합 — 그룹(괄호) 중첩은 쉬운 구성 미지원, 필요 시 DSL 직접 관리) |
-| 조건 행(측정항목 비교) — 측정항목 + 연산자 + 값 | `{"type":"cmp","feature":"<카탈로그 featureKey>","op":"="/"!="/">"/">="/"<"/"<="/"IN","value":…}` — 연산자 선택지는 측정항목 `valueType`(수치형/문자형)에 따라 필터, `IN` 값은 콤마 분리 배열, ISO2 코드(VN 등)는 숫자 오인 파싱 방지 |
-| 조건 행(시간창 집계) — 집계(건수/금액합계/서로 다른 값 개수) + distinct 대상 + 차원 + 시간창 + 연산자 + 임계값 | `{"type":"velocity","agg":"count"\|"sum"\|"distinct_count","field":"receiveCountry"\|"channelType"(distinct_count 에서만),"dimension":"subject","window":"10m"\|"1h"\|"6h"\|"24h","op":…,"value":…}` — `field` 는 닫힌 집합(수취국가·이용 채널), `count`/`sum` 은 field 미포함 |
+| ① 탐지 조건 그룹 — 모두 만족(AND)/하나라도(OR) | 그룹마다 `{"type":"and"\|"or","conditions":[…]}`. 쉬운 구성에서 최대 3단계 그룹(괄호) 중첩, 엔진 `MAX_DEPTH=16` 이내 |
+| 조건 행 — 엔진 측정 기준 + 연산자 + 기준값 | 첫 select가 추상 종류가 아니라 Feature Catalog 실제 항목(국적·금액·10m/1h/6h/24h 건수·금액합계·수취국가/채널 distinct 수·가입/KYC 경과일 등)을 카테고리별로 직접 노출. 저장 DSL=`{"type":"cmp","feature":"<카탈로그 featureKey>","op":"="\|"!="\|">"\|">="\|"<"\|"<="\|"IN","value":…}`. NUMBER/STRING/ENUM/BOOL별 연산자·값 입력 제한 |
+| 시간창 집계 항목 | `FeatureComputeAdapter`가 사전계산한 catalog key(`velocity.count.subject.6h`, `velocity.sum.subject.24h`, `velocity.distinct_count.receiveCountry.subject.24h`, `velocity.distinct_count.channelType.subject.6h` 등)를 조건 첫 선택으로 직접 고른다. legacy/DSL `velocity` 노드는 호환 유지 |
 | ⑦ 탐지 시 동작 — 허용/기록만/검토/추가인증/승인거부/차단/자금보류/동결/규제보고 | `decisionOutcome` (`§11.1`) → action router `§11.2` 매핑 |
 | `쉬운 구성` → `DSL(JSON)` 토글 | 폼 상태 → canonical 조건 트리 단방향 컴파일(`buildRuleJson()`), DSL 뷰는 **읽기 전용** 미리보기 |
-| 불완전 조건 행(측정항목 미선택·임계값 비수치·distinct 대상 미선택) | 컴파일에서 제외 — 조건 0개면 저장 차단 경고 |
+| 불완전 조건/빈 그룹 | 측정항목 미선택·빈 값·빈 그룹·깊이 초과가 하나라도 있으면 저장·시뮬레이션 차단 |
 
 #### 빌더 하단 패널 (인라인 시뮬레이션 + 룰 추천)
 
@@ -1268,15 +1268,15 @@ ver │ status      │ author        │ approver      │ activatedAt        �
 
 - **BR-001**: `ruleId`/`ruleSetId` 는 immutable·unique(서비스·워크스페이스 내). ARCHIVED 룰 식별자도 재할당 금지 → `FDS-VALIDATION-001`(중복 룰 식별자). 표시명 변경은 `name`(displayName) 사용.
 - **BR-002**: 업무 용어 선택값은 시스템이 내부 필드(feature catalog `§10.1`)로 변환·검증. 측정항목은 **카탈로그 select 만** 허용(자유 텍스트 필드 입력 제거 — `RuleDslParser` 폐그래머와 정합, 임의 field 주입 불가), distinct 대상·차원·시간창도 닫힌 집합에서만 선택. 변환 불가/미존재 항목 선택 시 `FDS-VALIDATION-002`. 운영자는 필드명을 직접 입력하지 않음.
-- **BR-003**: 시간창 집계(velocity)의 집계 기간은 엔진 사전계산 윈도우 **`10m`/`1h`/`6h`/`24h` 닫힌 집합**에서만 선택(자유 기간 입력 없음 — feature 프리컴퓨트 키와 1:1).
+- **BR-003**: 시간창 집계는 엔진 사전계산 윈도우 **`10m`/`1h`/`6h`/`24h` 닫힌 집합**의 catalog feature로만 선택한다(자유 기간/field 입력 없음 — feature 프리컴퓨트 키와 1:1).
 - **BR-004**: ⑦ 동작 = 거래차단/승인거부 + 적용 시작이 24시간 이내이면 즉시 영향 **경고**(저장 가능, 확인 모달).
 - **BR-005**: 평가 방식 = 즉시(실시간) 선택 시 인라인 SLO 검증 — 과거 집계 단계는 사전집계 방식 강제, 인라인 중 대량 조회가 필요한 룰은 거부(`§5.2`). 추가 결재 필요.
 - **BR-006**: 실패 시에도 차단(fail-closed)은 명단/제재류 핵심 차단 룰만 허용 + 결재 필수(`§19` D-01).
-- **BR-007**: `쉬운 구성` 폼 상태가 유일한 편집 원천이며 `buildRuleJson()` 이 canonical DSL(cmp/velocity + and/or)로 **단방향 컴파일**한다(단일 정본). `DSL(JSON)` 토글은 컴파일 결과의 **읽기 전용 미리보기**(직접 편집 없음). 과거 easy JSON 형식(`stages`/`groupBy`/`thresholdParams`)은 엔진 `validateRuleJson` 이 거부 — JSON 스키마(폐그래머) 위반은 저장 차단. 운영 화면 기본은 '쉬운 구성'.
+- **BR-007**: `쉬운 구성`의 catalog condition tree가 유일한 편집 원천이며 `buildRuleJson()`이 `cmp/and/or` canonical DSL로 **단방향 컴파일**한다. `DSL(JSON)` 토글은 읽기 전용 미리보기이며 과거 easy JSON 형식은 엔진이 거부한다.
 - **BR-008**: `DSL(JSON)` 읽기 전용 미리보기로 컴파일된 조건 트리(국적 선두 cmp 노드 포함 여부·AND/OR 결합·velocity field)를 결재 전 확인한다. 저장/시뮬 payload 는 조건 트리에 `ruleNo`·`name` 메타를 동봉한 **JSON 직렬화 문자열**로 전송된다(엔진은 조건 트리만 파싱, API §5.8 위임 봉투).
 - **BR-009**: 룰은 **내부 머터리얼라이즈 상태만** 사용. 평가 중 외부 API 실시간 조회 항목(ML 점수·제재명단·주소 위험)은 측정 항목으로 직접 선택 불가 — ingest/enrichment 적재 값 또는 외부 스크리닝 결과 reference 만 사용(`§5.2`).
 - **BR-011 (버튼↔엔드포인트 경계)**: `[임시저장(DRAFT)]`은 본 화면 `POST /rules`(DRAFT 생성)·`PUT /rules/{ruleId}`(수정)로 처리한다. 하단 `[시뮬레이션 후 결재 상신(SUBMITTED)]`은 본 화면에서 직접 상신하지 않고 **활성화 결재 게이트(SFDS-RULE-005) `POST /rules/{ruleId}/activate` 🔒(4-eyes)** 로 이관(딥링크)되어 결재 요청(`fds_approval_requests`, `subjectKind=RULE`, `approval_status=상신(SUBMITTED)`)을 생성한다(`§6.5` BR-001, API §4.6).
-- **BR-010 (탐지 조건 AND/OR 결합)**: ① 탐지 조건은 **여러 조건 행을 AND(모두 만족) 또는 OR(하나라도) 단층 루트로 결합**한다(`{"type":"and"|"or","conditions":[…]}` — 조건이 1개여도 트리 유지, 엔진 MAX_DEPTH 16 이내). 각 행은 측정항목 비교(cmp: 측정항목+연산자+값) 또는 시간창 집계(velocity: 집계+distinct 대상+차원+시간창+연산자+임계값)이며, 특정 국적 선택 시 `customer.nationality` cmp 노드가 조건 트리 **선두에 AND 결합 대상으로 자동 추가**된다. 그룹(괄호) 중첩 결합은 쉬운 구성에서 미지원(엔진 DSL 은 중첩 and/or 를 지원하나 화면 컴파일러는 단층만 생성). 불완전 행(측정항목 미선택·비수치 임계값·distinct 대상 미선택)은 컴파일 제외, 조건 0개는 저장 차단 경고.
+- **BR-010 (탐지 조건 AND/OR 결합)**: 조건 그룹마다 AND(모두 만족)/OR(하나라도)를 선택하고 조건 또는 하위 그룹을 추가한다. 쉬운 구성은 최대 3단계 중첩하며 엔진 DSL `and/or`로 그대로 컴파일한다. 특정 국적 scope는 사용자 그룹 바깥에서 **항상 AND guard**로 결합해 내부 OR가 국적 제한을 우회하지 못한다. 측정항목 미선택·빈 기준값·빈 그룹·깊이 초과가 하나라도 있으면 저장/시뮬레이션을 차단한다.
 - **BR-012 (인라인 시뮬레이션)**: 빌더 하단 ① 인라인 시뮬레이션은 작성 중(미저장 `ruleJson`) 조건을 기존 `POST /api/v1/admin/fds/rules/simulations`로 **즉시 백테스트**한다. 결과 표시는 **SFDS-RULE-006(룰 시뮬레이션)과 공통 컴포넌트**를 재사용한다(중복 화면 아님). read-only(결재 불필요)이며, 결과 비율은 **거래(이벤트) 기준**·표본 **최대 500건 근사**다.
 - **BR-013 (룰 추천)**: ② 룰 추천은 **수치형 피처 select + 목표 적중률(%) + 방향(이상=GTE/이하=LTE)** 입력으로 `POST /api/v1/admin/fds/rules/recommendations`를 호출해 **목표 적중률 percentile로 단일 피처 임계값을 역산**하고, 추천 임계값을 단일조건 룰로 **엔진 재평가**해 예상 적중률을 검증한다. 추천 임계값·예상 적중률·인접 대안(±1·2%p)을 제시하고, `[빌더에 적용]`으로 `featureKey`·`threshold`(=⑤ 기준값)를 폼에 주입한다. read-only(결재 불필요), 비율은 **거래 기준**·표본 **최대 500건 근사**, 비수치 피처/빈 표본은 graceful(`sampleSize=0`)이다. raw PII·개별 피처값은 미반환(집계·임계값만).
 

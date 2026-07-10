@@ -665,6 +665,8 @@ hanpass-ph 해외송금(`remit-svc`) 인입 예시(`POST /api/v1/fds/events`):
 
 > `transaction.phpEquivalent`는 `FeatureComputeAdapter`가 `canonicalPayload.transaction.phpEquivalent`에서 독해해 노출하는 hanpass-ph grounding feature이다(부재 시 미노출). `RiskGroup`(watchlist/allowlist) 매칭은 `GroupMembership`로 룰에 노출된다.
 >
+> no-code 화면은 `측정항목 비교/시간창 집계` 두 추상 종류를 먼저 고르게 하지 않는다. 실제 enabled catalog를 카테고리별 첫 select로 직접 노출하고, subject count/sum 및 receiveCountry/channelType distinct의 10m/1h/6h/24h materialized key를 일반 `cmp` leaf로 컴파일한다. 조건 그룹은 최대 3단계 AND/OR 중첩이며 엔진의 폐쇄 `RuleDslParser`가 그대로 평가한다.
+>
 > `FeatureComputeAdapter`에는 Internal Audit·Merchant·Crypto·Trade·Commerce·Settlement(Phase 7 advanced domain) feature 계산 분기가 코드에 존재하나, 이는 `EventFamily`(trade/order/seller/invoice/employee/market)·미운영 채널에만 routing되며 **hanpass-ph 5채널에서는 트리거되지 않는다**(닫힌 분기 잔존). 외부 인텔리전스 의존 신호(주소 위험·HS code·risk grade 등)는 catalog input slot으로 룰 빌더가 값을 주입(연동 미정).
 
 ### 10.2 룰 예시 (hanpass-ph 운영 데모 룰)
@@ -1449,7 +1451,7 @@ SaaS FDS는 고객사 내부 시스템이 API로 직접 사용할 수 있는 외
 API 제공 원칙:
 
 - 모든 API는 tenant, source system, idempotency key, request signature를 기본으로 한다.
-- 실시간 거래 판단 API와 비동기 event ingest API를 분리한다.
+- 실시간 거래 판단 API와 비동기 event ingest API의 기존 분리 계약을 유지한다. 요청 한 번으로 결과가 필요한 연동사를 위해 동일 use case를 순서대로 호출하는 additive `/events/evaluate`를 제공한다.
 - API 응답은 고객 서비스가 바로 action할 수 있는 decision code와 reason code를 포함한다.
 - 원천 payload는 core schema에 직접 저장하지 않고 canonical event로 정규화한다.
 - OpenAPI 문서, sandbox tenant, sample payload, conformance test kit을 제공한다.
@@ -1460,6 +1462,7 @@ API 제공 원칙:
 | API group | 용도 | 대표 endpoint | scope |
 |---|---|---|---|
 | Ingest API | 거래·고객·정산 event 수신 | `POST /api/v1/fds/events` | `fds:event:write` |
+| Sync Ingest Decision API | event 저장 후 ACTIVE inline 룰 즉시 판단 | `POST /api/v1/fds/events/evaluate` | `fds:event:write` + `fds:decision:evaluate` |
 | Decision API | 승인 전 실시간 FDS 판단 | `POST /api/v1/fds/decisions/evaluate` | `fds:decision:evaluate` |
 | Case API | case 조회·배정·상태 변경 | `GET /api/v1/fds/cases`, `PATCH /api/v1/fds/cases/{caseId}` | `fds:case:read`/`fds:case:update` |
 | Action API | case 기반 수동 action 상신(outbox 등록) | `POST /api/v1/fds/cases/{caseId}/actions` | `fds:action:write` |
