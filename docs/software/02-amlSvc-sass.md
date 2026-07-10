@@ -614,7 +614,7 @@ UBO는 단순 JSON 배열이 아니라 별도 관계 graph로 관리한다.
 
 ### 10.2a 거래당 sender/receiver screening (hanpass-ph 해외송금)
 
-해외송금(`CROSS_BORDER_REMIT`)은 sender(회원, `TargetType=CUSTOMER`)와 receiver(수취인, `TargetType=COUNTERPARTY`)를 **각각 screening**하고, `ScreenCommand.transactionRef`(송금 거래번호)로 한 쌍을 묶어 WLF 화면이 거래당 sender+receiver로 그룹핑한다(`ScreenSubjectUseCase`). 데모 시드는 sender 매치(JUAN/MARIA, V19)에 더해 수취국(PH/VN/ID) receiver 제재 엔트리 3종(V26)을 등재해 진양성을 재현한다. raw PII는 입력·저장하지 않으며 매칭 입력은 토큰/hash다(§19.2).
+해외송금(`CROSS_BORDER_REMIT`)은 sender(회원, `TargetType=CUSTOMER`)와 receiver(수취인, `TargetType=COUNTERPARTY`)를 **각각 screening**하고, `ScreenCommand.transactionRef`(송금 거래번호)로 한 쌍을 묶어 WLF 화면이 거래당 sender+receiver로 그룹핑한다(`ScreenSubjectUseCase`). 중립 거래 인입의 자동 WLF와 시뮬레이터의 명시적 `/api/v1/aml/screen` 재확인은 sender=`eventId`, receiver=`eventId:receiver` 멱등키를 공유해 역할별 물리 결과를 1행으로 유지한다. 검토 큐는 기존 재스크리닝 이력을 삭제하지 않고 거래번호+역할별 최신 결과만 현재 행으로 투영한다. 데모 시드는 sender 매치(JUAN/MARIA, V19)에 더해 수취국(PH/VN/ID) receiver 제재 엔트리 3종(V26)을 등재해 진양성을 재현한다. raw PII는 입력·저장하지 않으며 매칭 입력은 토큰/hash다(§19.2).
 
 ### 10.3 Scoring
 
