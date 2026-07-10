@@ -345,6 +345,8 @@ sequenceDiagram
     Note over APP,TM: 동기 HOLD 오케스트레이션 없음(가정 G6, decision=PASS/REPORT advisory)<br/>WLF 실패는 인입 실패로 전파 안 함(screened=false)
 ```
 
+**사용자 정의 룰 fan-out(v9.44).** `EvaluateTm`은 잠금 기준선 CTR/STR 평가와 독립된 `REQUIRES_NEW` 경계에서 `aml_configurable_report_rules` ACTIVE 버전을 로드한다. 현재 거래 scalar와 DSL이 참조한 subject count/sum window만 materialize하고, 발동 시 `(tenant,transactionRef,ruleCode)` 멱등 TM 알림을 적재한다. DRAFT/SUPERSEDED는 평가하지 않는다. 사용자 정의 룰 오류는 해당 overlay만 fail-safe skip하며 법정 CTR/STR 기준선 평가와 인입 수용을 오염시키지 않는다. 응답 `evaluation.firedRuleCodes`에는 built-in/custom 코드가 함께 반환된다.
+
 ### 5.2 실시간 WLF screening (동기 + fail 정책)
 
 ```mermaid

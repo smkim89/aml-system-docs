@@ -706,6 +706,16 @@ WLF score는 설명 가능해야 한다.
 
 > **phpEquivalent 금액 feature.** 금액 기반 시나리오의 임계는 hanpass-ph PHP 환산액(`transaction.phpEquivalent`)을 사용한다. `TmEvaluationService.buildSnapshot`이 subject의 최신 거래-운반 canonical payload(`payload->>'phpEquivalent'`)에서 노출하며, 부재 시 key 미설정 ⇒ 금액 시나리오 미발화(fail-safe). count·channel cmp 노드는 금액과 무관하게 동작한다. fds-svc의 `FeatureComputeAdapter.readPhpEquivalent`와 대칭이다. `SHELL_MERCHANT`/`TRADE_MISPRICING`/`CRYPTO_OFF_RAMP`/`INTERNAL_OVERRIDE_ABUSE`는 enum 잔존이나 hanpass-ph 데모 ACTIVE 시드가 없다.
 
+### 12.1a 사용자 정의 STR/CTR TM 룰 (v9.44)
+
+`ConfigurableReportRule`은 법정 보고 카탈로그를 대체하지 않는 tenant별 탐지 overlay다. 헥사고날 경계는 `ManageConfigurableReportRuleUseCase`/`ConfigurableReportRuleStorePort` → `ConfigurableReportRuleService`/`ConfigurableReportRuleEvaluationService` → REST/JPA adapter이며, 정의·샘플 시뮬레이션·실거래 평가가 동일 `TmScenarioDslParser`/`TmCondition`을 사용한다.
+
+- 수명주기: DRAFT 생성 → sampleFeatures 시뮬레이션 → `TM_SCENARIO` 4-eyes(`CUSTOM_RULE|code|version`) → ACTIVE, 기존 ACTIVE는 SUPERSEDED.
+- 신뢰 경계: bo-api는 생성/활성화 요청의 브라우저 `makerId`를 사용하지 않고 인증된 principal email을 엔진 maker로 전달한다. 조회는 `aml:case:read`, 변경은 `aml:admin:policy`로 분리한다.
+- 평가: `TmEvaluationService`가 built-in CTR/STR side-effect와 별도로 ACTIVE custom을 `REQUIRES_NEW` 평가한다. scalar는 `EvaluateCommand`, velocity count/sum은 `CanonicalEventWindowPort`에서 materialize하며 아직 커밋되지 않은 현재 거래는 transactionRef 존재 여부를 확인해 정확히 1회 보완한다.
+- 결과: `Alert.detectTmScenario(ruleCode)` → `ux_alert_tm` 멱등 저장, evidence.trigger=`{ruleCode,ruleFamily,ruleVersion,ruleSource:CUSTOM,description,strReasonCode?}`. STR custom hit는 2차 RA trigger 신호에 포함한다.
+- 규제 경계: custom은 TM alert만 생성한다. CTR 법정 DRAFT의 현금성/통화임계/영업일 누계와 STR 자동 DRAFT/사유 fold는 기존 잠금 카탈로그만 수행한다. 분석가는 custom STR alert를 트리아지 후 기존 `:recommend-str`로 보고 흐름에 연결한다.
+
 ### 12.2 TM alert lifecycle (alert_status)
 
 `aml_alerts.status`의 정본 상태 enum·전이는 **6종으로 종결**한다(DB §5.7과 1:1, CHECK 6종). 이후 조사·보고·종결 라이프사이클은 `aml_cases.status`(§13.3a case_status)가 인계한다. alert 단계와 case 단계를 구분한다.

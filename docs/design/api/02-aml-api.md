@@ -324,6 +324,19 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | POST | `/api/v1/admin/aml/tm-scenarios/{scenarioCode}/simulate` | `aml:admin:policy` | — | scenario simulation(응답 DTO §3.15 `SimulationResponse`) | — |
 | POST | `/api/v1/admin/aml/tm-scenarios/{scenarioCode}:activate` | `aml:admin:policy` | 🔒4-eyes | scenario 변경 적용 | `aml_approvals` |
 
+#### 사용자 정의 STR/CTR TM 룰 (v9.44)
+
+| 메서드 | 경로 | scope | 4-eyes | 설명 |
+|---|---|---|---|---|
+| GET | `/api/v1/admin/aml/configurable-report-rules?family=STR\|CTR` | `aml:case:read` | — | 사용자 정의 룰 버전 목록(통계/BFF read) |
+| POST | `/api/v1/admin/aml/configurable-report-rules` | `aml:admin:policy` | — | 안전 DSL 사용자 정의 룰 DRAFT 생성(201) |
+| POST | `/api/v1/admin/aml/configurable-report-rules/{ruleCode}/simulate` | `aml:admin:policy` | — | 입력 sampleFeatures 결정적 시뮬레이션 |
+| POST | `/api/v1/admin/aml/configurable-report-rules/{ruleCode}:activate` | `aml:admin:policy` | 🔒 `TM_SCENARIO` | DRAFT 버전 활성화 상신(202), subjectRef=`CUSTOM_RULE\|code\|version` |
+
+`ConfigurableReportRuleView`: `{ ruleCode, version, family(STR|CTR), displayName, description, reasonCode(STR 필수/CTR null), severity, status(DRAFT|ACTIVE|SUPERSEDED), parameters, dsl, effectiveFrom, createdBy }`. `ruleCode`는 `[A-Z][A-Z0-9_]{2,79}`이며 잠금 기준선과 충돌하는 `STR_`/`CTR_` 접두는 금지한다. DSL은 `cmp`/`and`/`or`/`not`와 `velocity(count|sum, dimension=subject, window=1h..30d)`의 닫힌 문법이며 allowlist 밖 피처·`always`·빈 AND/OR 그룹은 400이다.
+
+bo-api 표면: `GET|POST /api/v1/bo/aml/report-rules/configurable`, `POST .../configurable/{ruleCode}/simulate`, `POST .../configurable/{ruleCode}:activate`. GET은 `aml:case:read`, 변경은 `aml:admin:policy`로 분리한다. DRAFT 생성·활성화 상신의 `makerId`는 브라우저 입력을 신뢰하지 않고 인증된 `BackofficePrincipal.email`로 덮어쓴다. bo-web은 엔진을 직접 호출하지 않는다.
+
 > bo-api의 `GET /api/v1/bo/aml/tm-scenarios/{scenarioCode}`는 운영자 화면용 BFF read model이다. 엔진 저장 권위는 위 Admin API의 정책 store이며, 변경 적용은 기존 `:activate` 4-eyes(`TM_SCENARIO`) 흐름만 사용한다.
 
 #### Case / CDD·EDD (§13)
@@ -663,7 +676,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 |---|---|---|
 | `alertId` | string(uuid) | DB `alert_id` PK |
 | `alertType` | enum | §5.18 `alert_type`(`TM_SCENARIO`/`SCREENING`/`RA`/`FDS_ESCALATION`/`VENDOR_ALERT`). **API 정본, DB 1:1** |
-| `ruleCode` | string\|null | **CTR/STR 보고 룰 코드**(`AmlReportRuleCode`: CTR_SINGLE·CTR_DAILY·STR_PEP·STR_SANCTION·STR_KYC_INCOME_MISMATCH·STR_STRUCTURED·STR_NO_PURPOSE·STR_THIRD_PARTY·STR_VELOCITY_CASH·STR_MANUAL). TM_SCENARIO 타입 알림의 발동 룰 코드이며 엔진 DB `scenario_code` 칼럼 값을 JSON 필드명 `ruleCode`로 노출한다(v9.21 — 레거시 `scenarioCode` 응답 필드 폐기). 정상 CTR/STR 룰 경로는 `AmlReportRuleCode.name()`이고, bo-api read model은 레거시 시나리오 경로 알림이 남아 있을 때 표시 공백 방지를 위해 엔진 `scenarioCode`/`evidence.trigger.scenarioCode` 문자열을 fallback 표시값으로 사용할 수 있다. 비-TM 알림(SCREENING/RA/FDS_ESCALATION/VENDOR_ALERT)은 null. 심각도 매핑: `STR_SANCTION`(RESTRICT)=`CRITICAL`, 그 외 STR=`HIGH`, CTR=`MEDIUM` |
+| `ruleCode` | string\|null | TM_SCENARIO 타입 알림의 안정 발동 룰 코드. 잠금 기준선 `AmlReportRuleCode` 10종 또는 사용자 정의 `ConfigurableReportRule.ruleCode`이며 엔진 DB `scenario_code`를 JSON `ruleCode`로 노출한다. custom evidence는 `trigger.ruleSource=CUSTOM`·`ruleFamily`·`ruleVersion`을 병기한다. 비-TM 알림은 null. |
 | `targetRef` | string | 대상 고객/법인 ref(회원번호/대상 식별자, DB `target_ref`, nullable) |
 | `transactionRef` | string | 관련 거래 ref(DB `transaction_ref`, nullable). hanpass-ph: charge_order_id/transaction_id/transfer_number/wallet_transaction_id |
 | `severity` | enum | §5.19 `alert_severity`(`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`) |
@@ -836,7 +849,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 
 `ReportRuleOverview`: `{ scope("TENANT"), family("CTR"|"STR"), period("7d"|"30d"|"90d"), rules(ReportRuleOverviewRow[]), generatedAt(ISO-8601), cacheTtlSeconds(int, 45) }` — CTR·룰 효과성 통계 메뉴는 `family=CTR`(CTR 룰 개요), STR·룰 효과성 통계 메뉴는 `family=STR`(STR 룰 개요)을 조회. `family=STR`은 STR 퍼널과 동일한 tipping-off 전담(COMPLIANCE) 게이트 — 비전담 `403 AML.FORBIDDEN_SCOPE`.
 
-`ReportRuleOverviewRow`: `{ ruleCode(string — 안정 룰 코드, family=CTR→{CTR_SINGLE,CTR_DAILY}, family=STR→8종), family("CTR"|"STR"), reportType(enum CTR|STR), reasonCode(string|null — STR 사유 코드, CTR 룰은 null), evaluationMode(enum INLINE_AND_ASYNC|ASYNC_ONLY), actions(string[] — 발동 시 액션 CTR_REPORT/STR_FLAG/RESTRICT/EDD_TRIGGER), status(enum ACTIVE|DRAFT — EXECUTED 활성화 반영), naturalLanguage(string — 한국어 설명), hitCount30d(long — 기간 내 발동 건수, 라이브 DRAFT store `firedRules` 실집계·소스 없으면 0), draftCount(long — 기간 내 DRAFT 발동 건수), lastFiredAt(ISO-8601|null — 최근 발동 시각), tuningRecommended(bool — 튜닝/활성화 검토 권고), conditions(RuleConditionView[] — **발동 조건 행**: `{label, op, value, unit?, paramKey?}`, FDS 룰 조건 행과 동형·resolved 현재값(오버라이드 반영)·`paramKey` 존재 시 편집 파라미터 결합 행) }` — 카탈로그 순서 고정. 발동/DRAFT 카운트는 비운영 stub 폴백 라이브 store(P2/P3) 위 실집계, seed 없음(운영 미결선 시 0). **`conditions[]` 는 stats overview(`aml:case:read`) 로 노출**된다 — 조회 사용자도 룰이 언제 발동하는지 본다(표시=조회 권한, **편집은 관리 경로 `POST .../report-rules/{ruleCode}:update-params`(`aml:admin:policy`, 🔒 `REPORT_RULE_PARAM`) 한정** — 기능정의서 §12-B.3 BR-003 개정). 룰 상세(`GET .../report-rules/{ruleCode}`)의 `ReportRuleView` 는 여기에 `params[]`(`{key, label, defaultValue, currentValue, unit?, min?, max?, editable}` — currentValue=resolved·defaultValue=카탈로그·editable=false 는 읽기전용 표시)와 `pendingParamApprovalId`(진행 중 파라미터 결재)를 더한다.
+`ReportRuleOverviewRow`: `{ ruleCode, family("CTR"|"STR"), reportType, reasonCode, evaluationMode, actions, status, naturalLanguage, hitCount30d, draftCount, lastFiredAt, tuningRecommended, source("BUILT_IN"|"CUSTOM"), conditions[] }`. BUILT_IN은 카탈로그/라이브 보고 store, CUSTOM은 `aml_configurable_report_rules`와 실제 `aml_alerts.scenario_code` lifecycle 집계가 원천이다. 같은 custom 코드에 여러 버전이 있으면 **실제 평가 중인 ACTIVE를 우선 표시**하고, ACTIVE가 없을 때만 최신 DRAFT를 표시한다. custom DRAFT는 발동하지 않으므로 `draftCount=0`; `actions=["TM_ALERT"]`. `conditions[]`는 built-in resolved 파라미터 또는 custom safe DSL leaf를 표시한다.
 
 > **재제출(RESUBMIT)·기각/취소 통제.** `SUBMISSION_FAILED` 건의 정정 후 재제출은 **별도 엔드포인트 없이 기존 `POST .../reports/{reportId}:submit`(🔒 `STR_SUBMIT`/`CTR_SUBMIT`) 신규 결재 사이클을 재사용**하며 서버가 `resubmitCount`를 증가시킨다(연동 §6.2). 보고 기각/취소(`REJECTED`/`CANCELLED`) 전이는 **전용 엔드포인트 `POST .../reports/{reportId}:reject`/`:cancel`(§2.7)** 로 수행하며, CTR 제외 처리(`CANCELLED`+`ctrExemptionCode`)를 포함해 **사유 코드 필수 + 보고책임자 결재(4-eyes, `REPORTING_OFFICER`, 자기승인 금지)** — 설계서 §14.1a/§14.3 정본.
 

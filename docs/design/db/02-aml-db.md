@@ -385,7 +385,7 @@ PK: `(tenant_id, score_id)`
 | `tenant_id` | VARCHAR(64) | N | — | PK | |
 | `alert_id` | UUID | N | — | PK | `alertId` |
 | `alert_type` | VARCHAR(64) | N | — | enum | §5.18 alert_type(TM_SCENARIO/SCREENING/RA/FDS_ESCALATION/VENDOR_ALERT). API `alertType` 정본 동기화 |
-| `scenario_code` | VARCHAR(80) | Y | NULL | enum | **v9.21 — TM_SCENARIO 알림의 발동 CTR/STR 룰 코드**(`AmlReportRuleCode`: CTR_SINGLE·CTR_DAILY + STR 8종)를 저장. `ck_aml_alerts_scenario_code` CHECK 는 레거시 시나리오 10종(STRUCTURING/HIGH_RISK_CORRIDOR/…) ∪ CTR/STR 룰 10종 합집합(V7 확장, 기존 행 보존). 신규 TM 알림은 CtrEvaluationService·StrEvaluationService 가 룰 코드로 영속(레거시 시나리오 발동 폐기). 부분 UNIQUE `ux_alert_tm(tenant_id, transaction_ref, scenario_code)` 로 (transactionRef, ruleCode) 멱등. API `ruleCode`(§3.4a) 정본 매핑 |
+| `scenario_code` | VARCHAR(80) | Y | NULL | 식별자 CHECK | **TM_SCENARIO 알림의 발동 룰 코드**. built-in `AmlReportRuleCode` 10종 또는 V33 사용자 정의 안정 코드(`[A-Z][A-Z0-9_]{2,79}`)를 저장한다. 레거시 시나리오 10종 기존 행은 보존. 부분 UNIQUE `ux_alert_tm(tenant_id, transaction_ref, scenario_code)` 로 (transactionRef, ruleCode) 멱등. API `ruleCode`(§3.4a) 정본 매핑 |
 | `target_ref` | VARCHAR(256) | Y | NULL | | 대상 고객/법인 = 회원 업무참조/토큰(`member.member_id`→`customer_ref`). `aml_customers.customer_ref`·canonical `payload.targetRef` 와 동일 값. **대상 360°(§3.16 뷰)·TM 알림 상세의 대상 링크 키** |
 | `transaction_ref` | VARCHAR(256) | Y | NULL | | 관련 거래 ref. **hanpass-ph 정합**: `walletchg.charge_order_id`(충전)·`domestic.transaction_id`(국내)·`remit.transfer_number`(해외)·`*.wallet_transaction_id` 중 하나의 keyed token. TM 알림 상세 '관련 거래 목록'의 join 키 — 다건 거래는 `evidence.relatedTransactions[]`(아래)에 transaction_ref 배열로 보존 |
 | `severity` | VARCHAR(32) | N | — | enum | §5.19 alert_severity(LOW/MEDIUM/HIGH/CRITICAL) |
@@ -401,7 +401,7 @@ PK: `(tenant_id, alert_id)`
 
 ### 3.10a `aml_tm_scenarios` — TM 시나리오 정의(룰 DSL) (설계서 §12.1, 구현 V5)
 
-거래모니터링 시나리오의 tenant별 버전 정의(임계·윈도우·DSL 그래프). `aml_alerts.scenario_code`의 마스터이며 TM 평가(`TmEvaluationService`)의 룰 입력. `TM_SCENARIO` 4-eyes 활성화로 단일 ACTIVE 버전 전환.
+레거시 거래모니터링 시나리오의 tenant별 버전 정의(임계·윈도우·DSL 그래프). v9.21 이후 실 알림 발동에서는 제외된 호환/백테스트 store다. 신규 사용자 정의 실평가 룰은 §3.10b가 정본이며 `TM_SCENARIO` 승인선을 공유한다.
 
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
 |---|---|---|---|---|---|
@@ -419,6 +419,26 @@ PK: `(tenant_id, alert_id)`
 PK: `(tenant_id, scenario_code, version)` · 인덱스 `ix_tm_scenario_active (tenant_id, scenario_code, status)`(ACTIVE 정의 조회).
 
 > **hanpass-ph 데모 ACTIVE 6종(구현 시드).** `tenant_demo` 한정 ACTIVE 시나리오는 **STRUCTURING**(채널 IN [DOMESTIC_REMIT,CASH_IN] + 24h count≥5, v2) · **HIGH_RISK_CORRIDOR**(CROSS_BORDER_REMIT + phpEquivalent≥280000, v3) · **RAPID_MOVEMENT**(2h count≥3 + phpEquivalent≥56000) · **MULE_NETWORK**(7d count≥8) · **REFUND_LAUNDERING**(7d count≥6 + phpEquivalent≥28000) · **ROUND_TRIPPING**(14d count≥4 + phpEquivalent≥112000)다(V19/V22/V26/V28). 나머지 4종(SHELL_MERCHANT·TRADE_MISPRICING·CRYPTO_OFF_RAMP·INTERNAL_OVERRIDE_ABUSE)은 advanced-domain(비-hanpass) 잔존값으로 hanpass 데모에서 미활성.
+
+### 3.10b `aml_configurable_report_rules` — 사용자 정의 STR/CTR TM 룰 (Flyway V33)
+
+법정 보고 기준선 `AmlReportRuleCatalog` 10종은 코드 잠금으로 유지하고, 운영자가 추가하는 TM 탐지 overlay만 저장하는 버전형 정책 store다. DRAFT는 실평가하지 않으며 `TM_SCENARIO` 4-eyes 승인 EXECUTED 후 ACTIVE 버전만 `POST /aml/v1/transaction-events` 평가에 참여한다.
+
+| 컬럼 | 타입 | NULL | 제약/설명 |
+|---|---|---|---|
+| `tenant_id` | VARCHAR(64) | N | PK 선두, 테넌트 격리 |
+| `rule_code` | VARCHAR(80) | N | PK, 대문자 안정 코드, `STR_`/`CTR_` 잠금 접두 금지 |
+| `version` | VARCHAR(80) | N | PK, `\|` 금지(approval subjectRef delimiter) |
+| `family` | VARCHAR(8) | N | CHECK `STR`/`CTR` |
+| `display_name` / `description` | VARCHAR(160) / VARCHAR(1000) | N | 업무 표시명·자연어 설명 |
+| `reason_code` | VARCHAR(64) | Y | STR은 `StrReasonCode` 8종 필수, CTR은 NULL |
+| `severity` | VARCHAR(32) | N | LOW/MEDIUM/HIGH/CRITICAL |
+| `status` | VARCHAR(32) | N | DRAFT/ACTIVE/SUPERSEDED |
+| `parameters` / `dsl` | JSONB | N | 비PII 정책값·bounded safe DSL |
+| `effective_from` | TIMESTAMPTZ | Y | 승인 활성화 시각 |
+| `created_at/by`, `updated_at/by` | 공통 | N/Y | 정책 감사 메타 |
+
+PK `(tenant_id, rule_code, version)`, partial UNIQUE `ux_configurable_report_rule_active(tenant_id, rule_code) WHERE status='ACTIVE'`, family 조회 인덱스. V33은 `aml_alerts.scenario_code` CHECK를 닫힌 enum에서 대문자 안정 식별자 패턴으로 완화한다. 멱등 UNIQUE `ux_alert_tm(tenant_id,transaction_ref,scenario_code)`는 그대로 유지되어 custom rule replay도 알림 1건을 보장한다.
 
 ### 3.11 `aml_cases` — CDD/EDD/조사 케이스 (설계서 §13, §17.4)
 
