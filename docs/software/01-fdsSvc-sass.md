@@ -2204,7 +2204,7 @@ SaaS FDS는 한국 policy pack을 기본으로 하되, 국가별 규정을 plugi
 ### 17.2 운영 화면
 
 - tenant별 ingest 상태
-- REST 거래 인입: source system별 24h 수신 건수·마지막 수신 상대시각·최근 60초 TPS. fds-svc `GET /api/v1/admin/fds/ingest/metrics` → bo-api health 집계 → `/fds/connectors`; replay/duplicate 비가산, raw payload/PII 미노출
+- REST 거래 인입: fds-svc는 source system별 24h 수신·마지막 수신·60초 TPS를 저수준 집계하고, bo-api/bo-web은 이를 `POST /api/v1/fds/events` 단일 논리 API 한 행(연결 상태·전체 24h 합계·전체 최신 수신·TPS 합계)으로 `/fds/connectors`에 표시한다. cache는 tenant/workspace 격리, replay/duplicate 비가산, raw payload/PII 미노출
 - connector lag / error
 - schema validation 실패
 - decision 추이
@@ -2366,6 +2366,7 @@ hanpass-ph FDS(`fds-svc`)는 Hanpass `FdsSvc`를 참조 구현으로 삼되, 그
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-10 | v3.1 | **운영 화면을 단일 FDS REST 거래 인입 API로 정정.** source system별 엔진 집계는 내부 입력으로 유지하고 `/fds/connectors`는 `POST /api/v1/fds/events` 한 행에 API 상태·24h 전체 합계·최신 수신·TPS 합계를 표시한다. bo-api/bo-web cache tenant/workspace 격리 포함. | system-architect |
 | 2026-07-10 | v3.0 | **Canonical store 기반 REST 거래 인입 실측 관측 흐름 추가.** §17에서 `fds_canonical_events.received_at`·`transaction_ref IS NOT NULL` accepted row를 tenant/workspace/source별 24h 건수·마지막 수신·60초 TPS로 집계하는 저수준 admin API와 bo-api→`/fds/connectors` 표시 흐름을 확정. replay/duplicate 비가산, PII 미노출. | system-architect |
 | 2026-07-10 | v2.9 | **국적·가입/KYC 경과일 프로필 원천을 AML CDD outbox로 정본화.** §5.2에 CDD→FDS 사전 materialization, 거래 승인 경로 무외부조회, 거래 snapshot fallback 우선순위를 추가. | system-architect |
 | 2026-07-09 | v2.8 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule, aegis-aml 84997e1 — fds V9).** (1) §5.5 compliance plugin 예시에서 가상자산 Travel Rule 제거. (2) §6.1 aml-svc 위임 행 'Travel Rule regulatory case' 제거. (3) §11.2 `action_type` **23종→22종**(`REQUEST_TRAVEL_RULE_INFO` 삭제)·`OPEN_AML_CASE`/`REGULATORY_REPORT` 설명에서 Travel Rule 문구 제거·§11.1.1 recommendedActions 카운트 정정. (4) §11.2a `OPEN_COMPLIANCE_CASE`→`OPEN_AML_CASE` 매핑을 `AML_REVIEW`로 정정(구 `CRYPTO_TRAVEL_RULE` 삭제). (5) §11.3 `case_type` **11종→10종**(`CRYPTO_TRAVEL_RULE` 삭제). (6) §16.2 규제 팩 카탈로그에서 `TRAVEL_RULE` named pack 제거(`PCI`만 잔존)·§15/§16.2 crypto 예시 Travel Rule 문구 제거. | system-architect. 코드=truth. 근거=`services/fds-svc`(ActionType 22종·CaseType 10종·feature `crypto.travelRuleMissing` 제거·CaseSlaPolicy/DecisionActionRouter/AliasMapping travel 분기 제거)·migration V9(`drop_travel_rule`). `OPEN_AML_CASE`/`REGULATORY_REPORT`의 aml-svc 위임은 유지. |
