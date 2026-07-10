@@ -44,6 +44,7 @@ flowchart LR
     AMLSQS --> AMLAPP
     AMLAPP -->|outbox: WLF true_match / high_risk / str_recommended| SQSFB[["SQS: aml-fds-feedback"]]
     SQSFB --> FDS
+    AMLAPP -->|outbox: CDD customer profile<br/>internal REST + retry| FDS
     AMLAPP -->|outbox: report.submitted| SUB["adapter/out/submission<br/>(mock KoFIU / 규제기관 adapter)"]
     SUB -->|회신 acked/failed| CBQ["aml-report-callbacks<br/>(또는 sync-close)"]
     CBQ --> AMLSQS
@@ -55,6 +56,7 @@ flowchart LR
 규칙:
 - **이벤트 인입은 동기 REST 가 정본 경로다(코드 truth)**. hanpass-ph core-banking 은 `POST /api/v1/aml/events`(`AmlEventController`, scope `aml:event:write`)로 canonical 이벤트를 멱등 전송한다. 별도 `@SqsListener` ingest consumer 는 **현재 구현되어 있지 않다**(`aml-canonical-events` 큐는 config 선언만 존재, consumer 미구현 — §2.1 주석).
 - 엔진 간(`fds-svc`→`aml-svc`) 연동은 **event(SQS) 연동**이다(코드 truth: `FdsDecisionConsumer` `@SqsListener("aml-fds-decision")`). 동기 fallback 은 Internal API(`/internal/v1/aml/fds-escalations`, `FdsEscalationInternalController`).
+- AML→FDS 고객 프로필은 `customer.cdd.completed`와 원자적으로 `FDS_CUSTOMER_PROFILE` outbox를 생성하고, relay가 `PUT /internal/v1/fds/customer-profiles/{memberRef}`로 전달한다. 이는 거래 승인 중 외부 조회가 아니라 사전 materialization이며 실패는 outbox retry/backoff로 재시도한다.
 - `bo-web`은 `bo-api` 경유만(엔진 직접 호출 금지). 결재·감사·evidence export 는 `bo-api`→`aml-svc` Admin/Internal API.
 - 모든 메시지·커넥터·아웃박스는 `tenantId`(=`tenant_demo`)·`dataScope`·`traceId`를 전파한다.
 - raw PII 는 큐·이벤트·외부 제출 어디에도 평문 전파 금지. ref(token)/hash/`payloadHash`만 흐른다(§10).
@@ -70,7 +72,8 @@ flowchart LR
 | in | `adapter/in/rest` | 동기 ingest(`AmlEventController`)·screen·RA·TM·evidence·내부(`FdsEscalationInternalController`·`ScreenInternalController`·`CustomerRiskInternalController`·`PiiRevealInternalController`)·watchlist admin·audit | `IngestAmlEventUseCase`·`ScreenSubjectUseCase`·`EvaluateRiskUseCase`·`EvaluateTransactionUseCase` 등 |
 | in | `adapter/in/sqs` | `FdsDecisionConsumer`(`@SqsListener aml-fds-decision`)·`ReportSubmissionCallbackConsumer`(FIU 회신, 직접 호출/REST callback 시드) | `ConsumeFdsDecisionUseCase`·`AcknowledgeReportUseCase` |
 | in | `adapter/in/scheduled` | `OutboxRelayScheduler`(아웃박스 drain)·`WatchlistReconciliationScheduler`(명단 freshness) | `RelayOutboxUseCase`·`ReconcileWatchlistUseCase` |
-| out | `adapter/out/messaging` | `OutboxRelayRouter`(WEBHOOK→relay / 그 외→SQS)·`SqsOutboxRelayPublisher`(aws)·`InMemoryOutboxRelayPublisher`(local)·`HighRiskOutboxAdapter` | `OutboxRelayPort`·`OutboxMessagingPort`·`HighRiskEventPort` |
+| out | `adapter/out/messaging` | `OutboxRelayRouter`(WEBHOOK→callback, FDS_CUSTOMER_PROFILE→internal REST, 그 외→SQS)·`SqsOutboxRelayPublisher`(aws)·`InMemoryOutboxRelayPublisher`(local)·`HighRiskOutboxAdapter` | `OutboxRelayPort`·`OutboxMessagingPort`·`HighRiskEventPort` |
+| out | `adapter/out/external` | `HttpFdsCustomerProfileSenderAdapter`(CDD profile projection) | `FdsCustomerProfileSenderPort` |
 | out | `adapter/out/webhook` | `HttpWebhookRelayAdapter`(서명 customer callback) | `WebhookSenderPort` |
 | out | `adapter/out/submission` | `MockRegulatorSubmissionAdapter`(mock KoFIU, 운영시 규제기관 어댑터) | `ReportSubmissionPort` |
 | out | `adapter/out/feed` | `MockWatchlistFeedAdapter`(명단 import) | `WatchlistFeedPort` |
@@ -275,6 +278,8 @@ API `IngestEventRequest`(02-aml-api §3.1)·`aml_canonical_events` 컬럼과 1:1
 ```
 
 > 외부 제출(`aml.report.submitted`) payload 본문은 `aml_regulatory_reports.report_payload`(JSONB)를 참조하며 메시지에는 ref·hash·코드만 싣는다(PII·증적 본문 미전파). SQS 헤더(코드 truth `SqsOutboxRelayPublisher`): `tenantId`·`eventType`·`aggregateType`·`aggregateRef`·`idempotencyKey`(=`payloadHash`).
+
+CDD→FDS 프로필 outbox(`aggregateType=FDS_CUSTOMER_PROFILE`, `eventType=aml.customer.profile.updated`)는 `sourceEventId/occurredAt/nationality/country/registeredAt/kycCompletedAt/kycLevel/dataScope`만 싣는다. `aggregateRef=customerRef(=memberRef)`, FDS `Workspace-Id=default`이며 raw name·DOB·document/hash는 금지한다. FDS는 `(tenant,workspace,memberRef)`로 멱등 upsert하고 CDD non-null 값은 authoritative update, null은 기존값 보존한다. outbox 재시도 역전 도착은 `(occurredAt, sourceEventId)`가 더 오래된 경우 no-op한다.
 
 ---
 
@@ -697,6 +702,7 @@ aml-svc 엔진은 `aml_tenants`의 `deployment_model`/`onboarding_status`/`infra
 
 | 일자 | 버전 | 변경 | 비고 |
 |---|---|---|---|
+| 2026-07-10 | v3.2 | **AML CDD→FDS 고객 프로필 outbox/REST 동기화 추가.** §1 토폴로지·경계·adapter 표에 `FDS_CUSTOMER_PROFILE` route와 `HttpFdsCustomerProfileSenderAdapter` 추가, §4.4에 PII-safe payload·memberRef/workspace·멱등/authoritative update 규칙 명시. AML V32가 aggregate CHECK를 7종으로 확장. | integration-designer |
 | 2026-07-09 | v3.1 | **Travel Rule 기능 전면 제거 정합(코드=truth).** (1) 헤더 닫힌 enum 보존 주석에서 `travel-rule` 패밀리 제거·`EventFamily` **19종** 명시 + `travel-rule.*` 이벤트 미수용(`NeutralEventValidator`/strict gate 거부) 명문화. (2) §9 제목·TOC `규제 제출 연동(STR/CTR/Travel Rule)`→`(STR/CTR)`, 앵커 동기화. (3) §9.1 `report_type` enum `STR/CTR/TRAVEL_RULE/…`→**`STR/CTR/EDD_REGISTER/WLF_REGISTER/RA_REPORT/AUDIT_EXPORT`**(코드 truth `ReportType` 6종). (4) **§9.3 Travel Rule 소절 삭제**(TravelRuleController/Service/도메인·`aml_travel_rule_transfers` 삭제) — 후속 §9.4→§9.3 재번호. (5) §3.2 `fds.case.escalated` 케이스 매핑에서 `REQUEST_TRAVEL_RULE_INFO`→`VASP_TRAVEL_RULE_REVIEW` 행 제거, §5.3 시퀀스 `VASP_...` 제거. (6) §8.3 subject_type 행에서 `TRAVEL_RULE_EXCEPTION` 제거(`ApprovalSubjectType` 20종). (7) §13 잔존 노트 — Travel Rule 항 삭제, `EventFamily`(19종)·projection·`case_type`(`CaseType` 11종)에서 `travel-rule`/`VASP_TRAVEL_RULE_REVIEW` 제거·삭제 명시. (8) §1 직렬화 예시·adapter 표·`aegis-stack` 참조에서 Travel Rule 제거. **STR/CTR 제출·FDS 위임(`OPEN_AML_CASE`) 흐름 자체는 유지·CRYPTO_OFF_RAMP TM 시나리오 존치**. 과거 changelog 행은 역사 기록으로 보존. | 코드=truth. 근거=aegis-aml 84997e1(feature/remove-travel-rule)·aml `EventFamily`(19종)/`ReportType`(6종)/`CaseType`(11종)/`ApprovalSubjectType`(20종)·`NeutralEventValidator`·V31 DROP(fds V9·bo-api V14 동반). integration-designer |
 | 2026-07-07 | v2.9 | **제재명단 파서 country(ISO-2) fallback 체인 반영(코드=truth, fix/wlf-entity-country-fds-phpequiv).** §9 fetch·파싱 절의 attributes 에 `country?(ISO-2 매치 키)` 추가 + fallback 체인 명문화 — OFAC `nationality → citizenship → addressList/address/country`, UN `NATIONALITY/VALUE(스코프 파싱, 문서순 첫 VALUE 오인 제거) → INDIVIDUAL_ADDRESS·ENTITY_ADDRESS/COUNTRY`. 배경: 단체(ENTITY)·선박은 국적 블록이 없어 country 부재 → 수취인(이름+국가 2필드, 최대 0.65) 스크리닝이 임계 0.65 에 도달 불가(제재 기업 수취인 영구 미탐)이던 결함 해소. 기적재 엔트리는 동일 버전 SKIP_UNCHANGED 라 재파싱되지 않음 — 신선 DB 재수집 또는 신규 publish 버전부터 반영. | 코드=truth. 근거=`OfacSdnXmlParser`·`UnConsolidatedXmlParser`(+파서 단위테스트 fixture 주소 블록). 시뮬레이터 `demo_ingest.py` 제재 수취인 선정도 country 보유 엔트리로 한정. |
 | 2026-07-04 | v2.8 | **중립(canonical) 동기 수집 흐름 반영(코드=truth, feature/aml-neutral-canonical-ingest, additive).** (1) **§3.1a 신설** — REST canonical ingest 와 병존하는 동기 REST 단일 수집 표면(`POST /aml/v1/transaction-events`) 매핑 표(5 product → canonical eventType·EventFamily·channelType·후속 usecase·산출). WALLET_TOPUP(`CASH_IN`)만 CTR 현금성, reversal 순증 차감, WLF sender 전 product·receiver=remit, PII 토큰화 경계 명문화. (2) **§5.1a 신설** — 단일 POST → 검증(422) → 토큰화·vault → 멱등 ingest → WLF + CTR/STR 동기 팬아웃 Mermaid 시퀀스(HOLD 미구현 가정 G6, WLF best-effort). 원천은 시뮬레이터·경량, 대량 비동기 ingest 는 consumer 미구현으로 후속. | aegis-java-implementer. 코드=truth. 근거=aml-svc `NeutralTransactionEventController`·`NeutralTransactionEventService`·`ProductEventTypeMapper`·`NeutralEventValidator`. API 02-aml §2.1a/§3.17 동기화. |

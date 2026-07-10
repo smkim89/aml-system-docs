@@ -4,7 +4,7 @@
 > 입력 설계서: `docs/software/01-fdsSvc-sass.md` v1.1 (특히 §7 공통 데이터 모델, §8 event taxonomy, §9 수단/채널, §10 룰/feature, §11 action/case/결재, §13 멀티테넌시, §14 DDL, §16 PII/규제).
 > 책임 서비스: **`services/fds-svc`** (Java 25, Spring Boot 3.5.x, 헥사고날, `adapter/out/persistence`). AML 규제 케이스는 `aml-svc`, 결재·감사·IAM 운영은 `bo-api`가 별도 스키마로 보유한다.
 >
-> **대상 시스템 = hanpass-ph**: 한국→필리핀 해외송금(`CROSS_BORDER_REMIT`) + 필리핀 국내송금(`DOMESTIC_REMIT`) + 지갑(월렛충전 `CASH_IN`·월렛결제 `WALLET_PAYMENT`·ATM/지갑출금 `WALLET_WITHDRAWAL`) 5거래유형의 AML/FDS RegOps 백오피스. 운영 테넌트는 단일(`tenant_demo` = hanpass-ph). 본 문서는 그 데이터 모델을 실제 저장소 Flyway(V1~V10)·도메인 enum과 1:1로 확정한다.
+> **대상 시스템 = hanpass-ph**: 한국→필리핀 해외송금(`CROSS_BORDER_REMIT`) + 필리핀 국내송금(`DOMESTIC_REMIT`) + 지갑(월렛충전 `CASH_IN`·월렛결제 `WALLET_PAYMENT`·ATM/지갑출금 `WALLET_WITHDRAWAL`) 5거래유형의 AML/FDS RegOps 백오피스. 운영 테넌트는 단일(`tenant_demo` = hanpass-ph). 본 문서는 그 데이터 모델을 실제 저장소 Flyway(V1~V11)·도메인 enum과 1:1로 확정한다.
 
 ## 목차
 1. [범위·원칙](#1-범위원칙)
@@ -420,9 +420,11 @@ stateDiagram-v2
 | nationality | VARCHAR(2) | Y | | | 고객 국적(ISO-3166 alpha-2, 비-PII) — 프로파일 스냅샷(V10). feature `customer.nationality`(STRING) 원천 |
 | registered_at | TIMESTAMPTZ | Y | | | 회원 가입 시각(비-PII, V10) — feature `customer.signupAgeDays`(NUMBER = floor((occurredAt−registered_at)/일)) 파생 원천 |
 | kyc_completed_at | TIMESTAMPTZ | Y | | | KYC 완료 시각(비-PII, V10) — feature `customer.kycAgeDays`(NUMBER = floor((occurredAt−kyc_completed_at)/일)) 파생 원천 |
+| profile_source_event_id | VARCHAR(160) | Y | | | 마지막 적용 CDD 원천 eventId(V11, 동일 occurredAt tie-break) |
+| profile_source_occurred_at | TIMESTAMPTZ | Y | | | 마지막 적용 CDD 원천 occurredAt(V11, outbox 역전 도착 방지) |
 | created_at / updated_at | TIMESTAMPTZ | N | now() | | |
 
-> **프로파일 스냅샷 upsert 규칙(V10, aegis-aml `docs/aml-data.md` §11.7.1)**: 3컬럼은 인입 이벤트 `subject` 블록의 비-PII 스냅샷(`nationality`/`registeredAt`/`kycCompletedAt`)에서 upsert 되며 **COALESCE 보존** — 거래 이벤트처럼 프로파일을 동봉하지 않은 인입의 null 이 CDD 원천 마스터 값을 지우지 않는다(`SubjectStateJpaAdapter`). feature 컴퓨트(`FeatureComputeAdapter`)는 이 마스터에서 파생하고, 값 부재 시 feature 미노출(= 룰 non-matching), 음수 경과일은 0 클램프. 기존 `customer.accountAgeDays`(`riskSignals.memberAgeDays` 원천, 소스 제공)는 별도 보존(무회귀).
+> **프로파일 upsert 규칙(V10+V11, CDD-authoritative)**: AML `customer.cdd.completed`가 `FDS_CUSTOMER_PROFILE` outbox→내부 API로 전달한 non-null 값을 authoritative update한다. null은 기존값 보존한다. 거래 이벤트 `subject`의 구 프로필 스냅샷은 빈 컬럼을 최초 보충하는 legacy fallback일 뿐 기존 CDD 값을 덮어쓰지 못한다. V11 원천 버전을 `(profile_source_occurred_at, profile_source_event_id)`로 비교해 재시도 중 늦게 도착한 과거 CDD는 no-op한다. feature 컴퓨트는 이 마스터에서 파생하고 값 부재 시 미노출, 음수 경과일은 0 클램프한다.
 
 ### 5.7 fds_accounts
 | 컬럼 | 타입 | NULL | 제약 | 설명 |
@@ -943,7 +945,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 
 ## 8. Flyway 마이그레이션 순서
 
-스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V10, 누락 없음)이다.
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V11, 누락 없음)이다.
 
 | 버전 | 파일 | 내용(실제) | 비고 |
 |---|---|---|---|
@@ -957,6 +959,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | V8 | `V8__remove_demo_pending_rules.sql` | **데모 결재대기(PENDING_APPROVAL) 룰 시드 제거(REST-only 인입 원칙, sim-rest-only-closed-loop)**: V2 시드의 데모 결재대기 룰 2건(`11111111-0000-4000-a000-0000000000a1` PH 해외송금 신규룰 검토·`…a2` PH 카드 CNP 임계 상향)과 연결 4-eyes 결재요청 2건(`payload_hash sha256:demo-pending-rule-1/2`)을 DELETE — FK 자식(approval_steps → rule_param_overrides → rule_versions → approval_requests → rules) 방어적 선삭제, 멱등. ACTIVE 룰 정본(`00000000-…` 시리즈·`11111111-…-000000000002` 월렛충전 차단룰)은 유지. 데모 결재 데이터는 이후 REST 4-eyes 폐루프로만 생성한다 | 정리(DELETE) |
 | V9 | `V9__drop_travel_rule.sql` | **Travel Rule 기능 전면 제거(feature/remove-travel-rule)**: (1) V2 seed 로 심어진 Travel Rule 피처 정의 `fds_feature_catalog.feature_key='crypto.travelRuleMissing'` DELETE. (2) 제거되는 enum 값 참조 잔존 row 정리(제약 재생성 선행) — `fds_actions` `action_type='REQUEST_TRAVEL_RULE_INFO'` · `fds_cases` `case_type='CRYPTO_TRAVEL_RULE'` DELETE. (3) `fds_actions_action_type_check` CHECK를 `DROP … ADD`로 **22종** 재생성(`REQUEST_TRAVEL_RULE_INFO` 제거). (4) `fds_cases_case_type_check` CHECK를 **10종** 재생성(`CRYPTO_TRAVEL_RULE` 제거). V1 baseline·V2 seed 는 수정 금지 원칙에 따라 travel 값을 그대로 담고(역사 기록), V9 가 신규 버전으로 제거. 운영에 잔존 이력 존재 시 아카이빙 후 적용. aml-svc 대칭 V31·bo-api V14 동반 | 정리(DELETE+CHECK 재생성) |
 | V10 | `V10__subject_profile_and_distinct_velocity_features.sql` | **고객 프로파일 스냅샷 + distinct velocity feature(룰베이스 확장, aegis-aml `docs/aml-data.md` §11.7.1/§11.7.2)**: (1) `fds_subjects` 에 비-PII 프로파일 컬럼 3종 — `nationality varchar(2)`·`registered_at timestamptz`·`kyc_completed_at timestamptz`(전부 nullable, `ADD COLUMN IF NOT EXISTS`, CDD 인입 재투영으로 백필) — 국적 차원·가입경과일·KYC경과일 룰의 feature 원천(ISO 국가코드·타임스탬프만, 원문 성명/신분증 미수용 §16.1). (2) `fds_feature_catalog` 에 `_global`/`default` 시드 11행 upsert — `customer.nationality`/`customer.signupAgeDays`/`customer.kycAgeDays`(Subject 3종) + `velocity.distinct_count.{receiveCountry,channelType}.subject.{10m,1h,6h,24h}`(Velocity 8종), `ON CONFLICT … DO UPDATE`(멱등). REST-only 원칙 준수 — 룰 정의 카탈로그 행만 시드(Flyway 허용 선례 V3/V4/V6), 예시 룰 2종(국적 VN 24h 수취국 distinct·전채널 6h 건수)은 REST(4-eyes)로 생성. 기존 행 무변경(additive·무회귀) | additive |
+| V11 | `V11__subject_profile_source_version.sql` | `fds_subjects.profile_source_event_id varchar(160)`·`profile_source_occurred_at timestamptz` additive 추가 + tenant/workspace/source-time 인덱스. AML outbox 재시도 역전 도착에서 과거 CDD가 최신 국적을 덮는 것을 방지 | additive |
 
 > **consolidate 주의**: 2026-06-30 이전 문서의 구 phase 파일(V10~V22 등)은 현행 저장소에 실재하지 않는다. 해당 스키마·CHECK·demo seed 의미는 V1/V2 baseline·seed와 V3~V6 additive seed로 흡수되었으므로, 본 표가 Flyway 정본이다.
 
@@ -1004,6 +1007,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-10 | v3.6 | **FDS 고객 프로필 CDD-authoritative upsert 정합.** AML CDD outbox/internal API non-null 값은 갱신, null 보존, 거래 snapshot은 빈 값 bootstrap만 허용. V11 원천 eventId/occurredAt 컬럼으로 역전 도착 과거 projection을 차단. | data-modeler |
 | 2026-07-09 | v3.5 | **FDS 룰베이스 확장 — 고객 프로파일 스냅샷·distinct velocity 반영(코드=truth, V10, feature/fds-rule-nationality-metric-conditions).** (1) §8 저장소 마이그레이션 표에 `V10__subject_profile_and_distinct_velocity_features.sql`(1:1) 행 추가 + "현행 V1~V9, 누락 없음" → "V1~V10"로 정정(헤더 Flyway 범위 표기도 V1~V10 로 동기). (2) §5.6 `fds_subjects` 에 비-PII 프로파일 컬럼 3종 `nationality varchar(2)`·`registered_at`·`kyc_completed_at` 행 추가 + COALESCE 보존 upsert 노트(거래 이벤트의 미동봉 null 이 CDD 원천 마스터를 지우지 않음, `SubjectStateJpaAdapter`) — feature `customer.nationality`(STRING)·`customer.signupAgeDays`/`customer.kycAgeDays`(NUMBER = floor((occurredAt−타임스탬프)/일), 음수 0 클램프, 부재 시 미노출) 원천, 기존 `customer.accountAgeDays` 보존(무회귀). (3) §5.17 `rule_json` velocity `distinct_count`·`field` 문법 노트 신설 — `field` 닫힌 화이트리스트 `{receiveCountry, channelType}`(`RuleDslParser.DISTINCT_FIELDS`), `distinct_count` 필수·`count`/`sum` 금지(폐그래머), 사전계산 키 `velocity.distinct_count.<field>.subject.<window>`(window 10m/1h/6h/24h). (4) §5.20 feature catalog V10 시드 노트(Subject 3종 + Velocity distinct 8종, `ON CONFLICT DO UPDATE` 멱등). | data-modeler. 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V10__subject_profile_and_distinct_velocity_features.sql`·`domain/rule/{VelocityAggregate,RuleCondition,RuleDslParser,DomainFeatureKeys}`·`adapter/out/persistence/{SubjectStateJpaEntity,SubjectStateJpaAdapter,CanonicalEventJpaRepository}`·`adapter/out/feature/FeatureComputeAdapter`·aegis-aml 491f46e. |
 | 2026-07-09 | v3.4 | **Travel Rule 기능 전면 제거 반영(코드=truth, V9, feature/remove-travel-rule).** (1) §8 저장소 마이그레이션 표에 `V9__drop_travel_rule.sql`(1:1) 행 추가 + "현행 V1~V8, 누락 없음" → "V1~V9"로 정정. (2) §4.8 `action_type` **23종→22종**(`REQUEST_TRAVEL_RULE_INFO` 제거) + 위임 각주에서 제거(`OPEN_AML_CASE`/`REGULATORY_REPORT` 위임 유지). (3) §4.10 `case_type` **11종→10종**(`CRYPTO_TRAVEL_RULE` 제거) 및 §4.8 `OPEN_COMPLIANCE_CASE` 매핑 각주·§5.13 case_type 각주(532행)에서 Travel Rule 언급 제거. (4) §5.1 `compliance_policy.optional`=Travel Rule/PCI → **PCI**, §5.3a PH_AMLC 임계 병기에서 Travel Rule ₱50,000 제거. (5) §9 서비스 경계 표 "AML/STR/CTR/Travel Rule 케이스"→"AML/STR/CTR 케이스", 위임 서술에서 `REQUEST_TRAVEL_RULE_INFO` 제거, §10 downstream enum action_type 23종→22종·case_type 11종→10종 동기화. V1 baseline·V2 seed 의 travel 값은 수정 금지 원칙에 따라 역사 기록으로 보존하고 V9 가 신규 버전으로 제거한다. `crypto.travelRuleMissing` feature 정의도 V9 가 DELETE. aml-svc 대칭 V31(travel 테이블 DROP+enum CHECK 재생성)·bo-api V14(메뉴·결재라우팅·감사 allowlist 제거) 동반. | data-modeler. 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V9__drop_travel_rule.sql`·`domain/enums/ActionType`·`domain/enums/CaseType`·aegis-aml 84997e1. |
 | 2026-07-07 | v3.3 | **데모 결재대기 룰 시드 제거 반영(코드=truth, V8, feature/sim-rest-only-closed-loop).** §8 저장소 마이그레이션 표에 `V8__remove_demo_pending_rules.sql`(1:1) 행 추가 + "현행 V1~V7, 누락 없음" → "V1~V8"로 정정. 사용자 지시 '데모데이터 절대 금지, 모든 데이터는 시뮬레이터 REST 인입'에 따라 V2 시드의 데모 결재대기(PENDING_APPROVAL) 룰 2건·4-eyes 결재요청 2건을 DELETE(FK 자식 방어적 선삭제·멱등). ACTIVE 룰 정본은 유지 — 룰/정책은 평가 기준(구성 정본), 결재 "대기 건" 은 비즈니스 데이터로 분류. aml-svc 도 대칭으로 V29(데모 워치리스트·데모 결재 제거)를 얹음(02-aml-db.md §7). | 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V8__remove_demo_pending_rules.sql`·aegis-aml `scripts/demo_ingest.py`(`ensure_watchlists`)·CLAUDE.md §시뮬레이터. |

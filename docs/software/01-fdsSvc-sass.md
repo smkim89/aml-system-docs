@@ -234,6 +234,8 @@ hanpass-ph FDS는 거래를 “서비스명”이 아니라 “거래 행위”�
 
 룰 평가 중 외부 API를 실시간 조회하지 않는다. 외부 조회는 ingest 또는 enrichment 단계에서 미리 materialize한다.
 
+고객 국적·가입/KYC 경과일은 AML `customer.cdd.completed` 성공 트랜잭션의 outbox가 FDS 내부 프로필 API로 비동기 전달해 `fds_subjects`에 미리 materialize한다. 따라서 거래 승인 경로는 AML을 조회하지 않으며 거래마다 국적을 반복 전송하지 않는다. 기존 거래 스냅샷은 빈 프로필 bootstrap만 허용하고 CDD 값을 덮어쓰지 못한다.
+
 이유:
 
 - 거래 승인 경로 지연 방지
@@ -2359,6 +2361,7 @@ hanpass-ph FDS(`fds-svc`)는 Hanpass `FdsSvc`를 참조 구현으로 삼되, 그
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-10 | v2.9 | **국적·가입/KYC 경과일 프로필 원천을 AML CDD outbox로 정본화.** §5.2에 CDD→FDS 사전 materialization, 거래 승인 경로 무외부조회, 거래 snapshot fallback 우선순위를 추가. | system-architect |
 | 2026-07-09 | v2.8 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule, aegis-aml 84997e1 — fds V9).** (1) §5.5 compliance plugin 예시에서 가상자산 Travel Rule 제거. (2) §6.1 aml-svc 위임 행 'Travel Rule regulatory case' 제거. (3) §11.2 `action_type` **23종→22종**(`REQUEST_TRAVEL_RULE_INFO` 삭제)·`OPEN_AML_CASE`/`REGULATORY_REPORT` 설명에서 Travel Rule 문구 제거·§11.1.1 recommendedActions 카운트 정정. (4) §11.2a `OPEN_COMPLIANCE_CASE`→`OPEN_AML_CASE` 매핑을 `AML_REVIEW`로 정정(구 `CRYPTO_TRAVEL_RULE` 삭제). (5) §11.3 `case_type` **11종→10종**(`CRYPTO_TRAVEL_RULE` 삭제). (6) §16.2 규제 팩 카탈로그에서 `TRAVEL_RULE` named pack 제거(`PCI`만 잔존)·§15/§16.2 crypto 예시 Travel Rule 문구 제거. | system-architect. 코드=truth. 근거=`services/fds-svc`(ActionType 22종·CaseType 10종·feature `crypto.travelRuleMissing` 제거·CaseSlaPolicy/DecisionActionRouter/AliasMapping travel 분기 제거)·migration V9(`drop_travel_rule`). `OPEN_AML_CASE`/`REGULATORY_REPORT`의 aml-svc 위임은 유지. |
 | 2026-07-04 | v2.7 | **(H1) 판정 발동 룰 근거 거래 조회 유스케이스 역전파(코드=truth, fix/aml-fds-spec-backprop).** §6.2 헥사고날 레이아웃 — `application/port/in`에 `QueryDecisionUseCase`·`QueryDecisionEvidenceUseCase`(판정 발동 룰 근거 거래 전수 조회, API §4.2) 추가, `application/port/out`에 `DecisionEvidenceQueryPort`(발동 룰 evidence 윈도우 해소 + 근거 거래 조회) 추가. `adapter/in/rest` 註記에 Decision 조회 그룹(`DecisionQueryController`: `GET /decisions/{id}`·`GET /decisions`·`GET /decisions/{decisionId}/evidence-transactions`, 응답 DTO `DecisionEvidenceTransactionsResponse` API §5.4a) 명문화. 어댑터-인 표면 + 유스케이스 목록 수준 반영(엔진 도메인 무변경). | aegis-spec. 코드=truth. 근거=fds-svc `adapter/in/rest/DecisionQueryController`·port `QueryDecisionEvidenceUseCase`·`QueryDecisionUseCase`·`DecisionEvidenceQueryPort`·usecase `QueryDecisionService`. API §4.2/§5.4a 동기화. |
 | 2026-06-30 | v2.6 | **hanpass-ph grounding 재정합(코드 truth 기준).** 문서를 일반 멀티서비스 SaaS FDS 플랫폼 서술에서 **hanpass-ph 단일 FDS 엔진(`fds-svc`, 테넌트 `tenant_demo`) 아키텍처 정본**으로 재작성. 제목·§1 목적·§2.1~2.4·§4·§5.1/5.4·§6 아키텍처 다이어그램·§7 데이터 모델·§8.1 event family·§8.2 캐논 예시·§9.1~9.3 enum·§10.1/10.2 룰·§13.0b/13.4 멀티테넌시·§12 연동·§14.6 commerce·§15 도메인 예시·§18 Phase3/7·결론·§3.1 — hanpass-ph **5채널**(`CROSS_BORDER_REMIT`·`DOMESTIC_REMIT`·`CASH_IN`·`WALLET_PAYMENT`·`WALLET_WITHDRAWAL`) + `transaction.phpEquivalent`(결제액 PHP 환산) 룰 feature로 정렬. 카드·PG·코인·무역·이커머스·B2B·내부감사 등 **비-hanpass 채널/Phase 7 advanced domain**과 다수 도메인 예시는 제거하되, `ChannelType`/`EventFamily`/`InstrumentType`/`PaymentRail` 닫힌 enum·commerce/trade 도메인·feature 분기는 코드 truth로 **닫힌 잔존(미사용)** 명시. 헥사고날(domain/application/adapter/global)·멀티테넌시 인프라는 코드 truth로 유지. `EventFamily` REMIT/DOMESTIC/WALLET 보강. | aml-system-docs 역전파(코드 truth) |

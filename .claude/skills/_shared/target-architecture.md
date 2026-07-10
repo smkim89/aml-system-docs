@@ -46,7 +46,7 @@
 - **배포 모델(핵심)**: AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건이 커서 **고객사별 전용 배포가 기본**이다(공유 SaaS DB 아님). §4.1 참조.
 - **멀티테넌시 키**: `tenant_id`/`workspace_id`/`data_scope`는 **배포 내부 분리** 용도다 — `tenant_id`=배포의 고객사(전용 배포에선 사실상 단일 값), `workspace_id`=그 고객사의 서비스/환경(예 retail/corporate, prod/sandbox), `data_scope`=조회·조치 권한 필터. (소규모 공유 배포에서만 `tenant_id`가 고객사 간 격리로 동작.)
 - **컴플라이언스**: raw PII 미저장(토큰/해시 마스킹), 4-eyes(작성자≠승인자), 감사로그 전수.
-- **규제 보고**: 한국 Policy Pack(STR/CTR/Travel Rule).
+- **규제 보고**: 한국 Policy Pack(STR/CTR). Travel Rule은 현 단계 범위에서 제거한다.
 - **관측성**: traceId 전파 + 경계별 진입/이탈 구조화 로그.
 
 ### 4.1 배포 모델 (deployment topology)
