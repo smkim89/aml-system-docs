@@ -607,6 +607,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-006**: `확정 매칭` 승인 시 케이스 자동 생성(`SANCTIONS_REVIEW`/`PEP_REVIEW`) + AML→FDS 전파(`aml.screening.true_match`, 화면 비대상 BE). 케이스 상세는 AML-CASE-002로 딥링크.
 - **BR-007**: 점수·점수 분해·매칭 후보는 마스킹 식별자/해시만 표시. 원문 대조가 불가피하면 `aml:pii:reveal` + 사유 + 감사(`RAW_DATA_ACCESS`). **(v9.17 — 식별정보 4필드 통일, 코드 정합)** 이 원문 reveal 경로는 매치 상세의 **회원 본인 식별정보** 와 **워치리스트 엔트리 원문(매칭 후보)** 에 적용되며, 양쪽 모두 **이름·국적·성별·생년월일(NAME/NATIONALITY/GENDER/DOB) 4필드 균일**로 노출된다(이전: 회원=이름/국적/성별, 후보=명단 기재명/국적/생년 — 각 3필드 비대칭, `subjectIdentity`, API §3.2). reveal 가능 `field` = `NAME`/`NATIONALITY`/`GENDER`/`DOB`(전체 7종 도메인의 식별정보 서브셋, API §1.6·§2.6·DB §5.35 V23). 무조건 cleartext 가 아니라 **권한·사유·감사 게이트**를 거치며(`aml:pii:reveal` scope 없으면 `[원문 보기]` 버튼 자체를 숨김), 원문이 vault 에 적재되지 않거나 주체가 보유하지 않는 필드(예 수취자=상대방의 성별·생년월일)는 **공백**으로 둔다(reveal stub 은 인식 주체의 미보유 필드에 빈 값 `""` 반환). cleartext 는 이 요청 한정 transient — 화면·로그에 영속하지 않는다.
 - **BR-008**: 상태 전이 위반은 `AML.INVALID_STATE_TRANSITION`. 결재 후 payload 변경 시 `AML.APPROVAL_PAYLOAD_CHANGED`로 무효화.
+
 - **BR-009**: **WLF 매칭 임계값 변경 통제** — 유사도 임계값(예: 자동낮춤 0.66 미만 / 검토필요 0.66~0.92 / 고신뢰 0.92 이상)과 적용 룰버전(WLF-KR v12)은 본 화면이 아니라 **정책팩(Policy Pack) 파라미터**로 관리되며, 변경은 정책팩 4-eyes(`POLICY_PACK`) 결재를 따릅니다(설계서 §5.3·§5.5, AML-PP-001 연계). 본 화면에는 읽기 전용으로만 표시.
 - **BR-010 (v7.0 — QA 정합)**: 화면 상단(헤더 우측)에 **`[시뮬레이션]` 버튼 → AML-WLF-004** 아웃바운드 트리거를 둔다(§12-B.1 진입 경로의 소스 측 명시) — 단건 퍼지 매칭 사전 테스트·임의 수행(일괄) 도구 화면으로 이동.
 - **BR-011 (hanpass-ph 거래당 sender·receiver 그룹 — 코드 정본 `AmlWlfTransactionGroups`)**: 해외송금 건은 검토 큐를 **거래번호(`transactionRef`) 단위 그룹**으로 묶어 표시한다 — 그룹 헤더(거래번호) 아래 **송금인(`CUSTOMER`)·수취인(`COUNTERPARTY`) 역할별 최신 각 1건**(거래당 2회 스크리닝)을 나열하고, 각 행에서 상세 열람·`[오탐 면제]`(FP 화이트리스트, 4-eyes `FP_WHITELIST`)를 수행한다. 동일 거래·역할의 과거 결과가 남아 있어도 현재 그룹에는 중복 노출하지 않는다. `transactionRef` 없는 건(국내송금·월렛 단건)은 평면 행으로 폴백한다. 역할 라벨은 송금인/수취인(`wlfRoleLabel`), 대상유형 미정의 시 일반 대상유형 라벨로 폴백. 상태 배지는 `amlMon.enum.screeningStatus.*` 번역을 해석해 raw enum/message key를 노출하지 않는다.
@@ -908,6 +909,14 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-006 (대상 360° 연계)**: 고위험 목록 행 → AML-RA-003 드릴다운은 **대상 360° 통합 뷰**(`GET /api/v1/bo/aml/subjects/{customerRef}/360`, DB §3.16·API §2.5a·§3.4b)를 골격으로 한다 — `tx-history-svc` 통합 거래 이력(채널·corridor) + `member-svc` CDD/screening(zoloz) + `wallet-svc` 자금그래프 결합. RA-003·CASE-002·TM-001 알림 상세 공통.
 
 ---
+
+### RA 운영 보강 — 1차 검토와 스코어 조절 (2026-07-10)
+
+- RA 상세의 EDD 액션 옆에는 `onboardingReview.status=REQUIRED`인 SANCTION/PEP 대상만 **[1차 RA 검토 완료]**를 표시한다. 신원·명단 근거·후속조치 세 체크가 모두 선택되어야 완료 가능하며 완료 actor/메모/시각을 표시한다. `AUTO_COMPLETED` 일반 고객에는 버튼을 표시하지 않는다.
+- `CDD 이행 주기 관리` 바로 다음 메뉴를 **RA 스코어 조절**(`/aml/ra-models`)로 둔다. ONBOARDING은 SANCTION/PEP 비교점수, ONGOING은 STR/CTR/FDS 코드별 가중치·lookback·포화·debounce·EDD 임계를 편집한다.
+- ACTIVE 버전은 화면에서 직접 덮어쓰지 않는다. **새 초안으로 복제 → 저장 → 시뮬레이션 → 활성화 상신 → maker/checker 승인** 흐름을 고정한다.
+- 1차 처리 현황은 `evaluated/notEvaluated`와 별도로 `manualReviewRequired`를 표시해 자동평가 누락과 명단 검토 대기를 혼동하지 않는다.
+- 2차 RA는 거래 차단 화면이 아니다. 동일 회원의 AML TM과 FDS 이력을 점수화하고 CDD 재이행 주기 단축·EDD 요청 여부를 보여준다.
 
 ## 6. 위험평가(RA) 모델 활성화·등급 조정
 
