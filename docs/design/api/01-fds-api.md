@@ -268,6 +268,7 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 | PUT | `/api/v1/admin/fds/source-systems/{sourceSystem}/mappings` | field mapping/PII allowlist 변경(`fds_schema_mappings`) | `fds:admin:source-system` | **필수** |
 | PUT | `/api/v1/admin/fds/source-systems/{id}` | source system 속성·capability 매트릭스 수정(`enabled`/`schemaVersion`/ingest 설정/`failPolicy`/`capabilities`, `fds_source_systems`) | `fds:admin:source-system` | **필수** |
 | GET | `/api/v1/admin/fds/connectors` | connector health 목록(`fds_connector_offsets`) | `fds:admin:source-system` | — |
+| GET | `/api/v1/admin/fds/ingest/metrics` | REST 거래 인입 실측 집계. tenant/workspace 내 `fds_canonical_events`의 `transaction_ref IS NOT NULL` accepted row 기준 최근 24h 건수·마지막 수신·최근 60초 TPS를 source system별로 반환(§5.15a) | `fds:admin:source-system` | — |
 | GET | `/api/v1/admin/fds/connectors/{connectorId}` | connector 단건 health·offset·lag·last_error 조회(`fds_connector_offsets`) | `fds:admin:source-system` | — |
 | POST | `/api/v1/admin/fds/connectors/{connectorId}/pause` | connector 일시중지(`connector_status`→`DISABLED`, ingest/poll suspend) | `fds:admin:source-system` | — |
 | POST | `/api/v1/admin/fds/connectors/{connectorId}/resume` | connector 재개(`connector_status`→`HEALTHY`, offset 유지 후 소비 재개) | `fds:admin:source-system` | — |
@@ -598,6 +599,23 @@ ApprovalDecisionRequest(approve/reject): `comment`(string △). checker는 토�
 | updatedAt | datetime | `updated_at` | |
 
 > `{connectorId}`=`connector_id`(connector 경로 변수는 `{connectorId}`로 전수 통일 — replay·pause·resume 동일). data-scope 밖 connector → `FDS-DATASCOPE-DENIED`(403), 격리 밖/미존재 → `FDS-NOT-FOUND`(404).
+
+### 5.15a IngestMetricsResponse (GET /admin/fds/ingest/metrics) — REST 거래 인입 실측
+
+bo-api의 `/api/v1/bo/fds/ingest/health`가 사용하는 저수준 엔진 read API다. 집계 대상은 tenant/workspace 경계 안에서 `transaction_ref IS NOT NULL`인 `fds_canonical_events` row이며, `received_at`을 수신 시각 정본으로 사용한다. 신규 accepted event만 canonical row를 추가하므로 멱등 replay/duplicate는 수신 건수에 재가산되지 않는다. `/events`·`:batch`·`/events/evaluate`별 HTTP 호출량은 canonical row만으로 구분할 수 없으므로 게이트웨이 APM 범위로 분리한다.
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| generatedAt | datetime | 집계 생성 시각(UTC) |
+| windowStartedAt | datetime | 24시간 집계 시작(포함) |
+| rateWindowSeconds | integer | TPS 관측 구간. 현재 60초 |
+| received24h | long(int64) | 최근 24시간 accepted 거래 이벤트 합계 |
+| lastReceivedAt | datetime(nullable) | 전체 REST 거래 소스 중 가장 최근 수신 시각 |
+| sources | SourceIngestMetric[] | 등록된 `REST_PUSH` source system별 행(미수신 source도 0건/null로 포함) |
+
+`SourceIngestMetric`: `sourceSystem`(string(64)), `enabled`(boolean), `received24h`(long), `lastReceivedAt`(datetime nullable), `tps`(decimal, 최근 `rateWindowSeconds` accepted 건수 ÷ 구간 초).
+
+bo-api health 집계의 `metricSource=MEASURED`; REST 전용이므로 queue depth/DLQ/backfill 호환 필드는 `0`/`null`이다. 신호 기본값은 마지막 수신 ≤60초 `LIVE`, ≤300초 `DELAYED`, 그 외/미수신 `STOPPED`다.
 
 ### 5.16 ConnectorPauseResponse / ConnectorResumeResponse (POST /admin/fds/connectors/{connectorId}/pause·/resume)
 일시중지·재개는 상태 전이만 수행(offset/cursor 보존). 멱등 — 이미 목표 상태면 동일 body 재반환.
@@ -1651,6 +1669,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-10 | v4.1 | **FDS REST 거래 인입 실측 모니터링 API 추가.** §4.8 `GET /api/v1/admin/fds/ingest/metrics`와 §5.15a DTO를 신설. `fds_canonical_events.received_at`·`transaction_ref IS NOT NULL` accepted row 기준 24h 건수/마지막 수신/60초 TPS를 tenant/workspace/source별로 반환하며 replay/duplicate는 비가산. bo-api health는 `MEASURED`, 경로별 HTTP 호출량은 게이트웨이 APM으로 분리. | api-designer |
 | 2026-07-10 | v4.0 | **AML CDD 고객 프로필 동기화 API 추가.** §4.3a `PUT /internal/v1/fds/customer-profiles/{memberRef}`와 PII-safe DTO·tenant/workspace/caller·날짜 검증을 명시. §5.1 거래 `SubjectDto` 프로필은 bootstrap fallback으로 강등하고 CDD master 우선순위를 확정. | api-designer |
 | 2026-07-09 | v3.9 | **FDS 룰베이스 확장 역전파(코드=truth, feature/fds-rule-nationality-metric-conditions, fds V10).** (1) §5.1 `SubjectDto` 에 비-PII 프로파일 스냅샷 3필드 추가 — `nationality`(string(2) ISO-3166 alpha-2)·`registeredAt`(datetime)·`kycCompletedAt`(datetime), `fds_subjects` COALESCE upsert(DB §5.6·V10) 후 feature `customer.nationality`/`customer.signupAgeDays`/`customer.kycAgeDays`(= floor((occurredAt−타임스탬프)/일), 부재 시 미노출·`customer.accountAgeDays` 보존) 파생 note 신설. 기존 표기 `kycLevel`/`riskRating` 은 코드 `IngestEventRequest.SubjectDto` 에 없어 정정 삭제(마스터 컬럼일 뿐 인입 DTO 필드 아님). (2) §5.8 `ruleJson` wire 타입을 object → **string(JSON)** 으로 정정(`RuleUpsertRequest.ruleJson` `@NotBlank String`·`RuleDto.ruleJson` String, 저장 JSONB) + `channelScope` **NULL = 전채널** 명기. (3) §5.8 velocity `distinct_count`·`field` 규약 note 신설 — `field` 닫힌 화이트리스트 `{receiveCountry, channelType}`(`RuleDslParser.DISTINCT_FIELDS`), `distinct_count` 필수·`count`/`sum` 금지, 사전계산 키 `velocity.distinct_count.<field>.subject.<window>`(window 10m/1h/6h/24h). (4) §5.8 bo-api 위임 wire 봉투 note 신설 — 쓰기: `toEnginePayload()` 가 `ruleJson` 을 JSON 문자열로 재성형(object 전송 = 400 FDS-VALIDATION-001, MockRestServiceServer 미적발 wire 갭)·`channelScope` null 원문 전달(기본값 주입 금지)·bo-api 전용 필드 탈락 / 읽기: `fromEngine` 이 `channelScope` NULL 을 기본 채널로 치환하지 않고 그대로 노출(라벨 "전채널", round-trip scope 오염 방지). | api-designer. 코드=truth. 근거=fds-svc `adapter/in/rest/dto/{IngestEventRequest,RuleUpsertRequest,RuleDto}`·`domain/rule/{RuleDslParser,RuleCondition,VelocityAggregate}`·bo-api `fds/service/FdsRuleGroupService`(toEnginePayload·EngineRuleUpsertPayload·fromEngine·channelLabel)·aegis-aml 491f46e(+워킹트리 channelScope NULL 노출 수정). |
 | 2026-07-09 | v3.8 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule).** fds-svc `ActionType` **23종→22종**(`REQUEST_TRAVEL_RULE_INFO` 제거) — §1.1 원칙·§4.4 CaseActionRequest·§5.7 `ActionResponse`·§7 recommendedActions·§9.1 `FdsActionResult`·§10 OpenAPI `ActionType` enum·§13 downstream 전수 갱신. fds-svc `CaseType` **11종→10종**(`CRYPTO_TRAVEL_RULE` 제거) — §5.5 `CaseDto`·§10 OpenAPI `CaseType` enum/설명·§13 downstream 갱신. §1 위임 서술·§6 `FDS-AML-DELEGATED`·§12 위임 서술에서 "AML/Travel Rule"→"AML", `REQUEST_TRAVEL_RULE_INFO` 후보 action 제거(`OPEN_AML_CASE`/`REGULATORY_REPORT` 위임은 유지). bo-api/bo-web `travelRuleReference` 삭제(RuleRef.reference travel MISSING_FIELD 본문 소멸 — `MISSING_FIELD`는 데이터품질 reasonCode로 잔존, RuleRef reference variant 주석 불변). FATF R.16 party 정보 요건(originator/counterparty 필드 근거)은 규제 근거로 유지. §5.4·§5.5 엔진 계약 나머지 무변경. | api-designer. 코드=truth. 근거=aegis-aml 84997e1(feature/remove-travel-rule)·삭제된 fds `ActionType`(REQUEST_TRAVEL_RULE_INFO)·`CaseType`(CRYPTO_TRAVEL_RULE)·Flyway V9 DROP. |

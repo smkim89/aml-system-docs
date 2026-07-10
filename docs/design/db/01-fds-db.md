@@ -4,7 +4,7 @@
 > 입력 설계서: `docs/software/01-fdsSvc-sass.md` v1.1 (특히 §7 공통 데이터 모델, §8 event taxonomy, §9 수단/채널, §10 룰/feature, §11 action/case/결재, §13 멀티테넌시, §14 DDL, §16 PII/규제).
 > 책임 서비스: **`services/fds-svc`** (Java 25, Spring Boot 3.5.x, 헥사고날, `adapter/out/persistence`). AML 규제 케이스는 `aml-svc`, 결재·감사·IAM 운영은 `bo-api`가 별도 스키마로 보유한다.
 >
-> **대상 시스템 = hanpass-ph**: 한국→필리핀 해외송금(`CROSS_BORDER_REMIT`) + 필리핀 국내송금(`DOMESTIC_REMIT`) + 지갑(월렛충전 `CASH_IN`·월렛결제 `WALLET_PAYMENT`·ATM/지갑출금 `WALLET_WITHDRAWAL`) 5거래유형의 AML/FDS RegOps 백오피스. 운영 테넌트는 단일(`tenant_demo` = hanpass-ph). 본 문서는 그 데이터 모델을 실제 저장소 Flyway(V1~V12)·도메인 enum과 1:1로 확정한다.
+> **대상 시스템 = hanpass-ph**: 한국→필리핀 해외송금(`CROSS_BORDER_REMIT`) + 필리핀 국내송금(`DOMESTIC_REMIT`) + 지갑(월렛충전 `CASH_IN`·월렛결제 `WALLET_PAYMENT`·ATM/지갑출금 `WALLET_WITHDRAWAL`) 5거래유형의 AML/FDS RegOps 백오피스. 운영 테넌트는 단일(`tenant_demo` = hanpass-ph). 본 문서는 그 데이터 모델을 실제 저장소 Flyway(V1~V13)·도메인 enum과 1:1로 확정한다.
 
 ## 목차
 1. [범위·원칙](#1-범위원칙)
@@ -892,6 +892,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | fds_canonical_events | ix_events_subject_time | `(tenant_id, workspace_id, subject_ref, occurred_at DESC)` | subject velocity |
 | fds_canonical_events | ix_events_tx | `(tenant_id, workspace_id, transaction_ref)` | transaction 단위 조회 |
 | fds_canonical_events | ix_events_type_time | `(tenant_id, workspace_id, event_family, occurred_at DESC)` | family 라우팅/통계 |
+| fds_canonical_events | ix_events_rest_tx_received | `(tenant_id, workspace_id, source_system, received_at DESC)` WHERE `transaction_ref IS NOT NULL` | REST 거래 인입 24h 건수·source별 마지막 수신 실측(V13) |
 | fds_decisions | ix_dec_event | `(tenant_id, workspace_id, event_id)` | event→decision |
 | fds_decisions | ix_dec_tx | `(tenant_id, workspace_id, transaction_ref, created_at DESC)` | tx timeline |
 | fds_decisions | ix_dec_decision_time | `(tenant_id, workspace_id, decision, created_at DESC)` | decision 추이 대시보드 |
@@ -947,7 +948,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 
 ## 8. Flyway 마이그레이션 순서
 
-스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V12, 누락 없음)이다.
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V13, 누락 없음)이다.
 
 | 버전 | 파일 | 내용(실제) | 비고 |
 |---|---|---|---|
@@ -963,6 +964,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | V10 | `V10__subject_profile_and_distinct_velocity_features.sql` | **고객 프로파일 스냅샷 + distinct velocity feature(룰베이스 확장, aegis-aml `docs/aml-data.md` §11.7.1/§11.7.2)**: (1) `fds_subjects` 에 비-PII 프로파일 컬럼 3종 — `nationality varchar(2)`·`registered_at timestamptz`·`kyc_completed_at timestamptz`(전부 nullable, `ADD COLUMN IF NOT EXISTS`, CDD 인입 재투영으로 백필) — 국적 차원·가입경과일·KYC경과일 룰의 feature 원천(ISO 국가코드·타임스탬프만, 원문 성명/신분증 미수용 §16.1). (2) `fds_feature_catalog` 에 `_global`/`default` 시드 11행 upsert — `customer.nationality`/`customer.signupAgeDays`/`customer.kycAgeDays`(Subject 3종) + `velocity.distinct_count.{receiveCountry,channelType}.subject.{10m,1h,6h,24h}`(Velocity 8종), `ON CONFLICT … DO UPDATE`(멱등). REST-only 원칙 준수 — 룰 정의 카탈로그 행만 시드(Flyway 허용 선례 V3/V4/V6), 예시 룰 2종(국적 VN 24h 수취국 distinct·전채널 6h 건수)은 REST(4-eyes)로 생성. 기존 행 무변경(additive·무회귀) | additive |
 | V11 | `V11__subject_profile_source_version.sql` | `fds_subjects.profile_source_event_id varchar(160)`·`profile_source_occurred_at timestamptz` additive 추가 + tenant/workspace/source-time 인덱스. AML outbox 재시도 역전 도착에서 과거 CDD가 최신 국적을 덮는 것을 방지 | additive |
 | V12 | `V12__dynamic_rule_builder_core_features.sql` | `FeatureComputeAdapter`가 계산하는 subject count/sum의 10m/1h/6h/24h core feature 8개를 `_global/default` catalog에 멱등 upsert. catalog-first 룰 화면에서 거래건수·금액합계를 직접 선택하는 정본 | additive seed |
+| V13 | `V13__rest_ingest_monitoring_index.sql` | REST 거래 인입 실측을 위한 partial index `ix_events_rest_tx_received (tenant_id, workspace_id, source_system, received_at DESC) WHERE transaction_ref IS NOT NULL`. 24h accepted 거래 count와 source별 최신 수신 조회 지원 | additive index |
 
 > **consolidate 주의**: 2026-06-30 이전 문서의 구 phase 파일(V10~V22 등)은 현행 저장소에 실재하지 않는다. 해당 스키마·CHECK·demo seed 의미는 V1/V2 baseline·seed와 V3~V6 additive seed로 흡수되었으므로, 본 표가 Flyway 정본이다.
 
@@ -1010,6 +1012,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-10 | v3.7 | **REST 거래 인입 모니터링 조회 인덱스 추가.** V13 `ix_events_rest_tx_received (tenant_id, workspace_id, source_system, received_at DESC) WHERE transaction_ref IS NOT NULL`을 §6에 반영. accepted canonical 거래 row의 24h 건수·마지막 수신 조회를 지원하며 스키마/컬럼 변경 없음. | data-modeler |
 | 2026-07-10 | v3.6 | **FDS 고객 프로필 CDD-authoritative upsert 정합.** AML CDD outbox/internal API non-null 값은 갱신, null 보존, 거래 snapshot은 빈 값 bootstrap만 허용. V11 원천 eventId/occurredAt 컬럼으로 역전 도착 과거 projection을 차단. | data-modeler |
 | 2026-07-09 | v3.5 | **FDS 룰베이스 확장 — 고객 프로파일 스냅샷·distinct velocity 반영(코드=truth, V10, feature/fds-rule-nationality-metric-conditions).** (1) §8 저장소 마이그레이션 표에 `V10__subject_profile_and_distinct_velocity_features.sql`(1:1) 행 추가 + "현행 V1~V9, 누락 없음" → "V1~V10"로 정정(헤더 Flyway 범위 표기도 V1~V10 로 동기). (2) §5.6 `fds_subjects` 에 비-PII 프로파일 컬럼 3종 `nationality varchar(2)`·`registered_at`·`kyc_completed_at` 행 추가 + COALESCE 보존 upsert 노트(거래 이벤트의 미동봉 null 이 CDD 원천 마스터를 지우지 않음, `SubjectStateJpaAdapter`) — feature `customer.nationality`(STRING)·`customer.signupAgeDays`/`customer.kycAgeDays`(NUMBER = floor((occurredAt−타임스탬프)/일), 음수 0 클램프, 부재 시 미노출) 원천, 기존 `customer.accountAgeDays` 보존(무회귀). (3) §5.17 `rule_json` velocity `distinct_count`·`field` 문법 노트 신설 — `field` 닫힌 화이트리스트 `{receiveCountry, channelType}`(`RuleDslParser.DISTINCT_FIELDS`), `distinct_count` 필수·`count`/`sum` 금지(폐그래머), 사전계산 키 `velocity.distinct_count.<field>.subject.<window>`(window 10m/1h/6h/24h). (4) §5.20 feature catalog V10 시드 노트(Subject 3종 + Velocity distinct 8종, `ON CONFLICT DO UPDATE` 멱등). | data-modeler. 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V10__subject_profile_and_distinct_velocity_features.sql`·`domain/rule/{VelocityAggregate,RuleCondition,RuleDslParser,DomainFeatureKeys}`·`adapter/out/persistence/{SubjectStateJpaEntity,SubjectStateJpaAdapter,CanonicalEventJpaRepository}`·`adapter/out/feature/FeatureComputeAdapter`·aegis-aml 491f46e. |
 | 2026-07-09 | v3.4 | **Travel Rule 기능 전면 제거 반영(코드=truth, V9, feature/remove-travel-rule).** (1) §8 저장소 마이그레이션 표에 `V9__drop_travel_rule.sql`(1:1) 행 추가 + "현행 V1~V8, 누락 없음" → "V1~V9"로 정정. (2) §4.8 `action_type` **23종→22종**(`REQUEST_TRAVEL_RULE_INFO` 제거) + 위임 각주에서 제거(`OPEN_AML_CASE`/`REGULATORY_REPORT` 위임 유지). (3) §4.10 `case_type` **11종→10종**(`CRYPTO_TRAVEL_RULE` 제거) 및 §4.8 `OPEN_COMPLIANCE_CASE` 매핑 각주·§5.13 case_type 각주(532행)에서 Travel Rule 언급 제거. (4) §5.1 `compliance_policy.optional`=Travel Rule/PCI → **PCI**, §5.3a PH_AMLC 임계 병기에서 Travel Rule ₱50,000 제거. (5) §9 서비스 경계 표 "AML/STR/CTR/Travel Rule 케이스"→"AML/STR/CTR 케이스", 위임 서술에서 `REQUEST_TRAVEL_RULE_INFO` 제거, §10 downstream enum action_type 23종→22종·case_type 11종→10종 동기화. V1 baseline·V2 seed 의 travel 값은 수정 금지 원칙에 따라 역사 기록으로 보존하고 V9 가 신규 버전으로 제거한다. `crypto.travelRuleMissing` feature 정의도 V9 가 DELETE. aml-svc 대칭 V31(travel 테이블 DROP+enum CHECK 재생성)·bo-api V14(메뉴·결재라우팅·감사 allowlist 제거) 동반. | data-modeler. 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V9__drop_travel_rule.sql`·`domain/enums/ActionType`·`domain/enums/CaseType`·aegis-aml 84997e1. |

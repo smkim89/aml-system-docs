@@ -2193,6 +2193,7 @@ SaaS FDS는 한국 policy pack을 기본으로 하되, 국가별 규정을 plugi
 | `fds.ingest.accepted` | 정상 처리 이벤트 수 |
 | `fds.ingest.rejected` | schema/signature 실패 |
 | `fds.ingest.duplicate` | dedup 처리 |
+| `fds.ingest.rest.transaction.received24h` | tenant/workspace별 최근 24h accepted canonical 거래 이벤트 실측(`transaction_ref IS NOT NULL`, `received_at`) |
 | `fds.connector.lag` | connector 지연 |
 | `fds.rule.evaluated` | 룰 평가 수 |
 | `fds.decision.created` | decision 수 |
@@ -2203,6 +2204,7 @@ SaaS FDS는 한국 policy pack을 기본으로 하되, 국가별 규정을 plugi
 ### 17.2 운영 화면
 
 - tenant별 ingest 상태
+- REST 거래 인입: source system별 24h 수신 건수·마지막 수신 상대시각·최근 60초 TPS. fds-svc `GET /api/v1/admin/fds/ingest/metrics` → bo-api health 집계 → `/fds/connectors`; replay/duplicate 비가산, raw payload/PII 미노출
 - connector lag / error
 - schema validation 실패
 - decision 추이
@@ -2364,6 +2366,7 @@ hanpass-ph FDS(`fds-svc`)는 Hanpass `FdsSvc`를 참조 구현으로 삼되, 그
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-10 | v3.0 | **Canonical store 기반 REST 거래 인입 실측 관측 흐름 추가.** §17에서 `fds_canonical_events.received_at`·`transaction_ref IS NOT NULL` accepted row를 tenant/workspace/source별 24h 건수·마지막 수신·60초 TPS로 집계하는 저수준 admin API와 bo-api→`/fds/connectors` 표시 흐름을 확정. replay/duplicate 비가산, PII 미노출. | system-architect |
 | 2026-07-10 | v2.9 | **국적·가입/KYC 경과일 프로필 원천을 AML CDD outbox로 정본화.** §5.2에 CDD→FDS 사전 materialization, 거래 승인 경로 무외부조회, 거래 snapshot fallback 우선순위를 추가. | system-architect |
 | 2026-07-09 | v2.8 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule, aegis-aml 84997e1 — fds V9).** (1) §5.5 compliance plugin 예시에서 가상자산 Travel Rule 제거. (2) §6.1 aml-svc 위임 행 'Travel Rule regulatory case' 제거. (3) §11.2 `action_type` **23종→22종**(`REQUEST_TRAVEL_RULE_INFO` 삭제)·`OPEN_AML_CASE`/`REGULATORY_REPORT` 설명에서 Travel Rule 문구 제거·§11.1.1 recommendedActions 카운트 정정. (4) §11.2a `OPEN_COMPLIANCE_CASE`→`OPEN_AML_CASE` 매핑을 `AML_REVIEW`로 정정(구 `CRYPTO_TRAVEL_RULE` 삭제). (5) §11.3 `case_type` **11종→10종**(`CRYPTO_TRAVEL_RULE` 삭제). (6) §16.2 규제 팩 카탈로그에서 `TRAVEL_RULE` named pack 제거(`PCI`만 잔존)·§15/§16.2 crypto 예시 Travel Rule 문구 제거. | system-architect. 코드=truth. 근거=`services/fds-svc`(ActionType 22종·CaseType 10종·feature `crypto.travelRuleMissing` 제거·CaseSlaPolicy/DecisionActionRouter/AliasMapping travel 분기 제거)·migration V9(`drop_travel_rule`). `OPEN_AML_CASE`/`REGULATORY_REPORT`의 aml-svc 위임은 유지. |
 | 2026-07-04 | v2.7 | **(H1) 판정 발동 룰 근거 거래 조회 유스케이스 역전파(코드=truth, fix/aml-fds-spec-backprop).** §6.2 헥사고날 레이아웃 — `application/port/in`에 `QueryDecisionUseCase`·`QueryDecisionEvidenceUseCase`(판정 발동 룰 근거 거래 전수 조회, API §4.2) 추가, `application/port/out`에 `DecisionEvidenceQueryPort`(발동 룰 evidence 윈도우 해소 + 근거 거래 조회) 추가. `adapter/in/rest` 註記에 Decision 조회 그룹(`DecisionQueryController`: `GET /decisions/{id}`·`GET /decisions`·`GET /decisions/{decisionId}/evidence-transactions`, 응답 DTO `DecisionEvidenceTransactionsResponse` API §5.4a) 명문화. 어댑터-인 표면 + 유스케이스 목록 수준 반영(엔진 도메인 무변경). | aegis-spec. 코드=truth. 근거=fds-svc `adapter/in/rest/DecisionQueryController`·port `QueryDecisionEvidenceUseCase`·`QueryDecisionUseCase`·`DecisionEvidenceQueryPort`·usecase `QueryDecisionService`. API §4.2/§5.4a 동기화. |

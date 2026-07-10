@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **6.15** | **2026-07-10** | **SM Kim** | **FDS REST 거래 인입 실측 모니터링 확정.** `/fds/connectors`에 30초 자동갱신 REST 인입 요약(24h accepted 고유 거래 이벤트·마지막 수신 상대시각·라이브 소스·등록 REST 소스)과 source별 24h 건수/60초 TPS/신호를 표시. 수치 원천은 fds-svc `GET /api/v1/admin/fds/ingest/metrics` → bo-api `/api/v1/bo/fds/ingest/health`; `fds_canonical_events.received_at`, `transaction_ref IS NOT NULL`, tenant/workspace 기준 실측(`MEASURED`). replay/duplicate 비가산. REST 전용 화면은 queue/DLQ/backfill 추정값을 운영 실측처럼 표시하지 않음. |
 | **6.14** | **2026-07-09** | **SM Kim** | **§6.3 SFDS-RULE-003 룰 빌더 전면 개편 — 국적 차원 + 측정항목 기반 조건 + canonical DSL 컴파일(코드=truth, feature/fds-rule-nationality-metric-conditions, fds V10, aegis-aml 491f46e).** ① **고객 국적 차원 신설** — `전 국적(ALL)`(무조건) 또는 특정 ISO2 국적(후보 VN·PH·KR·TH·ID·MM·KH·NP) 선택, 특정 국적은 조건 트리 선두 `cmp customer.nationality = <ISO2>` 노드로 컴파일. ② **채널 범위 `전 채널` 선택지** — `channelScope` NULL(전채널 통합 평가, 목록/상세 표시도 NULL 그대로 + "전채널" 라벨, 기본 채널 치환 금지). ③ **측정항목 기반 조건 빌더** — 자유 텍스트 조건 입력을 폐기하고 공통 컴포넌트 `MetricConditionBuilder`(cmp: 카탈로그 select+valueType별 연산자+값 / velocity: count·sum·distinct_count+distinct 대상(수취국가·이용 채널)+차원 subject+시간창 10m/1h/6h/24h+임계값)로 교체, AND/OR 단층 결합(그룹 괄호 중첩은 쉬운 구성 미지원). ④ **canonical DSL 컴파일 단일 정본** — `buildRuleJson()` 순수 함수가 폼 상태를 엔진 `RuleDslParser` 그래머로 컴파일, DSL(JSON) 토글은 읽기 전용 미리보기(양방향 동기화 폐기), 과거 easy JSON(`stages`/`groupBy`/`thresholdParams`)은 엔진 `validateRuleJson` 거부. 매핑 표·와이어프레임·BR-002(카탈로그 select 만)·BR-003(윈도우 닫힌 집합)·BR-007(단방향 컴파일)·BR-008(DSL 미리보기+문자열 payload)·BR-010(단층 AND/OR·국적 선두 노드) 재작성. 신규 측정항목: `customer.nationality`·`customer.signupAgeDays`·`customer.kycAgeDays`(프로파일 스냅샷, DB V10)·`velocity.distinct_count.*`(API §5.8·DB §5.17). 인라인 시뮬·룰 추천 패널(BR-012/BR-013)은 불변. | 근거=bo-web `components/fds/FdsRuleBuilder.tsx`·`components/common/MetricConditionBuilder.tsx`·`lib/fds-rules.ts`(buildRuleJson·DISTINCT_FIELDS·METRIC_WINDOWS)·`lib/fds-rule-conditions.ts`, bo-api `FdsRuleGroupService`(toEnginePayload·fromEngine channelScope NULL 노출), fds-svc `RuleDslParser`·V10. 코드=truth. PPT 재빌드는 후속. |
 | **6.13** | **2026-07-09** | **SM Kim** | **Travel Rule 기능 전면 제거(코드=truth, feature/remove-travel-rule, aegis-aml 84997e1, fds V9·aml V31·bo-api V14).** FDS·AML 양 도메인에서 Travel Rule 을 현 단계 불필요로 판단해 완전 삭제 — FDS 영향: ① **액션 제거** — `ActionType` 에서 `REQUEST_TRAVEL_RULE_INFO`(Travel Rule 정보 요청) 삭제, §10.1 ACT-001 조치 종류 23→**22종**(API `ActionType` 정본, DB §4 CHECK 재생성). ② **케이스 타입 제거** — `CaseType` 에서 `CRYPTO_TRAVEL_RULE`(송금 Travel Rule) 삭제, §11 케이스 유형·§1.6.2·§13.1 REG 화면 11→**10종**(fds_cases.case_type CHECK 재생성). ③ **탐지 룰·피처 제거** — §8.2 SFDS-DEC-001 `TRAVEL_RULE_MISSING` 룰·`crypto.travelRuleMissing` 피처·룰빌더 travel 시드 조건·`RuleRef.reference`(payoutMethod/requiredFields/missingFields) 참조 드릴인 제거. ④ **AML 위임 서술 정정** — "STR/CTR/Travel Rule" 위임 서술을 "STR/CTR" 로 정정(AML 규제 보고 위임 표면에서 Travel Rule 제외). ⑤ **규제 팩 정정** — §16.2 카탈로그의 `TRAVEL_RULE` 팩·PH_AMLC 등 규제 팩 서술의 Travel Rule 임계 병기 제거(PCI 팩은 유지). Flyway fds **V9__drop_travel_rule**(action_type·case_type CHECK 재생성 22/10 값·feature `crypto.travelRuleMissing` seed 제거). i18n(ko/en) travel 키 제거. 과거 이력(v6.9 payout-method·v3.6 ACT-001 23종 등)은 역사 기록으로 유지. | 근거=aegis-aml `services/{fds-svc,bo-api,bo-web}` 84997e1(`ActionType` 22종·`CaseType` 10종·`V9__drop_travel_rule.sql`·룰 빌더/피처/참조 삭제). §02 AML 정의서·§03 IAM 정의서·DB/API 정본 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **6.12** | **2026-07-08** | **SM Kim** | **§11.1 SFDS-CASE-001 BR-007a 신설 — 1클릭 케이스 종결 bo-api 위임 wire 계약(코드=truth, feature/aml-fds-case-triage-disposition, 라이브 검증 7fca1a0).** 화면 "종결"의 사유 코드·메모만 받는 1클릭 흐름을 엔진 종결 계약(terminal `closedStatus` 필수·종결 전 `PENDING_APPROVAL` 경유 필수, §1.6.1·설계서 §11.6)으로 잇기 위해 bo-api 위임 계층이 ① `closeReason` 계열→`closedStatus` 파생(`FP_*`→CLOSED_FALSE_POSITIVE·`CONFIRMED_*`→CLOSED_CONFIRMED·`ESCALATED_AML`→CLOSED_REPORTED·`OTHER`→확정 계열 보수 기본값, DB §4.11) ② 상신 전 상태(`OPEN`/`ASSIGNED`→`IN_REVIEW`→`PENDING_APPROVAL`·`IN_REVIEW`/`ESCALATED`→`PENDING_APPROVAL`) 자동 선행(불법 전이는 엔진 409 표면화) ③ closeReason 8종 검증 위임·스텁 공통화를 수행함을 명문화. 종결은 여전히 `CASE_CLOSE` 4-eyes(BR-001)로 종결상신(`SUBMITTED`) 후 다른 승인자 종결. 화면 정의·enum·엔진 계약 무변경 — bo-api 위임 어댑팅만 신설. | 근거=bo-api `fds/service/FdsDecisionCaseStubService.closeCase`(closedStatusFor·PENDING_APPROVAL 자동 선행·CLOSE_REASONS 검증). API §4.4(케이스 종결 위임 note)·설계서 §11.6·DB §4.11 상호 참조. 코드=truth. PPT 재빌드는 후속. |
@@ -823,7 +824,7 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 |------|------|
 | **기능 ID** | SFDS-CONN-001 |
 | **권한** | `SFDS_CONNECTOR:READ` (목록 조회) / `SFDS_CONNECTOR:OPERATE` (신규/운영 버튼) |
-| **API** | `GET /api/v1/admin/fds/source-systems` · `/api/v1/admin/fds/connectors` |
+| **API** | `GET /api/v1/admin/fds/source-systems` · `/api/v1/admin/fds/connectors` + bo-api `GET /api/v1/bo/fds/ingest/health`(REST 실측 요약) |
 
 #### 화면 레이아웃
 
@@ -867,6 +868,7 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 - **BR-003**: 행 클릭 → 커넥터 상세/운영(SFDS-CONN-002). `[+ 새 커넥터]` 는 `SFDS_CONNECTOR:OPERATE` 만 노출.
 - **BR-004**: 좌측 메뉴는 `커넥터 목록` / `커넥터 등록` 2개 서브 메뉴로 구성(서브 시나리오).
 - **BR-005 (v5.0)**: 상단 `[인입 모니터링]` 버튼 → **SFDS-CONN-004**(수신 API 카탈로그·인입 라이브 모니터링). `마지막 수신`·`신호` 컬럼은 §4.0 ③ 확정 신호 표준을 따른다(● 수신중=기본 60초 내 수신, 임계는 소스별 설정).
+- **BR-006 (v6.15)**: 목록 상단 REST 인입 요약은 `fds_canonical_events` accepted 거래 row(`transaction_ref IS NOT NULL`)의 `received_at` 실측으로 24h 건수·마지막 수신·60초 TPS를 표시한다. 멱등 replay/duplicate는 비가산하며 30초 자동 갱신한다.
 
 ### 4.2 SFDS-CONN-002 · 커넥터 상세 / 운영
 
@@ -968,14 +970,15 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 | **기능 ID** | SFDS-CONN-004 |
 | **진입** | NAV `커넥터 관리` 그룹 / SFDS-CONN-001 상단 `[인입 모니터링]` 버튼 |
 | **권한** | `SFDS_CONNECTOR:READ` (read-only 집계) |
-| **API(제안)** | **bo-api** `GET /api/v1/bo/fds/ingest/catalog` · `GET /api/v1/bo/fds/ingest/health` — **집계 소유=bo-api(운영자 집계 경계 — §2 대시보드 원칙), 후속 API 정합 필요** |
+| **API** | **bo-api** `GET /api/v1/bo/fds/ingest/catalog` · `GET /api/v1/bo/fds/ingest/health` — 집계 소유=bo-api. health 원천=fds-svc `GET /api/v1/admin/fds/ingest/metrics`(API §5.15a) |
 
 - **구성**: 탭 `① 수신 API 카탈로그`/`② 인입 라이브 모니터링`.
   - **① 수신 API 카탈로그**: 이 서비스가 사용하는 수신 API 전체 리스트(§4.0 ② 정본 5종) — 컬럼: API 경로·용도·방식(동기/비동기 202)·인증(API Key+HMAC)·24h 호출량·마지막 호출·신호(●/⚠/✕). 하단에 **연동 방식 × 표시 신호 확정표(§4.0 ① 5종 — 큐 행에 `fds-events`(FIFO)·`fds-vendor-ingest`·DLQ 큐 정본 병기)를 표로 상시 표시**(파생 표시·편집 불가). **초기 셋업(백필) 적재**는 `POST .../events:batch` 행에 용도 병기(최근 백필 일시·진행률 ▶ → ② 탭 스냅샷 행).
-  - **② 인입 라이브 모니터링**: 커넥터(소스 시스템)×연동 방식별 라이브 상태 — REST=마지막 수신(n초 전)·TPS·●, 큐=`fds-events` depth·lag·DLQ 적체(`fds-events-dlq`·`fds-vendor-ingest-dlq`, depth poller PT60S)·마지막 메시지, 폴링=마지막 폴링·다음 폴링 예정·주기·커서, CDC=stream lag, 스냅샷=최근 스냅샷·초기 적재 진행률 %. 행 `▶` → SFDS-CONN-002(커넥터 상세·재처리).
+  - **② 인입 라이브 모니터링**: 현행 지원 방식 REST 전용. source system별 최근 24h accepted 고유 거래 이벤트 건수·마지막 수신(n초/분 전)·최근 60초 TPS·신호를 표시한다. 집계는 `fds_canonical_events.received_at` + `transaction_ref IS NOT NULL`이고 tenant/workspace 범위를 강제한다. queue/DLQ/backfill은 REST 실측 항목이 아니므로 0/null 호환값을 운영 지표처럼 노출하지 않는다. REST source 행은 read-only이며 상세는 상단 `[상세 모니터링]`을 사용한다. `fds_connector_offsets`가 존재하는 실제 connector 목록 행만 SFDS-CONN-002로 이동한다.
 - **BR-001**: 전 항목 **read-only 집계 파생값**(bo-api 소유, 30~60초 캐시·자동 새로고침 토글·raw PII 미포함). 신호 상태는 §4.0 ③ 확정 3종(● 수신중/⚠ 지연/✕ 중단)만 사용.
 - **BR-002**: ⚠/✕ 행은 색상 강조 + SFDS-DASH-001 플랫폼 알림과 동일 이벤트 소스 — 알림 클릭 시 본 화면 ② 탭(커넥터 컨텍스트)으로 딥링크. 운영 조치(재처리·일시중지)는 SFDS-CONN-002로 드릴다운(본 화면은 모니터링 전용).
 - **BR-003**: ① 카탈로그의 호출량·마지막 호출은 게이트웨이 집계 파생값. API 정의 자체(경로·인증·스키마)는 §4.0 ② 확정 표가 정본이며 화면에서 편집 불가.
+- **BR-004 (v6.15)**: ②의 24h 수신은 HTTP 요청 횟수가 아니라 canonical store에 신규 저장된 accepted 거래 이벤트 수다. `/events`·`:batch`·`/events/evaluate` 경로별 HTTP 호출량은 canonical row로 판별하지 않고 게이트웨이 APM으로 분리한다.
 
 ---
 
