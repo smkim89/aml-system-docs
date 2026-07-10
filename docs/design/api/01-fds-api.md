@@ -168,6 +168,7 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 | 메서드 | 경로 | 설명 | 인증/scope | 멱등 | 4-eyes |
 |---|---|---|---|---|---|
 | POST | `/api/v1/fds/events` | canonical event 비동기 수신(큐 적재). 신규=**202 Accepted**, 멱등 재반환=200/201(§5.2). `fds_canonical_events` insert | API Key+HMAC / `fds:event:write` | 필수 | — |
+| POST | `/api/v1/fds/events/evaluate` | canonical event 저장 후 ACTIVE inline 룰을 즉시 평가해 ingest 상태 + `DecisionResponse` 반환. 신규/멱등 replay=200, reject/duplicate는 기존 ingest HTTP 의미 유지 | API Key+HMAC / `fds:event:write` + `fds:decision:evaluate` | 필수(EVENT/DECISION scope 분리) | — |
 | POST | `/api/v1/fds/events:batch` | 다건 event 수신(최대 500). 신규 큐 적재=**202 Accepted** | `fds:event:write` | 필수 | — |
 | GET | `/api/v1/fds/events` | canonical event 목록 조회(필터: `sourceSystem`,`eventType`,`eventFamily`,`channelType`,`subjectRef`,`transactionRef`,`from`,`to` · 페이지네이션). 거래 인입 내역(원본 이벤트) 브라우즈 — 결정·케이스 화면의 역참조 목록. 마스킹 | `fds:case:read` | — | — |
 | GET | `/api/v1/fds/events/{eventId}` | event 단건 상태·정규화 결과·canonicalPayload 조회(마스킹) | `fds:case:read` | — | — |
@@ -368,6 +369,10 @@ FundingDto(△, 중립 WALLET_TOPUP §6.4 `funding` 블록): `fundingInstrumentT
 | canonicalPayloadJson | string(JSON) | △ | 정규화 payload(직접 평가 시, `transaction.phpEquivalent` 포함) |
 
 > `Tenant-Id`/`Workspace-Id`/`Idempotency-Key`(필수)는 헤더 전달. 응답에 즉시 decision 포함, `fds_decisions`+`fds_decision_reasons` 동기 생성. (과거 "IngestEventRequest와 동일 구조" 표기는 코드 정합으로 정정.)
+
+#### 5.3a IngestDecisionResponse (POST /fds/events/evaluate)
+
+동기 편의 API의 요청 body/헤더는 §5.1 `IngestEventRequest`와 동일하다. 내부 순서는 기존 ingest use case commit → §5.3 evaluate use case이며 두 단계 멱등 scope(`EVENT`/`DECISION`)는 동일 `Idempotency-Key`를 독립 저장한다. 응답은 `{ingest: IngestEventResponse, decision: DecisionResponse|null}`이다. `ACCEPTED`/`REPLAYED`만 `decision`이 존재하며 `DUPLICATE`/`REJECTED`는 `decision=null`이다. 기존 `/events`와 `/decisions/evaluate` 분리 계약은 불변이다.
 
 ### 5.4 DecisionResponse — `fds_decisions` (설계서 §12.8 응답 예시 정합)
 | 필드 | 타입 | 매핑 |
@@ -869,6 +874,31 @@ components:
         subjectRef: { type: string, description: 대상 token }
         sourceSystem: { type: string, maxLength: 64, description: 소스 시스템 식별(§4.8) }
         canonicalPayloadJson: { type: string, description: 정규화 payload(JSON, transaction.phpEquivalent 포함) }
+    IngestEventRequest:
+      type: object
+      required: [eventId, eventType, occurredAt, schemaVersion]
+      description: Canonical event body(전체 sub-DTO는 §5.1 정본). raw PII 금지.
+      properties:
+        eventId: { type: string }
+        eventType: { type: string }
+        occurredAt: { type: string, format: date-time }
+        schemaVersion: { type: string }
+        messageVersion: { type: string, default: v1 }
+        subject: { type: object, additionalProperties: true }
+        transaction: { type: object, additionalProperties: true }
+        channel: { type: object, additionalProperties: true }
+        corridor: { type: object, additionalProperties: true }
+        canonicalPayload: { type: string, description: JSON string }
+      additionalProperties: true
+    IngestEventResponse:
+      type: object
+      required: [eventId, status, idempotencyReplayed]
+      properties:
+        eventId: { type: string }
+        status: { type: string, enum: [ACCEPTED, REPLAYED, DUPLICATE, REJECTED] }
+        idempotencyReplayed: { type: boolean }
+        code: { type: string, nullable: true }
+        reason: { type: string, nullable: true }
     TransactionType:
       type: string
       description: 거래 유형(fds_transactions.transaction_type, DB §4.19 폐쇄 12종 — 자유 문자열 금지).
@@ -1138,7 +1168,38 @@ components:
         receiveCountry: { type: string, nullable: true, description: corridor 수취국 }
         expiresAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
+    IngestDecisionResponse:
+      type: object
+      required: [ingest]
+      properties:
+        ingest: { $ref: '#/components/schemas/IngestEventResponse' }
+        decision:
+          allOf: [ { $ref: '#/components/schemas/DecisionResponse' } ]
+          nullable: true
 paths:
+  /fds/events/evaluate:
+    post:
+      summary: canonical event 동기 인입 + ACTIVE inline 룰 즉시 판단
+      security: [ { ApiKeyHmac: [] }, { OAuth2: [fds:event:write, fds:decision:evaluate] } ]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/SourceSystem'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IngestEventRequest' }
+      responses:
+        '200':
+          description: ingest 상태 + 즉시 판단 결과(멱등 replay 포함)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestDecisionResponse' }
+        '400': { description: 검증 실패 }
+        '409': { description: event/idempotency 충돌 }
+        '422': { description: source/schema mapping 미등록 }
   /fds/decisions/evaluate:
     post:
       summary: 승인 전 실시간 FDS 판단
