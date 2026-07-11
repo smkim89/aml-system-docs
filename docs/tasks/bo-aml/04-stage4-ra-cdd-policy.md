@@ -31,5 +31,7 @@
 
 ## DoD
 - RA 흐름 E2E: 분포→고위험 행▶ 대상 상세→[고객 프로필]→[EDD 착수]→케이스(S5) / 모델 ② 편집→③ 시뮬레이션→활성화 상신(S6 승인).
+- RA 자동화 E2E(2026-07-10 보강): canonical CDD REST→ONBOARDING 자동점수, SANCTION/PEP만 수동검토→체크리스트 완료, 동일 memberRef AML TM+FDS REST→ONGOING 통합 가중점수→CDD 기한 단축/EDD를 `scripts/verify_aml_ra_closed_loop.py`로 검증한다. DB 직접 시드·bo-api stub은 DoD 증거로 인정하지 않는다.
+- RA 설정 DoD: ONBOARDING SANCTION/PEP 점수와 ONGOING STR/CTR/FDS 가중치를 신규 DRAFT에서 편집하고 simulate→RA_MODEL 4-eyes ACTIVE를 거친다. ACTIVE 직접 수정은 실패해야 한다.
 - 당연고위험 사유가 RA-003 ①·CDD-002 ②에 동일 파생 표기. 시뮬레이션은 결재 불필요·등급 무변경 확인.
 - `SPEC` 2건(S4-06·S4-11) 확정 전 해당 구현 착수 금지.
