@@ -735,7 +735,7 @@ WLF scoring parameter가 바뀔 때만 WLF config version과 definition hash 기
 
 - 수명주기: DRAFT 생성 → sampleFeatures 시뮬레이션 → `TM_SCENARIO` 4-eyes(`CUSTOM_RULE|code|version`) → ACTIVE, 기존 ACTIVE는 SUPERSEDED.
 - 신뢰 경계: bo-api는 생성/활성화 요청의 브라우저 `makerId`를 사용하지 않고 인증된 principal email을 엔진 maker로 전달한다. 조회는 `aml:case:read`, 변경은 `aml:admin:policy`로 분리한다.
-- 평가: `TmEvaluationService`가 built-in CTR/STR side-effect와 별도로 ACTIVE custom을 `REQUIRES_NEW` 평가한다. scalar는 `EvaluateCommand`, velocity count/sum은 `CanonicalEventWindowPort`에서 materialize하며 아직 커밋되지 않은 현재 거래는 transactionRef 존재 여부를 확인해 정확히 1회 보완한다.
+- 평가: `TmEvaluationService`가 built-in CTR/STR side-effect와 별도로 ACTIVE custom을 `REQUIRES_NEW` 평가한다. scalar는 `EvaluateCommand`, velocity count/sum은 `CanonicalEventWindowPort`에서 materialize하며 아직 커밋되지 않은 현재 거래는 transactionRef 존재 여부를 확인해 정확히 1회 보완한다. 같은 transaction 경계 보완을 fixed `STR_VELOCITY_CASH`에도 적용해, 조회 window에 triggerRef가 없을 때만 현재 cash 거래를 합성하고 effective N건 임계가 N번째 거래에서 발동하게 한다.
 - 결과: `Alert.detectTmScenario(ruleCode)` → `ux_alert_tm` 멱등 저장, evidence.trigger=`{ruleCode,ruleFamily,ruleVersion,ruleSource:CUSTOM,description,strReasonCode?}`. STR custom hit는 2차 RA trigger 신호에 포함한다.
 - 규제 경계: custom은 TM alert만 생성한다. CTR 법정 DRAFT의 현금성/통화임계/영업일 누계와 STR 자동 DRAFT/사유 fold는 기존 잠금 카탈로그만 수행한다. 분석가는 custom STR alert를 트리아지 후 기존 `:recommend-str`로 보고 흐름에 연결한다.
 
@@ -797,6 +797,8 @@ CDD는 고객·법인·셀러·merchant onboarding과 주기적 갱신의 기본
 - 고위험국가·제재 관련성
 - 대리인·대표자 권한
 
+`customer.cdd.completed` 수신은 identity projection과 1차 ONBOARDING RA를 한 트랜잭션에서 수행하고, 앱 업무결정 `APPROVE`/`REJECT`/`EDD_REQUIRED` 및 정확한 score/model snapshot을 반환한다(V42). 이벤트/멱등키별 decision projection은 불변이다. 저장 canonical event와 eventId/type/timestamp/payload/hash까지 같은 exact replay는 source가 뒤에 disabled/schema 변경돼도 최초 결정을 반환하고, 같은 key의 다른 내용은 409라 현재 모델로 재평가하거나 CDD decision을 숨기지 않는다.
+
 ### 13.2 EDD trigger
 
 > 코드값은 DB §5.29 `aml_cases.edd_trigger` enum(SCREAMING_SNAKE_CASE 8종)이 물리 정본이며, API §3.5 `CaseDto.eddTrigger`도 동일 8종으로 동기화한다. hanpass-ph는 `WLF_TRUE_MATCH`·`HIGH_RA_SCORE`·`HIGH_RISK_COUNTRY`·`UNUSUAL_TRANSACTION`·`COMPLEX_OWNERSHIP`를 사용하며, `TRADE_MISMATCH`·`CRYPTO_RISK`·`INTERNAL_OVERRIDE`는 닫힌 enum 잔존(advanced domain, 미사용)이다.
@@ -850,9 +852,11 @@ OPEN
 | `REPORTED` | STR/CTR 보고로 종결 |
 | `CLOSED` | 조치 완료 종결 |
 
+종결 상신 성공 시 즉시 `PENDING_APPROVAL`, checker 승인 시 terminal, 반려 시 직전 조사상태로 복원한다. 일반 PATCH는 `OPEN↔INVESTIGATING`만 허용하고 `PENDING_APPROVAL` 진입·이탈은 submit/checker 전용이다. `REPORTED`는 `STR_REVIEW→STR`, `CTR_REVIEW→CTR`의 case-linked report가 `SUBMITTED`/`ACKNOWLEDGED`일 때만 허용한다. submit/checker는 case를 먼저 잠그고 report를 잠근 뒤 lineage/target/status를 재검증해 FIU callback과 직렬화한다. 다른 case type의 REPORTED는 거부한다. 동일 `origin_alert_id`의 case는 tenant당 하나다(V43). manual create가 origin alert를 지정하면 alert도 같은 transaction에서 lock·target/type/status 검증·handoff 전이하며 임의 lineage 선점을 허용하지 않는다.
+
 ### 13.4 4-eyes
 
-다음 작업은 4-eyes를 기본으로 한다. 각 작업은 결재 `subjectType`(API §3.7 enum 15종, DB §5.16과 1:1)에 매핑되며, API §10 4-eyes 트리거 등재표가 🔒 엔드포인트 ↔ subjectType ↔ 본 §13.4 대상을 1:1로 연결한다. (`TRAVEL_RULE_EXCEPTION`은 2026-07-09 Travel Rule 전면 제거로 삭제됨 — aegis-aml 84997e1, aml V31.)
+다음 작업은 4-eyes를 기본으로 한다. 각 작업은 결재 `subjectType`(API §3.7 enum 21종, DB §5.16과 1:1)에 매핑된다.
 
 | 4-eyes 대상 작업 | subjectType(API §3.7) |
 |---|---|
@@ -871,8 +875,14 @@ OPEN
 | relationship reject(관계거절·온보딩 보류 확정) | `RELATIONSHIP_REJECT` |
 | CDD/EDD checklist 정책 변경 | `CHECKLIST_CHANGE` |
 | periodic review 주기·기준 변경 | `PERIODIC_REVIEW_CHANGE` |
+| 기관위험평가 제출/취소 | `IRA_SUBMIT` |
+| 당연고위험 참조 리스트 변경 | `HIGH_RISK_REGISTRY` |
+| PEP 경영진 승인 | `PEP_APPROVAL` |
+| CTR 규제 임계 변경 | `CTR_THRESHOLD` |
+| RA 당연고위험 고객 등재 | `HRR_REGISTRATION` |
+| CTR/STR 고정 룰 파라미터 변경 | `REPORT_RULE_PARAM` |
 
-> subjectType 마스터는 **API §3.7 enum(전수 16종)** 이 정본이며 DB §5.16·연동 §8.3은 이에 동기화한다. `SELF_APPROVAL_DISABLED`(maker≠checker)는 subjectType이 아니라 전 결재 횡단 불변식이다(§13.5).
+> subjectType 마스터는 **API §3.7 enum(전수 21종)** 이 정본이며 DB §5.16·연동 §8.3은 이에 동기화한다. `REPORT_RULE_PARAM`은 `COMPLIANCE_MANAGER` 승인선으로 aml-svc가 상신/실행을 소유한다(V41). `SELF_APPROVAL_DISABLED`(maker≠checker)는 subjectType이 아니라 전 결재 횡단 불변식이다.
 
 ### 13.5 결재 시스템
 
@@ -895,7 +905,7 @@ OPEN
 
 결재 라인은 tenant별로 설정한다(approval_line enum 6종, DB §5.12 정본). `SELF_APPROVAL_DISABLED`(maker≠checker)는 결재 라인 enum 값이 아니라 전 결재에 적용되는 횡단 불변식이며 DB CHECK 제약(`maker_id <> checker_id`)으로 강제한다.
 
-> **결재 대상(subjectType) 정본.** 각 결재 건의 대상 유형은 `aml_approvals.subject_type`(DB §5.16) / API `ApprovalDto.subjectType`(§3.7) enum **15종**이 정본이다(목록·매핑은 §13.4 표 참조): `WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL`/`TM_SCENARIO`/`RISK_OVERRIDE`/`EDD_CLOSE`/`STR_SUBMIT`/`CTR_SUBMIT`/`WATCHLIST_IMPORT`/`COUNTRY_RISK`/`POLICY_PACK`/`SECRET_CHANGE`/`RELATIONSHIP_REJECT`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`. (`TRAVEL_RULE_EXCEPTION`은 2026-07-09 Travel Rule 전면 제거로 삭제됨 — aegis-aml 84997e1, aml V31.)
+> **결재 대상(subjectType) 정본.** `aml_approvals.subject_type` / API `ApprovalDto.subjectType` enum **21종**이 정본이며 목록·매핑은 §13.4와 DB §5.16을 따른다. body maker는 인증 principal과 같은지 확인하는 assertion일 뿐이고 서버는 인증 주체만 maker/checker로 저장한다.
 
 | 결재 라인 | 사용처 |
 |---|---|
@@ -1004,6 +1014,8 @@ STR 후보는 hanpass-ph에서 다음 경로로 생성된다.
 
 > trade document mismatch·crypto high-risk withdrawal·internal employee action 등 advanced domain STR 트리거는 코드 분기/스키마에 잔존하나 hanpass-ph 운영에서는 사용하지 않는다.
 
+알림에서 전환된 `STR_REVIEW` 케이스는 `POST /api/v1/admin/aml/reports/str-drafts {caseId}`로 기존 trigger DRAFT를 연결하거나 새 DRAFT를 멱등 생성한다. case row→transaction report row 순으로 잠가 서로 다른 case의 동일 DRAFT last-write-wins를 차단한다. generic draft의 `caseId`도 tenant/type/target/비종결 상태를 검증한다. `case_id`는 DRAFT에서 최초 설정 후 불변이며 V43이 tenant+reportType+case당 STR/CTR 하나를 보장한다. 보고 submit은 report row lock 아래 단일 approval을 만들고 checker 반려 시 UNDER_REVIEW→DRAFT로 복원해 재상신 가능하다. 목록 `caseId` 필터와 상세 GET이 같은 계보를 노출한다.
+
 ### 14.3 CTR
 
 한국 시장 기본 policy pack은 FIU의 고액현금거래보고 제도 기준을 parameter로 관리한다. 기준금액과 보고 대상은 법령·감독규정 변경 가능성이 있으므로 tenant policy pack의 effective version으로 관리한다.
@@ -1094,10 +1106,14 @@ hanpass-ph 대량 거래·이벤트는 queue connector(SQS)로 받는다. 코드
 
 ```http
 GET /api/v1/evidence/aml/customers/{customerRef}/profile
+GET /api/v1/evidence/aml/customers/{customerRef}/activity-summary
+GET /api/v1/evidence/aml/customers/{customerRef}/fund-view?page=0&size=50
 GET /api/v1/evidence/aml/cases/{caseId}/timeline
 GET /api/v1/evidence/aml/reports/str-candidates?from=2026-01-01&to=2026-01-31
 POST /api/v1/evidence/aml/exports
 ```
+
+고객 evidence read는 화면 합성값이 아니라 엔진 원장을 사용한다. profile은 CDD의 PII-safe 국적·국가·소스 등록일·AML 온보딩일을 전달하며, 안전한 masked DOB projection이 없으면 `birthYearMasked=null`을 유지한다. activity-summary의 알림·케이스·진행 케이스·스크리닝은 tenant+target exact count이고, 진행 케이스는 `OPEN`·`INVESTIGATING`·`PENDING_APPROVAL`을 포함한다. `relationshipCount`는 `aml_relationships`의 실제 관계/UBO edge, `recentCounterpartyCount`는 최근 30일 distinct 거래상대방이다. 집계 소스 실패는 `degraded=true`로 표시해 0을 실제 0건으로 오인하지 않는다. fund-view는 최근 30일 exact `totalCount`와 서버 `page/size`(size≤200)를 제공하고 거래 `counterpartyRef`·`corridor`를 보존한다. bo-api Subject360의 알림/케이스 요약은 이 exact activity-summary를 재사용하고, bo-web의 더 보기는 같은 capped 응답 링크가 아니라 실제 다음 페이지를 요청한다.
 
 export 대상:
 
@@ -1972,6 +1988,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-12 | **실 REST AML lifecycle 폐루프 역전파.** CDD exact replay 업무결정 projection(V42), engine-owned `REPORT_RULE_PARAM` 4-eyes(V41), 알림-case/case-type별 STR·CTR report 유일성·비삭제 upgrade remediation·case→report lock·`PENDING_APPROVAL`/반려복원/type-matched REPORTED 선조건(V43), principal maker 신뢰경계, RA 상세 실 evidence와 simulator 동일 거래 snapshot/WLF 선검사·설정 A/B 원복 게이트를 반영했다. | 코드=truth. 근거=aegis-aml `feature/aml-lifecycle-closed-loop`, API/DB §V41~V43. |
 | 2026-07-11 | **WLF 엔진 typed profile·전용 조절 화면 역전파.** Policy Pack 단일 원장/4-eyes를 유지한 채 AML-WLF-005가 SANCTIONS·PEP별 6가중치·negative penalty·review/high-confidence threshold를 투영·상신하도록 §5.3·§10.3a를 개정했다. PEP/RCA→PEP, 그 외→SANCTIONS 매핑, WLF-only rule version, 결과 `appliedPolicy` snapshot, HIGH의 비자동확정 의미를 확정했다. | system-architect. 코드=truth. |
 | 2026-07-09 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule, aegis-aml 84997e1 — aml V31).** (1) §5.5 KR baseline에서 가상자산사업자 신고·Travel Rule 항목 제외. (2) §6.2 헥사고날 레이아웃 `domain/travelrule` 제거. (3) §8.1 `EventFamily` **20종→19종**(`TRAVEL_RULE` family 삭제)·§8.2 예시 `requiresTravelRule` 필드 폐기. (4) §13.2 EDD trigger `CRYPTO_RISK` 설명에서 Travel Rule 문구 제거·§13.3 `case_type` **12종→11종**(`VASP_TRAVEL_RULE_REVIEW` 삭제)·§13.3a `REPORTED` 설명 정정·§13.4/§13.5 4-eyes `subjectType` **16종→15종**(`TRAVEL_RULE_EXCEPTION` 삭제). (5) §14.1 `report_type` **7종→6종**(`TRAVEL_RULE` 삭제)·§14.3 `travelRuleThreshold` parameter 삭제. (6) §16 `policy_pack_code` 설명(STR/CTR)·§17.5 `aml_travel_rule_transfers` DDL 제거 스텁. (7) §21 Phase 5 'Travel Rule evidence'·Phase 8 `domain/travelrule` 삭제 주석·결론 요약 정정. 닫힌 enum 카운트 전수 정정. | system-architect. 코드=truth. 근거=`services/aml-svc`(EventFamily 19종·ReportType 6종·CaseType 11종·ApprovalSubjectType 20종·travelrule 도메인/UseCase/Controller/persistence 삭제)·migration V31(`DROP TABLE aml_travel_rule_transfers`). CRYPTO_OFF_RAMP TM 시나리오는 유지(dsl `crypto.travelRuleGap` 조건만 제거). |
 | 2026-07-04 | **알림 발동 근거 거래 전수 조회 표면 역전파(코드=truth, fix/aml-fds-spec-backprop).** §6.2 헥사고날에 in-port `QueryAlertRelatedTransactionsUseCase`(알림 발동 근거 거래 전수 페이징, API §2.4/§3.4d) + out-port `CanonicalEventWindowPort`(근거 윈도우 페이징)·`BankingCalendarPort` 추가. `adapter/in/rest` 엔드포인트 전수·응답 스키마 정본은 API §2.4/§3.4d 위임(본 레이아웃은 그룹 요약). 엔진 domain 무변경 — read-only 조회 표면. | aegis-spec. 코드=truth. 근거=aml-svc `application/port/in/QueryAlertRelatedTransactionsUseCase`·`application/usecase/AlertRelatedTransactionsService`·`application/port/out/CanonicalEventWindowPort`·`adapter/in/rest/AlertController`(`GET /alerts/{alertId}/related-transactions`). API §2.4/§3.4d 동기화. |
