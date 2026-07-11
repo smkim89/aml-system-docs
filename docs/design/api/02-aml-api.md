@@ -106,7 +106,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 > **인입 파이프라인 step 7d — 1차 온보딩 RA 엔진 CDD 파생(코드=truth, feature/aml-onboarding-ra-cdd-derivation, 요구 런 11).** `POST /api/v1/aml/events` 로 **`customer.cdd.completed`** 가 인입되면 단일 트랜잭션의 identity projection(step 7, `aml_customers` upsert + `kyc_evidence` + PII vault) **직후** 엔진이 1차 RA 를 CDD 데이터로부터 직접 파생한다(`DeriveOnboardingRaUseCase`·`OnboardingRaDerivationService`) — 별도 `POST /risk-assessments/evaluate` 호출·클라 계산 없이 `aml_risk_scores` 1차 RA 행이 생성된다:
 > - **(a) SCREENING** = 회원 WLF 스크리닝(SANCTION/PEP, 주체 키 `memberRef`, idem `cdd-ra:{eventId}`, `TargetType.CUSTOMER`, transient name/dob 는 매칭 토큰만·미저장 §19.2). 매치(POSSIBLE/TRUE, 비 AUTO_DISCOUNTED) 시 SCREENING=100 + **위험등급 HIGH 강제 상향(floor)** + 사유(list_type SANCTION/PEP) + 근거 참조 토큰(screeningId/entryId/listType), 무매치=0.
 > - **(b) GEOGRAPHY** = 국적/거주국 × 국가위험 정본(`LookupCountryRiskUseCase.gradeFor`, §2.7 국가위험) → PROHIBITED/HIGH=100·MEDIUM=60·LOW/미등재=15(nationality×residenceCountry **max 결합**).
-> - **(c) CUSTOMER** = `kyc_evidence`(sourceOfFunds·kycLevel) → `(sofRisk+kycLevelRisk)/2` 엔진 파생(occupation 예약).
+> - **(c) CUSTOMER** = `kyc_evidence`(sourceOfFunds·kycLevel·occupation) → `clamp((sofRisk+kycLevelRisk)/2 + occupationRisk)` 엔진 파생. 세 값은 ACTIVE ONBOARDING 맵과 exact code로 조회하고 미등록 값은 각 `default`를 적용한다. `kycLevelRisk`는 고객확인 수행 수준의 통제 잔여위험, `occupationRisk`는 평균 항목이 아닌 가산 조정값이다.
 > 파생 규칙은 ACTIVE ONBOARDING 모델(`KR_DEFAULT_RA`) `parameters` JSONB 정본(V19)이 소비하며 엔진 상수 하드코딩 없음. **fail-safe**: 스크리닝 미가용(워치리스트 stale/미수입) 시 freshness **boolean 선검사**로 1차 RA **평가 보류**(스코어 미생성)하되 CDD 인입 자체는 `ACCEPTED` — 예외 전파로 인입 TX 를 rollback-only 오염시키지 않는다(§15.5·§20.2 fail-closed). `customer.cdd.completed` 외 이벤트는 no-op.
 
 > **인입 파이프라인 step 7f — FDS 고객 프로필 동기화 outbox.** 신규 CDD가 ACCEPTED되면 동일 트랜잭션에서 `aggregateType=FDS_CUSTOMER_PROFILE`, `eventType=aml.customer.profile.updated`, `aggregateRef=customerRef` outbox를 생성한다. payload는 `sourceEventId/occurredAt/nationality/country/registeredAt/kycCompletedAt/kycLevel/dataScope`만 포함하고 raw name·DOB·문서 식별자는 제외한다. relay가 FDS 내부 API로 전달하며 실패는 기존 outbox retry/backoff로 재시도하므로 FDS 장애가 AML CDD ingest를 rollback하지 않는다. REPLAYED/DUPLICATE는 step 7f에 도달하지 않아 중복 enqueue하지 않는다.
@@ -312,14 +312,17 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
 | GET | `/api/v1/admin/aml/ra-models?modelCode=` | `aml:admin:policy` | — | RA 모델 버전 목록. 운영 family는 `KR_DEFAULT_RA=ONBOARDING`, `KR_ONGOING_RA=ONGOING` 두 개로 고정하며 임의 family를 거부한다. 응답 `RaModelSummary[]` — `scenario`, 전체 `weights`/`parameters`/임계, `isDefault`, 생성·수정 actor/시각, `copiedFromVersion`, canonical `definitionHash`, `latestSimulation`, `pendingApprovalId`를 노출한다. 실제 ACTIVE가 없으면 임의 버전을 현재 적용으로 추정하지 않는다. | `aml_risk_models`,`aml_ra_model_simulations`,`aml_approvals` |
+| GET | `/api/v1/admin/aml/ra-models/onboarding-input-catalog?windowDays=` | `aml:admin:policy` | — | 최근 수신 canonical CDD를 tenant+customerRef별 최신 1건으로 축약한 1차 RA 입력 카탈로그. `windowDays` 기본 90·1~365, 축별 최대 100. 응답은 §3.3d의 코드별 집계만 포함하며 raw payload/customerRef/eventId/PII를 반환하지 않는다. | `aml_canonical_events` |
 | POST | `/api/v1/admin/aml/ra-models/{modelCode}/versions:copy` | `aml:admin:policy` | — | 선택 버전을 서버측 다음 버전 `v{N+1}` DRAFT로 원자 복제. 요청 `CopyVersionRequest{ sourceVersion }`; 응답 `RaModelSummary`. `scenario`·가중치·parameters·임계를 승계하고 신규 DRAFT의 `isDefault=false`, `copiedFromVersion`/작성자/시각을 기록한다. UI 임의 버전명 생성은 허용하지 않는다. 같은 family에 `pendingApprovalId`가 하나라도 있으면 family lock 안에서 복제를 거부해 상신 대상이 새 버전에 의해 실행 불가능해지는 것을 막는다. | `aml_risk_models`,`aml_approvals` |
-| POST | `/api/v1/admin/aml/ra-models` | `aml:admin:policy` | — | `versions:copy`로 서버 발급된 기존 DRAFT 전체 정의만 갱신한다(update-only). 요청 `DraftRequest{ modelCode, version, scenario, weights, mediumThreshold, highThreshold, prohibitedThreshold, parameters }`. 임의 신규 version, family-scenario 불일치, ACTIVE/SUPERSEDED 및 활성화 결재 대기 DRAFT는 수정 불가. 가중치는 scenario factor catalog(ONBOARDING=`GEOGRAPHY/CUSTOMER/SCREENING`, ONGOING=`TRANSACTION_BEHAVIOR/CUSTOMER`)와 `0..100`, 총합 양수를 검증한다. parameters는 §11.3의 scenario별 전체 스키마를 검증한다. ONGOING 정수값은 소수 절삭 없이 exact integer이며 `lookbackDays=1..3650`, `debounceMinutes=0..525600`, `countSaturation=1..200`, baseline=`KR_DEFAULT_RA`를 강제한다. 작성자는 BFF 인증 principal에서 파생한다. | `aml_risk_models` |
+| POST | `/api/v1/admin/aml/ra-models` | `aml:admin:policy` | — | `versions:copy`로 서버 발급된 기존 DRAFT 전체 정의만 갱신한다(update-only). 요청 `DraftRequest{ modelCode, version, scenario, weights, mediumThreshold, highThreshold, prohibitedThreshold, parameters }`. 임의 신규 version, family-scenario 불일치, ACTIVE/SUPERSEDED 및 활성화 결재 대기 DRAFT는 수정 불가. 가중치는 scenario factor catalog(ONBOARDING=`GEOGRAPHY/CUSTOMER/SCREENING`, ONGOING=`TRANSACTION_BEHAVIOR/CUSTOMER`)와 `0..100`, 총합 양수를 검증한다. parameters는 §11.3의 scenario별 top-level/nested unknown key를 거부한다. ONBOARDING authoring은 `sofRisk=default+canonical 6종`, `kycLevelRisk=default+canonical 4종`, `occupationRisk=default+안전 분류코드`만 허용한다. 과거 ACTIVE legacy는 조회/복제할 수 있지만 DRAFT 저장·simulate·activate 전에 제거해야 한다. ONGOING 정수값은 소수 절삭 없이 exact integer이며 `lookbackDays=1..3650`, `debounceMinutes=0..525600`, `countSaturation=1..200`, baseline=`KR_DEFAULT_RA`를 강제한다. 작성자는 BFF 인증 principal에서 파생한다. | `aml_risk_models` |
 | POST | `/api/v1/admin/aml/ra-models/{modelCode}/simulate` | `aml:admin:policy` | — | 요청 `RaSimulateRequest{ version, samplePopulation }`, 모집단 `RECENT_90D_NEW\|ALL_ACTIVE\|HIGH_RISK_ONLY`(tenant·scenario 격리, 최대 500). candidate와 같은 scenario ACTIVE를 실제 비PII RA 입력으로 재평가하고 결과/definition hash를 영속한다(§3.15). 결재·실제 등급 변경 없음. | `aml_ra_model_simulations`,`aml_risk_scores` |
 | POST | `/api/v1/admin/aml/ra-models/{modelCode}/versions/{version}:activate` | `aml:admin:policy` | 🔒4-eyes | 요청 `ActivateRequest{ simulationId, reason }`. 성공한 simulation의 대상 버전·canonical definition hash가 현재 DRAFT와 일치해야 상신된다. `RA_MODEL` payload hash는 전체 정의를 고정하고 approve 시 재검산한다. 승인 실행 시 같은 tenant+scenario 기존 ACTIVE를 SUPERSEDED하고 새 버전을 ACTIVE로 원자 전환한다(ONBOARDING default도 이전). 작성자는 BFF 인증 principal에서 파생. 응답 `202 { approvalId, status: SUBMITTED, payloadHash }`. | `aml_risk_models`,`aml_ra_model_simulations`,`aml_approvals` |
 | GET | `/api/v1/admin/aml/risk-scores?riskGrade=&modelVersion=&country=&reviewDueSoon=&targetRef=&scenario=&requiredAction=&registeredWithinDays=&latestPerTarget=&page=&size=` | `aml:case:read` | — | **RA 점수 목록**(모니터링). `riskGrade` 멀티(콤마 구분)·`modelVersion`·**`country`(국적 필터, 엔진이 실제 국가 차원 보유·#7; stub 경로는 `targetRef` seed 파생 결정적 국가 post-filter)**·`reviewDueSoon`(boolean — 재심사 임박)·`targetRef`(contains 검색)·페이지네이션 필터. **RA 목록 서버 필터 4종(2026-07-06, feature/aml-ra-list-filters-dedupe — 전부 optional·additive)**: ① `scenario`=`ONBOARDING`(1차)\|`ONGOING`(2차) — `aml_risk_models.scenario` 모델 레지스트리 exists-join(모델 코드 하드코딩 아님, 잘못된 값 400), 변경이력 9.31 의 "서버측 scenario 필터 후속 과제" 해소; ② `requiredAction`(권고 조치, 콤마 멀티 — `NONE`(조치 없음)·`CDD_UPDATE`(CDD 갱신)·`EDD`(강화된 고객확인)·`RELATIONSHIP_REVIEW`(관계 검토), `NONE` 토큰은 레거시 `required_action IS NULL` 행 포섭); ③ `registeredWithinDays`(양수 int — **인입(온보딩) 회원 필터**, `aml_customers.created_at ≥ now-일수` exists-join); ④ `latestPerTarget`(boolean 기본 false — **회원(targetRef)별 최신 1건 dedupe**, `evaluated_at` max 상관 서브쿼리[tenant·targetRef·modelVersion·scenario 한정] — **dedupe 먼저 선정 후 등급/조치/임박 등 상태 필터를 outer 적용**해 "현재 상태" 목록 의미론 보장, `count`/`items` 동일 술어). 응답은 **페이지 봉투 `RiskScoreListResponse{ items: RiskScoreResponse[], page, size, total }`**(§1.2 envelope 원칙 정합 — `total`은 페이지 무관 전체 건수로 타일↔목록 정합·페이지 이동에 사용) — `items` 원소가 `RiskScoreResponse`(§3.3, `mandatoryHighRisk`·`mandatoryHighRiskReasons`·`forcedFloorEvidence`·`operativeNextReviewDueAt` 포함). bo-api `GET /api/v1/bo/aml/risk-scores` 가 동일 파라미터를 pass-through 위임하며, stub 경로도 동일 의미론(scenario=stub 행 시나리오 필터·requiredAction NULL 포섭·registeredWithinDays 는 seed 파생 결정적 가입일 post-filter·latestPerTarget 는 stub 이 target 당 1행이라 no-op) — 패리티 유지. **구현됨**(`RiskScoreAdminController`) | `aml_risk_scores`,`aml_risk_models`,`aml_customers` |
 | GET | `/api/v1/admin/aml/risk-scores/distribution?modelVersion=` | `aml:case:read` | — | **RA 등급 분포**. 응답 `RiskDistributionResponse`(§3.3b). **구현됨**(`RiskScoreAdminController`) | `aml_risk_scores` |
 | GET | `/api/v1/admin/aml/customers/pipeline-stats?histogramDays=` | `aml:case:read` | — | **CDD/RA 파이프라인 집계**(KYC 상태 분포·신규 등록 윈도우·RA 처리 현황·기간 히스토그램). `Tenant-Id` 헤더 필수·`Workspace-Id` 옵션. `histogramDays` 1~90·기본 14(범위 밖 클램프). 응답 `CddRaPipeline`(§3.3c). 집계 카운트만(raw PII 미노출). **구현됨**(엔진) | `aml_customers`,`aml_risk_scores` |
 | POST | `/api/v1/admin/aml/risk-scores/{scoreId}/override` | `aml:case:update` | 🔒4-eyes(하향) | 등급 수동 조정. 요청 `RiskOverrideRequest`(§3.3) | `aml_risk_scores`,`aml_approvals` |
+
+> **BFF 위임.** `GET /api/v1/bo/aml/ra-models/onboarding-input-catalog?windowDays=`가 위 엔진 응답을 1:1 위임한다. 동일 `aml:admin:policy` 권한이며 엔진 delegate가 없거나 빈 응답이면 관측값 stub을 합성하지 않고 `503 AML.ENGINE_UNAVAILABLE`로 fail-closed한다.
 
 #### TM scenario (§12)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
@@ -629,6 +632,19 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `raProcessing` | object | RA 처리 현황 `{ evaluated(number), pendingReview(number), notEvaluated(number) }`. `aml_risk_scores.evaluated_at`·`next_review_due_at` 기준 |
 | `periodHistogram` | array&lt;object&gt; | 기간 RA 평가 히스토그램. 각 원소 `{ date(string: YYYY-MM-DD), evaluatedCount(number) }`. 길이=`histogramDays` |
 | `generatedAt` | string(date-time) | 집계 생성 시각 |
+
+### 3.3d OnboardingInputCatalog → `GET /api/v1/admin/aml/ra-models/onboarding-input-catalog` · BFF `/api/v1/bo/aml/ra-models/onboarding-input-catalog`
+
+최근 수신 `customer.cdd.completed`를 tenant 내 `customerRef`별 최종 수신 1건으로 축약해 1차 RA 설정과 실제 REST 입력 코드를 대조하는 **집계 전용·PII-safe** read model이다. `windowDays` 기본 90, 허용 1~365, 각 축 `values` 최대 100개(최종 수신시각 내림차순). 응답 shape:
+
+`{ windowDays, windowStart, generatedAt, latestCustomerCount, sourceOfFunds, kycLevels, occupations, nationalities, residenceCountries }`
+
+각 축 `OnboardingInputAxis`는 `{ values: OnboardingInputValue[], ignoredValueCount, truncatedCodeCount }`, 각 값은 `{ code, customerCount, lastReceivedAt, canonical }`이다. `ignoredValueCount`는 blank/unsafe라 원문을 redaction한 고객 값 수, `truncatedCodeCount`는 100개 표시 상한 밖의 정상 distinct code 수로 서로 합치지 않는다.
+
+- 추출 경로: `payload.kyc.sourceOfFunds`, `payload.kyc.kycLevel`, `payload.kyc.occupation`, `payload.nationality`, `payload.kyc.residenceCountry`(blank이면 `payload.country` fallback).
+- `canonical=true`: SOF 6종, KYC 4종, 실제 ISO alpha-2, 또는 안전 분류코드인 occupation. SOF/KYC의 계약 외 legacy는 안전한 코드면 값은 보이되 `canonical=false`다.
+- 공백·누락·안전 형식 밖 값은 원문을 반환하지 않고 축별 `ignoredValueCount`만 증가시킨다. customerRef/eventId/name/DOB/sourceOfFundsDescription/전체 JSON payload는 응답에 없다.
+- BFF는 엔진 응답을 1:1 통과하며 어떤 profile에서도 local stub을 생성하지 않는다. 엔진 미연결·빈 응답은 `503 AML.ENGINE_UNAVAILABLE`다.
 
 ### 3.4 TransactionEvaluateRequest → `POST /api/v1/aml/transactions/evaluate` (DB `aml_alerts`, `AlertController.TransactionEvaluateRequest`)
 
@@ -1011,7 +1027,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| `country` | string | ISO 국가코드 |
+| `country` | string | ISO 3166-1 alpha-2 국가코드(신규/변경 입력은 실제 코드만 허용) |
 | `riskBand` | enum | `LOW`/`MEDIUM`/`HIGH`/`PROHIBITED`(국가위험 등급, RA 등급 §5.2와 동일 축) |
 | `basis` | array<string> | 근거(FATF blacklist/greylist·EU 고위험·제재·고위험 corridor 등). 자동 수집분은 `FATF_BLACKLIST`/`FATF_GREYLIST`(FATF, `FatfGradeMapping`) 또는 `EU_HIGH_RISK_THIRD_COUNTRY`(EU 집행위, 기본) |
 | `version` | string | 정책 버전 레이블(VARCHAR(80) — 자동 수집분은 canonical SHA-256 파생: `eu-<hash>`/`fatf-<hash>`) |
@@ -1021,13 +1037,13 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `sourceUrl` | string | **(V16)** 자동 수집분의 원천 URL(EU 고위험 제3국 URL / FATF 공개 목록 URL). 수동 행 null |
 | `asOf` | string(date-time) | **(V16)** 소스 관측 시점. 수동 행 null |
 
-`CountryRiskChangeRequest`(🔒4-eyes, `POST .../country-risk:change`): `{ changes: [ { country, riskBand, basis[] } ], reason, makerId }` → §3.7 `subjectType=COUNTRY_RISK` 결재 상신. 응답 `{ approvalId, status: SUBMITTED }`. 실행(EXECUTED) 후 변경 국가 관련 대상 재평가(RA) 트리거.
+`CountryRiskChangeRequest`(🔒4-eyes, `POST .../country-risk:change`): `{ changes: [ { country, riskBand, basis[] } ], reason }` → §3.7 `subjectType=COUNTRY_RISK` 결재 상신. `country`는 실제 ISO 3166-1 alpha-2만 허용하고 batch 내 중복·동일 국가 live pending을 거부한다. `basis` 원소는 null을 허용하지 않고 `reason`은 trim 후 필수·최대 512자(고객 PII 입력 금지)다. maker는 client body가 아니라 bo-api `BackofficePrincipal.email` → trusted `X-User-Subject`로 파생되며 legacy `makerId` 입력은 무시한다. 엔진 응답은 `{ approvalId, status: SUBMITTED }`이고 BFF는 body·nonblank `approvalId`·정확한 상태를 모두 확인한 뒤 동일 식별자/상태와 BFF 감사 digest(`payloadHash`, nullable)를 제공한다. 불완전 응답은 202를 합성하지 않는다. 실제 엔진 approval payload hash는 국가/version뿐 아니라 `riskBand`·정렬된 `basis` 전체를 고정하며 승인 시 advisory lock 아래 live payload를 재계산한다. 실행(EXECUTED) 후 변경 국가를 국적/거주국으로 가진 고객별 최신 수신 CDD **동일 이벤트 snapshot**으로 ACTIVE ONBOARDING 모델을 재평가해 새 `aml_risk_scores`를 append한다. batch는 ACTIVE ONBOARDING modelCode+version을 한 번 pin하고, 각 target lock 뒤 최신 projection-complete eventId와 국가를 재검증해 후보 이후 다른 국가로 이동한 옛 snapshot을 skip한다. 강제 경로는 원 CDD idempotency key의 기존 WLF 결과만 읽고 신규 screening/usage 독립 쓰기를 만들지 않는다. 기존 결과 부재 또는 재평가 실패는 정책 전환·승인 상태·RA append와 함께 rollback된다. DB에 남은 과거 3자리 코드는 persistence/기존 pending 조회 전용 legacy로만 rehydrate하며 신규 상신·canonical CDD lookup에는 사용할 수 없다.
 
 `CountryRiskImportStatusDto`(GET `.../country-risk/import-status` — 국가위험 일일 수집 상태 패널): `{ sourceCode("FATF_DAILY"), provider(활성 feed 제공자 — `EU_COMMISSION` 기본/`FATF` 대안), status(ACTIVE|DISABLED), blackUrl(소스 URL — provenance; **EU 제공자에선 null**, FATF 는 Call-for-Action URL), greyUrl(소스 URL — provenance; **EU 제공자에선 단일 고위험 제3국 URL**, FATF 는 Increased-Monitoring URL), activeVersion(현재 적용 canonical SHA-256 — 첫 적용 전 null), lastImportedAt, lastCheckedAt, lastStatus(APPLIED|SKIPPED_UNCHANGED|FAILED — 시도 전 null), lastError, recentRuns: CountryRiskImportRunDto[](최근 10건) }` — DB §3.22c `aml_country_risk_sources` + `aml_country_risk_import_runs` 1:1. **소스 URL 계약: EU 단일 목록은 `greyUrl` 에 단일 URL·`blackUrl` null(FE 는 `provider` 로 소스 표기 분기), FATF 는 black/grey 쌍**. `provider`/`blackUrl`/`greyUrl` 은 활성 feed 값(`CountryRiskFeedPort.provider()/blackUrl()/greyUrl()`, 라이브 feed 제공자를 소스 메타 라벨보다 우선 표기). `CountryRiskImportRunDto` = `{ runId, sourceCode, startedAt, finishedAt, status, version, added[], upgraded[], downgraded[], delisted[], suppressedManual[], error }`(run diff — ISO 코드 목록: 신규/상향/하향/이탈/수동보존. `runId`/`sourceCode` 로 상태 패널 행 식별).
 
 `CountryRiskImportResultDto`(POST `.../country-risk:import` — 수동 트리거 동기 실행 결과, 엔진 `SyncResult` 1:1): `{ status(APPLIED|SKIPPED_UNCHANGED|FAILED), version, added[], upgraded[], downgraded[], delisted[](이번 run 에 활성 제공자 목록에서 이탈한 ISO — 동일 제공자 provenance ACTIVE 만 supersede), suppressedManual[](MANUAL 오버라이드 우선으로 건너뛴 ISO, 가정 A8), error(FAILED 시 fail-safe 사유 — 기존 등급 유지) }`(엔진 SyncResult 는 `sourceCode`/`importedAt` 미포함).
 
-> bo-api 위임 계약(`GET/POST /api/v1/bo/aml/country-risk*`, `CountryRiskDtos`, 필드 단위 1:1 — QA 런 10 H-1): 등급표 행(`CountryRiskEntry`)은 엔진 `CountryRiskDto` 를 그대로 통과하되(`version` string→FE int 파생(`v7`→7·`fatf-<hash>`→0)·`policyPackCode` 는 bo-api 프레젠테이션 기본값), import-status/import 응답의 run diff 는 **엔진과 동일한 ISO 코드 목록(added/upgraded/downgraded/delisted/suppressedManual: string[])** 을 그대로 통과해 화면이 국가 목록 pill 을 렌더한다(카운트 손실 없음). import-status 는 소스 URL(blackUrl/greyUrl)을 병기하며, import 결과의 `sourceCode`/`importedAt` 은 엔진 SyncResult 에 없어 bo-api 가 요청 맥락(FATF_DAILY·응답 시각)으로 채운다. 수동 트리거는 `COUNTRY_RISK_IMPORT_TRIGGERED` 감사 이벤트(bo V8)를 남긴다.
+> bo-api 위임 계약(`GET/POST /api/v1/bo/aml/country-risk*`, `CountryRiskDtos`, 필드 단위 1:1 — QA 런 10 H-1): 등급표 행(`CountryRiskEntry`)은 엔진 `CountryRiskDto` 를 그대로 통과하되(`version` string→FE int 파생(`v7`→7·`fatf-<hash>`→0)·`policyPackCode` 는 bo-api 프레젠테이션 기본값), null body나 알 수 없는/빈 `riskBand`를 빈 표/LOW로 축소하지 않고 fail-closed한다. import-status/import 응답의 run diff 는 **엔진과 동일한 ISO 코드 목록(added/upgraded/downgraded/delisted/suppressedManual: string[])** 을 그대로 통과해 화면이 국가 목록 pill 을 렌더한다(카운트 손실 없음). import-status 는 소스 URL(blackUrl/greyUrl)을 병기하며, import 결과의 `sourceCode`/`importedAt` 은 엔진 SyncResult 에 없어 bo-api 가 요청 맥락(FATF_DAILY·응답 시각)으로 채운다. 수동 트리거는 `COUNTRY_RISK_IMPORT_TRIGGERED` 감사 이벤트(bo V8)를 남긴다.
 
 ### 3.13 PolicyPackChangeRequest (Admin, `aml_tenants.policy_pack_code`)
 
@@ -1269,6 +1285,12 @@ components:
     IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
     Signature: { name: X-Signature, in: header, required: true, schema: { type: string } }
     TraceId: { name: X-Trace-Id, in: header, required: false, schema: { type: string } }
+    UserSubject:
+      name: X-User-Subject
+      in: header
+      required: true
+      description: trusted BFF/mesh가 인증 principal에서 파생하는 actor. 브라우저 임의 입력 금지.
+      schema: { type: string }
   schemas:
     Error:
       type: object
@@ -1364,19 +1386,59 @@ components:
         status: { type: string, enum: [SUBMITTED] }
     CountryRiskChangeRequest:
       type: object
-      required: [changes, reason, makerId]
+      description: maker는 body가 아니라 trusted X-User-Subject에서 파생한다.
+      required: [changes, reason]
       properties:
         changes:
           type: array
+          minItems: 1
           items:
             type: object
             required: [country, riskBand]
             properties:
-              country: { type: string }
+              country: { type: string, pattern: '^[A-Za-z]{2}$', description: ISO 3166-1 alpha-2 }
               riskBand: { type: string, enum: [LOW, MEDIUM, HIGH, PROHIBITED] }
               basis: { type: array, items: { type: string } }
-        reason: { type: string }
-        makerId: { type: string }
+        reason: { type: string, minLength: 1, maxLength: 512 }
+    OnboardingInputValue:
+      type: object
+      required: [code, customerCount, lastReceivedAt, canonical]
+      properties:
+        code: { type: string, pattern: '^[A-Z][A-Z0-9_]{0,63}$' }
+        customerCount: { type: integer, format: int64, minimum: 1 }
+        lastReceivedAt: { type: string, format: date-time }
+        canonical: { type: boolean }
+    OnboardingInputAxis:
+      type: object
+      required: [values, ignoredValueCount, truncatedCodeCount]
+      properties:
+        values:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/OnboardingInputValue' }
+        ignoredValueCount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: blank/unsafe라 원문을 redaction한 고객 값 수
+        truncatedCodeCount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 축별 100개 표시 상한 밖의 정상 distinct code 수
+    OnboardingInputCatalog:
+      type: object
+      required: [windowDays, windowStart, generatedAt, latestCustomerCount, sourceOfFunds, kycLevels, occupations, nationalities, residenceCountries]
+      properties:
+        windowDays: { type: integer, minimum: 1, maximum: 365, default: 90 }
+        windowStart: { type: string, format: date-time }
+        generatedAt: { type: string, format: date-time }
+        latestCustomerCount: { type: integer, format: int64, minimum: 0 }
+        sourceOfFunds: { $ref: '#/components/schemas/OnboardingInputAxis' }
+        kycLevels: { $ref: '#/components/schemas/OnboardingInputAxis' }
+        occupations: { $ref: '#/components/schemas/OnboardingInputAxis' }
+        nationalities: { $ref: '#/components/schemas/OnboardingInputAxis' }
+        residenceCountries: { $ref: '#/components/schemas/OnboardingInputAxis' }
     PolicyPackChangeRequest:
       type: object
       required: [policyPackCode, parameters, reason, makerId]
@@ -1619,7 +1681,7 @@ paths:
     post:
       summary: 실시간 WLF/제재/PEP screening
       operationId: screenSubject
-      security: [ { ApiKeyHmac: [], OAuth2: [aml:screen:evaluate] } ]
+      security: [ { ApiKeyHmac: [], OAuth2: ['aml:screen:evaluate'] } ]
       parameters:
         - $ref: '#/components/parameters/TenantId'
         - $ref: '#/components/parameters/SourceSystem'
@@ -1647,7 +1709,7 @@ paths:
     post:
       summary: WLF 판정 (TRUE_MATCH/FALSE_POSITIVE는 4-eyes)
       operationId: decideScreening
-      security: [ { OAuth2: [aml:case:update] } ]
+      security: [ { OAuth2: ['aml:case:update'] } ]
       parameters:
         - $ref: '#/components/parameters/TenantId'
         - name: screeningId
@@ -1683,7 +1745,7 @@ paths:
     post:
       summary: 결재 승인 (maker≠checker 강제)
       operationId: approveApproval
-      security: [ { OAuth2: [aml:admin:approval] } ]
+      security: [ { OAuth2: ['aml:admin:approval'] } ]
       parameters:
         - $ref: '#/components/parameters/TenantId'
         - name: approvalId
@@ -1704,9 +1766,10 @@ paths:
     post:
       summary: 국가위험 변경 상신 (4-eyes, subjectType=COUNTRY_RISK)
       operationId: changeCountryRisk
-      security: [ { OAuth2: [aml:admin:policy] } ]
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
       parameters:
         - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/UserSubject'
       requestBody:
         required: true
         content:
@@ -1717,16 +1780,13 @@ paths:
           description: 4-eyes 결재 상신됨(approvalId 반환, subjectType=COUNTRY_RISK)
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  data: { $ref: '#/components/schemas/ApprovalSubmittedResponse' }
+              schema: { $ref: '#/components/schemas/ApprovalSubmittedResponse' }
         '403': { description: AML.FORBIDDEN_SCOPE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /api/v1/admin/aml/policy-packs:change:
     post:
       summary: tenant policy pack 변경 상신 (4-eyes, subjectType=POLICY_PACK)
       operationId: changePolicyPack
-      security: [ { OAuth2: [aml:admin:policy] } ]
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
       parameters:
         - $ref: '#/components/parameters/TenantId'
       requestBody:
@@ -1747,7 +1807,7 @@ paths:
     put:
       summary: periodic review 주기 설정 변경 (4-eyes)
       operationId: setPeriodicReviewPolicy
-      security: [ { OAuth2: [aml:admin:policy] } ]
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
       parameters:
         - $ref: '#/components/parameters/TenantId'
       requestBody:
@@ -1764,11 +1824,30 @@ paths:
                 type: object
                 properties:
                   data: { $ref: '#/components/schemas/ApprovalSubmittedResponse' }
+  /api/v1/admin/aml/ra-models/onboarding-input-catalog:
+    get:
+      summary: 최근 canonical CDD의 ONBOARDING RA 입력 코드 집계
+      operationId: getOnboardingInputCatalog
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: windowDays
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 365, default: 90 }
+      responses:
+        '200':
+          description: tenant별 최근 CDD 고객 최신 1건 기준 aggregate-only 입력 카탈로그
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OnboardingInputCatalog' }
+        '400': { description: windowDays 범위 오류, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '403': { description: AML.FORBIDDEN_SCOPE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /api/v1/admin/aml/ra-models/{modelCode}/simulate:
     post:
       summary: RA 모델 sample population simulation (분석 설정, 결재 불필요)
       operationId: simulateRaModel
-      security: [ { OAuth2: [aml:admin:policy] } ]
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
       parameters:
         - $ref: '#/components/parameters/TenantId'
         - { name: modelCode, in: path, required: true, schema: { type: string } }
@@ -1797,7 +1876,7 @@ paths:
     get:
       summary: 서비스 목록 조회 (bo-api 소유)
       operationId: listAmlTenants
-      security: [ { OAuth2: [aml:admin:policy] } ]
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
       parameters:
         - { name: deploymentModel, in: query, required: false, schema: { $ref: '#/components/schemas/DeploymentModel' } }
         - { name: onboardingStatus, in: query, required: false, schema: { $ref: '#/components/schemas/OnboardingStatus' } }
@@ -1818,7 +1897,7 @@ paths:
     post:
       summary: 서비스 등록 — 배포 유형 선택 + 온보딩 신청 (bo-api 소유)
       operationId: createAmlTenant
-      security: [ { OAuth2: [aml:admin:policy] } ]
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
       requestBody:
         required: true
         content:
@@ -1838,7 +1917,7 @@ paths:
     get:
       summary: 서비스 상세 조회 (bo-api 소유)
       operationId: getAmlTenant
-      security: [ { OAuth2: [aml:admin:policy] } ]
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
       parameters:
         - { name: tenantId, in: path, required: true, schema: { type: string } }
       responses:
@@ -1854,7 +1933,7 @@ paths:
     put:
       summary: 서비스 설정 변경 (bo-api 소유, deploymentModel 불변)
       operationId: updateAmlTenant
-      security: [ { OAuth2: [aml:admin:policy] } ]
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
       parameters:
         - { name: tenantId, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -1881,7 +1960,7 @@ paths:
     post:
       summary: 매니지드 IaC 파이프라인 트리거 (bo-api 소유, MANAGED_DEDICATED 전용)
       operationId: provisionAmlTenantOnboarding
-      security: [ { OAuth2: [aml:admin:policy] } ]
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
       parameters:
         - { name: tenantId, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -1910,7 +1989,7 @@ paths:
     post:
       summary: self-hosted 인스턴스 등록 콜백 (bo-api 소유, SELF_HOSTED 전용)
       operationId: registerAmlTenantOnboarding
-      security: [ { OAuth2: [aml:admin:policy] } ]
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
       parameters:
         - { name: tenantId, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -1938,7 +2017,7 @@ paths:
     get:
       summary: 온보딩 상태·단계 이력·infra_ref 조회 (bo-api 소유)
       operationId: getAmlTenantOnboardingStatus
-      security: [ { OAuth2: [aml:admin:policy] } ]
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
       parameters:
         - { name: tenantId, in: path, required: true, schema: { type: string } }
       responses:
