@@ -1,7 +1,7 @@
-# BO-AML 개발 태스크 개요 (BO-AML-SAAS-Planning_v8.0 · 32화면)
+# BO-AML 개발 태스크 개요 (PRD v9.44 · 33화면 / PPT 32화면)
 
 > 대상: `aegis-aml/services/bo-web` + `services/bo-api` 의 **AML 백오피스(준법감시실 콘솔)** 구현.
-> 정본 입력: PRD `docs/plan/02-aml-sass-functional-spec.md` v8.0 + PPT `docs/plan/BO-AML-SAAS-Planning_v8.0.pptx`.
+> 정본 입력: PRD `docs/plan/02-aml-sass-functional-spec.md` v9.44 + PPT `docs/plan/BO-AML-SAAS-Planning_v9.2.pptx`(PPT v9.2, 32화면·70슬라이드). AML-WLF-005는 원본 PPT 슬라이드가 없는 Markdown-only 화면이다.
 > 규칙·공통 참고 문서 = `docs/tasks/README.md`. 공통 기반 = `docs/tasks/bo-fds/01-stage1-foundation.md`(BOF-S1, 공유).
 
 ## 1. 단계(Stage) 개요
@@ -10,7 +10,7 @@
 |---|---|---|---|---|
 | **S1 AML 기반 추가** | `01-stage1-foundation.md` | 화면 없음 — PII reveal·tipping-off 가드·AML NAV·표시 사전(부록 F) (**BOF-S1 위에 추가**) | 1~2 | BOF-S1 |
 | **S2 대시보드·고객사** | `02-stage2-tenant-dashboard.md` | AML-DASH-001 · AML-TNT-001/002(4탭 — 보고기관 패널·소스 인입 신호)/003 | 3~9 | S1 |
-| **S3 WLF·명단** | `03-stage3-wlf-watchlist.md` | AML-WLF-001/002/003/**004(2탭)** · AML-WL-001(3탭)/002/**003(2탭)** | 10~20 | S1 |
+| **S3 WLF·명단** | `03-stage3-wlf-watchlist.md` | AML-WLF-001/002/003/**004(2탭)·005(3탭 설정)** · AML-WL-001(3탭)/002/**003(2탭)** | 10~20 + **WLF-005 슬라이드 없음(Markdown-only)** | S1 |
 | **S4 RA·CDD·정책 앞단** | `04-stage4-ra-cdd-policy.md` | AML-CTRY-001(2탭) · AML-RA-001(2탭)/003(3탭) · **AML-CDD-002(2탭)** · AML-RA-002(4탭) · **AML-HRR-001(2탭)** · AML-CDD-001(3탭) | 21~38 | S1 (S3 권장 — WLF 연계 표시) |
 | **S5 TM·케이스·규제 보고** | `05-stage5-tm-case-report.md` | AML-TM-001(2탭)/002 · AML-CASE-001/002(4탭) · AML-REP-001(3탭)/002(3탭) · **AML-IRA-001(3탭)** · ~~AML-TR-001(3탭)~~(제거됨 2026-07-09) | 39~58 | S1·S3·S4 |
 | **S6 정책팩·결재·통계·내부통제·감사·인입** | `06-stage6-approval-stat-audit-ingest.md` | AML-PP-001(2탭) · AML-APR-001 · **AML-STAT-001(2탭)** · **AML-EDU-001(2탭)** · AML-AUD-001(3탭) · **AML-ING-001(2탭)** | 59~70 | S1 (4-eyes 수렴점) |
@@ -25,7 +25,7 @@ graph LR
     S3 & S4 & S5 -.4-eyes 상신.-> S6
 ```
 
-## 2. 화면 → Stage·슬라이드 전수 매핑 (32화면 = PPT 슬라이드 3~70)
+## 2. 화면 → Stage·슬라이드 전수 매핑 (PRD 33화면 / PPT 32화면·슬라이드 3~70)
 
 | 화면(기능 ID) | PPT 슬라이드 | PRD § | Stage |
 |---|---|---|---|
@@ -35,6 +35,7 @@ graph LR
 | AML-TNT-003 고객사 등록 | 9 | §13.3 | S2 |
 | AML-WLF-001/002/003 WLF 검토 3탭 흐름 | 10~12 | §3.1~§3.3 | S3 |
 | **AML-WLF-004 스크리닝 시뮬레이션·임의 수행 2탭** | 13~14 | **§12-B.1** | S3 |
+| **AML-WLF-005 WLF 엔진 조절 3탭** | **— (원본 PPT 없음, Markdown-only)** | **§12-B.8** | S3 |
 | AML-WL-001 명단 소스·임포트 3탭 | 15~17 | §4.1 | S3 |
 | AML-WL-002 변경분 디프 승인 | 18 | §12-A.2 | S3 |
 | **AML-WL-003 내부 명단·오탐 면제 2탭** | 19~20 | **§12-B.5** | S3 |
@@ -76,6 +77,14 @@ graph LR
 
 > 그 외 화면은 확정 API(`docs/design/api/02-aml-api.md`) — **AML PRD 부록 A(화면↔API 전수 매핑)가 정본**.
 
+### WLF 엔진 설정 확정 API (v9.44)
+
+| API | 화면 | Stage |
+|---|---|---|
+| `GET /api/v1/bo/aml/wlf-engine-config` · `POST /api/v1/bo/aml/wlf-engine-config:change`🔒(`POLICY_PACK`) → 엔진 `GET /api/v1/admin/aml/wlf-engine-config` · `POST /api/v1/admin/aml/wlf-engine-config:change` 위임 | AML-WLF-005 | S3 |
+
+> AML-WLF-005는 별도 설정 저장소가 아니라 Policy Pack `aml_policy_packs.parameters`의 `wlf.*` typed 키를 투영·편집하며, SANCTIONS/PEP 프로필·6가중치·negative penalty·검토/고신뢰 임계를 관리한다.
+
 ## 4. 횡단 DoD (모든 태스크 공통 — FDS 횡단 DoD + AML 추가)
 
 1. `bo-fds/00-overview.md` §4 횡단 DoD 전부 적용.
@@ -83,6 +92,7 @@ graph LR
 3. **PII**: raw 미표시(토큰/hash), 원문 열람은 `aml:pii:reveal`+사유 입력+`RAW_DATA_ACCESS` 감사(S1-02).
 4. 4-eyes subjectType 16종(+제안 2종)·결재 라인 표시 = AML PRD 부록 C·부록 G.
 5. 표시 용어·enum = AML PRD 부록 F 사전과 1:1(i18n 키 원천).
+6. **WLF 설정 폐루프**: Admin simulation의 SANCTIONS/PEP `sourceTypes` 필터와 실제 aml-svc Public REST 인입의 설정 A/B 적용 차이·`appliedPolicy`·멱등 replay·과거 결과 불변·최초 설정 복원을 검증한다(bo-api stub·화면 mock·DB 직접 시드 금지).
 
 ## 5. Status 보드
 

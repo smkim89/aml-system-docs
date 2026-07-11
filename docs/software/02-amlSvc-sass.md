@@ -215,7 +215,7 @@ WLF, RA, TM은 규제 검사에서 설명 가능해야 한다. ML score는 보�
 
 watchlist source, country risk, WLF rule, RA model, TM scenario는 모두 versioned artifact이며 4-eyes 승인 후 적용한다.
 
-**WLF 매칭 임계값 변경 통제.** WLF 유사도 매칭 임계값(예: 자동낮춤 0.66 미만 / 검토필요 0.66~0.92 / 고신뢰 0.92 이상)과 WLF 룰버전(예 `WLF-KR v12`)은 별도 설정 화면 없이 **policy pack 파라미터**로 관리하며, 변경은 정책팩 4-eyes(`POLICY_PACK`) 결재 절차(§14.3 parameter·effective version 규약)를 따른다. WLF 검토 화면은 임계값을 읽기 전용으로 표시한다.
+**WLF 매칭 기준 변경 통제.** WLF 가중치·불일치 감점·유사도 임계와 룰버전은 계속 **policy pack 파라미터가 단일 원장**이며, 변경은 정책팩 4-eyes(`POLICY_PACK`) 결재 절차(§14.3 parameter·effective version 규약)를 따른다. 다만 운영자가 generic Policy Pack 키를 직접 다루지 않도록 별도 설정 화면 `AML-WLF-005 WLF 엔진 조절`(`/aml/wlf-engine`, bo-web→bo-api→aml-svc)을 제공한다. 이 화면은 policy pack 안의 typed SANCTIONS/PEP profile을 버전 목록·기준 편집·시뮬레이션 구조로 투영하는 전용 facade일 뿐 별도 설정 테이블/정본이 아니다. WLF 검토 화면은 각 결과 생성 당시의 profile·검토/고신뢰 임계·ruleVersion·definitionHash를 읽기 전용으로 표시한다.
 
 ### 5.4 실시간은 onboarding·제재 중심
 
@@ -630,6 +630,23 @@ WLF score는 설명 가능해야 한다.
 | Relationship match | same UBO, representative, account |
 | Negative signal | strong mismatch, verified false positive |
 
+#### 10.3a 명단군별 typed engine profile (`AML-WLF-005`)
+
+ACTIVE policy pack은 WLF profile 2종을 닫힌 스키마로 보유한다. 각 profile은 6개 component 상대 가중치(`NAME`/`DATE_OF_BIRTH`/`COUNTRY`/`DOCUMENT`/`ADDRESS`/`RELATIONSHIP`), `negativePenalty`, `reviewThreshold`, `highConfidenceThreshold`를 가진다. 각 값은 유한한 `0..1`이고 가중치 합이 양수여야 하며, 임계는 `0 ≤ reviewThreshold < highConfidenceThreshold ≤ 1`을 만족해야 한다. 미지 profile/weight/NaN/Infinity는 변경 상신 전에 거부한다.
+
+| Watchlist `list_type` | 적용 profile | 비고 |
+|---|---|---|
+| `PEP`, `RCA` | `PEP` | PEP 본인과 관련자에 같은 정치적 노출 기준 적용 |
+| `SANCTIONS`, `ADVERSE_MEDIA`, `INTERNAL`, `LAW_ENFORCEMENT`, `VASP_RISK` | `SANCTIONS` | PEP 계열 외 명단의 fail-safe 기본 profile |
+
+초기 profile은 종전 전역 `MatchRuleSet`과 동형(이름 0.55, DOB 0.10, 국가 0.10, 문서 0.15, 주소 0.05, 관계 0.05, negative 0.20)이다. `tenant_demo`의 receiver 계약은 이름+국가만 있는 정확 일치가 `0.65`이므로 SANCTIONS/PEP `reviewThreshold=0.65`, `highConfidenceThreshold=0.92`로 bootstrap한다. 다른 tenant에서 typed 키가 아직 없으면 기존 전역 `wlf.possible-threshold`/`wlf.true-threshold`와 코드 기본값(`0.66`/`0.92`)으로 안전하게 복원한다.
+
+screening은 요청 시작에 ACTIVE WLF 전체 정의를 1회 immutable snapshot으로 pin하고 후보 엔트리마다 `list_type` profile로 점수를 계산한 뒤 최고 confidence band(동률이면 점수, 다시 동률이면 entryId 안정 순서)의 profile 임계로 `NO_MATCH`/`POSSIBLE_MATCH`를 결정한다. **후보가 0건이면 reviewThreshold가 0이어도 평가할 match가 없으므로 status와 `confidenceBand`를 모두 `NO_MATCH`로 고정**하고, 후보가 존재할 때만 score와 profile 임계를 비교한다. 승인 commit이 평가 중간에 발생해도 한 결과 안에 ruleVersion을 섞지 않는다. `highConfidenceThreshold` 이상도 자동 `TRUE_MATCH`가 아니라 `HIGH` evidence/band가 붙은 `POSSIBLE_MATCH`다. 진성 확정은 §10.4의 분석가 4-eyes 상태머신을 계속 따른다. 결과 JSONB `score_breakdown.appliedPolicy`에는 profile·config/rule version·두 임계·definitionHash·band를 snapshot해 과거 검토를 현재 설정으로 재계산하지 않는다. 외부 응답의 `scoreBreakdown`은 기존 숫자 factor map을 유지하고 정책 snapshot은 top-level `appliedPolicy`로 분리한다.
+
+WLF scoring parameter가 바뀔 때만 WLF config version과 definition hash 기반 ruleVersion이 증가한다. CTR 등 WLF와 무관한 policy-pack 변경은 ruleVersion을 바꾸지 않으므로 FP whitelist를 불필요하게 무효화하지 않는다. 반대로 WLF definition이 바뀌면 whitelist의 version exact-match가 끊겨 재검토된다.
+
+변경 상신은 `expectedActiveRuleVersion`을 필수로 비교하고 policy-pack active row lock 아래 pack당 DRAFT 1건만 허용한다. 현재 적용 projection과 screening은 모두 `status=ACTIVE && active=true`를 동시에 만족하는 정확히 1개 정책팩만 사용하며 inactive ACTIVE 행을 현재값으로 추정하지 않는다. 적용 시점은 호출자가 예약/소급 지정하지 않으며 checker EXECUTED 시각을 서버가 기록한다. checker 신원은 bo-api 인증 principal과 trusted `X-User-Subject`에서만 파생하고 client `checkerId`로 대체할 수 없다. 반려된 후보는 `REJECTED`로 종결되고 다음 policy-pack version과 WLF config/ruleVersion은 각각 전체 보존 이력의 최대 번호 다음으로 할당해 서로 다른 정의가 같은 식별자를 재사용하지 않는다. 설정 화면의 버전 이력은 각 행의 SANCTIONS/PEP 전체 profile을 펼쳐 보여 checker가 DRAFT의 6가중치·negative penalty·두 임계를 hash와 함께 검토할 수 있어야 한다.
+
 ### 10.4 판정 상태
 
 | Status | 설명 |
@@ -1038,6 +1055,8 @@ Source-System: core-banking
 Idempotency-Key: core-banking:evt-001
 X-Signature: hmac-sha256=...
 ```
+
+요청 HMAC canonical material은 `timestamp\napiKey\nmethod\nrequestURI\n[nonblank X-User-Subject\n]rawBody`다. 운영자 Admin/Internal 호출은 인증 principal에서 파생한 `X-User-Subject`를 서명에 포함해 checker/maker actor와 payload를 함께 고정한다. actor가 없는 Public ingest는 기존 material을 유지한다.
 
 ### 15.2 Real-time Screening API
 
@@ -1953,6 +1972,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-11 | **WLF 엔진 typed profile·전용 조절 화면 역전파.** Policy Pack 단일 원장/4-eyes를 유지한 채 AML-WLF-005가 SANCTIONS·PEP별 6가중치·negative penalty·review/high-confidence threshold를 투영·상신하도록 §5.3·§10.3a를 개정했다. PEP/RCA→PEP, 그 외→SANCTIONS 매핑, WLF-only rule version, 결과 `appliedPolicy` snapshot, HIGH의 비자동확정 의미를 확정했다. | system-architect. 코드=truth. |
 | 2026-07-09 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule, aegis-aml 84997e1 — aml V31).** (1) §5.5 KR baseline에서 가상자산사업자 신고·Travel Rule 항목 제외. (2) §6.2 헥사고날 레이아웃 `domain/travelrule` 제거. (3) §8.1 `EventFamily` **20종→19종**(`TRAVEL_RULE` family 삭제)·§8.2 예시 `requiresTravelRule` 필드 폐기. (4) §13.2 EDD trigger `CRYPTO_RISK` 설명에서 Travel Rule 문구 제거·§13.3 `case_type` **12종→11종**(`VASP_TRAVEL_RULE_REVIEW` 삭제)·§13.3a `REPORTED` 설명 정정·§13.4/§13.5 4-eyes `subjectType` **16종→15종**(`TRAVEL_RULE_EXCEPTION` 삭제). (5) §14.1 `report_type` **7종→6종**(`TRAVEL_RULE` 삭제)·§14.3 `travelRuleThreshold` parameter 삭제. (6) §16 `policy_pack_code` 설명(STR/CTR)·§17.5 `aml_travel_rule_transfers` DDL 제거 스텁. (7) §21 Phase 5 'Travel Rule evidence'·Phase 8 `domain/travelrule` 삭제 주석·결론 요약 정정. 닫힌 enum 카운트 전수 정정. | system-architect. 코드=truth. 근거=`services/aml-svc`(EventFamily 19종·ReportType 6종·CaseType 11종·ApprovalSubjectType 20종·travelrule 도메인/UseCase/Controller/persistence 삭제)·migration V31(`DROP TABLE aml_travel_rule_transfers`). CRYPTO_OFF_RAMP TM 시나리오는 유지(dsl `crypto.travelRuleGap` 조건만 제거). |
 | 2026-07-04 | **알림 발동 근거 거래 전수 조회 표면 역전파(코드=truth, fix/aml-fds-spec-backprop).** §6.2 헥사고날에 in-port `QueryAlertRelatedTransactionsUseCase`(알림 발동 근거 거래 전수 페이징, API §2.4/§3.4d) + out-port `CanonicalEventWindowPort`(근거 윈도우 페이징)·`BankingCalendarPort` 추가. `adapter/in/rest` 엔드포인트 전수·응답 스키마 정본은 API §2.4/§3.4d 위임(본 레이아웃은 그룹 요약). 엔진 domain 무변경 — read-only 조회 표면. | aegis-spec. 코드=truth. 근거=aml-svc `application/port/in/QueryAlertRelatedTransactionsUseCase`·`application/usecase/AlertRelatedTransactionsService`·`application/port/out/CanonicalEventWindowPort`·`adapter/in/rest/AlertController`(`GET /alerts/{alertId}/related-transactions`). API §2.4/§3.4d 동기화. |
 | 2026-06-30 | **hanpass-ph 기준 재작성(코드 truth).** 본 설계서를 SaaS 다도메인 AML 일반화 → **hanpass-ph 단일 서비스 AML 엔진(`aml-svc`)** 정본으로 재정렬. (1) 제목·§1·§2 — 시스템=hanpass-ph AML, 비-hanpass 도메인(카드 PG·crypto·trade/TBML·ecommerce·B2B) 일반화 제거, fds/aml 관계 유지. (2) §3·§4 — Hanpass 참조구현을 코드 구성요소 매핑으로 교체, "지원 금융 도메인 15종" → hanpass-ph 거래 6채널(`CASH_IN`/`DOMESTIC_REMIT`/`CROSS_BORDER_REMIT`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`/`CARD_NOT_PRESENT`, V26). (3) §6.2 — 헥사고날 패키지 레이아웃을 실제 소스(`com.aegis.aml` domain/application/adapter) 기준으로 재작성. (4) §8.1 — event family를 코드 `EventFamily` enum **20종** 정본으로 교체(hanpass-ph `REMIT`/`DOMESTIC`/`WALLET` transaction-bearing, advanced/vendor는 미사용 잔존 명시). (5) §10.2a — 거래당 sender/receiver WLF(`transactionRef`) 신설. (6) §12.1 — `TmScenario` 10종 + 데모 ACTIVE 시나리오(phpEquivalent 임계, V19/V22/V26/V28)로 재작성. (7) §9/§10/§11/§13.3/§14.1 — 닫힌 enum의 hanpass-ph 미사용 값을 ✕ 표기. (8) §15.3~§15.5 — REST+SQS만, polling/CDC·legacy bridge 미사용 잔존. (9) §16 — 멀티테넌트 유지·운영=`tenant_demo` 단일 명시. (10) §18 — 도메인별 예시를 hanpass-ph 6채널로 교체. (11) Travel Rule/VASP·advanced domain·vendor 전수에 미사용 주석. | aegis-java-implementer. 근거=`services/aml-svc/src/main/java/com/aegis/aml`(EventFamily·TmScenario·ScreenSubjectUseCase·TmEvaluationService)·migration V19/V22/V26/V27/V28/V29. 닫힌 enum·DB 컬럼은 삭제 아닌 "잔존(미사용)" 표기 — 코드/DB 정본 보존. |

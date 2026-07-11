@@ -39,7 +39,8 @@
 | Tenant | `Tenant-Id` 헤더 (Public/Internal) / bo-api 세션 클레임 (Admin) | Y | DB `tenant_id`(테넌트=서비스, 상위 기관 institution이 운영하는 서비스 1종·1 기관 : N 서비스). 전용 배포(`MANAGED_DEDICATED`/`SELF_HOSTED`)에서는 배포=서비스 단일 값(라우팅은 배포 엔드포인트 단위). `SHARED` 배포에서만 `Tenant-Id` 헤더 행 라우팅·RLS `app.current_tenant` 세션변수로 강제 |
 | Source System | `Source-System` 헤더 | Public Ingest/Screen Y | DB `aml_source_systems.source_system`. 미등록 source는 거부 |
 | Data-scope | bo-api 토큰 클레임 `dataScope` / 쿼리 `dataScope` | N | DB `data_scope`(영업점·법인그룹 하위 격리, 정본 §4) |
-| 서명 | `X-Signature: hmac-sha256=...` | Public Y | body HMAC (source `secret_ref` 키), 위변조 방지 |
+| 서명 | `X-Signature: hmac-sha256=...` | Public Y | HMAC-SHA256(source `secret_ref` 키). canonical material=`timestamp\napiKey\nmethod\nrequestURI\n[nonblank X-User-Subject\n]rawBody`; actor 없는 Public 요청은 기존 material과 동일, actor가 있는 Admin/Internal 요청은 actor까지 위변조 방지 |
+| 운영자 actor | `X-User-Subject` | Admin/Internal write Y | trusted BFF/mesh가 인증 principal에서 파생. nonblank이면 위 HMAC material에 결합되므로 서명 뒤 actor 교체는 401. 브라우저 임의 입력 금지 |
 | Idempotency | `Idempotency-Key` 헤더 | 쓰기성 Public Y | DB `aml_canonical_events.idempotency_key` UNIQUE(tenant_id,idempotency_key) |
 | Trace | `X-Trace-Id`(없으면 생성) | N | DB `trace_id` 전파(설계서 §20.3). 응답 `X-Trace-Id` 반향 |
 
@@ -72,7 +73,7 @@
 
 ### 1.5 4-eyes(결재) 표기
 
-본 문서에서 **🔒4-eyes** 표기된 엔드포인트는 작성자≠승인자 결재(`aml_approvals`, CHECK `maker_id<>checker_id`)를 거쳐야 실행된다(설계서 §13.4~§13.5). 호출 흐름: `① 상신(maker) → 202 + approvalId(status=SUBMITTED) → ② 승인(checker) → APPROVED → ③ 실행 → EXECUTED`. payload는 `payload_hash`로 고정되어 승인 후 변경 시 무효화.
+본 문서에서 **🔒4-eyes** 표기된 엔드포인트는 작성자≠승인자 결재(`aml_approvals`, CHECK `maker_id<>checker_id`)를 거쳐야 실행된다(설계서 §13.4~§13.5). 호출 흐름: `① 상신(maker) → 202 + approvalId(status=SUBMITTED) → ② 승인(checker) → APPROVED → ③ 실행 → EXECUTED`. payload는 `payload_hash`로 고정되어 승인 후 변경 시 무효화. maker와 checker는 모두 브라우저 body가 아니라 인증 principal에서 서버 파생한다. bo-api는 `BackofficePrincipal.email`, aml-svc는 trusted `X-User-Subject`를 checker 단일 정본으로 사용하며, 호환용 body `checkerId`가 있으면 principal과 정확히 같아야 한다. 다른 문자열 주입은 승인/반려 실행 전에 거부한다.
 
 > **`DRAFT` 상태는 내부 전이 상태로 API 미노출.** `ApprovalDto.status`(§3.7) 및 API 호출 흐름에서 `DRAFT`는 내부 엔진 초기화 단계이며 외부 호출자(bo-api/bo-web)에게 노출되지 않는다. API 표면 첫 관찰 가능 상태는 `SUBMITTED`(상신 완료, 202 응답)이다(설계서 §13.5 상태머신 대비). PRD/화면은 `DRAFT` 배지 표시 불필요.
 
@@ -277,6 +278,50 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 
 > **bo-api 위임(§10.4).** BO 화면 수동 트리거는 `POST /api/v1/bo/aml/watchlist-sources/{sourceCode}/sync`(scope `aml:admin:watchlist` or `BO_SUPER_ADMIN`, `AmlWatchlistController`) → `AmlEngineClient`로 위 엔진 `.../{code}/sync`에 순수 위임한다(응답 `WatchlistSyncResponse` 미러, 운영자 감사 `WATCHLIST_IMPORT_APPLIED`·trigger MANUAL). 제재명단 수집은 엔진 전용 표면이라 **비위임(stub) 모드는 fail-closed 503 `AML.ENGINE_UNAVAILABLE`**(위조 성공 카운트가 48h freshness 게이트를 잘못 갱신하는 것 방지, 4-eyes 계약 대상 아님).
 
+#### WLF 엔진 설정 (§10.3, AML-WLF-005)
+
+| 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
+|---|---|---|---|---|---|
+| GET | `/api/v1/admin/aml/wlf-engine-config` | `aml:admin:watchlist` **or** `aml:admin:policy` | — | tenant의 런타임 적용 WLF 룰 버전과 정책팩 버전 이력, SANCTIONS·PEP별 가중치/불일치 감점/검토·고신뢰 임계 조회. 기존 WLF 시뮬레이션 운영자는 현재 적용 기준 조회만 허용한다. `status=ACTIVE && active=true`를 동시에 만족하는 정책팩이 없거나 복수이면 screening 선택과 동일하게 fail-closed한다. typed profile 키가 없는 legacy/pending 이력은 저장된 `wlf.possible-threshold`/`wlf.true-threshold`를 우선 SANCTIONS·PEP에 fan-out하고, 나머지 누락값은 코드 기본 profile(6가중치·negativePenalty 0.20, 기본 band 0.66/0.92)로 하위호환 해석한다. 유효하지 않은 수치·임계 또는 저장된 definitionHash 불일치는 fail-closed하며, V38은 비-DRAFT 이력을 canonical typed form으로 보강한다. | `aml_policy_packs.parameters` |
+| POST | `/api/v1/admin/aml/wlf-engine-config:change` | `aml:admin:policy` | 🔒 `POLICY_PACK` | 전체 SANCTIONS·PEP 프로필을 새 정책팩 DRAFT로 상신. maker는 인증 principal에서 파생하고, checker 승인·EXECUTED 전에는 ACTIVE 스크리닝에 영향 없음 | `aml_policy_packs`,`aml_approvals` |
+
+> **BFF 미러.** bo-web은 엔진을 직접 호출하지 않고 `GET/POST /api/v1/bo/aml/wlf-engine-config[:change]`만 사용한다. GET은 `aml:admin:watchlist` 또는 `aml:admin:policy`(기존 WLF-004 simulation 호환), POST는 `aml:admin:policy`만 허용한다(`BO_SUPER_ADMIN` 우회 포함). bo-api는 DTO를 손실 없이 위임하며 delegate 미구성/빈 응답을 성공으로 위조하지 않고 `503 AML.ENGINE_UNAVAILABLE`로 fail-closed한다. 메뉴 `AML-WLF-005`(`/aml/wlf-engine`)는 `aml:admin:policy` 또는 `BO_SUPER_ADMIN`만 접근한다.
+
+`WlfEngineConfigResponse`:
+
+```json
+{
+  "activeRuleVersion": "wlf-rule-v3",
+  "versions": [{
+    "policyPackCode": "KR_DEFAULT",
+    "policyPackVersion": "v7",
+    "status": "ACTIVE",
+    "configVersion": "wlf-config-v3",
+    "ruleVersion": "wlf-rule-v3",
+    "definitionHash": "sha256:...",
+    "effectiveFrom": "2026-07-11T00:00:00Z",
+    "profiles": {
+      "SANCTIONS": {
+        "weights": {"NAME": 0.55, "DATE_OF_BIRTH": 0.10, "COUNTRY": 0.10, "DOCUMENT": 0.15, "ADDRESS": 0.05, "RELATIONSHIP": 0.05},
+        "negativePenalty": 0.20,
+        "reviewThreshold": 0.65,
+        "highConfidenceThreshold": 0.92
+      },
+      "PEP": {
+        "weights": {"NAME": 0.55, "DATE_OF_BIRTH": 0.10, "COUNTRY": 0.10, "DOCUMENT": 0.15, "ADDRESS": 0.05, "RELATIONSHIP": 0.05},
+        "negativePenalty": 0.20,
+        "reviewThreshold": 0.65,
+        "highConfidenceThreshold": 0.92
+      }
+    }
+  }]
+}
+```
+
+`WlfEngineConfigChangeRequest`는 `{ expectedActiveRuleVersion, profiles, reason }`이며 `profiles`는 위와 같은 **SANCTIONS·PEP 닫힌 집합 전체**다. `expectedActiveRuleVersion`은 화면이 편집한 ACTIVE 버전의 필수 낙관적 동시성 토큰이며 현재 값과 다르면 `409 AML.STATE_CONFLICT`로 상신을 거부한다. 호출자 지정 `effectiveFrom`은 지원하지 않고 승인 EXECUTED 시각을 서버가 기록한다. 각 profile은 6개 weight 닫힌 집합, 유한수·`0..1`, 양수 weight 합, `reviewThreshold < highConfidenceThreshold`를 만족해야 한다. 서버는 active policy-pack row lock 아래 단일 DRAFT만 허용하고 `configVersion`과 WLF 전용 `ruleVersion`을 자동 증가시키며 canonical 전체 정의의 `definitionHash`를 계산한다. 반려 시 후보는 `REJECTED`로 종결되어 후속 상신을 막지 않는다. 응답은 `202 { approvalId, status, candidateConfigVersion, candidateRuleVersion, definitionHash }`. PEP/RCA 엔트리는 PEP profile, 그 외 source/list type은 SANCTIONS profile로 평가한다. 한 평가 요청은 ACTIVE 전체 정의를 1회 pin해 후보 전부에 같은 ruleVersion을 적용한다. `highConfidenceThreshold`는 검토 우선순위/evidence 경계이며 분석가 4-eyes 없이 `TRUE_MATCH`를 자동 생성하지 않는다.
+
+> **단건 시뮬레이션 profile 필터.** Admin/BFF `POST .../screenings:simulate` 요청은 `{ name, nameRomanized?, similarityThreshold?, targetType?, dob?, country?, documentHash?, sourceTypes? }`를 사용한다. 이 분석 전용 경로는 기존 WLF 도구의 `aml:admin:watchlist`와 AML-WLF-005의 `aml:admin:policy` 중 하나를 허용한다(일괄 수행·template은 계속 watchlist 권한 전용). `sourceTypes`는 명단 소스 유형의 닫힌 배열이며 AML-WLF-005는 SANCTIONS 탭에서 `['SANCTIONS']`, PEP 탭에서 `['PEP','RCA']`를 보낸다. 생략 시 모든 ACTIVE 명단을 평가한다. 서버는 ACTIVE 전체 정의를 1회 pin하고 후보 조회·profile 선택 모두에 이 필터를 적용한다. 응답의 적용 임계와 `appliedPolicy`는 실제 ACTIVE 설정에서 파생한다. 호출자가 임의 `similarityThreshold`를 보낸 경우 분석용 override이며 ACTIVE `highConfidenceThreshold` 미만이어야 하고 영속 screening/ACTIVE 정책을 변경하지 않는다.
+
 #### Screening 검토 (§10.4)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
@@ -454,8 +499,8 @@ bo-api 표면: `GET|POST /api/v1/bo/aml/report-rules/configurable`, `POST .../co
 |---|---|---|---|---|---|
 | GET | `/api/v1/admin/aml/approvals?status=SUBMITTED` | `aml:admin:approval` | — | 결재 대기 큐 | `aml_approvals` |
 | GET | `/api/v1/admin/aml/approvals/{approvalId}` | `aml:admin:approval` | — | 결재 상세 | `aml_approvals` |
-| POST | `/api/v1/admin/aml/approvals/{approvalId}:approve` | `aml:admin:approval` | — | 승인(checker, maker≠checker 강제) | `aml_approvals` |
-| POST | `/api/v1/admin/aml/approvals/{approvalId}:reject` | `aml:admin:approval` | — | 반려 | `aml_approvals` |
+| POST | `/api/v1/admin/aml/approvals/{approvalId}:approve` | `aml:admin:approval` | — | 승인(checker=trusted `X-User-Subject`, maker≠checker 강제; body 명의 주입 거부) | `aml_approvals` |
+| POST | `/api/v1/admin/aml/approvals/{approvalId}:reject` | `aml:admin:approval` | — | 반려(checker=trusted `X-User-Subject`; body 명의 주입 거부) | `aml_approvals` |
 | GET | `/api/v1/admin/aml/source-systems` | `aml:admin:source-system` | — | source 목록 | `aml_source_systems` |
 | POST | `/api/v1/admin/aml/source-systems` | `aml:admin:source-system` | 🔒4-eyes(secret 변경) | source 등록·secret 변경 | `aml_source_systems`,`aml_approvals` |
 | GET | `/api/v1/admin/aml/audit-events?eventCategory&from&to&actor&subjectRef` | `aml:admin:audit` | — | append-only 감사 조회. `eventCategory` 허용값(DB §3.15 enum 10종): `WATCHLIST_IMPORT`/`WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL_CHANGE`/`RISK_OVERRIDE`/`TM_SCENARIO_CHANGE`/`CASE_APPROVAL`/`REPORT_LIFECYCLE`/`RAW_DATA_ACCESS`/`POLICY_CHANGE` | `aml_audit_events` |
@@ -501,7 +546,7 @@ bo-api 표면: `GET|POST /api/v1/bo/aml/report-rules/configurable`, `POST .../co
 | `relationshipRefs` | array<string> | — | 관계 ref(공유 계좌·반복 수취인 등) |
 | `transactionRef` | string | — | **해외송금 거래번호 keyed token**. 동일 거래의 sender·receiver screening을 묶는 키(§13). receiver 키 자체가 (이름+국가+전화)이므로 동일 수취인은 거래간 누적·FP 화이트리스트 재사용된다 |
 
-응답 `ScreeningResponse` (DB `aml_screening_results`, `ScreeningController.ScreeningResponse` 정본 — code truth 12필드):
+응답 `ScreeningResponse` (DB `aml_screening_results`, `ScreeningController.ScreeningResponse` 정본):
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
@@ -512,13 +557,14 @@ bo-api 표면: `GET|POST /api/v1/bo/aml/report-rules/configurable`, `POST .../co
 | `targetType` | enum | DB §5.23 target_type(`CUSTOMER`/`ENTITY`/`COUNTERPARTY`/`CRYPTO_ADDRESS`) |
 | `status` | enum | §5.5 screening_status(`NO_MATCH`/`POSSIBLE_MATCH`/`TRUE_MATCH`/`FALSE_POSITIVE`/`AUTO_DISCOUNTED`/`ESCALATED`). **API 별칭 `POTENTIAL_MATCH`는 `POSSIBLE_MATCH`로 정규화** |
 | `score` | number | 유사도 |
-| `scoreBreakdown` | object | name/dob/country/document/address/relationship(§10.3). **hanpass-ph 정합**: `member-svc zoloz_aml_screening`(`hit_results`→후보·항목별 점수, `risk_level`→`riskGrade`, `total_hits`→matched 카운트, `decision`→`status`)를 본 분해로 정규화. **가중 분모 = 전체 가중치 합(name 0.55+date 0.10+country 0.10+document 0.15+address 0.05+relationship 0.05 = 1.0)** — overall=`Σ(weight·score)/sumOfWeights()`이며 미제공 컴포넌트는 분자 기여 0·분모 유지(이름만 완전일치=0.55). **데모 스텁(bo-api `StubNameMatcher`, aml-svc 미가동·비위임) 점수분해는 name/dob/country 서브셋만 산출**(엔진은 6 컴포넌트 — 의도적 단순화·overall은 동일 분모로 1:1) |
+| `scoreBreakdown` | object | name/dob/country/document/address/relationship/negative 분해(§10.3). **가중 분모 = 해당 결과에 스냅샷된 ACTIVE profile의 6개 weight 합**이며 overall=`max(0, Σ(weight·score)/sumOfWeights() - negativePenalty×negativeSignal)`이다. 미제공 컴포넌트는 분자 기여 0·분모 유지한다. 주소는 요청 `addressTokens`와 엔트리 attributes 주소 토큰이 모두 있을 때만, negative signal은 결정적 불일치 근거가 있을 때만 적용한다. 과거 결과는 이후 정책 변경에도 이 스냅샷 의미가 변하지 않는다 |
 | `riskGrade` | enum | §5.2(평가 가능 시) |
 | `reasonCodes` | array<string> | `reason_codes` (예: `NAME_EXACT_MATCH`,`SANCTIONS_NAME_SIMILARITY`,`DOB_MATCH`,`COUNTRY_MATCH`). 이름 유사 코드는 명단군별 일반형 **`<LISTTYPE>_NAME_SIMILARITY`**(예 `SANCTIONS_NAME_SIMILARITY`/`PEP_NAME_SIMILARITY`/`INTERNAL_NAME_SIMILARITY`, listType 미상 시 `NAME_SIMILARITY`)로 발급(tokenSet≥0.6 또는 edit≥0.85), 완전일치 시 `NAME_EXACT_MATCH`. 일치 여부 플래그만 — 원문 이름/생년/국적 값 미포함 |
 | `requiredActions` | array<string> | `MANUAL_REVIEW`/`EDD_REVIEW`/... |
 | `matchedEntries` | array<string> | 후보 entry_id(masked). **하위호환 유지** — `matchedCandidates`와 병존(기존 소비자 보존) |
 | `matchedCandidates` | array<object> | **가산(additive) 필드.** 매칭 후보 출처계보. 각 원소 `MatchedCandidate`(아래 표) — `matchedEntries`의 각 entry_id를 `aml_watchlist_entries`+`aml_watchlist_sources` 조인으로 enrich한 best-effort 파생값. **raw PII 미포함**(masked entryId·출처·버전·점수·토큰개수만) |
 | `matchedRules` | array<object> | 적용된 WLF 룰 참조 `{ ruleCode, threshold, score }`(파생값, DB `rule_version` 기준 투영). `score`(number)는 해당 룰에 대해 산출된 실측 유사도 점수(threshold 대비 판정 근거·엔진 WLF 룰 score 투영, `ScreeningResponse.matchedRules[].score` 코드=truth). 단수 `ruleVersion`과 구분 |
+| `appliedPolicy` | object | **가산 엔진 스냅샷.** `{ profile(SANCTIONS\|PEP), configVersion, ruleVersion, definitionHash, reviewThreshold, highConfidenceThreshold, confidenceBand(NO_MATCH\|REVIEW\|HIGH) }`. 결과 생성 시점의 실제 ACTIVE 정의를 고정하며 WLF 검토 상세·재현 검증의 정본이다. `HIGH`도 자동 TRUE_MATCH가 아니라 검토 우선순위 표시다 |
 | `subjectIdentity` | object | **가산(additive) 필드(bo-api WLF 매치 상세 투영).** reveal 게이트 대상 식별정보 메타 `SubjectIdentity`(아래 표) — 대상 식별자(`targetRef`) + reveal 가능 필드 키 목록만. **raw PII(이름·국적·성별·생년 원문) 미포함** — 원문은 `aml:pii:reveal`+사유+`RAW_DATA_ACCESS` 경로(§1.6, `POST /internal/v1/aml/pii/reveal` §2.6)로만 노출. **CUSTOMER·counterparty 대상 모두 `[NAME, NATIONALITY, GENDER, DOB]` 4필드 균일**(주체 무관). 주체가 보유하지 않는 필드(예 수취자=상대방의 성별·생년월일)는 reveal stub 이 빈 값(`""`)을 반환한다(placeholder 아님) |
 | `ruleVersion` | string | 적용 WLF 룰/threshold 버전(DB `rule_version`) |
 | `decidedBy` | string | 판정자(분석가, DB `decided_by`, nullable) |
@@ -526,7 +572,7 @@ bo-api 표면: `GET|POST /api/v1/bo/aml/report-rules/configurable`, `POST .../co
 | `createdAt` | string(date-time) | 결과 행 생성 시각(DB `created_at`, `ScreeningResponse.createdAt` 코드=truth). review-queue/history 기간필터·SLA 기준. **미영속 결과(실시간 POST 비저장)는 null 가능** — `decidedAt`(판정 시각)와 병기·구분 |
 | `expiresAt` | string(date-time) | 실시간 결과 만료(§15.7) |
 
-> **bo-api enrichment(가산, 엔진 `ScreeningResponse` 미포함).** 아래 필드는 코어 `ScreeningResponse` 레코드에 없고 bo-api가 `matchedEntries`를 `aml_watchlist_entries`·`aml_watchlist_sources`로 조인해 파생하거나 화면이 로컬 합성하는 best-effort 값이다(raw PII 미포함): `matchedCandidates[]`(매칭 후보 출처계보, 아래 `MatchedCandidate` 표)·`matchedRules[]`(`{ruleCode, threshold}`)·`riskGrade`·`requiredActions[]`·`decidedAt`·`expiresAt`. 코어 엔진 응답만 소비하는 호출자는 이 필드를 가정하지 않는다.
+> **bo-api enrichment와 passthrough.** `matchedCandidates[]`·`riskGrade`·`requiredActions[]`·`subjectIdentity` 등은 bo-api가 명단/화면 read model로 enrich할 수 있다. 반면 `matchedRules[]`, `ruleVersion`, `scoreBreakdown`, `appliedPolicy`는 엔진이 산출한 판정 증거이므로 bo-api가 재계산하거나 하드코딩 임계로 덮지 않고 손실 없이 전달한다. raw PII는 어느 경로에도 추가하지 않는다.
 
 > **`screeningHistory`(이전 판정 이력 배열)는 `ScreeningResponse` 미포함.** 동일 `screeningId`의 이전 판정 이력은 `GET /api/v1/aml/screenings/{screeningId}` 상세 조회(§2.2) 응답에서 파생한다. PRD 화면파생 방향 채택 — bo-web/bo-api가 이력 상세가 필요할 경우 단건 조회 엔드포인트를 호출하며, 실시간 screening POST 응답(`ScreeningResponse`)에는 이력 배열을 포함하지 않는다.
 
@@ -883,7 +929,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `approvalLine` | enum | §5.12 approval_line |
 | `status` | enum | §5.13 approval_status **7종(API 노출, `DRAFT` 제외)**: `SUBMITTED`/`APPROVED`/`REJECTED`/`CANCELLED`/`EXPIRED`/`EXECUTED`/`EXECUTION_FAILED`. `DRAFT`는 내부 엔진 전이 상태로 외부 미노출(§1.5) |
 | `makerId` | string | 상신자 |
-| `checkerId` | string | 승인자 (**maker≠checker**) |
+| `checkerId` | string | 승인자 (**maker≠checker**). 응답은 서버 파생 실제 승인자, 요청에서는 인증 principal과 일치할 때만 허용되는 optional 호환 assertion |
 | `payloadHash` | string | 고정 hash(변경 시 무효화) |
 | `reason` | string | 사유 |
 | `stagedPayload` | string\|null | **상신 시점 고정 canonical payload**(상세 전용, DB §3.16 `staged_payload`). 결재함 **상신 내용·변경 전→후(as-is/to-be) 파생 소스** — masked/tokenized only(원문 PII 미저장 §19.2). `null`=live 파생 subject/legacy(run3 D13) |
@@ -894,7 +940,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 
 > **결재함 위임(엔진) 응답 parity(run3 D13, 코드=truth).** 엔진 `ApprovalController.{ApprovalSummary,ApprovalDetail}` 가 `submittedAt`(=`created_at`)·`expiresAt`·`stagedPayload`(Detail)를 응답하도록 결선해 위임 경로에서 상신일시·만료·변경내역·상신내용이 전부 `null` 로 내려와 정렬·만료 뱃지·변경 전후 표가 무력화되던 결함을 해소한다. stub↔엔진 위임 응답 모양 동형(불변식).
 
-`ApprovalDecisionRequest`: `{ checkerId, decision: "APPROVE"|"REJECT", reason }`. 서버는 `checkerId == makerId` 시 `409 AML.SELF_APPROVAL_FORBIDDEN`.
+승인 `ApprovalDecisionRequest`는 `{ checkerId?, reason? }`, 반려 `ApprovalRejectRequest`는 `{ checkerId?, reason }`다. 액션은 각각 `:approve`/`:reject` 경로가 결정하며 body `decision` 필드는 없다. `checkerId`는 legacy 호환용 assertion일 뿐 신원 정본이 아니며, 서버는 인증 principal에서 checker를 파생하고 nonblank body 값이 principal과 다르면 요청을 거부한다. 인증 checker가 maker와 같으면 body 위조 여부와 무관하게 `409 AML.SELF_APPROVAL_FORBIDDEN`.
 
 ### 3.8 EvidenceExportRequest → `POST /api/v1/evidence/aml/exports` (DB `aml_evidence_exports`, UseCase: `ExportEvidenceUseCase`)
 
@@ -1053,11 +1099,11 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 |---|---|---|---|
 | `policyPackCode` | string | R | 대상 pack(`KR_DEFAULT` 등, DB `aml_tenants.policy_pack_code`) |
 | `parameters` | object | R | STR/CTR 기준금액·보고 대상·임계치(effective version 관리, 설계서 §14.3) |
-| `effectiveFrom` | string(date-time) | — | 적용 시점(미지정 시 승인·실행 시점) |
+| `effectiveFrom` | string(date-time) | — | **호출자 지정 미지원(반드시 생략/null)**. 예약·소급 활성화는 구현하지 않으며 non-null은 400. 실제 `effective_from`은 checker 승인 EXECUTED 시각을 서버가 기록 |
 | `reason` | string | R | 변경 사유(감사) |
 | `makerId` | string | R | 상신자 |
 
-→ §3.7 `subjectType=POLICY_PACK` 결재 상신. 응답 `{ approvalId, status: SUBMITTED }`. 실행 시 tenant policy pack effective version 갱신.
+→ §3.7 `subjectType=POLICY_PACK` 결재 상신. 응답 `{ approvalId, status: SUBMITTED }`. active row lock 아래 pack당 DRAFT 1건만 허용하며 실행 시 tenant policy pack effective version을 갱신한다. 반려 시 후보 artifact는 `REJECTED`로 종결되고 다음 상신은 전체 version 이력의 최대 번호 다음을 사용한다.
 
 ### 3.14 (제거됨 — Travel Rule 전면 제거, 2026-07-09, aml V31·bo-api V14)
 
@@ -1289,7 +1335,7 @@ components:
       name: X-User-Subject
       in: header
       required: true
-      description: trusted BFF/mesh가 인증 principal에서 파생하는 actor. 브라우저 임의 입력 금지.
+      description: trusted BFF/mesh가 인증 principal에서 파생하고 요청 HMAC에 결합하는 actor. 브라우저 임의 입력·서명 뒤 교체 금지.
       schema: { type: string }
   schemas:
     Error:
@@ -1326,7 +1372,7 @@ components:
         addressTokens: { type: array, items: { type: string } }
         relationshipRefs: { type: array, items: { type: string } }
         transactionRef: { type: string, description: '해외송금 거래번호 token — 동일 거래 sender·receiver screening 연결(§13)' }
-    ScreeningResponse:  # code truth: ScreeningController.ScreeningResponse (12 fields)
+    ScreeningResponse:  # code truth: ScreeningController.ScreeningResponse
       type: object
       properties:
         screeningId: { type: string, format: uuid }
@@ -1340,10 +1386,21 @@ components:
         reasonCodes: { type: array, items: { type: string } }
         matchedEntries: { type: array, items: { type: string } }
         ruleVersion: { type: string }
+        appliedPolicy:
+          type: object
+          nullable: true
+          properties:
+            profile: { type: string, enum: [SANCTIONS, PEP] }
+            configVersion: { type: string }
+            ruleVersion: { type: string }
+            definitionHash: { type: string }
+            reviewThreshold: { type: number }
+            highConfidenceThreshold: { type: number }
+            confidenceBand: { type: string, enum: [NO_MATCH, REVIEW, HIGH] }
         decidedBy: { type: string, nullable: true }
         decidedAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time, nullable: true }
-        # riskGrade·requiredActions·matchedCandidates·matchedRules·expiresAt 는 bo-api enrichment(엔진 응답 외, §3.2)
+        # riskGrade·requiredActions·matchedCandidates·expiresAt 는 bo-api enrichment(§3.2)
     RuleRef:
       type: object
       properties:
@@ -1374,11 +1431,15 @@ components:
               evidence: { type: object }
     ApprovalDecisionRequest:
       type: object
-      required: [checkerId, decision]
       properties:
-        checkerId: { type: string }
-        decision: { type: string, enum: [APPROVE, REJECT] }
+        checkerId: { type: string, description: "인증 principal과 일치해야 하는 호환용 assertion; 서버 파생 checker를 대체하지 못함" }
         reason: { type: string }
+    ApprovalRejectRequest:
+      type: object
+      required: [reason]
+      properties:
+        checkerId: { type: string, description: "인증 principal과 일치해야 하는 호환용 assertion; 서버 파생 checker를 대체하지 못함" }
+        reason: { type: string, minLength: 1 }
     ApprovalSubmittedResponse:
       type: object
       properties:
@@ -1748,6 +1809,7 @@ paths:
       security: [ { OAuth2: ['aml:admin:approval'] } ]
       parameters:
         - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/UserSubject'
         - name: approvalId
           in: path
           required: true
@@ -1758,10 +1820,32 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ApprovalDecisionRequest' }
       responses:
-        '200': { description: 승인/반려 처리 }
+        '204': { description: 승인 실행 완료 }
+        '400': { description: checker identity 불일치/요청 검증 실패, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '409':
           description: AML.SELF_APPROVAL_FORBIDDEN / AML.APPROVAL_PAYLOAD_CHANGED
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /api/v1/admin/aml/approvals/{approvalId}:reject:
+    post:
+      summary: 결재 반려 (maker≠checker 강제)
+      operationId: rejectApproval
+      security: [ { OAuth2: ['aml:admin:approval'] } ]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/UserSubject'
+        - name: approvalId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApprovalRejectRequest' }
+      responses:
+        '204': { description: 반려 처리 완료 }
+        '400': { description: checker identity 불일치/사유 검증 실패, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: AML.SELF_APPROVAL_FORBIDDEN / 상태 전이 위반, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /api/v1/admin/aml/country-risk:change:
     post:
       summary: 국가위험 변경 상신 (4-eyes, subjectType=COUNTRY_RISK)
@@ -2222,6 +2306,8 @@ eAMLA 제출은 **raw PII 미전송** — 토큰화된 보고 참조만 전달�
 ## 변경 이력
 
 | 일자 | 변경 | 비고 |
+|---|---|---|
+| 2026-07-11 | **WLF 엔진 가변 설정·적용 증거 API 추가(AML-WLF-005).** `GET/POST /api/v1/admin/aml/wlf-engine-config[:change]`와 bo-api 미러를 신설해 Policy Pack 단일 원장/`POLICY_PACK` 4-eyes 위에서 SANCTIONS·PEP별 6가중치·negative penalty·review/high-confidence band를 관리한다. screening 응답에 결과 생성 시점 `appliedPolicy`(profile·config/rule version·definition hash·threshold·band)를 additive 영속 투영하고, admin simulation `sourceTypes` 필터 및 적용정책 응답을 명문화했다. HIGH는 우선순위 evidence일 뿐 자동 TRUE_MATCH가 아니다. | api-designer. 코드=truth. aml V37~V38·bo-api V15·`verify_aml_wlf_config_closed_loop.py`. |
 | 2026-07-10 | **CDD→FDS 고객 프로필 동기화 계약 추가.** §2.1 step 7f에 CDD accepted 트랜잭션의 `FDS_CUSTOMER_PROFILE` outbox와 PII-safe payload, replay/dedup, relay retry 경계를 명시. AML DB V32가 outbox aggregate CHECK 7종을 허용한다. `registeredAt`·`kyc.kycVerifiedAt`은 `docs/aml-data.md` §12.2 정본. | api-designer |
 | 2026-07-09 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule, aml V31·bo-api V14).** (1) **§2.7 Regulatory Reporting 표에서 travel-rule 엔드포인트 2행 삭제** — `GET .../travel-rule/transfers`·`POST .../travel-rule/transfers/{ref}:resolve-exception` 제거. (2) **§3.7 `ApprovalDto.subjectType` 21→20종** — `TRAVEL_RULE_EXCEPTION` enum 행 제거(`ApprovalSubjectType` 20종 코드 정합). (3) **§3.8 `EvidenceExportRequest.exportType`에서 `TRAVEL_RULE` 제거**(`ExportType` 9종). (4) **§3.14 `TravelRuleTransferDto` 섹션을 제거 스텁으로 대체** — `aml_travel_rule_transfers` 테이블·`TravelRuleTransferDto`·`CompletenessStatus`·`TravelRuleRiskStatus` enum 삭제, 섹션 번호는 타 문서 § 참조 보존 위해 유지. (5) **§3.10 FdsEscalation `action` enum에서 `REQUEST_TRAVEL_RULE_INFO` 제거**(fds `ActionType` 22종 정합, `OPEN_AML_CASE`/`REGULATORY_REPORT` 위임 유지). (6) **§5 OpenAPI에서 `TravelRuleTransferDto` schema·`/travel-rule/transfers` path 삭제**. (7) **§6 BO 매핑 `Travel Rule exception` 행·§7 동기화 `Policy Pack STR/CTR/Travel Rule`·§8 `AmlReportSubmitted`·§10 4-eyes `TRAVEL_RULE_EXCEPTION` 행·policy pack/reports 제출 서술의 "STR/CTR/Travel Rule"→"STR/CTR"** 전수 정정. 유지: FATF R.16 당사자 정보 요건(`counterparty` 인입 계약 필수 규칙 — CROSS_BORDER_REMITTANCE)은 규제 근거·라이브 검증 규칙이라 존치(422 규칙 ⑦). | api-designer. 코드=truth. 근거=aegis-aml 84997e1(feature/remove-travel-rule)·삭제된 aml `TravelRuleController`·bo-api `AmlTravelRuleController`·`ApprovalSubjectType`(20)·`CaseType`(11)·`ReportType`(6)·`ExportType`(9)·`EventFamily`(19)·`CompletenessStatus`/`TravelRuleRiskStatus` 삭제·Flyway aml V31·bo-api V14. |
 | 2026-07-08 | **알림→케이스 트리아지·처분(disposition) 폐루프 API 역전파(코드=truth, feature/aml-fds-case-triage-disposition, aml-svc V30·bo-api V13).** (1) **§2.4 TM API 표에 알림 lifecycle 4행 신설** — `POST /api/v1/aml/alerts/{alertId}:triage`(`DETECTED`→`TRIAGED`)·`:dismiss`(`DETECTED`/`TRIAGED`→`DISMISSED`, **optional body `{reason, actor}`** — 엔진 하위호환 optional, `reason`/`actor` 지정 시 `disposition_reason`/`disposition_actor`(V30) 영속)·`:escalate`(`TRIAGED`→`ESCALATED`, 201 케이스)·`:recommend-str`(`TRIAGED`→`STR_RECOMMENDED`, 201 STR 케이스+아웃박스), 전부 scope `aml:case:update`·불법 전이 409 `AML.STATE_CONFLICT` + **알림 lifecycle 상태기계 note**(6종 종결값·`dispositionReason` DISMISSED 전이 한정 불변식·4-eyes 비대상 G2). (2) **§3.4a `AlertDto`에 `dispositionReason`/`dispositionActor` 2행 신설** — DB `disposition_reason`(VARCHAR(64))·`disposition_actor`(VARCHAR(128)) V30 1:1, DISMISSED 에서만 non-null, 오탐율(§12-B.3) 실집계 근거. (3) **§2.5a bo-api 위임 표에 알림 처분 4행 신설** — `:triage`(body `AlertTriageRequest{actor?}`)·`:dismiss`(`AlertDismissRequest{reason 필수 @NotBlank, actor?}` — **bo-api 계층 사유 필수 강제, 공백 시 400, G1**)·`:escalate`·`:recommend-str`(`AlertHandOffRequest{caseType?, actor?}`, 201 caseId), 응답 `AlertActionResponse{alertId,status,caseId?,caseStatus?}` + **위임 4종·409 표면화 계약 note**(stub↔위임 동형·prod fail-closed G7·감사 4종 V13·`mapError` 상태 토큰만 구조화 G8). (4) **§2.7 케이스 `:close` 행 일반화(라이브 검증 추가 수정, 커밋 fbb0673)** — `🔒4-eyes(EDD 종결)`→`🔒4-eyes(EDD_CLOSE)`, 종결 대상을 **EDD_REVIEW 전용에서 조사 케이스 일반(EDD_REVIEW·STR_REVIEW·SAR_REVIEW·CDD)으로 정정**. 알림 트리아지·처분 폐루프에서 전환된 STR_REVIEW 케이스가 `:close` 시 400 "case is not an EDD_REVIEW case" 로 거부되던 결함 해소 — 엔진 `Case.closeApproved`(구 `closeEdd`)가 케이스 유형 가드 없이 존재·비종결 상태 불변식만 강제하고, `CddEddService.submitEddClose` 도 EDD_REVIEW 전용 가드 제거(존재·비종결 검증 유지). 회원원장 EDD 종료 이력(`recordEddClosed`)은 EDD_REVIEW 에만 기록(알림 파생 케이스 제외). | aegis-java-implementer(spec). 코드=truth·가정 G1~G3. 근거=aml-svc `adapter/in/rest/AlertController`(`:dismiss` DismissRequest{reason,actor}·AlertDto.dispositionReason/Actor)·`domain/Alert`(dismiss(reason,actor) DISMISSED 한정 불변식)·`domain/Case`(closeApproved 유형 가드 제거)·`application/usecase/CddEddService`(submitEddClose·approveEddClose EDD_REVIEW 이력 한정)·`db/migration/V30__alert_disposition_reason.sql`, bo-api `aml/tm/controller/AmlTmController`(4 액션)·`aml/tm/service/AmlTmService`(위임·stub·감사 4종·prod fail-closed)·`proxy/AmlEngineClient`(409 STATE_CONFLICT 상태 토큰 구조화)·`db/migration/V13__alert_disposition_audit_events.sql`. DB §02-aml §마이그레이션(V30)·plan §02 §7.1·§8.1·§12-B.3 동기화. |
