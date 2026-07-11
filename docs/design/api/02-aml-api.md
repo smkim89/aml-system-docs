@@ -39,7 +39,8 @@
 | Tenant | `Tenant-Id` 헤더 (Public/Internal) / bo-api 세션 클레임 (Admin) | Y | DB `tenant_id`(테넌트=서비스, 상위 기관 institution이 운영하는 서비스 1종·1 기관 : N 서비스). 전용 배포(`MANAGED_DEDICATED`/`SELF_HOSTED`)에서는 배포=서비스 단일 값(라우팅은 배포 엔드포인트 단위). `SHARED` 배포에서만 `Tenant-Id` 헤더 행 라우팅·RLS `app.current_tenant` 세션변수로 강제 |
 | Source System | `Source-System` 헤더 | Public Ingest/Screen Y | DB `aml_source_systems.source_system`. 미등록 source는 거부 |
 | Data-scope | bo-api 토큰 클레임 `dataScope` / 쿼리 `dataScope` | N | DB `data_scope`(영업점·법인그룹 하위 격리, 정본 §4) |
-| 서명 | `X-Signature: hmac-sha256=...` | Public Y | body HMAC (source `secret_ref` 키), 위변조 방지 |
+| 서명 | `X-Signature: hmac-sha256=...` | Public Y | HMAC-SHA256(source `secret_ref` 키). canonical material=`timestamp\napiKey\nmethod\nrequestURI\n[nonblank X-User-Subject\n]rawBody`; actor 없는 Public 요청은 기존 material과 동일, actor가 있는 Admin/Internal 요청은 actor까지 위변조 방지 |
+| 운영자 actor | `X-User-Subject` | Admin/Internal write Y | trusted BFF/mesh가 인증 principal에서 파생. nonblank이면 위 HMAC material에 결합되므로 서명 뒤 actor 교체는 401. 브라우저 임의 입력 금지 |
 | Idempotency | `Idempotency-Key` 헤더 | 쓰기성 Public Y | DB `aml_canonical_events.idempotency_key` UNIQUE(tenant_id,idempotency_key) |
 | Trace | `X-Trace-Id`(없으면 생성) | N | DB `trace_id` 전파(설계서 §20.3). 응답 `X-Trace-Id` 반향 |
 
@@ -72,7 +73,7 @@
 
 ### 1.5 4-eyes(결재) 표기
 
-본 문서에서 **🔒4-eyes** 표기된 엔드포인트는 작성자≠승인자 결재(`aml_approvals`, CHECK `maker_id<>checker_id`)를 거쳐야 실행된다(설계서 §13.4~§13.5). 호출 흐름: `① 상신(maker) → 202 + approvalId(status=SUBMITTED) → ② 승인(checker) → APPROVED → ③ 실행 → EXECUTED`. payload는 `payload_hash`로 고정되어 승인 후 변경 시 무효화.
+본 문서에서 **🔒4-eyes** 표기된 엔드포인트는 작성자≠승인자 결재(`aml_approvals`, CHECK `maker_id<>checker_id`)를 거쳐야 실행된다(설계서 §13.4~§13.5). 호출 흐름: `① 상신(maker) → 202 + approvalId(status=SUBMITTED) → ② 승인(checker) → APPROVED → ③ 실행 → EXECUTED`. payload는 `payload_hash`로 고정되어 승인 후 변경 시 무효화. maker와 checker는 모두 브라우저 body가 아니라 인증 principal에서 서버 파생한다. bo-api는 `BackofficePrincipal.email`, aml-svc는 trusted `X-User-Subject`를 checker 단일 정본으로 사용하며, 호환용 body `checkerId`가 있으면 principal과 정확히 같아야 한다. 다른 문자열 주입은 승인/반려 실행 전에 거부한다.
 
 > **`DRAFT` 상태는 내부 전이 상태로 API 미노출.** `ApprovalDto.status`(§3.7) 및 API 호출 흐름에서 `DRAFT`는 내부 엔진 초기화 단계이며 외부 호출자(bo-api/bo-web)에게 노출되지 않는다. API 표면 첫 관찰 가능 상태는 `SUBMITTED`(상신 완료, 202 응답)이다(설계서 §13.5 상태머신 대비). PRD/화면은 `DRAFT` 배지 표시 불필요.
 
@@ -281,7 +282,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
-| GET | `/api/v1/admin/aml/wlf-engine-config` | `aml:admin:watchlist` **or** `aml:admin:policy` | — | tenant의 ACTIVE WLF 룰 버전과 정책팩 버전 이력, SANCTIONS·PEP별 가중치/불일치 감점/검토·고신뢰 임계 조회. 기존 WLF 시뮬레이션 운영자는 ACTIVE 기준 조회만 허용한다. ACTIVE가 없거나 정의가 불완전하면 임의 기본값을 합성하지 않고 fail-closed | `aml_policy_packs.parameters` |
+| GET | `/api/v1/admin/aml/wlf-engine-config` | `aml:admin:watchlist` **or** `aml:admin:policy` | — | tenant의 런타임 적용 WLF 룰 버전과 정책팩 버전 이력, SANCTIONS·PEP별 가중치/불일치 감점/검토·고신뢰 임계 조회. 기존 WLF 시뮬레이션 운영자는 현재 적용 기준 조회만 허용한다. `status=ACTIVE && active=true`를 동시에 만족하는 정책팩이 없거나 복수이면 screening 선택과 동일하게 fail-closed한다. typed profile 키가 없는 legacy/pending 이력은 저장된 `wlf.possible-threshold`/`wlf.true-threshold`를 우선 SANCTIONS·PEP에 fan-out하고, 나머지 누락값은 코드 기본 profile(6가중치·negativePenalty 0.20, 기본 band 0.66/0.92)로 하위호환 해석한다. 유효하지 않은 수치·임계 또는 저장된 definitionHash 불일치는 fail-closed하며, V38은 비-DRAFT 이력을 canonical typed form으로 보강한다. | `aml_policy_packs.parameters` |
 | POST | `/api/v1/admin/aml/wlf-engine-config:change` | `aml:admin:policy` | 🔒 `POLICY_PACK` | 전체 SANCTIONS·PEP 프로필을 새 정책팩 DRAFT로 상신. maker는 인증 principal에서 파생하고, checker 승인·EXECUTED 전에는 ACTIVE 스크리닝에 영향 없음 | `aml_policy_packs`,`aml_approvals` |
 
 > **BFF 미러.** bo-web은 엔진을 직접 호출하지 않고 `GET/POST /api/v1/bo/aml/wlf-engine-config[:change]`만 사용한다. GET은 `aml:admin:watchlist` 또는 `aml:admin:policy`(기존 WLF-004 simulation 호환), POST는 `aml:admin:policy`만 허용한다(`BO_SUPER_ADMIN` 우회 포함). bo-api는 DTO를 손실 없이 위임하며 delegate 미구성/빈 응답을 성공으로 위조하지 않고 `503 AML.ENGINE_UNAVAILABLE`로 fail-closed한다. 메뉴 `AML-WLF-005`(`/aml/wlf-engine`)는 `aml:admin:policy` 또는 `BO_SUPER_ADMIN`만 접근한다.
@@ -498,8 +499,8 @@ bo-api 표면: `GET|POST /api/v1/bo/aml/report-rules/configurable`, `POST .../co
 |---|---|---|---|---|---|
 | GET | `/api/v1/admin/aml/approvals?status=SUBMITTED` | `aml:admin:approval` | — | 결재 대기 큐 | `aml_approvals` |
 | GET | `/api/v1/admin/aml/approvals/{approvalId}` | `aml:admin:approval` | — | 결재 상세 | `aml_approvals` |
-| POST | `/api/v1/admin/aml/approvals/{approvalId}:approve` | `aml:admin:approval` | — | 승인(checker, maker≠checker 강제) | `aml_approvals` |
-| POST | `/api/v1/admin/aml/approvals/{approvalId}:reject` | `aml:admin:approval` | — | 반려 | `aml_approvals` |
+| POST | `/api/v1/admin/aml/approvals/{approvalId}:approve` | `aml:admin:approval` | — | 승인(checker=trusted `X-User-Subject`, maker≠checker 강제; body 명의 주입 거부) | `aml_approvals` |
+| POST | `/api/v1/admin/aml/approvals/{approvalId}:reject` | `aml:admin:approval` | — | 반려(checker=trusted `X-User-Subject`; body 명의 주입 거부) | `aml_approvals` |
 | GET | `/api/v1/admin/aml/source-systems` | `aml:admin:source-system` | — | source 목록 | `aml_source_systems` |
 | POST | `/api/v1/admin/aml/source-systems` | `aml:admin:source-system` | 🔒4-eyes(secret 변경) | source 등록·secret 변경 | `aml_source_systems`,`aml_approvals` |
 | GET | `/api/v1/admin/aml/audit-events?eventCategory&from&to&actor&subjectRef` | `aml:admin:audit` | — | append-only 감사 조회. `eventCategory` 허용값(DB §3.15 enum 10종): `WATCHLIST_IMPORT`/`WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL_CHANGE`/`RISK_OVERRIDE`/`TM_SCENARIO_CHANGE`/`CASE_APPROVAL`/`REPORT_LIFECYCLE`/`RAW_DATA_ACCESS`/`POLICY_CHANGE` | `aml_audit_events` |
@@ -928,7 +929,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `approvalLine` | enum | §5.12 approval_line |
 | `status` | enum | §5.13 approval_status **7종(API 노출, `DRAFT` 제외)**: `SUBMITTED`/`APPROVED`/`REJECTED`/`CANCELLED`/`EXPIRED`/`EXECUTED`/`EXECUTION_FAILED`. `DRAFT`는 내부 엔진 전이 상태로 외부 미노출(§1.5) |
 | `makerId` | string | 상신자 |
-| `checkerId` | string | 승인자 (**maker≠checker**) |
+| `checkerId` | string | 승인자 (**maker≠checker**). 응답은 서버 파생 실제 승인자, 요청에서는 인증 principal과 일치할 때만 허용되는 optional 호환 assertion |
 | `payloadHash` | string | 고정 hash(변경 시 무효화) |
 | `reason` | string | 사유 |
 | `stagedPayload` | string\|null | **상신 시점 고정 canonical payload**(상세 전용, DB §3.16 `staged_payload`). 결재함 **상신 내용·변경 전→후(as-is/to-be) 파생 소스** — masked/tokenized only(원문 PII 미저장 §19.2). `null`=live 파생 subject/legacy(run3 D13) |
@@ -939,7 +940,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 
 > **결재함 위임(엔진) 응답 parity(run3 D13, 코드=truth).** 엔진 `ApprovalController.{ApprovalSummary,ApprovalDetail}` 가 `submittedAt`(=`created_at`)·`expiresAt`·`stagedPayload`(Detail)를 응답하도록 결선해 위임 경로에서 상신일시·만료·변경내역·상신내용이 전부 `null` 로 내려와 정렬·만료 뱃지·변경 전후 표가 무력화되던 결함을 해소한다. stub↔엔진 위임 응답 모양 동형(불변식).
 
-`ApprovalDecisionRequest`: `{ checkerId, decision: "APPROVE"|"REJECT", reason }`. 서버는 `checkerId == makerId` 시 `409 AML.SELF_APPROVAL_FORBIDDEN`.
+승인 `ApprovalDecisionRequest`는 `{ checkerId?, reason? }`, 반려 `ApprovalRejectRequest`는 `{ checkerId?, reason }`다. 액션은 각각 `:approve`/`:reject` 경로가 결정하며 body `decision` 필드는 없다. `checkerId`는 legacy 호환용 assertion일 뿐 신원 정본이 아니며, 서버는 인증 principal에서 checker를 파생하고 nonblank body 값이 principal과 다르면 요청을 거부한다. 인증 checker가 maker와 같으면 body 위조 여부와 무관하게 `409 AML.SELF_APPROVAL_FORBIDDEN`.
 
 ### 3.8 EvidenceExportRequest → `POST /api/v1/evidence/aml/exports` (DB `aml_evidence_exports`, UseCase: `ExportEvidenceUseCase`)
 
@@ -1334,7 +1335,7 @@ components:
       name: X-User-Subject
       in: header
       required: true
-      description: trusted BFF/mesh가 인증 principal에서 파생하는 actor. 브라우저 임의 입력 금지.
+      description: trusted BFF/mesh가 인증 principal에서 파생하고 요청 HMAC에 결합하는 actor. 브라우저 임의 입력·서명 뒤 교체 금지.
       schema: { type: string }
   schemas:
     Error:
@@ -1430,11 +1431,15 @@ components:
               evidence: { type: object }
     ApprovalDecisionRequest:
       type: object
-      required: [checkerId, decision]
       properties:
-        checkerId: { type: string }
-        decision: { type: string, enum: [APPROVE, REJECT] }
+        checkerId: { type: string, description: "인증 principal과 일치해야 하는 호환용 assertion; 서버 파생 checker를 대체하지 못함" }
         reason: { type: string }
+    ApprovalRejectRequest:
+      type: object
+      required: [reason]
+      properties:
+        checkerId: { type: string, description: "인증 principal과 일치해야 하는 호환용 assertion; 서버 파생 checker를 대체하지 못함" }
+        reason: { type: string, minLength: 1 }
     ApprovalSubmittedResponse:
       type: object
       properties:
@@ -1804,6 +1809,7 @@ paths:
       security: [ { OAuth2: ['aml:admin:approval'] } ]
       parameters:
         - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/UserSubject'
         - name: approvalId
           in: path
           required: true
@@ -1814,10 +1820,32 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ApprovalDecisionRequest' }
       responses:
-        '200': { description: 승인/반려 처리 }
+        '204': { description: 승인 실행 완료 }
+        '400': { description: checker identity 불일치/요청 검증 실패, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '409':
           description: AML.SELF_APPROVAL_FORBIDDEN / AML.APPROVAL_PAYLOAD_CHANGED
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /api/v1/admin/aml/approvals/{approvalId}:reject:
+    post:
+      summary: 결재 반려 (maker≠checker 강제)
+      operationId: rejectApproval
+      security: [ { OAuth2: ['aml:admin:approval'] } ]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/UserSubject'
+        - name: approvalId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApprovalRejectRequest' }
+      responses:
+        '204': { description: 반려 처리 완료 }
+        '400': { description: checker identity 불일치/사유 검증 실패, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: AML.SELF_APPROVAL_FORBIDDEN / 상태 전이 위반, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /api/v1/admin/aml/country-risk:change:
     post:
       summary: 국가위험 변경 상신 (4-eyes, subjectType=COUNTRY_RISK)

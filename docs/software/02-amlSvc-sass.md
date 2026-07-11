@@ -639,13 +639,13 @@ ACTIVE policy pack은 WLF profile 2종을 닫힌 스키마로 보유한다. 각 
 | `PEP`, `RCA` | `PEP` | PEP 본인과 관련자에 같은 정치적 노출 기준 적용 |
 | `SANCTIONS`, `ADVERSE_MEDIA`, `INTERNAL`, `LAW_ENFORCEMENT`, `VASP_RISK` | `SANCTIONS` | PEP 계열 외 명단의 fail-safe 기본 profile |
 
-초기 profile은 종전 전역 `MatchRuleSet`과 동형(이름 0.55, DOB 0.10, 국가 0.10, 문서 0.15, 주소 0.05, 관계 0.05, negative 0.20)이다. `tenant_demo`의 receiver 계약은 이름+국가만 있는 정확 일치가 `0.65`이므로 SANCTIONS/PEP `reviewThreshold=0.65`, `highConfidenceThreshold=0.92`로 bootstrap한다. 다른 tenant에서 typed 키가 아직 없으면 기존 전역 `wlf.possible-threshold`/`wlf.true-threshold`와 코드 기본값으로 안전하게 복원한다.
+초기 profile은 종전 전역 `MatchRuleSet`과 동형(이름 0.55, DOB 0.10, 국가 0.10, 문서 0.15, 주소 0.05, 관계 0.05, negative 0.20)이다. `tenant_demo`의 receiver 계약은 이름+국가만 있는 정확 일치가 `0.65`이므로 SANCTIONS/PEP `reviewThreshold=0.65`, `highConfidenceThreshold=0.92`로 bootstrap한다. 다른 tenant에서 typed 키가 아직 없으면 기존 전역 `wlf.possible-threshold`/`wlf.true-threshold`와 코드 기본값(`0.66`/`0.92`)으로 안전하게 복원한다.
 
-screening은 요청 시작에 ACTIVE WLF 전체 정의를 1회 immutable snapshot으로 pin하고 후보 엔트리마다 `list_type` profile로 점수를 계산한 뒤 최고 confidence band(동률이면 점수, 다시 동률이면 entryId 안정 순서)의 profile 임계로 `NO_MATCH`/`POSSIBLE_MATCH`를 결정한다. 승인 commit이 평가 중간에 발생해도 한 결과 안에 ruleVersion을 섞지 않는다. `highConfidenceThreshold` 이상도 자동 `TRUE_MATCH`가 아니라 `HIGH` evidence/band가 붙은 `POSSIBLE_MATCH`다. 진성 확정은 §10.4의 분석가 4-eyes 상태머신을 계속 따른다. 결과 JSONB `score_breakdown.appliedPolicy`에는 profile·config/rule version·두 임계·definitionHash·band를 snapshot해 과거 검토를 현재 설정으로 재계산하지 않는다. 외부 응답의 `scoreBreakdown`은 기존 숫자 factor map을 유지하고 정책 snapshot은 top-level `appliedPolicy`로 분리한다.
+screening은 요청 시작에 ACTIVE WLF 전체 정의를 1회 immutable snapshot으로 pin하고 후보 엔트리마다 `list_type` profile로 점수를 계산한 뒤 최고 confidence band(동률이면 점수, 다시 동률이면 entryId 안정 순서)의 profile 임계로 `NO_MATCH`/`POSSIBLE_MATCH`를 결정한다. **후보가 0건이면 reviewThreshold가 0이어도 평가할 match가 없으므로 status와 `confidenceBand`를 모두 `NO_MATCH`로 고정**하고, 후보가 존재할 때만 score와 profile 임계를 비교한다. 승인 commit이 평가 중간에 발생해도 한 결과 안에 ruleVersion을 섞지 않는다. `highConfidenceThreshold` 이상도 자동 `TRUE_MATCH`가 아니라 `HIGH` evidence/band가 붙은 `POSSIBLE_MATCH`다. 진성 확정은 §10.4의 분석가 4-eyes 상태머신을 계속 따른다. 결과 JSONB `score_breakdown.appliedPolicy`에는 profile·config/rule version·두 임계·definitionHash·band를 snapshot해 과거 검토를 현재 설정으로 재계산하지 않는다. 외부 응답의 `scoreBreakdown`은 기존 숫자 factor map을 유지하고 정책 snapshot은 top-level `appliedPolicy`로 분리한다.
 
 WLF scoring parameter가 바뀔 때만 WLF config version과 definition hash 기반 ruleVersion이 증가한다. CTR 등 WLF와 무관한 policy-pack 변경은 ruleVersion을 바꾸지 않으므로 FP whitelist를 불필요하게 무효화하지 않는다. 반대로 WLF definition이 바뀌면 whitelist의 version exact-match가 끊겨 재검토된다.
 
-변경 상신은 `expectedActiveRuleVersion`을 필수로 비교하고 policy-pack active row lock 아래 pack당 DRAFT 1건만 허용한다. 적용 시점은 호출자가 예약/소급 지정하지 않으며 checker EXECUTED 시각을 서버가 기록한다. 반려된 후보는 `REJECTED`로 종결되고 다음 policy-pack version과 WLF config/ruleVersion은 각각 전체 보존 이력의 최대 번호 다음으로 할당해 서로 다른 정의가 같은 식별자를 재사용하지 않는다.
+변경 상신은 `expectedActiveRuleVersion`을 필수로 비교하고 policy-pack active row lock 아래 pack당 DRAFT 1건만 허용한다. 현재 적용 projection과 screening은 모두 `status=ACTIVE && active=true`를 동시에 만족하는 정확히 1개 정책팩만 사용하며 inactive ACTIVE 행을 현재값으로 추정하지 않는다. 적용 시점은 호출자가 예약/소급 지정하지 않으며 checker EXECUTED 시각을 서버가 기록한다. checker 신원은 bo-api 인증 principal과 trusted `X-User-Subject`에서만 파생하고 client `checkerId`로 대체할 수 없다. 반려된 후보는 `REJECTED`로 종결되고 다음 policy-pack version과 WLF config/ruleVersion은 각각 전체 보존 이력의 최대 번호 다음으로 할당해 서로 다른 정의가 같은 식별자를 재사용하지 않는다. 설정 화면의 버전 이력은 각 행의 SANCTIONS/PEP 전체 profile을 펼쳐 보여 checker가 DRAFT의 6가중치·negative penalty·두 임계를 hash와 함께 검토할 수 있어야 한다.
 
 ### 10.4 판정 상태
 
@@ -1055,6 +1055,8 @@ Source-System: core-banking
 Idempotency-Key: core-banking:evt-001
 X-Signature: hmac-sha256=...
 ```
+
+요청 HMAC canonical material은 `timestamp\napiKey\nmethod\nrequestURI\n[nonblank X-User-Subject\n]rawBody`다. 운영자 Admin/Internal 호출은 인증 principal에서 파생한 `X-User-Subject`를 서명에 포함해 checker/maker actor와 payload를 함께 고정한다. actor가 없는 Public ingest는 기존 material을 유지한다.
 
 ### 15.2 Real-time Screening API
 

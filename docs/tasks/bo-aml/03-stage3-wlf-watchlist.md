@@ -28,7 +28,7 @@
 | BOA-S3-13 | FE | **AML-WL-003 2탭** — ①내부 요주의 명단(수기 등록 폼→diff 초안→WL-002 4-eyes·발효일) ②오탐 면제 관리(4카드·활성/만료/해제 생명주기·`[면제 해제(2인)]`·만료 D-7 ⚠) | PRD §12-B.5 / PPT 슬라이드 19~20 | 3 | S3-12 |
 | BOA-S3-14 | BE | **WLF 엔진 프로필 폐루프** — Policy Pack `parameters`의 `wlf.*` typed projection/change, SANCTIONS/PEP 닫힌 스키마 검증·WLF 전용 ruleVersion/hash, 6가중치+negative/address 평가 실적용, PEP/RCA 프로필 매핑, 평가당 ACTIVE snapshot 1회 pin, expected rule 낙관적 잠금·DRAFT 1건·반려 REJECTED 종결, 결과 `appliedPolicy` 스냅샷·FP 룰버전 일치 | PRD §3.1 BR-009/012·§12-B.8 / API·DB WLF config | 5 | S1 |
 | BOA-S3-15 | BE | **WLF 설정 BFF·메뉴** — `GET /api/v1/bo/aml/wlf-engine-config`·`POST .../wlf-engine-config:change` fail-closed 위임, `aml:admin:policy`, `/aml/wlf-engine` 동적 메뉴·AML-WLF-005 권한 시드(`BO_SUPER_ADMIN`/`AML_POLICY_ADMIN`) | PRD §12-B.8·부록 A/B / API WLF config | 2 | S3-14 |
-| BOA-S3-16 | FE | **AML-WLF-005 3탭** — ①버전 현황 ②프로필 기준(SANCTIONS/PEP 하위 탭) ③ACTIVE 단건 simulation(`sourceTypes`), RA 모델 관리 동형 카드/편집 UX·diff·미저장값 시뮬레이션 제외 경고·`POLICY_PACK` 상신 상태, WLF 검토 `appliedPolicy` 표시 | PRD §12-B.8 / **PPT 없음(Markdown-only)** | 4 | S3-14·S3-15 |
+| BOA-S3-16 | FE | **AML-WLF-005 3탭** — ①버전 현황(행별 SANCTIONS/PEP staged profile disclosure, DRAFT checker 검토 안내) ②프로필 기준(SANCTIONS/PEP 하위 탭) ③ACTIVE 단건 simulation(`sourceTypes`), RA 모델 관리 동형 카드/편집 UX·diff·미저장값 시뮬레이션 제외 경고·`POLICY_PACK` 상신 상태, WLF 검토 `appliedPolicy` 표시 | PRD §12-B.8 / **PPT 없음(Markdown-only)** | 4 | S3-14·S3-15 |
 | BOA-S3-17 | QA | **실 REST 시뮬레이터 폐루프** — Admin simulation 대상유형·DOB·국가·문서 hash/`sourceTypes` 확인→설정 A/B 각각 승인 실행→Public screen PEP/제재 인입→가중치·negative penalty·밴딩·프로필·rule/hash 확인→동일 멱등키 replay→기존 결과 불변→최초 profile 값 승인 재적용(disposable DB·mutation opt-in, 이력/FP version 비가역) | PRD §12-B.8 BR-006 / `docs/aml-data.md` | 3 | S3-14~16 |
 
 ## DoD

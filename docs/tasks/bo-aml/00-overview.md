@@ -1,7 +1,7 @@
 # BO-AML 개발 태스크 개요 (PRD v9.44 · 33화면 / PPT 32화면)
 
 > 대상: `aegis-aml/services/bo-web` + `services/bo-api` 의 **AML 백오피스(준법감시실 콘솔)** 구현.
-> 정본 입력: PRD `docs/plan/02-aml-sass-functional-spec.md` v9.44 + PPT `docs/plan/BO-AML-SAAS-Planning_v8.0.pptx`. AML-WLF-005는 원본 PPT 슬라이드가 없는 Markdown-only 화면이다.
+> 정본 입력: PRD `docs/plan/02-aml-sass-functional-spec.md` v9.44 + PPT `docs/plan/BO-AML-SAAS-Planning_v9.2.pptx`(PPT v9.2, 32화면·70슬라이드). AML-WLF-005는 원본 PPT 슬라이드가 없는 Markdown-only 화면이다.
 > 규칙·공통 참고 문서 = `docs/tasks/README.md`. 공통 기반 = `docs/tasks/bo-fds/01-stage1-foundation.md`(BOF-S1, 공유).
 
 ## 1. 단계(Stage) 개요

@@ -51,7 +51,7 @@
 ### 2.1 인증 방식 (설계서 §12.8)
 | 방식 | 용도 | 적용 API |
 |---|---|---|
-| API Key + HMAC(`X-Api-Key` + `X-Signature: hmac-sha256=...`) | 서버 간 기본 연동 | 외부 Ingest/Decision/Case/Evidence API |
+| API Key + HMAC(`X-Api-Key` + `X-Signature: hmac-sha256=...`) | 서버 간 기본 연동. canonical material=`timestamp\napiKey\nmethod\nrequestURI\n[nonblank X-User-Subject\n]rawBody`; actor 없는 외부 요청은 기존 material 유지 | 외부 Ingest/Decision/Case/Evidence API |
 | OAuth2 Client Credentials (`Authorization: Bearer`) | 권한 scope 세분화 | 외부 API, Admin API(bo-api 위임 토큰) |
 | mTLS | 고위험 action API | Decision/Action 계열 옵션 |
 | Webhook signature(`X-Signature`) | 고객 callback 위변조 방지 | Webhook 송신 |
