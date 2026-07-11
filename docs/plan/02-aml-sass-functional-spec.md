@@ -914,7 +914,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 - RA 상세의 EDD 액션 옆에는 `onboardingReview.status=REQUIRED`인 SANCTION/PEP 대상만 **[1차 RA 검토 완료]**를 표시한다. 신원·명단 근거·후속조치 세 체크가 모두 선택되어야 완료 가능하며 완료 actor/메모/시각을 표시한다. `AUTO_COMPLETED` 일반 고객에는 버튼을 표시하지 않는다.
 - `CDD 이행 주기 관리` 바로 다음 메뉴를 **RA 스코어 조절**(`/aml/ra-models`)로 둔다. ONBOARDING은 SANCTION/PEP 비교점수, ONGOING은 STR/CTR/FDS 코드별 가중치·lookback·포화·debounce·EDD 임계를 편집한다.
-- ACTIVE 버전은 화면에서 직접 덮어쓰지 않는다. **새 초안으로 복제 → 저장 → 시뮬레이션 → 활성화 상신 → maker/checker 승인** 흐름을 고정한다.
+- ACTIVE 버전은 화면에서 직접 덮어쓰지 않는다. **새 초안으로 복제 → 저장 → 시뮬레이션 → 활성화 상신 → maker/checker 승인** 흐름을 고정한다. family에 활성화 결재 대기 버전이 있으면 모든 복제 버튼을 비활성화하고 엔진도 family lock 안에서 거부한다. 과거 DRAFT는 불변 이력으로 표시하며 그 정의를 새 server-numbered DRAFT로 복제하는 동선만 제공한다.
 - 1차 처리 현황은 `evaluated/notEvaluated`와 별도로 `manualReviewRequired`를 표시해 자동평가 누락과 명단 검토 대기를 혼동하지 않는다.
 - 2차 RA는 거래 차단 화면이 아니다. 동일 회원의 AML TM과 FDS 이력을 점수화하고 CDD 재이행 주기 단축·EDD 요청 여부를 보여준다.
 
@@ -927,30 +927,28 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | **기능 ID** | AML-RA-002 |
 | **태스크** | T-11 |
 | **권한** | 모델 정책·시뮬레이션 `aml:admin:policy`(🔒 활성화) / 등급 조정 `aml:case:update`(🔒 하향) |
-| **API** | `GET /api/v1/admin/aml/ra-models` · `POST .../ra-models/{modelCode}/simulate`(시뮬레이션·결재 불필요) · `POST .../ra-models/{modelCode}/versions/{version}:activate`(🔒) · `POST .../risk-scores/{scoreId}/override`(🔒 하향) |
+| **API** | `GET /api/v1/admin/aml/ra-models` · `POST .../{modelCode}/versions:copy` · `POST .../ra-models`(DRAFT 전체 저장) · `POST .../{modelCode}/simulate`(시뮬레이션·결재 불필요) · `POST .../{modelCode}/versions/{version}:activate`(`simulationId` 필수·🔒) · `POST .../risk-scores/{scoreId}/override`(🔒 하향) |
 | **탭** | ① 버전 목록 / ② factor 편집 / ③ **시뮬레이션** / ④ 등급 조정 이력 (모델 저작 흐름: 셋업→편집→검증→활성화) |
 
-#### 화면 레이아웃 — 모델 활성화 (문장형 factor 빌더)
+#### 화면 레이아웃 — 모델 활성화 (1차·2차 typed 정의 편집)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ RA 모델 관리      서비스 [hanpass-ph ▼]   모델 [RA-KR ▼]          admin ▼     │
+│ RA 스코어 조절    서비스 [hanpass-ph ▼]   1차/2차 모델             admin ▼     │
 ├─ 탭: [버전 목록] [factor 편집] [시뮬레이션] [등급 조정 이력] ─────────────┤
 │ 버전 │ 상태       │ factor 수 │ 작성자 │ 작성일   │ 동작                  │
 │ ─────┼────────────┼───────────┼────────┼──────────┼───────────────────────┤
 │ v5   │ 작성중      │ 14        │ 김분석 │ 06-05    │ [시뮬레이션][활성화 상신🔒]│
 │ v4   │ 활성        │ 13        │ 이감리 │ 03-01    │ (현재 적용)           │
 ├──────────────────────────────────────────────────────────────────────────┤
-│ ▶ v5 factor 편집 — 문장형 빌더                                            │
-│   ① 대상: 개인·법인 고객                                                  │
-│   ② 측정 항목: [고위험 국가 거주 여부]                                    │
-│   ③ 가중치: [+25점]   ④ 등급 임계: 높음 [70점] / 거래금지 [90점]          │
-│   ⑤ 추가조건: [실소유자 확인 미완료] 이면 [+15점]                         │
-│   ── 자연어 미리보기 ──────────────────────────────────────────────────  │
-│   "고위험 국가 거주 고객은 25점을 가산하고, 실소유자 확인이 미완료이면     │
-│    15점을 추가 가산한다. 합산 점수가 70점 이상이면 '높음', 90점 이상이면   │
-│    '거래금지' 등급으로 분류한다."                                         │
-│                          [임시저장] [시뮬레이션 → ③ 탭] [활성화 상신 🔒] │
+│ ▶ v5 정의 편집 — ONBOARDING                                               │
+│   상대가중치: [지역 25] [고객 35] [스크리닝 40]                           │
+│   CDD 파생: 국가등급·자금원천·KYC·직업 / SANCTION·PEP·country floor       │
+│   등급 임계: 중간 [40] / 높음 [70] / 거래금지 [90]                        │
+│ ── ONGOING 선택 시 ────────────────────────────────────────────────────  │
+│   상대가중치: [거래행동 70] [1차 baseline 30]                             │
+│   trigger [STR✓ CTR✓ FDS✓] / 룰가중치 / lookback·포화·최근성·EDD          │
+│                  [저장] [저장된 초안 시뮬레이션 → ③] [활성화 상신 🔒]    │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -960,14 +958,14 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ ↩ 진입 경로: ② factor 편집에서 [시뮬레이션] 클릭 → 편집한 v5 초안 검증     │
 ├──────────────────────────────────────────────────────────────────────────┤
-│ 비교 모델 [RA-KR v5 초안(② 편집) vs v4 ▼]  샘플 [최근 90일 신규 ▼]        │
-│   결과: 높음 +142 / 중간 -88 / 낮음 -54     오탐 예상 +6% (v4 대비)        │
-│ ┌─ factor 변화 영향 ─────────────────────────────────────────────────┐   │
-│ │ 고위험국가 가중치 +5pt → 높음 증가   ·   UBO 조건 완화 → 중간 일부 낮음 │   │
-│ │ 거래 행동 신규(v4 미적용)            ·   오탐율 v4 4% → v5 10%        │   │
-│ └────────────────────────────────────────────────────────────────────┘   │
-│ [시뮬레이션 실행] → 등급 이동·오탐율 미리보기 (등급 변경 없음)            │
-│ 검증 후 활성화는 ② factor 편집 → [활성화 상신(2인·RA_MODEL)]              │
+│ 비교 [KR_DEFAULT_RA v5 DRAFT vs ACTIVE v4]  모집단 [최근 90일 신규 ▼]      │
+│ replay 기간 2026-04-12 ~ 2026-07-11 · 표본 500 · 실제 평가 487             │
+│          LOW   MEDIUM   HIGH   PROHIBITED                                  │
+│ baseline 310      140      45        5                                     │
+│ candidate 280      155      47        5     delta -30 / +15 / +2 / 0       │
+│ 설정 diff: weights.GEOGRAPHY 20→25 · parameters.screening.PEP 90→95         │
+│ 운영 영향: 등급변경 47 · 재이행 단축 18 · EDD 후보 7                       │
+│ [시뮬레이션 실행] (실제 고객 등급·주기 변경 없음) [활성화 상신 🔒]          │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -985,24 +983,24 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 | 빌더 요소 | 입력 | 설명 |
 |------|------|------|
-| ① 대상 | 개인·법인 고객 | 평가 대상 유형 |
-| ② 측정 항목 | factor catalog(고위험 국가·UBO·KYC 완성도·거래 행동·WLF match 등, 설계서 §11.1) | 변수·필드명 비노출, 업무 용어로 선택 |
-| ③ 가중치 | +N점 | factor별 가산/감산 |
-| ④ 등급 임계 | 높음/거래금지 점수 | 등급 경계 |
-| ⑤ 추가조건 | 조건 → 추가 점수 | 복합 조건 |
-| ⑥ 동작 | 등급 분류 | 결과 등급(낮음/중간/높음/거래금지) |
+| ① 평가 단계 | 1차(ONBOARDING) / 2차(ONGOING) | 서로 다른 ACTIVE·편집 정의·simulation 기준선을 갖는다. |
+| ② 상대가중치 | 1차=`GEOGRAPHY/CUSTOMER/SCREENING`, 2차=`TRANSACTION_BEHAVIOR/CUSTOMER` | 각 `0..100`, 합계 양수. 실제 엔진 factor catalog 밖의 임의 키는 만들지 않는다. |
+| ③ 1차 규칙 | 국가위험 등급점수·자금원천·KYC 수준·직업·SANCTION/PEP match/no-match/floor·국가 floor | `OnboardingRaParameters` 전체를 업무 라벨로 편집한다. |
+| ④ 2차 규칙 | STR/CTR/FDS trigger·rule-code 가중치·lookback·포화·debounce·최근성·1차 baseline·EDD 조건 | `OngoingRaParameters` 전체를 업무 라벨로 편집한다. baseline은 유일한 1차 family `KR_DEFAULT_RA` 고정이며 rule code는 `STR_`/`CTR_`/`FDS_` prefix를 검증한다. 정수값은 exact integer이고 lookback 1~3650일·포화 1~200건·debounce 0~525600분이다. |
+| ⑤ 등급 임계 | 중간/높음/거래금지 점수 | `0 <= medium < high < prohibited <= 100` |
+| ⑥ 버전 메타 | 현재 ACTIVE·적용시각·복제 원본·작성/수정자·최신 simulation·결재대기 | 버전 행과 단계별 운영 카드에 항상 표시한다. |
 
 #### 비즈니스 규칙
 
-- **BR-001**: **모델 활성화 = 4-eyes**(`:activate`, subjectType=`RA_MODEL`, `aml:admin:policy`). 활성화 전 **③ 시뮬레이션 탭**에서 초안 검증 권장. 활성 버전은 1개, 이전 버전과 비교 리포트 보존(설계서 §11.3).
-- **BR-001a**: **③ 시뮬레이션**은 ② factor 편집에서 편집 중인 초안 모델을 활성화 전 검증하는 **분석 전용**(`POST .../simulate`, 권한 `aml:admin:policy`, **결재 불필요**·등급 변경 없음). 결과는 등급 이동 delta·오탐율 예상·factor 변화 영향. 검증 후 활성화는 ② factor 편집의 [활성화 상신].
+- **BR-001**: **모델 활성화 = 4-eyes**(`:activate`, subjectType=`RA_MODEL`, `aml:admin:policy`). 각 tenant+scenario의 실제 ACTIVE는 1개다. ACTIVE/과거 버전을 서버에서 신규 `v{N+1}` DRAFT로 복제→전체 정의 저장→③ 시뮬레이션→`simulationId`로 활성화 상신한다. ACTIVE와 결재 대기 DRAFT는 직접 수정하지 않는다. 승인 실행 시 같은 scenario의 기존 ACTIVE는 SUPERSEDED되고 새 ACTIVE/default가 원자 적용되며 이후 신규 평가가 새 `modelVersion`을 기록한다.
+- **BR-001a**: **③ 시뮬레이션**은 저장된 DRAFT를 같은 scenario의 현재 ACTIVE와 실제 tenant 비PII 표본으로 비교하는 **분석 전용**(`POST .../simulate`, 권한 `aml:admin:policy`, 결재 불필요·등급 변경 없음)이다. 모집단은 최근 90일 신규/전체 현재대상/현재 고위험으로 실제 구분하고 최대 500건을 재생한다. 화면과 이력은 candidate/baseline 버전·definition hash, 모집단·실제 replay 기간·표본/평가 건수, **candidate/baseline 절대 등급분포와 이동 delta**, 설정 diff, 2차 재평가·CDD 기한 단축·EDD 예상 영향을 함께 보존·표시한다. RA 확정 label이 없으면 오탐률을 합성하지 않는다. 활성화는 성공한 동일 definition hash의 `simulationId`가 필수이며 저장 후 변경된(stale) 결과는 거부한다.
 - **BR-002**: **등급 하향 조정 = 4-eyes**(`override`, subjectType=`RISK_OVERRIDE`, `aml:case:update`). 상향·동일은 사유 기록 후 즉시 반영 가능하되 감사. 사유 필수.
 - **BR-002a**: **조정 대상 선택은 위험점수 목록에서**(블라인드 `scoreId` 직접 입력 금지). 흐름: ④ 등급 조정 탭 → **위험점수 목록 조회**(`GET /api/v1/admin/aml/risk-scores`, 등급 필터+`targetRef` 검색) → **행 선택**(현재 등급·점수 컨텍스트 확보) → 조정 등급 select 는 **현재 등급 기준 하향 가능 등급만 노출**(상향·동일 불가) → 사유 입력 → `[등급 조정 상신 🔒]`(`POST .../risk-scores/{scoreId}/override`, body `RiskOverrideRequest{ targetGrade(하향만)·reason(필수)·makerId }`). 서버는 하향이 아니면 거부. maker≠checker.
-- **BR-003**: factor·가중치·임계는 **문장형 빌더 + 자연어 미리보기**로 편집. 내부 DSL/모델 artifact는 화면 비노출(설계서 §2.6). 변수·필드명 금지.
+- **BR-003**: factor·가중치·임계·scenario parameters는 실제 엔진의 닫힌 스키마를 **typed 업무 폼 + 자연어 설명**으로 편집한다. 임의 condition/factor 키를 생성하거나 저장 시 폐기하는 범용 빌더는 사용하지 않는다. 내부 JSON 키는 API 계약으로 유지하되 화면 라벨은 업무 용어를 쓴다. 선택 버전의 full definition이 누락·오류이면 UI 상수나 ACTIVE 정의를 합성하지 않고 오류 경로를 표시해 편집/저장을 차단한다.
 - **BR-004**: 활성화·조정 결재는 payload_hash 고정. 승인 후 본문 변경 시 `AML.APPROVAL_PAYLOAD_CHANGED` 무효화. 자기 승인 시 `AML.SELF_APPROVAL_FORBIDDEN`.
-- **BR-005**: 모든 버전·시뮬레이션·활성화·조정 이력 보존(versioned approval, 설계서 §5.3).
-- **BR-006 (RA 시나리오 구분, 코드=truth)**: RA 모델 정의는 **평가 시나리오(`scenario`) 축으로 구분**된다(DB §3.9 `aml_risk_models.scenario`, 도메인 `RaScenario` 2종·bo-api `RaDtos.RaScenario`·API §2.7/§3.3). ① **`ONBOARDING`(1차·온보딩)** — 회원가입 CDD 완료 시점 1회 baseline 위험평가(정본 활성 모델 `KR_DEFAULT_RA`, `is_default=true`). 목록·draft·응답의 각 모델/버전 행이 자기서술 배지로 이 값을 노출한다(버전은 소유 모델의 scenario 승계). draft 시 미지정이면 서버가 `ONBOARDING`으로 안전 기본 처리. ② **`ONGOING`(2차·상시) — 실운영 `KR_ONGOING_RA v1 ACTIVE`**(V12, `is_default=false`): STR/CTR 발동 시 **거래 가중 재평가→재이행 주기 단축(앞당기기만)→EDD 자동 개시**를 수행하는 실운영 모델이다. 정의(트리거 families `[STR,CTR]`·디바운스·룰 심각도 가중·lookback 30d·최근성·건수 포화·1차 baseline `KR_DEFAULT_RA` 결합·EDD 임계[STR draft·심각도 HIGH·`UNUSUAL_TRANSACTION`])는 모델 `parameters` JSONB(DB §3.9)에 자기서술로 담기고, 엔진(`OngoingRaFactorDeriver`)이 상수 하드코딩 없이 이 정의만 소비한다. 화면(2차 RA 탭)은 `reassessmentAlerts`(재평가 유발 STR/CTR 알림 계보)·`reviewShortened`(주기 단축 from→to)로 재평가 사유·단축 계보를 표시한다(API §3.3). **1차 온보딩 정본(`KR_DEFAULT_RA`=ONBOARDING·회원가입 CDD 1회, §5.1)은 불변**이며 `is_default=false` 로 기본 평가 경로(`findActiveDefault→KR_DEFAULT_RA`)에 간섭하지 않는다. **문서 미정의 지점 없음**(V12 `parameters` 가 전 규칙을 자기서술).
-- **BR-006 (RA 시나리오 구분 — 1차 온보딩·2차 상시, 코드=truth)**: RA 모델 정의(`aml_risk_models`)는 `scenario`(**ONBOARDING**=1차 온보딩 RA / **ONGOING**=2차 상시 RA, DB §3.9·API §2.7 draft `scenario?` 옵션·미지정 시 ONBOARDING) + `parameters`(ONGOING 정의 JSON)로 **어느 모델 정의가 어느 RA 흐름에 소비되는지 자기서술**한다. ① **버전 목록(탭 ①)·초안(POST ra-models)에 시나리오 배지 + parameters 규칙 패널 노출** — 기존 정본 `KR_DEFAULT_RA`(활성/작성중 버전)는 `ONBOARDING`(회원가입 CDD 완료 시점 1회 평가, §5.1·v9.18 RA 절 정본, `parameters={}`). ② **2차 상시 RA(`KR_ONGOING_RA`)는 실운영 `v1 ACTIVE`(V12·`is_default=false`)** 로 목록에 **활성(상시)** 표기되며, 거래 가중 재평가·주기 단축·EDD 자동 개시를 수행한다 — 정의는 모델 `parameters`(DB §3.9)로 노출하고 재평가 결과는 §3.3 `RiskScoreResponse.{scenario,reassessmentAlerts,reviewShortened}` 로 2차 RA 탭에 표시한다. `is_default=false` 로 1차 기본 평가 경로 미간섭.
+- **BR-005**: 모든 버전·복제 계보·canonical definition hash·시뮬레이션·활성화·조정 이력을 보존한다(versioned approval, 설계서 §5.3). 엔진 미연결 BFF는 write/simulation을 가짜 성공시키지 않고 fail-closed한다.
+- **BR-006 (RA 시나리오 구분, 코드=truth)**: RA 모델 정의는 `scenario`로 어느 런타임이 소비하는지 자기서술한다. ① `ONBOARDING`(1차, `KR_DEFAULT_RA`, default)은 CDD 완료에서 GEOGRAPHY/CUSTOMER/SCREENING과 V19/V20/V34의 전체 `OnboardingRaParameters`를 소비한다. ② `ONGOING`(2차, `KR_ONGOING_RA`, non-default)은 같은 회원의 STR/CTR/**FDS** 신호에서 TRANSACTION_BEHAVIOR/CUSTOMER와 전체 `OngoingRaParameters`를 소비해 재이행 주기를 앞당기고 EDD를 판단한다. 목록·버전·편집·simulation은 scenario를 혼합하지 않고 각각의 현재 ACTIVE와 정의를 자기서술하며, 화면은 `reassessmentAlerts`·`reviewShortened`·실제 `modelVersion`을 표시한다.
+- **BR-007 (tenant/workspace 격리)**: RA 편집 selection·dirty form·simulation 결과·modal과 비동기 mutation callback은 현재 `(tenantId, workspaceId)` scope key에 결속한다. scope 전환 시 이전 state를 즉시 폐기하며 동일 `modelCode@version`이 다른 tenant에 있어도 이전 tenant 정의를 현재 헤더로 저장하지 않는다.
 
 ---
 

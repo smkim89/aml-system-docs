@@ -675,13 +675,15 @@ WLF score는 설명 가능해야 한다.
 
 ### 11.3 모델 운영
 
-- 모델 draft 작성
-- sample population simulation
-- score distribution review
-- false positive / false negative 검토
-- 4-eyes 승인
-- effective_from 적용
-- 이전 모델과 비교 리포트 보존
+- 운영 family는 `KR_DEFAULT_RA=ONBOARDING`, `KR_ONGOING_RA=ONGOING` 두 개로 고정한다. Admin REST/BFF 모두 임의 제3 family와 family-scenario 교차 지정 및 복사를 거치지 않은 임의 version 생성을 거부한다.
+- scenario별 실제 ACTIVE와 적용시각을 명시적으로 조회한다(ONBOARDING/ONGOING 각각 tenant당 1개).
+- 선택 ACTIVE/과거 버전을 서버측 다음 버전 `v{N+1}` DRAFT로 복제하고 복제 원본·작성/수정 메타데이터를 보존한다. ACTIVE·SUPERSEDED·결재대기 DRAFT는 수정할 수 없다. family에 `RA_MODEL` 결재 대기 버전이 있으면 새 복제를 거부해 pending target의 latest-version 불변식을 보존한다.
+- ONBOARDING은 GEOGRAPHY/CUSTOMER/SCREENING 가중치와 `OnboardingRaParameters` 전체를, ONGOING은 TRANSACTION_BEHAVIOR/CUSTOMER 가중치와 STR/CTR/FDS `OngoingRaParameters` 전체를 서로 독립 검증·저장한다.
+- ONGOING의 일/분/건수 값은 소수 절삭 없이 exact integer로 파싱하며 운영 쿼리·대상별 200-alert cap과 맞춰 `lookbackDays<=3650`, `debounceMinutes<=525600`, `countSaturation<=200`을 강제한다. baseline family는 `KR_DEFAULT_RA` 고정이다.
+- 실제 tenant 비PII 입력을 scenario별로 최대 500건 재생해 같은 scenario ACTIVE와 비교한다. ONGOING은 기존 2차 score 보유자에 한정하지 않고 runtime과 같은 `TM_SCENARIO`/`FDS_ESCALATION` alert 계보(대상별 최근 200건)를 사용해 신규 trigger로 처음 영향받는 1차-only 고객도 포함한다. 결과(모집단·기간·candidate/baseline 절대 분포·grade delta·설정 diff·운영 영향·양쪽 definition hash)는 `aml_ra_model_simulations`에 보존한다.
+- 활성화는 성공한 동일 definition hash의 `simulationId`를 필수로 하고, `RA_MODEL` 4-eyes payload hash에 전체 canonical 정의를 고정한다. approve 시 live 정의를 재계산해 drift를 차단한다.
+- 승인 실행은 같은 tenant+scenario의 기존 ACTIVE를 SUPERSEDED하고 신규 버전을 ACTIVE로 원자 전환한다. ONBOARDING default도 함께 이전하며 이후 CDD/TM/FDS 평가가 새 `modelVersion`을 점수 이력에 기록한다. bulk 소급 재평가는 하지 않는다.
+- copy/edit/상신/승인은 동일 tenant+model family transaction lock으로 직렬화하고 copy는 lock 안에서 family pending 결재 0건을 재확인한다. checker는 lock 획득 후 live full-definition hash를 다시 검산한다. 공통 approval approve/reject도 결재 행 row lock으로 직렬화해 하나의 최종 전이만 실행한다.
 
 ---
 

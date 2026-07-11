@@ -162,6 +162,7 @@ flowchart LR
 > 멱등: 두 이벤트 모두 부분 UNIQUE `(tenant_id, origin_fds_case_ref, fds_event_id) WHERE source_origin='FDS'` 기반 `INSERT … ON CONFLICT DO NOTHING`(코드 truth `FdsDecisionService` 주석)으로 재전달 시 단일 alert·단일 case 만 생성된다. `eventId` 미제공 시 `fdsCaseRef` fallback.
 > `severity`는 FDS 라우팅 힌트로 AML alert severity 를 결정하되, 미상/비정상 값은 eventType 기본값(escalated→`HIGH`, applied→`MEDIUM`)으로 안전 fallback. aml-svc 는 FDS `action_type` 을 소유·재현하지 않고 **AML case trigger 로만 해석**한다(action ownership 경계).
 > `fds.case.escalated`의 동기 fallback 경로는 `POST /internal/v1/aml/fds-escalations`(`FdsEscalationInternalController`)다. `fds.decision.applied`는 **비동기 큐 전용**(대응 동기 REST 계약 없음).
+> **ONGOING RA side effect.** 동일 `targetRef=memberRef`로 영속된 FDS alert는 현재 ACTIVE ONGOING 모델의 `trigger.families`에 `FDS`가 포함될 때만 재평가 입력이 된다. engine은 해당 모델의 `ruleSeverityWeights`·lookback·최근성·포화·baseline·EDD 규칙을 소비하고 새 점수에 ACTIVE `modelVersion`을 기록한다. 결과는 AML CDD 기한 단축/EDD 판단이며 FDS 거래 action을 역으로 변경하지 않는다.
 
 ### 3.3 아웃바운드 — aml-svc → fds-svc (`aml-fds-feedback`, aggregate `FDS_FEEDBACK`)
 

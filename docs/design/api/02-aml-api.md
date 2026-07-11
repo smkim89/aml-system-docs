@@ -311,10 +311,11 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 #### Risk Assessment 정책·override (§11.3)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
-| GET | `/api/v1/admin/aml/ra-models?modelCode=` | `aml:admin:policy` | — | RA 모델 버전 목록. 응답 `RaModelSummary[]` — 각 행에 `scenario`(ONBOARDING/ONGOING, DB §3.9 `aml_risk_models.scenario`) + **`parameters`(JSON, DB §3.9 `aml_risk_models.parameters` 1:1)** 노출. ONGOING 모델은 `parameters` 에 트리거·룰 심각도 가중·lookback·최근성·1차 baseline 결합·주기 단축·EDD 임계 정의를 담고, ONBOARDING 모델은 `{}` | (정책 store) |
-| POST | `/api/v1/admin/aml/ra-models` | `aml:admin:policy` | — | RA 모델 버전 초안(draft·결재 불필요). 요청 `DraftRequest{ modelCode, version, scenario?, weights, mediumThreshold, highThreshold, prohibitedThreshold, parameters? }` — **`scenario`(ONBOARDING/ONGOING) 옵션, 미지정 시 `ONBOARDING`**(엔진 `RiskModelAdminController.draft` default). **`parameters`(옵션) 는 ONGOING 모델 정의 JSON**(DB §3.9), ONBOARDING 은 생략 시 `{}`. **작성자(maker)는 요청 본문이 아니라 인증 principal(`principal.email()`)에서 서버 파생**한다(신뢰경계 — bo-api BFF `RaDtos.DraftRequest` 계약에 `makerId` 필드 부재, 하단 §3.3 註 동형). 응답 `RaModelSummary` | (정책 store) |
-| POST | `/api/v1/admin/aml/ra-models/{modelCode}/simulate` | `aml:admin:policy` | — | sample population simulation(응답 DTO §3.15 `SimulationResponse`) | — |
-| POST | `/api/v1/admin/aml/ra-models/{modelCode}/versions/{version}:activate` | `aml:admin:policy` | 🔒4-eyes | RA 모델 활성화. 요청 `ActivateRequest{ reason? }` — **작성자(maker)는 요청 본문이 아니라 인증 principal(`principal.email()`)에서 서버 파생**(bo-api BFF `RaDtos.ActivateRequest` 계약에 `makerId` 필드 부재, 하단 §3.3 註 동형·미인증 상신 거부). 응답 `202 { approvalId, status: SUBMITTED }` | `aml_approvals` |
+| GET | `/api/v1/admin/aml/ra-models?modelCode=` | `aml:admin:policy` | — | RA 모델 버전 목록. 운영 family는 `KR_DEFAULT_RA=ONBOARDING`, `KR_ONGOING_RA=ONGOING` 두 개로 고정하며 임의 family를 거부한다. 응답 `RaModelSummary[]` — `scenario`, 전체 `weights`/`parameters`/임계, `isDefault`, 생성·수정 actor/시각, `copiedFromVersion`, canonical `definitionHash`, `latestSimulation`, `pendingApprovalId`를 노출한다. 실제 ACTIVE가 없으면 임의 버전을 현재 적용으로 추정하지 않는다. | `aml_risk_models`,`aml_ra_model_simulations`,`aml_approvals` |
+| POST | `/api/v1/admin/aml/ra-models/{modelCode}/versions:copy` | `aml:admin:policy` | — | 선택 버전을 서버측 다음 버전 `v{N+1}` DRAFT로 원자 복제. 요청 `CopyVersionRequest{ sourceVersion }`; 응답 `RaModelSummary`. `scenario`·가중치·parameters·임계를 승계하고 신규 DRAFT의 `isDefault=false`, `copiedFromVersion`/작성자/시각을 기록한다. UI 임의 버전명 생성은 허용하지 않는다. 같은 family에 `pendingApprovalId`가 하나라도 있으면 family lock 안에서 복제를 거부해 상신 대상이 새 버전에 의해 실행 불가능해지는 것을 막는다. | `aml_risk_models`,`aml_approvals` |
+| POST | `/api/v1/admin/aml/ra-models` | `aml:admin:policy` | — | `versions:copy`로 서버 발급된 기존 DRAFT 전체 정의만 갱신한다(update-only). 요청 `DraftRequest{ modelCode, version, scenario, weights, mediumThreshold, highThreshold, prohibitedThreshold, parameters }`. 임의 신규 version, family-scenario 불일치, ACTIVE/SUPERSEDED 및 활성화 결재 대기 DRAFT는 수정 불가. 가중치는 scenario factor catalog(ONBOARDING=`GEOGRAPHY/CUSTOMER/SCREENING`, ONGOING=`TRANSACTION_BEHAVIOR/CUSTOMER`)와 `0..100`, 총합 양수를 검증한다. parameters는 §11.3의 scenario별 전체 스키마를 검증한다. ONGOING 정수값은 소수 절삭 없이 exact integer이며 `lookbackDays=1..3650`, `debounceMinutes=0..525600`, `countSaturation=1..200`, baseline=`KR_DEFAULT_RA`를 강제한다. 작성자는 BFF 인증 principal에서 파생한다. | `aml_risk_models` |
+| POST | `/api/v1/admin/aml/ra-models/{modelCode}/simulate` | `aml:admin:policy` | — | 요청 `RaSimulateRequest{ version, samplePopulation }`, 모집단 `RECENT_90D_NEW\|ALL_ACTIVE\|HIGH_RISK_ONLY`(tenant·scenario 격리, 최대 500). candidate와 같은 scenario ACTIVE를 실제 비PII RA 입력으로 재평가하고 결과/definition hash를 영속한다(§3.15). 결재·실제 등급 변경 없음. | `aml_ra_model_simulations`,`aml_risk_scores` |
+| POST | `/api/v1/admin/aml/ra-models/{modelCode}/versions/{version}:activate` | `aml:admin:policy` | 🔒4-eyes | 요청 `ActivateRequest{ simulationId, reason }`. 성공한 simulation의 대상 버전·canonical definition hash가 현재 DRAFT와 일치해야 상신된다. `RA_MODEL` payload hash는 전체 정의를 고정하고 approve 시 재검산한다. 승인 실행 시 같은 tenant+scenario 기존 ACTIVE를 SUPERSEDED하고 새 버전을 ACTIVE로 원자 전환한다(ONBOARDING default도 이전). 작성자는 BFF 인증 principal에서 파생. 응답 `202 { approvalId, status: SUBMITTED, payloadHash }`. | `aml_risk_models`,`aml_ra_model_simulations`,`aml_approvals` |
 | GET | `/api/v1/admin/aml/risk-scores?riskGrade=&modelVersion=&country=&reviewDueSoon=&targetRef=&scenario=&requiredAction=&registeredWithinDays=&latestPerTarget=&page=&size=` | `aml:case:read` | — | **RA 점수 목록**(모니터링). `riskGrade` 멀티(콤마 구분)·`modelVersion`·**`country`(국적 필터, 엔진이 실제 국가 차원 보유·#7; stub 경로는 `targetRef` seed 파생 결정적 국가 post-filter)**·`reviewDueSoon`(boolean — 재심사 임박)·`targetRef`(contains 검색)·페이지네이션 필터. **RA 목록 서버 필터 4종(2026-07-06, feature/aml-ra-list-filters-dedupe — 전부 optional·additive)**: ① `scenario`=`ONBOARDING`(1차)\|`ONGOING`(2차) — `aml_risk_models.scenario` 모델 레지스트리 exists-join(모델 코드 하드코딩 아님, 잘못된 값 400), 변경이력 9.31 의 "서버측 scenario 필터 후속 과제" 해소; ② `requiredAction`(권고 조치, 콤마 멀티 — `NONE`(조치 없음)·`CDD_UPDATE`(CDD 갱신)·`EDD`(강화된 고객확인)·`RELATIONSHIP_REVIEW`(관계 검토), `NONE` 토큰은 레거시 `required_action IS NULL` 행 포섭); ③ `registeredWithinDays`(양수 int — **인입(온보딩) 회원 필터**, `aml_customers.created_at ≥ now-일수` exists-join); ④ `latestPerTarget`(boolean 기본 false — **회원(targetRef)별 최신 1건 dedupe**, `evaluated_at` max 상관 서브쿼리[tenant·targetRef·modelVersion·scenario 한정] — **dedupe 먼저 선정 후 등급/조치/임박 등 상태 필터를 outer 적용**해 "현재 상태" 목록 의미론 보장, `count`/`items` 동일 술어). 응답은 **페이지 봉투 `RiskScoreListResponse{ items: RiskScoreResponse[], page, size, total }`**(§1.2 envelope 원칙 정합 — `total`은 페이지 무관 전체 건수로 타일↔목록 정합·페이지 이동에 사용) — `items` 원소가 `RiskScoreResponse`(§3.3, `mandatoryHighRisk`·`mandatoryHighRiskReasons`·`forcedFloorEvidence`·`operativeNextReviewDueAt` 포함). bo-api `GET /api/v1/bo/aml/risk-scores` 가 동일 파라미터를 pass-through 위임하며, stub 경로도 동일 의미론(scenario=stub 행 시나리오 필터·requiredAction NULL 포섭·registeredWithinDays 는 seed 파생 결정적 가입일 post-filter·latestPerTarget 는 stub 이 target 당 1행이라 no-op) — 패리티 유지. **구현됨**(`RiskScoreAdminController`) | `aml_risk_scores`,`aml_risk_models`,`aml_customers` |
 | GET | `/api/v1/admin/aml/risk-scores/distribution?modelVersion=` | `aml:case:read` | — | **RA 등급 분포**. 응답 `RiskDistributionResponse`(§3.3b). **구현됨**(`RiskScoreAdminController`) | `aml_risk_scores` |
 | GET | `/api/v1/admin/aml/customers/pipeline-stats?histogramDays=` | `aml:case:read` | — | **CDD/RA 파이프라인 집계**(KYC 상태 분포·신규 등록 윈도우·RA 처리 현황·기간 히스토그램). `Tenant-Id` 헤더 필수·`Workspace-Id` 옵션. `histogramDays` 1~90·기본 14(범위 밖 클램프). 응답 `CddRaPipeline`(§3.3c). 집계 카운트만(raw PII 미노출). **구현됨**(엔진) | `aml_customers`,`aml_risk_scores` |
@@ -605,7 +606,7 @@ bo-api 표면: `GET|POST /api/v1/bo/aml/report-rules/configurable`, `POST .../co
 
 > override는 **블라인드 scoreId 직접 입력이 아니라** 위험점수 목록 조회(`GET .../risk-scores`, 등급 필터+`targetRef`) → 행 선택 → 현재 등급 기준 하향 가능 등급만 선택 → 사유 입력 → 4-eyes 상신 흐름이다(PRD §6.1 AML-RA-002).
 
-> **RA 모델 관리 DTO `scenario`·`parameters`(bo-api BFF, 코드=truth).** bo-api 의 RA 모델 관리 read model `RaModel`(`GET /api/v1/bo/aml/ra-models`)과 그 하위 `RaModelVersion` 은 model-level 축 **`scenario`(ONBOARDING/ONGOING, DB §3.9 `aml_risk_models.scenario` 1:1)** 와 **`parameters`(JSON, DB §3.9 `aml_risk_models.parameters` 1:1)** 를 노출한다 — `RaModelVersion.scenario`/`parameters` 는 소유 `RaModel` 을 승계(같은 modelCode 의 버전은 동일 scenario)해 버전 행이 모델 그룹 밖에서도 자기서술적이다. FE 는 `scenario` 를 시나리오 배지에, `parameters` 를 트리거·룰 심각도 가중·lookback·최근성·1차 결합·주기 단축·EDD 임계 규칙 패널에 verbatim 렌더한다(하드코딩 금지). 엔진 응답에 `scenario` 부재 시 bo-api 는 `ONBOARDING` 으로 안전 기본 처리(graceful, `RaDtos.RaScenario`). enum 2종 = `ONBOARDING`(1차·온보딩·`KR_DEFAULT_RA`) / `ONGOING`(2차·상시·**실운영 `KR_ONGOING_RA v1 ACTIVE`**, 정의는 모델 `parameters` 로 노출 — STR/CTR 발동 시 거래 가중 재평가→주기 단축→EDD 자동 개시). ONGOING 재평가 결과는 §3.3 `RiskScoreResponse.{scenario, reassessmentAlerts, reviewShortened}` 로 화면에 표시(bo-api `RaDtos.{ReassessmentAlert,ReviewShortened}` 1:1).
+> **RA 모델 관리 DTO `scenario`·`parameters`(bo-api BFF, 코드=truth).** bo-api 의 RA 모델 관리 read model `RaModel`(`GET /api/v1/bo/aml/ra-models`)과 그 하위 `RaModelVersion` 은 model-level 축 **`scenario`(ONBOARDING/ONGOING, DB §3.9 `aml_risk_models.scenario` 1:1)** 와 **`parameters`(JSON, DB §3.9 `aml_risk_models.parameters` 1:1)** 를 노출한다 — `RaModelVersion.scenario`/`parameters` 는 소유 `RaModel` 을 승계(같은 modelCode 의 버전은 동일 scenario)해 버전 행이 모델 그룹 밖에서도 자기서술적이다. 운영 family는 `KR_DEFAULT_RA=ONBOARDING`, `KR_ONGOING_RA=ONGOING` 두 개로 고정한다. FE는 `scenario`를 배지에 표시하고, 저장된 전체 정의를 scenario별 typed form으로 엄격 파싱해 ONBOARDING 가중치·CDD 파생 규칙과 ONGOING 가중치·STR/CTR/FDS 규칙을 독립 편집한다. 필수/미지/타입 오류 필드나 family-scenario 불일치는 UI 기본값으로 합성하지 않고 편집·시뮬레이션·활성화를 차단한다. enum 2종 = `ONBOARDING`(1차·온보딩·`KR_DEFAULT_RA`) / `ONGOING`(2차·상시·`KR_ONGOING_RA`, STR/CTR/FDS 발동 시 거래 가중 재평가→주기 단축→EDD 자동 개시). ONGOING 재평가 결과는 §3.3 `RiskScoreResponse.{scenario, reassessmentAlerts, reviewShortened}` 로 화면에 표시한다(bo-api `RaDtos.{ReassessmentAlert,ReviewShortened}` 1:1).
 
 ### 3.3b RiskDistributionResponse → `GET /api/v1/admin/aml/risk-scores/distribution` (DB `aml_risk_scores`)
 
@@ -1048,19 +1049,27 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 
 ### 3.15 SimulationResponse (Admin, RA/TM simulate 응답)
 
-RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenarioCode}/simulate` 공통 응답. **분석 설정이므로 결재 불필요**(설계서 §13.5). PRD §5.1(AML-RA-001 '시뮬레이션' 탭: `높음 +142 / 중간 -88 / 낮음 -54`, `오탐 영향 추정 +6%') 화면 의존.
+RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenarioCode}/simulate`의 분석 결과. RA 결과는 activation 증거이므로 영속하지만 실행 자체는 **분석 설정이며 결재·실제 등급 변경이 없다**(설계서 §13.5). RA에는 확정 label이 없으므로 근거 없는 오탐률 0%를 합성하지 않고 등급 이동·설정 diff·운영 영향만 제공한다.
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `simulationId` | string(uuid) | 시뮬레이션 실행 식별자(감사·재현) |
-| `modelVersion` / `scenarioVersion` | string | 대상 모델/시나리오 버전 |
-| `samplePopulation` | object | `{ definition, sampleSize, periodFrom, periodTo }`(예: 최근 90일 신규) |
+| `modelCode` / `version` / `scenarioVersion` | string | 대상 모델/시나리오와 버전(RA는 `modelCode`·`version`) |
+| `scenario` | enum\|null | RA만: `ONBOARDING\|ONGOING` |
+| `definitionHash` | string\|null | RA candidate 전체 canonical 정의 hash. 저장 후 정의 변경 시 기존 결과는 activation에 사용할 수 없다. |
+| `baselineVersion` / `baselineDefinitionHash` | string\|null | 같은 scenario에서 현재 실제 적용되는 ACTIVE 기준선 |
+| `samplePopulation` | enum | RA 모집단 `RECENT_90D_NEW\|ALL_ACTIVE\|HIGH_RISK_ONLY` |
+| `sampleSize` | integer | 선택된 tenant·scenario 표본 수(최대 500) |
+| `gradeDistribution` | object\|null | RA candidate `{ LOW, MEDIUM, HIGH, PROHIBITED }` 건수. 합계는 `operationalImpact.evaluatedCount`; ONGOING 표본 중 적용 trigger가 없는 행은 평가에서 제외될 수 있어 `evaluatedCount <= samplePopulation.sampleSize`다. |
 | `gradeShift` | object | 등급 이동 추정 `{ LOW(integer), MEDIUM, HIGH, PROHIBITED }`(부호 있는 증감 = 후보 분포 − 기준 분포, PRD '높음 +142 / 중간 -88 / 낮음 -54') |
 | `baselineDistribution` | object\|null | **활성 버전 기준 분포**(증감 `gradeShift` 의 기준선) `{ LOW(long), MEDIUM, HIGH, PROHIBITED }`. 표본 부재 시 생략(nullable, #4) |
-| `falsePositiveImpact` | object\|null | 오탐 영향 추정 `{ deltaPercent(number), baseline, projected }`(PRD '오탐 영향 추정 +6%'). **미산출 시 생략**(nullable — 0% 오표시 방지, #4) |
+| `configurationChanges` | array\|null | RA만: baseline 대비 가중치·임계·parameter 변경 경로와 전/후 값(비PII) |
+| `operationalImpact` | object\|null | RA만: `{ evaluatedCount, gradeChangedCount, reviewShortenedCount, eddCandidateCount }`. 실제 고객 상태를 변경하지 않는다. |
+| `period` | object\|null | 실제 replay 입력 기간 `{ from, to }`. 표본 0이면 두 값 nullable |
+| `falsePositiveImpact` | object\|null | TM 등 확정 label 근거가 있는 경우만 제공. RA는 미산출(nullable — 0% 오표시 금지). |
 | `evaluatedAt` | string(date-time) | 실행 시각 |
 
-> **RA simulate 요청 `RaSimulateRequest` = `{ modelVersion, samplePopulation }`(코드=truth).** 구 `factorWeightOverrides`(요인 가중 오버라이드)는 FE 미전송·엔진 미소비 dead 필드였으므로 **요청·응답 계약에서 제거**(#4). 표본(sample)은 bo-api 가 최근 90일 점수로 서버측 자동 구성한다. bo-api `RaDtos.{RaSimulateRequest,SimulationResponse}` 1:1.
+> **RA simulate 요청 `RaSimulateRequest` = `{ version, samplePopulation }`.** 구 `factorWeightOverrides`와 호출자 제공 factor sample은 엔진 미소비/표본 왜곡 경로이므로 제거한다. 엔진이 tenant·scenario별 실제 입력을 선택·재생하고 `aml_ra_model_simulations`에 결과를 남긴다. bo-api는 이를 손실 없이 전달하며 엔진 미연결 write/simulate는 503 `AML.ENGINE_UNAVAILABLE`로 fail-closed한다.
 
 ### 3.16 TenantDto / TenantCreateRequest / OnboardingProvisionRequest / OnboardingRegisterRequest / OnboardingStatusResponse (bo-api 소유, DB `aml_tenants`)
 
@@ -1535,15 +1544,30 @@ components:
       type: object
       properties:
         simulationId: { type: string, format: uuid }
+        modelCode: { type: string, nullable: true }
+        version: { type: string, nullable: true }
         modelVersion: { type: string }
         scenarioVersion: { type: string }
+        scenario: { type: string, enum: [ONBOARDING, ONGOING], nullable: true }
+        definitionHash: { type: string, nullable: true }
+        baselineVersion: { type: string, nullable: true }
+        baselineDefinitionHash: { type: string, nullable: true }
         samplePopulation:
+          oneOf:
+            - type: string
+              enum: [RECENT_90D_NEW, ALL_ACTIVE, HIGH_RISK_ONLY]
+            - type: object
+              description: TM simulation population (legacy shared response)
+              properties:
+                definition: { type: string }
+                sampleSize: { type: integer }
+                periodFrom: { type: string, format: date-time }
+                periodTo: { type: string, format: date-time }
+        sampleSize: { type: integer, maximum: 500, nullable: true }
+        gradeDistribution:
           type: object
-          properties:
-            definition: { type: string }
-            sampleSize: { type: integer }
-            periodFrom: { type: string, format: date-time }
-            periodTo: { type: string, format: date-time }
+          nullable: true
+          additionalProperties: { type: integer }
         gradeShift:
           type: object
           properties:
@@ -1559,6 +1583,29 @@ components:
             MEDIUM: { type: integer, format: int64 }
             HIGH: { type: integer, format: int64 }
             PROHIBITED: { type: integer, format: int64 }
+        configurationChanges:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              before: {}
+              after: {}
+        operationalImpact:
+          type: object
+          nullable: true
+          properties:
+            evaluatedCount: { type: integer, format: int64 }
+            gradeChangedCount: { type: integer, format: int64 }
+            reviewShortenedCount: { type: integer, format: int64 }
+            eddCandidateCount: { type: integer, format: int64 }
+        period:
+          type: object
+          nullable: true
+          properties:
+            from: { type: string, format: date-time, nullable: true }
+            to: { type: string, format: date-time, nullable: true }
         falsePositiveImpact:
           type: object
           nullable: true
