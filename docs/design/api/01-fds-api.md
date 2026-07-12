@@ -4,6 +4,7 @@
 > 정본: `.claude/skills/_shared/aegis-stack.md` (4서비스 모노레포 · Java 25 · Spring Boot 3.5.x · 헥사고날 · 멀티테넌시 · PII 마스킹 · 4-eyes · 한국 Policy Pack).
 > 입력 설계서: `docs/software/01-fdsSvc-sass.md` (§6.2 헥사고날 `adapter/in/rest`, §11 action/case/결재, §12.8 Public API, §13 멀티테넌시, §16 PII/규제).
 > 입력 DB: `docs/design/db/01-fds-db.md` (스키마 `fds`, 멀티테넌시 `tenant_id/workspace_id/data_scope`, enum 코드값 §4, 컬럼/타입 §5, `subject_kind` 10종 `CASE_CLOSE`·`POLICY_PACK`·`RULE_PARAM` 포함 §5.23, `fds_cases.aml_case_id` §5.13, **배포 모델 `fds_tenants.deployment_model`(3종)·`onboarding_status`(8종)·`default_region`·`infra_ref` §4.1·§5.1, 구 `isolation_mode` 폐기**, `close_reason` 8종 §4.11, `compliance_policy` JSONB §5.1, **`transaction_type` 폐쇄 enum 12종 §4.19**, `channel_type` §4.4, corridor 컬럼 §5.5).
+> 공통 inbound 인증 정본: [`00-common-machine-auth.md`](00-common-machine-auth.md) (wire v2 canonical request·credential version·durable nonce·전환/회전).
 > 코드 정본: **`services/fds-svc`** (`com.aegis.fds.adapter.in.rest` 전 컨트롤러·DTO, `com.aegis.fds.domain.enums.ChannelType`·`EventFamily`, Flyway `V17`/`V20`/`V22` 데모 룰). 본 문서의 엔드포인트·요청/응답 DTO·enum은 이 저장소와 1:1 일치한다(추측 금지).
 > 책임 서비스: **`services/fds-svc`**. AML/STR/CTR 본 케이스는 `aml-svc`, 운영자 IAM·결재 집약·감사는 `bo-api`. **bo-web은 bo-api만 호출(엔진 직접호출 금지)**.
 
@@ -51,25 +52,35 @@
 ### 2.1 인증 방식 (설계서 §12.8)
 | 방식 | 용도 | 적용 API |
 |---|---|---|
-| API Key + HMAC(`X-Api-Key` + `X-Signature: hmac-sha256=...`) | 서버 간 기본 연동. canonical material=`timestamp\napiKey\nmethod\nrequestURI\n[nonblank X-User-Subject\n]rawBody`; actor 없는 외부 요청은 기존 material 유지 | 외부 Ingest/Decision/Case/Evidence API |
+| API Key + HMAC(`X-Api-Key` + `X-Auth-Version: 2` + `X-Nonce` + `X-Signature`) | 서버 간 기본 연동. wire v2 canonical bytes·raw query·고정 9-key scopeContext·body digest·replay 의미론은 [공통 machine-auth 정본](00-common-machine-auth.md)만 따른다. 구 v1 공식은 기존 credential 전환 호환에만 허용 | 외부 Ingest/Decision/Case/Evidence API |
 | OAuth2 Client Credentials (`Authorization: Bearer`) | 권한 scope 세분화 | 외부 API, Admin API(bo-api 위임 토큰) |
 | mTLS | 고위험 action API | Decision/Action 계열 옵션 |
 | Webhook signature(`X-Signature`) | 고객 callback 위변조 방지 | Webhook 송신 |
 
-- 인증 주체는 `fds_api_credentials`(`credential_type` = `API_KEY`/`OAUTH2_CLIENT`/`MTLS`/`WEBHOOK`)로 검증. **secret 원문 미저장 — `secret_hash` 대조**.
+- 인증 주체는 `fds_api_credentials`(`credential_type` = `API_KEY`/`OAUTH2_CLIENT`/`MTLS`/`WEBHOOK`)로 검증. HMAC 검증에는 필요 시 AES-GCM 복호화한 공유 secret을 사용하며 **DB에는 `secret_ciphertext`만 저장**한다(raw secret 미저장·미로그).
 - API key·OAuth2 client·webhook은 `(tenantId, workspaceId)`에 바인딩. cross-workspace 접근은 명시적 scope 필요.
+- v2 요청은 `Tenant-Id`·최종 raw path/query·FDS workspace·scope context·최종 body bytes·timestamp·nonce를 함께 서명한다. `Source-System`만 source header 정본이며 alias는 허용하지 않는다. credential/service policy 교집합으로 protocol을 제한하고 기존 row=`[v1,v2]`, 신규 row=`[v2]` 전환 정책을 적용한다. v1은 RFC3339 offset timestamp 호환을 유지하지만 v2는 UTC `Z`만 허용한다.
+- filter coverage/scope는 servlet normalized route로 판단하고 HMAC은 raw URI를 고정한다. dot segment·encoded separator·matrix parameter·double slash 등 모호한 raw path와 보안/canonical singleton header 중복은 body/credential/nonce 처리 전에 generic 401이다. signed client는 redirect를 자동 추종하지 않고 새 target에 새 nonce로 재서명한다. bo-api 공용 engine `RestClient`도 `DONT_FOLLOW`를 강제해 302 target으로 machine header를 전달하지 않는다(단, bo-api→FDS signer 자체는 P0-04 미완료).
+- nonce TTL 기본 15분은 `2 × timestamp skew`보다 엄격히 길어야 하고, 만료 row는 기본 1분마다 최대 `20 × 5,000`건을 짧은 batch로 정리한다. local/demo simulator credential provisioner와 bootstrap bypass는 명시적 `local|demo` positive profile + opt-in에서만 허용되며 Flyway business seed가 아니다.
+- **미완료 경계(2026-07-12)**: P0-00 공통 기반은 확정됐지만 `/aml/v1/**` filter(P0-01), 내부 service-auth와 bo-api→FDS signer(P0-04), multipart 최종 raw-byte client 전환(P0-14), credential 폐기·유예회전·last-used·rate/network/workload 통제(P1-02)는 미완료다. 본 명세만으로 해당 경로나 machine credential lifecycle 적용 완료를 주장하지 않는다([공통 정본 §7](00-common-machine-auth.md#7-후속-태스크-경계)).
 
 ### 2.2 격리 컨텍스트 (필수 헤더)
 | 헤더 | 매핑 컬럼 | 필수 | 설명 |
 |---|---|---|---|
 | `Tenant-Id` | `tenant_id` | 필수(외부) | SaaS 서비스 경계. **hanpass-ph는 단일 운영 테넌트 `tenant_demo`로 서비스한다**(테넌트=서비스 모델은 코드/스키마 truth로 유지하되 운영 테넌트는 1종). Admin API는 위임 토큰 claim에서 주입 |
 | `Workspace-Id` | `workspace_id` | 선택(미지정 시 `default`) | hanpass-ph 운영 workspace는 `default`. `sandbox`는 shadow-only(action 미발행) |
-| `Source-System` | `source_system` | Ingest/Decision 필수 | connector·schema 식별 |
+| `X-Data-Scope` | `data_scope` | 선택 | 외부 machine 요청의 권한 context. v2 `scopeContext.data-scope`에 결합 |
+| `Source-System` | `source_system` | Ingest/Decision 필수 | connector·schema 식별. source header의 유일한 정본 이름(`X-Source-System` 등 alias 금지) |
 | `Idempotency-Key` | `idempotency_key` | 멱등 엔드포인트 필수 | 중복 방지(§3.3) |
+| `X-Api-Key` | `credential_id` | HMAC 인증 시 필수 | `(tenant_id, workspace_id, credential_id)` credential |
+| `X-Timestamp` | — | HMAC 인증 시 필수 | RFC3339 UTC(`Z`), ±5분 |
+| `X-Auth-Version` | — | v2 필수 | 정확히 `2` |
+| `X-Nonce` | `fds_auth_nonces.nonce_hash` | v2 필수 | 16 random bytes canonical base64url-no-padding(22자); raw nonce 미저장, 기본 TTL 15분(`>2×skew`) |
 | `X-Signature` | — | HMAC 인증 시 필수 | `hmac-sha256=...` |
-| `traceId`(`X-Trace-Id`) | `fds_audit_logs.trace_id` | 선택 | 관측성 전파(설계서 §17) |
+| `traceId`(`X-Trace-Id`) | `fds_audit_logs.trace_id` | 선택 | 관측성 전파(설계서 §17). singleton이지만 고정 9-key scopeContext 밖 |
+| `correlationId`(`X-Correlation-Id`) | 메시지/로그 계보 | 선택 | 관측성 전파. 고정 9-key scopeContext와 현재 singleton 거부 목록 밖 |
 
-- `dataScope`는 **헤더가 아니라 위임 토큰 claim**으로 전달된다. bo-api가 운영자 토큰의 `dataScope` 집합을 Admin API 호출 시 fds-svc 조회의 강제 IN 필터로 주입한다(저장 격리 아님, 조회·조치 권한 필터).
+- 외부 machine request의 `dataScope`는 `X-Data-Scope`, Admin 위임의 `dataScope`는 bo-api 운영자 토큰 claim에서 전달된다. bo-api는 claim 집합을 fds-svc 조회의 강제 IN 필터로 주입한다(저장 격리 아님, 조회·조치 권한 필터). `X-Trace-Id`/`X-Correlation-Id`는 관측성 값이며 v2 고정 9-key context에는 추가하지 않는다.
 
 ### 2.3 OAuth2 scope (설계서 §12.8, `fds_api_credentials.scopes`)
 `fds:event:write` · `fds:decision:evaluate` · `fds:case:read` · `fds:case:update` · `fds:evidence:export` · `fds:rule:simulate` · `fds:admin:source-system` · `fds:admin:rule` · `fds:admin:group` · `fds:admin:credential` · `fds:action:write`
@@ -564,7 +575,7 @@ ApprovalDecisionRequest(approve/reject): `comment`(string △). checker는 토�
 
 ### 5.13 CredentialDto / CredentialCreateRequest — `fds_api_credentials`
 요청: `credentialType`(enum `API_KEY`/`OAUTH2_CLIENT`/`MTLS`/`WEBHOOK` ●), `scopes`(string[] ●), `ipAllowlist`(string[] △), `webhookUrl`(string △).
-응답(생성 1회만): `credentialId`, `secret`(평문 1회 반환 후 미보존 — 이후 `secret_hash`만), `scopes`. 조회 응답에는 secret 미노출.
+응답(생성 1회만): `credentialId`, `secret`(평문 1회 반환 후 미보존 — 이후 AES-GCM `secret_ciphertext`만), `scopes`. 조회 응답에는 raw secret/ciphertext 모두 미노출.
 
 **CredentialDto (GET /admin/fds/credentials 조회 응답)** — `fds_api_credentials` (DB §5.29). secret 필드 미포함.
 | 필드 | 타입 | 매핑 |
@@ -578,7 +589,7 @@ ApprovalDecisionRequest(approve/reject): `comment`(string △). checker는 토�
 | createdAt | datetime | `created_at` |
 | updatedAt | datetime | `updated_at` |
 
-> `secret` / `secret_hash`는 조회 응답 미노출(원문 및 hash 모두). 생성 시 1회만 `secret` 반환.
+> `secret` / `secret_ciphertext`는 조회 응답 미노출(원문 및 암호문 모두). 생성 시 1회만 `secret`을 안전한 발급 채널로 전달한다. 신규 credential의 `allowedProtocolVersions` 기본은 `["v2"]`; migration 이전 row는 `["v1","v2"]`로 전환한다(DB §5.29, 공통 인증 §6). 생성·scope 변경·유예회전·폐기·last-used 이력과 credential별 rate/network/workload 조건은 P1-02 미완료이며 이 DTO만으로 운영 lifecycle을 충족하지 않는다.
 
 ### 5.14 ExternalDecisionRequest — `fds_external_decisions` (§5.30)
 `vendorName`(string(96) ●), `vendorDecisionRef`(string(256)), `bridgeMode`(enum `ExternalDecisionMode` 5종, ● — `$ref: '#/components/schemas/ExternalDecisionMode'`, §10 OpenAPI), `transactionRef`(string(256)), `vendorDecision`(string(32)), `evidenceHash`(string(128)).
@@ -723,8 +734,10 @@ tenant 알림 채널 1건(설계서 §13.2 alert channel, PRD TNT-002 ⑤). GET�
 | `FDS-VALIDATION-002` | 400 | enum 코드값 불일치 또는 immutable 위반(decision/action/case/channel/connector_status/control_capability/ingest_mode/risk_group_type·`group_type` 변경…) | 전체 |
 | `FDS-PII-REJECTED` | 422 | raw PII(PAN/주민번호) 포함 payload reject | Ingest/Decision |
 | `FDS-SCHEMA-UNKNOWN` | 422 | 등록되지 않은 `source_system`/`schema_version` | Ingest/Decision |
-| `FDS-AUTH-001` | 401 | 인증 실패(API key/HMAC/토큰) | 전체 |
-| `FDS-AUTH-002` | 401 | HMAC 서명 불일치 | HMAC API |
+| `FDS-AUTH-001` | 401 | 필수 인증 identity/header 부재(`Tenant-Id`/API key/토큰) | 전체 |
+| `FDS-AUTH-002` | 401 | generic machine-auth 실패(credential/protocol/version/nonce/timestamp/canonical/signature/replay 원인을 외부에 구분하지 않음) | HMAC API |
+| `FDS-AUTH-003` | 503 | nonce replay store 불가 — 인증 fail-closed | HMAC v2 API |
+| `FDS-AUTH-004` | 413 | 인증 raw-body 상한 초과 | HMAC API |
 | `FDS-AUTHZ-001` | 403 | 권한 부족 | 전체 |
 | `FDS-AUTHZ-002` | 403 | scope 불일치 | 전체 |
 | `FDS-AUTHZ-003` | 403 | cross-workspace 접근 차단 | 전체 |
@@ -778,9 +791,9 @@ tenant 알림 채널 1건(설계서 §13.2 alert channel, PRD TNT-002 ⑤). GET�
 
 ## 9. Webhook 콜백 계약 (outbound)
 
-설계서 §12.8 'Webhook API'를 정본으로 확정한다. fds-svc는 decision/case/action 이벤트를 서비스 등록 URL로 **outbound HTTP POST** 발행한다(`fds_api_credentials.credential_type=WEBHOOK`, `webhook_url`/`secret_hash` 사용, `/admin/fds/credentials/{id}/rotate`로 회전). bo-web/bo-api 운영자 화면과 무관한 **서비스 서버 간 콜백** 채널이다.
+설계서 §12.8 'Webhook API'를 정본으로 확정한다. fds-svc는 decision/case/action 이벤트를 서비스 등록 URL로 **outbound HTTP POST** 발행한다(`fds_api_credentials.credential_type=WEBHOOK`, `webhook_url`/AES-GCM `secret_ciphertext` 사용, `/admin/fds/credentials/{id}/rotate`로 회전). bo-web/bo-api 운영자 화면과 무관한 **서비스 서버 간 콜백** 채널이다.
 
-> **전송 어댑터 구현 확정(T10)**: 전송은 `fds_webhook_outbox`(DB §5.35, transactional outbox) + 스케줄드 디스패처(`WebhookRelayScheduler`/`WebhookRelayService`/`HttpWebhookSenderAdapter`, 연동 §6.2.2)로 실현된다 — 도메인 변경 트랜잭션 내 enqueue → `SELECT … FOR UPDATE SKIP LOCKED` 클레임 → 서명 POST → 2xx `DISPATCHED` / 비2xx·타임아웃 `FAILED`+지수 backoff(MAX 5) → `DEAD_LETTERED`(DLQ + `WEBHOOK_DEAD_LETTER` 감사). `sandbox`는 미발행(shadow). 서명 material(`timestamp + "." + rawBody`)은 **인바운드 ingest 필터 material(`timestamp + "\n" + apiKey + "\n" + body`)과 분리**되며 fds/aml 양 엔진 아웃바운드가 동일하다(AML §8.3).
+> **전송 어댑터 구현 확정(T10)**: 전송은 `fds_webhook_outbox`(DB §5.35, transactional outbox) + 스케줄드 디스패처(`WebhookRelayScheduler`/`WebhookRelayService`/`HttpWebhookSenderAdapter`, 연동 §6.2.2)로 실현된다 — 도메인 변경 트랜잭션 내 enqueue → `SELECT … FOR UPDATE SKIP LOCKED` 클레임 → 서명 POST → 2xx `DISPATCHED` / 비2xx·타임아웃 `FAILED`+지수 backoff(MAX 5) → `DEAD_LETTERED`(DLQ + `WEBHOOK_DEAD_LETTER` 감사). `sandbox`는 미발행(shadow). **아웃바운드 webhook** 서명 material(`timestamp + "." + rawBody`)은 [인바운드 machine-auth v2](00-common-machine-auth.md)의 preamble/query/scopeContext/digest/nonce canonical bytes와 별개이며 혼용하지 않는다. fds/aml 양 엔진 아웃바운드 공식은 동일하다(AML §8.3).
 
 ### 9.1 이벤트 타입 (`eventName`)
 | eventName | 트리거 | 발행 주체(엔진) | 핵심 payload |
@@ -809,7 +822,7 @@ tenant 알림 채널 1건(설계서 §13.2 alert channel, PRD TNT-002 ⑤). GET�
 
 ### 9.3 서명·검증
 - 헤더 `X-Signature: hmac-sha256=<hex>` = HMAC-SHA256(secret, `timestamp + "." + rawBody`). 헤더 `X-Webhook-Timestamp`(epoch ms) 동봉, 수신 측 ±5분 허용으로 replay 방어.
-- secret은 credential WEBHOOK의 `secret_hash` 대조 원본(평문 1회 발급, 회전 시 무중단 위해 dual-secret 검증 기간 허용).
+- secret은 credential WEBHOOK의 AES-GCM `secret_ciphertext`를 발송 시점에만 복호화해 사용한다(raw secret 미저장·미로그). 회전 시 새 credential ID 병행 발급→client 전환→clock skew+nonce TTL 경과 후 구 credential 비활성화를 기본으로 한다(공통 인증 §6).
 
 ### 9.4 재시도·멱등
 - 2xx 미수신 시 지수 backoff 재시도(예: 0s/30s/2m/10m/1h, 최대 24h). 최종 실패는 DLQ + 운영자 알림.
@@ -872,6 +885,26 @@ components:
       in: header
       required: true
       schema: { type: string, maxLength: 256 }
+    Timestamp:
+      name: X-Timestamp
+      in: header
+      required: true
+      schema: { type: string, format: date-time }
+    AuthVersion:
+      name: X-Auth-Version
+      in: header
+      required: true
+      schema: { type: string, enum: ['2'] }
+    Nonce:
+      name: X-Nonce
+      in: header
+      required: true
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{22}$' }
+    Signature:
+      name: X-Signature
+      in: header
+      required: true
+      schema: { type: string, pattern: '^hmac-sha256=[0-9a-f]{64}$' }
   schemas:
     Decision:
       type: string
@@ -1669,6 +1702,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-12 | v4.3 | **P0-00 공통 inbound machine-auth wire v2 동기화.** §2를 `00-common-machine-auth.md` 정본으로 전환해 normalized servlet routing/ambiguous raw-path·duplicate singleton 거부, raw path/query·고정 9-key scopeContext(trace/correlation 제외)·body digest, v1 offset/v2 UTC `Z`, nonce TTL `>2×skew`·cleanup `20×5000/tick`, signed redirect 거부와 local/demo positive provisioning을 반영했다. `FDS-AUTH-002/003/004` generic 오류와 P0-01/P0-04/P0-14·P1-02 미완료 경계를 명시했다. FDS credential의 구 hash 컬럼 오기를 실제 AES-GCM `secret_ciphertext`로 전수 정정했으며 §9 outbound webhook `timestamp + "." + rawBody` 공식은 inbound v2와 별개로 유지했다. | 코드 truth=`common-security`, FDS V14, bo-api `RestClientConfig`/`RestClientConfigTest`, `test-vectors/machine-auth-v2.json`, Python simulator transport |
 | 2026-07-10 | v4.2 | **BO 단일 REST API 모니터링·cache scope 정합.** fds-svc §5.15a source별 metrics는 저수준 입력으로 유지하고 `/fds/connectors`는 `POST /api/v1/fds/events` 한 행에 전체 24h 수신·최신 수신·TPS 합계·metrics 응답 상태를 표시한다. bo-api TTL cache와 bo-web query cache에 tenant/workspace identity를 강제한다. | api-designer |
 | 2026-07-10 | v4.1 | **FDS REST 거래 인입 실측 모니터링 API 추가.** §4.8 `GET /api/v1/admin/fds/ingest/metrics`와 §5.15a DTO를 신설. `fds_canonical_events.received_at`·`transaction_ref IS NOT NULL` accepted row 기준 24h 건수/마지막 수신/60초 TPS를 tenant/workspace/source별로 반환하며 replay/duplicate는 비가산. bo-api health는 `MEASURED`, 경로별 HTTP 호출량은 게이트웨이 APM으로 분리. | api-designer |
 | 2026-07-10 | v4.0 | **AML CDD 고객 프로필 동기화 API 추가.** §4.3a `PUT /internal/v1/fds/customer-profiles/{memberRef}`와 PII-safe DTO·tenant/workspace/caller·날짜 검증을 명시. §5.1 거래 `SubjectDto` 프로필은 bootstrap fallback으로 강등하고 CDD master 우선순위를 확정. | api-designer |

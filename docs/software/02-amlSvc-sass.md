@@ -1,6 +1,7 @@
 # hanpass-ph AML Service(aml-svc) 소프트웨어 아키텍처 설계서
 
 > **본 문서 범위.** 본 설계서는 **hanpass-ph 송금 서비스의 AML(자금세탁방지) 엔진(`aml-svc`)** 소프트웨어 아키텍처 정본이다. 시스템 대상은 hanpass-ph 단일 서비스의 AML이며, 거래 유형·TM(거래 모니터링)·WLF(요주의 명단 필터링)·RA(고객위험평가)는 hanpass-ph 실제 거래(월렛충전·국내송금·해외송금·월렛결제·ATM출금·카드결제) 기준으로 기술한다. 멀티테넌트 격리 능력은 유지하나(전용 배포 기본), **운영 대상 테넌트는 hanpass-ph(`tenant_demo`)** 단일이다. 헥사고날·3-WAS 모노레포 구조는 코드(`services/aml-svc`)를 진실로 기술하며, 닫힌 enum 중 hanpass-ph가 사용하지 않는 값(advanced domain·vessel·crypto 등)은 "스키마·enum 잔존(미사용)"으로 명시한다.
+> 공통 inbound machine-auth 정본: [`../design/api/00-common-machine-auth.md`](../design/api/00-common-machine-auth.md) (P0-00 wire v2·credential version·durable nonce). 아웃바운드 webhook 서명은 별도 계약이다.
 
 ## 목차
 
@@ -1066,10 +1067,14 @@ POST /api/v1/aml/events
 Tenant-Id: tenant-a
 Source-System: core-banking
 Idempotency-Key: core-banking:evt-001
+X-Api-Key: ...
+X-Timestamp: 2026-07-12T00:00:00Z
+X-Auth-Version: 2
+X-Nonce: AAECAwQFBgcICQoLDA0ODw
 X-Signature: hmac-sha256=...
 ```
 
-요청 HMAC canonical material은 `timestamp\napiKey\nmethod\nrequestURI\n[nonblank X-User-Subject\n]rawBody`다. 운영자 Admin/Internal 호출은 인증 principal에서 파생한 `X-User-Subject`를 서명에 포함해 checker/maker actor와 payload를 함께 고정한다. actor가 없는 Public ingest는 기존 material을 유지한다.
+요청 HMAC wire v2는 UTF-8/LF/no trailing LF의 `preamble/version/METHOD/rawPath/rawQuery/Tenant-Id/fixed 9-key scopeContext/content digest/timestamp/nonce` 순서를 사용하며 세부 문법은 [공통 machine-auth 정본](../design/api/00-common-machine-auth.md)만 따른다. AML은 물리 workspace 없이 `scopeContext.workspace=default`, source header는 `Source-System`만 인정한다. filter/scope coverage는 normalized servlet route로 판단하고 HMAC은 raw path를 고정하며, ambiguous raw path와 duplicate singleton header는 nonce 소비 전에 거부한다. `X-Trace-Id`/`X-Correlation-Id`는 관측성에는 전파하지만 9-key context 밖이다. `X-User-Subject`는 고정 context에 결합한다. 구 `timestamp/apiKey/method/path/[actor]/body` 공식은 기존 credential 전환 호환용 v1이며 RFC3339 offset timestamp를 계속 받지만, 신규 client는 UTC `Z` v2를 사용한다. signed client는 redirect를 자동 추종하지 않는다. bo-api 공용 engine `RestClient`도 `DONT_FOLLOW`로 origin 302를 그대로 반환하고 target 호출·machine header 전달을 막는다.
 
 ### 15.2 Real-time Screening API
 
@@ -1172,6 +1177,10 @@ POST /api/v1/aml/screen
 Tenant-Id: tenant_demo
 Source-System: member
 Idempotency-Key: onboarding:customer:C20260606-0001:v1
+X-Api-Key: ...
+X-Timestamp: 2026-07-12T00:00:00Z
+X-Auth-Version: 2
+X-Nonce: AAECAwQFBgcICQoLDA0ODw
 X-Signature: hmac-sha256=...
 ```
 
@@ -1194,11 +1203,15 @@ API 인증·권한:
 
 | 방식 | 용도 |
 |---|---|
-| API Key + HMAC | 서버 간 기본 연동 |
+| API Key + HMAC wire v2 | 서버 간 기본 연동. canonical/replay/credential transition 정본=`../design/api/00-common-machine-auth.md`; 기존 row `[v1,v2]`, 신규 row `[v2]` |
 | OAuth2 Client Credentials | 권한 scope 기반 중대형 고객 연동 |
 | mTLS | 고위험 screening API |
 | IP allowlist | 운영망 고정 |
-| Webhook signature | 고객 callback 위변조 방지 (서명 입력=`timestamp+rawBody` HMAC, 계약 정본=API §8.3) |
+| Webhook signature | 고객 callback 위변조 방지 (outbound `timestamp + "." + rawBody` HMAC, 계약 정본=API §8.3; inbound v2와 혼용 금지) |
+
+> nonce 기본 TTL 15분은 정책상 `2×timestamp skew`보다 엄격히 길고, 만료 cleanup은 기본 1분 주기·최대 `20×5000/tick`의 짧은 batch다. local/demo bootstrap/provisioner는 명시적 `local|demo` positive profile + opt-in에서만 동작하며 Flyway business seed가 아니다. REST simulator와 bo-api AML 위임은 서로 다른 credential ID/secret을 사용하고, BO credential scope union에는 STR 접근용 `COMPLIANCE` authority token이 포함된다.
+>
+> **미완료 경계(2026-07-12)**: `/aml/v1/**` filter coverage(P0-01), AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer(P0-04), multipart 최종 raw-byte signer(P0-14), P1-02 credential 생성/scope 변경/유예회전/폐기/last-used·rate/network/workload 통제는 미완료다. 특히 `/aml/v1/transaction-events`는 P0-01 완료 증거 전까지 v2 보호 완료로 간주하지 않는다. valid v2 nonce는 HMAC 성공 뒤 scope/controller보다 먼저 소비되므로 downstream 오류에도 재사용할 수 없고, 업무 멱등 replay는 새 nonce를 사용한다.
 
 권한 scope(정본=API §1.1 enum 전수, OAuth2/RBAC 공통, 13종):
 
@@ -1748,7 +1761,8 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 1. **전담 role 한정 조회** — STR 관련 케이스(`STR_REVIEW`)와 규제 보고(STR) 화면은 **준법감시 전담 role(COMPLIANCE scope)** 만 조회한다. 일반 운영·상담 role에는 해당 메뉴·검색·딥링크를 노출하지 않는다.
 2. **비전담 노출 금지** — STR 진행 사실(후보 생성·검토중·제출 여부)은 일반 상담/운영 화면·고객 응대 채널·webhook payload에 STR 플래그로 노출하지 않는다(케이스 존재 자체 비표시).
 3. **상시 경고 배너** — STR 후보 목록·보고 작성·제출 화면 상단에 "본 화면 정보의 외부 누설은 특정금융정보법 제4조의2 위반입니다" 경고 배너를 상시 표시한다.
-4. **열람 감사** — STR 관련 화면의 열람·조회는 `aml_audit_events`에 작업자·대상·시각을 기록한다(원문 열람은 §19.2 `RAW_DATA_ACCESS` 규약 동일).
+4. **열람 감사** — STR 관련 화면의 열람·조회는 `aml_audit_events`에 작업자·대상·시각을 기록한다(원문 열람은 §19.2 `RAW_DATA_ACCESS` 규약 동일). 감사 actor는 브라우저/body 입력이 아니라 bo-api principal에서 파생해 machine-auth v2로 서명한 `X-User-Subject`를 사용한다.
+5. **이중 authority 경계** — BO edge에서 사용자 `AML_COMPLIANCE` RBAC를 먼저 강제하고, bo-api→aml-svc 전용 machine credential도 `COMPLIANCE` authority token과 필요한 endpoint scope를 보유해야 한다. 엔진 `RoleGuard`/`ScopeGuard`를 생략하지 않는다.
 
 ### 19.3 감사
 
@@ -1989,6 +2003,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-12 | **P0-00 공통 inbound machine-auth wire v2 설계 전환.** §15.1/§15.7을 `../design/api/00-common-machine-auth.md` 정본으로 바꾸고 normalized servlet routing/ambiguous path·duplicate singleton 거부, raw query·AML `workspace=default`·고정 9-key scopeContext(trace/correlation 제외)·body digest, v1 offset/v2 UTC `Z`, nonce TTL `>2×skew`·cleanup `20×5000/tick`, signed redirect 거부와 local/demo positive provisioning을 반영했다. simulator/BO AML credential 분리, BO `COMPLIANCE` authority와 signed `X-User-Subject` STR 감사 actor 경계를 명시했다. P0-01/P0-04/P0-14·P1-02 lifecycle은 미완료이며 outbound webhook 공식은 inbound v2와 분리했다. | system-architect. 코드 truth=`common-security`, AML V44, bo-api AML signer·`RestClientConfig`/`RestClientConfigTest`, Python simulator transport |
 | 2026-07-12 | **실 REST AML lifecycle 폐루프 역전파.** CDD exact replay 업무결정 projection(V42), engine-owned `REPORT_RULE_PARAM` 4-eyes(V41), 알림-case/case-type별 STR·CTR report 유일성·비삭제 upgrade remediation·case→report lock·`PENDING_APPROVAL`/반려복원/type-matched REPORTED 선조건(V43), principal maker 신뢰경계, RA 상세 실 evidence와 simulator 동일 거래 snapshot/WLF 선검사·설정 A/B 원복 게이트를 반영했다. | 코드=truth. 근거=aegis-aml `feature/aml-lifecycle-closed-loop`, API/DB §V41~V43. |
 | 2026-07-11 | **WLF 엔진 typed profile·전용 조절 화면 역전파.** Policy Pack 단일 원장/4-eyes를 유지한 채 AML-WLF-005가 SANCTIONS·PEP별 6가중치·negative penalty·review/high-confidence threshold를 투영·상신하도록 §5.3·§10.3a를 개정했다. PEP/RCA→PEP, 그 외→SANCTIONS 매핑, WLF-only rule version, 결과 `appliedPolicy` snapshot, HIGH의 비자동확정 의미를 확정했다. | system-architect. 코드=truth. |
 | 2026-07-09 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule, aegis-aml 84997e1 — aml V31).** (1) §5.5 KR baseline에서 가상자산사업자 신고·Travel Rule 항목 제외. (2) §6.2 헥사고날 레이아웃 `domain/travelrule` 제거. (3) §8.1 `EventFamily` **20종→19종**(`TRAVEL_RULE` family 삭제)·§8.2 예시 `requiresTravelRule` 필드 폐기. (4) §13.2 EDD trigger `CRYPTO_RISK` 설명에서 Travel Rule 문구 제거·§13.3 `case_type` **12종→11종**(`VASP_TRAVEL_RULE_REVIEW` 삭제)·§13.3a `REPORTED` 설명 정정·§13.4/§13.5 4-eyes `subjectType` **16종→15종**(`TRAVEL_RULE_EXCEPTION` 삭제). (5) §14.1 `report_type` **7종→6종**(`TRAVEL_RULE` 삭제)·§14.3 `travelRuleThreshold` parameter 삭제. (6) §16 `policy_pack_code` 설명(STR/CTR)·§17.5 `aml_travel_rule_transfers` DDL 제거 스텁. (7) §21 Phase 5 'Travel Rule evidence'·Phase 8 `domain/travelrule` 삭제 주석·결론 요약 정정. 닫힌 enum 카운트 전수 정정. | system-architect. 코드=truth. 근거=`services/aml-svc`(EventFamily 19종·ReportType 6종·CaseType 11종·ApprovalSubjectType 20종·travelrule 도메인/UseCase/Controller/persistence 삭제)·migration V31(`DROP TABLE aml_travel_rule_transfers`). CRYPTO_OFF_RAMP TM 시나리오는 유지(dsl `crypto.travelRuleGap` 조건만 제거). |

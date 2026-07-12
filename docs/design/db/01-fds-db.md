@@ -2,9 +2,10 @@
 
 > 정본: `.claude/skills/_shared/target-architecture.md` (PostgreSQL · Flyway · 서비스별 별도 스키마 · 멀티테넌시 · PII 마스킹 · 4-eyes).
 > 입력 설계서: `docs/software/01-fdsSvc-sass.md` v1.1 (특히 §7 공통 데이터 모델, §8 event taxonomy, §9 수단/채널, §10 룰/feature, §11 action/case/결재, §13 멀티테넌시, §14 DDL, §16 PII/규제).
+> 공통 inbound 인증 정본: [`../api/00-common-machine-auth.md`](../api/00-common-machine-auth.md) (wire v2·credential version·nonce replay 의미론).
 > 책임 서비스: **`services/fds-svc`** (Java 25, Spring Boot 3.5.x, 헥사고날, `adapter/out/persistence`). AML 규제 케이스는 `aml-svc`, 결재·감사·IAM 운영은 `bo-api`가 별도 스키마로 보유한다.
 >
-> **대상 시스템 = hanpass-ph**: 한국→필리핀 해외송금(`CROSS_BORDER_REMIT`) + 필리핀 국내송금(`DOMESTIC_REMIT`) + 지갑(월렛충전 `CASH_IN`·월렛결제 `WALLET_PAYMENT`·ATM/지갑출금 `WALLET_WITHDRAWAL`) 5거래유형의 AML/FDS RegOps 백오피스. 운영 테넌트는 단일(`tenant_demo` = hanpass-ph). 본 문서는 그 데이터 모델을 실제 저장소 Flyway(V1~V13)·도메인 enum과 1:1로 확정한다.
+> **대상 시스템 = hanpass-ph**: 한국→필리핀 해외송금(`CROSS_BORDER_REMIT`) + 필리핀 국내송금(`DOMESTIC_REMIT`) + 지갑(월렛충전 `CASH_IN`·월렛결제 `WALLET_PAYMENT`·ATM/지갑출금 `WALLET_WITHDRAWAL`) 5거래유형의 AML/FDS RegOps 백오피스. 운영 테넌트는 단일(`tenant_demo` = hanpass-ph). 본 문서는 그 데이터 모델을 실제 저장소 Flyway(V1~V14)·도메인 enum과 1:1로 확정한다.
 
 ## 목차
 1. [범위·원칙](#1-범위원칙)
@@ -75,6 +76,7 @@ erDiagram
     FDS_TENANTS ||--o{ FDS_WORKSPACES : has
     FDS_TENANTS ||--o{ FDS_SOURCE_SYSTEMS : registers
     FDS_TENANTS ||--o{ FDS_API_CREDENTIALS : owns
+    FDS_API_CREDENTIALS ||--o{ FDS_AUTH_NONCES : consumes
     FDS_SOURCE_SYSTEMS ||--o{ FDS_SCHEMA_MAPPINGS : maps
     FDS_SOURCE_SYSTEMS ||--o{ FDS_CONNECTOR_OFFSETS : tracks
 
@@ -763,19 +765,42 @@ no-code rule builder가 노출하는 feature 정의(§10.1).
 | updated_at | TIMESTAMPTZ | N | now() | |
 
 ### 5.29 fds_api_credentials (§12.8, §13.0)
-API key/OAuth2 client/webhook을 `(tenant, workspace)`에 바인딩. **secret 원문 미저장 — hash만.**
+API key/OAuth2 client/webhook을 `(tenant, workspace)`에 바인딩. HMAC은 검증을 위해 공유 secret 복원이 필요하므로 **평문/hash가 아니라 AES-GCM `secret_ciphertext`를 저장**하고 요청 검증/발송 시점에만 복호화한다. raw secret은 DB·로그·조회 응답에 남기지 않는다.
 | 컬럼 | 타입 | NULL | 제약 | 설명 |
 |---|---|---|---|---|
 | tenant_id / workspace_id | VARCHAR(64) | N | PK | |
 | credential_id | VARCHAR(96) | N | PK | |
 | credential_type | VARCHAR(32) | N | `API_KEY`/`OAUTH2_CLIENT`/`MTLS`/`WEBHOOK` | |
-| secret_hash | VARCHAR(256) | Y | | HMAC secret keyed hash |
+| secret_ciphertext | VARCHAR(512) | Y | | HMAC/OAuth/webhook 공유 secret의 AES-GCM 암호문. raw secret 미저장 |
 | scopes | JSONB | N | `'[]'` | `fds:event:write` 등 |
+| allowed_protocol_versions | JSONB | N | DEFAULT `'["v2"]'`; non-empty subset of `v1`/`v2` | migration 이전 row=`["v1","v2"]`, 신규 row=`["v2"]`; service policy와 교집합만 허용 |
 | ip_allowlist | JSONB | Y | | |
 | webhook_url | VARCHAR(512) | Y | | callback URL |
 | enabled | BOOLEAN | N | TRUE | |
 | created_by / updated_by | VARCHAR(128) | Y | | secret 변경은 SECURITY_ADMIN 결재 |
 | created_at / updated_at | TIMESTAMPTZ | N | | |
+
+credential rotation은 신규 credential ID 병행 발급→client 전환→최대 clock skew(5분)+nonce TTL(15분) 경과→구 credential 비활성화를 기본으로 한다([공통 인증 §6](../api/00-common-machine-auth.md#6-credential-전환회전)). 명시적 v2 실패 후 v1 fallback은 금지한다. 단, 생성·scope 변경·유예회전·폐기·last-used 이력과 credential별 사용 조건은 **P1-02 미완료 범위**이므로 이 권장 절차만으로 credential lifecycle 완료를 주장하지 않는다.
+
+local/demo REST simulator credential은 Flyway data seed가 아니다. 명시적 `local|demo` positive profile과 opt-in property가 함께 켜진 경우에만 환경의 32자 이상 secret을 정상 cipher로 암호화해 v2-only row로 provision한다. 그 밖의 profile에는 provisioner가 등록되지 않는다.
+
+### 5.29a fds_auth_nonces (P0-00, Flyway V14)
+
+machine-auth v2의 credential-wide replay store. 인증 HMAC 검증 성공 뒤 scope/controller보다 먼저 `REQUIRES_NEW`로 원자 소비한다. invalid signature는 row를 만들지 않으며, valid signature 이후 업무 4xx/5xx·rollback이 발생해도 nonce는 소비된 채 유지한다. 업무 `Idempotency-Key` replay는 새 nonce로 인증한다.
+
+| 컬럼 | 타입 | NULL | 제약 | 설명 |
+|---|---|---|---|---|
+| tenant_id / workspace_id | VARCHAR(64) | N | PK, FK→`fds_api_credentials` | FDS credential scope |
+| credential_id | VARCHAR(96) | N | PK, FK→`fds_api_credentials` | API key ID |
+| nonce_hash | VARCHAR(64) | N | PK, lowercase SHA-256 hex | raw `X-Nonce` 미저장 |
+| protocol_version | VARCHAR(8) | N | CHECK `v2` | nonce는 v2 전용 |
+| canonical_request_hash | VARCHAR(64) | N | lowercase SHA-256 hex | canonical 전문 대신 hash만 저장 |
+| scope_context_hash | VARCHAR(64) | N | lowercase SHA-256 hex | 고정 9-key scopeContext hash |
+| content_digest | VARCHAR(72) | N | `sha-256=` + 64 lowercase hex | 최종 raw body digest, body 자체 미저장 |
+| consumed_at | TIMESTAMPTZ | N | DEFAULT now() | 원자 소비 시각 |
+| expires_at | TIMESTAMPTZ | N | `> consumed_at` | 기본 TTL 15분, 설정 정책은 `nonce TTL > 2 × timestamp skew` 강제 |
+
+PK `(tenant_id, workspace_id, credential_id, nonce_hash)`, FK `(tenant_id, workspace_id, credential_id)`→`fds_api_credentials` `ON DELETE CASCADE`. 단일 `INSERT ... ON CONFLICT ... WHERE expires_at <= consumed_at`가 동시성 경계라 같은 credential+nonce는 query/context/body가 달라도 만료 전 정확히 1회만 성공한다. raw nonce/body/signature/secret은 저장하지 않는다. expiry cleanup은 기본 1분 주기, tick당 최대 20 batch × 5,000 row를 각각 짧은 `REQUIRES_NEW` + `FOR UPDATE SKIP LOCKED`로 삭제한다. 정본 의미론은 [공통 인증 §4](../api/00-common-machine-auth.md#4-검증replay-의미론)를 따른다.
 
 ### 5.30 fds_external_decisions (§12.6 Legacy Vendor Bridge)
 vendor 결과를 evidence로 보존(원천 이벤트 아님).
@@ -843,7 +868,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 ---
 
 ### 5.35 fds_webhook_outbox (§12.8 webhook callback · API §9 · 연동 §4.5/§6.2.2, 엔진 T10)
-서비스 콜백(decision/case/action, API §9.1 4종)을 서비스 등록 URL로 **서명 HTTP POST** 발행하는 **transactional outbox**(액션 outbox `fds_actions`와 별개 채널 — relay 의미·상태머신 상이). 도메인 변경 트랜잭션 내에서 PENDING row 적재(`WebhookOutboxEmitter`) → 스케줄드 디스패처(`WebhookRelayScheduler`/`WebhookRelayService`, 연동 §6.2.2)가 `SELECT … FOR UPDATE SKIP LOCKED` 클레임 → endpoint(`fds_api_credentials` WEBHOOK·`webhook_url`·`secret_ciphertext`) 조회 → HMAC 서명(`hmac-sha256=<hex>` = HMAC-SHA256(secret, `timestamp + "." + payload`)) POST. 상태머신: `PENDING → DISPATCHING → DISPATCHED | (FAILED ↻ 지수 backoff) → DEAD_LETTERED`(DLQ). `payload`는 canonical camelCase envelope JSON(API §9.2, raw PII 미포함 — ref/hash/마스킹만), `payload_hash`=SHA-256(멱등 dedup). `sandbox` workspace는 미발행(shadow). 멀티테넌시 `(tenant_id, workspace_id, …)` 선두. (저장소 파일 `V15__webhook_outbox.sql`.)
+서비스 콜백(decision/case/action, API §9.1 4종)을 서비스 등록 URL로 **서명 HTTP POST** 발행하는 **transactional outbox**(액션 outbox `fds_actions`와 별개 채널 — relay 의미·상태머신 상이). 도메인 변경 트랜잭션 내에서 PENDING row 적재(`WebhookOutboxEmitter`) → 스케줄드 디스패처(`WebhookRelayScheduler`/`WebhookRelayService`, 연동 §6.2.2)가 `SELECT … FOR UPDATE SKIP LOCKED` 클레임 → endpoint(`fds_api_credentials` WEBHOOK·`webhook_url`·`secret_ciphertext`) 조회 → HMAC 서명(`hmac-sha256=<hex>` = HMAC-SHA256(secret, `timestamp + "." + payload`)) POST. 상태머신: `PENDING → DISPATCHING → DISPATCHED | (FAILED ↻ 지수 backoff) → DEAD_LETTERED`(DLQ). `payload`는 canonical camelCase envelope JSON(API §9.2, raw PII 미포함 — ref/hash/마스킹만), `payload_hash`=SHA-256(멱등 dedup). `sandbox` workspace는 미발행(shadow). 멀티테넌시 `(tenant_id, workspace_id, …)` 선두. 현행 저장소 파일은 통합 `V1__baseline.sql`이며 구 논리 V15 의미가 흡수돼 있다. 이 outbound `timestamp + "." + payload` 공식은 inbound machine-auth v2([공통 API 정본](../api/00-common-machine-auth.md))와 별개다.
 
 | 컬럼 | 타입 | NULL | 제약 | 설명 |
 |---|---|---|---|---|
@@ -912,9 +937,10 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | fds_audit_logs | ix_audit_action_time | `(tenant_id, workspace_id, audit_action, created_at DESC)` | 감사 조회 |
 | fds_evidence_exports | ix_export_status | `(tenant_id, workspace_id, status, created_at DESC)` | export 큐 |
 | fds_external_decisions | ix_ext_tx | `(tenant_id, workspace_id, transaction_ref)` | dual-run 비교 |
-| fds_notify_channels | ix_fds_notify_channels_scope | `(tenant_id, workspace_id)` | 알림 채널 목록·전체교체 delete(V14, 엔진 T8) |
-| fds_webhook_outbox | ux_fds_webhook_outbox_idem | UNIQUE `(tenant_id, workspace_id, aggregate_type, aggregate_ref, event_name, payload_hash)` | webhook 멱등 dedup(V15, 엔진 T10) |
-| fds_webhook_outbox | ix_fds_webhook_outbox_claim | `(tenant_id, workspace_id, status, next_attempt_at, created_at)` | 디스패처 SKIP LOCKED 클레임(V15, 연동 §6.2.2) |
+| fds_notify_channels | ix_fds_notify_channels_scope | `(tenant_id, workspace_id)` | 알림 채널 목록·전체교체 delete(현행 통합 V1, 엔진 T8) |
+| fds_webhook_outbox | ux_fds_webhook_outbox_idem | UNIQUE `(tenant_id, workspace_id, aggregate_type, aggregate_ref, event_name, payload_hash)` | webhook 멱등 dedup(현행 통합 V1, 엔진 T10) |
+| fds_webhook_outbox | ix_fds_webhook_outbox_claim | `(tenant_id, workspace_id, status, next_attempt_at, created_at)` | 디스패처 SKIP LOCKED 클레임(현행 통합 V1, 연동 §6.2.2) |
+| fds_auth_nonces | ix_fds_auth_nonces_expires_at | `(expires_at)` | 기본 1분 주기·tick당 최대 20×5,000건, batch별 `REQUIRES_NEW`/`SKIP LOCKED` 만료 정리(V14, P0-00) |
 
 > 대용량 테이블(`fds_canonical_events`, `fds_decisions`, `fds_audit_logs`)은 `(tenant_id, occurred_at/created_at)` 월 단위 RANGE 파티션을 운영 옵션으로 둔다. 보존정책(§7)에 따라 파티션 단위 파기.
 
@@ -927,7 +953,8 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 - 식별자는 tenant별 **keyed hash(HMAC)** 또는 **token**으로만 저장 → `subject_ref`, `account_ref`, `instrument_ref`, `counterparty_ref`, `document_no_hash`, `target_ref`, `member_ref`.
 - raw payload 미저장. 필요 시 tenant region 암호화 object storage에 저장하고 `payload_hash` reference만 DB 보존.
 - ingest 단계에서 원천 payload에 주민번호/PAN 포함 시 reject 또는 tokenization 후 원문 폐기.
-- secret(API key/HMAC/webhook): `fds_api_credentials.secret_hash`로만 저장. 원문 미저장.
+- secret(API key/HMAC/webhook): `fds_api_credentials.secret_ciphertext`에 AES-GCM 암호문만 저장. raw secret 미저장·미로그·조회 미노출.
+- machine-auth replay: `fds_auth_nonces`에는 raw nonce/body/signature 대신 nonce/request/context hash와 content digest만 저장하고 15분 TTL 뒤 batch 파기한다.
 
 ### 7.2 감사 컬럼
 - 운영 테이블 공통: `created_at`, `updated_at`.
@@ -948,7 +975,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 
 ## 8. Flyway 마이그레이션 순서
 
-스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V13, 누락 없음)이다.
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V14, 누락 없음)이다.
 
 | 버전 | 파일 | 내용(실제) | 비고 |
 |---|---|---|---|
@@ -965,6 +992,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | V11 | `V11__subject_profile_source_version.sql` | `fds_subjects.profile_source_event_id varchar(160)`·`profile_source_occurred_at timestamptz` additive 추가 + tenant/workspace/source-time 인덱스. AML outbox 재시도 역전 도착에서 과거 CDD가 최신 국적을 덮는 것을 방지 | additive |
 | V12 | `V12__dynamic_rule_builder_core_features.sql` | `FeatureComputeAdapter`가 계산하는 subject count/sum의 10m/1h/6h/24h core feature 8개를 `_global/default` catalog에 멱등 upsert. catalog-first 룰 화면에서 거래건수·금액합계를 직접 선택하는 정본 | additive seed |
 | V13 | `V13__rest_ingest_monitoring_index.sql` | REST 거래 인입 실측을 위한 partial index `ix_events_rest_tx_received (tenant_id, workspace_id, source_system, received_at DESC) WHERE transaction_ref IS NOT NULL`. 24h accepted 거래 count와 source별 최신 수신 조회 지원 | additive index |
+| V14 | `V14__machine_auth_nonce_replay.sql` | P0-00 machine-auth v2. `fds_api_credentials.allowed_protocol_versions` 추가(기존 row `["v1","v2"]` backfill, 이후 DEFAULT `["v2"]`, non-empty subset CHECK) + `fds_auth_nonces` 생성(PK tenant/workspace/credential/nonce_hash, credential FK CASCADE, request/context hash·content digest·consumed/expires 시각, v2/hash/expiry CHECK) + expiry index | additive auth/replay |
 
 > **consolidate 주의**: 2026-06-30 이전 문서의 구 phase 파일(V10~V22 등)은 현행 저장소에 실재하지 않는다. 해당 스키마·CHECK·demo seed 의미는 V1/V2 baseline·seed와 V3~V6 additive seed로 흡수되었으므로, 본 표가 Flyway 정본이다.
 
@@ -999,7 +1027,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 - **스키마**: `fds` (fds-svc). 형제 스키마 `aml`, `bo`.
 - **격리 키**: `tenant_id`(=배포의 서비스(테넌트=서비스)·전용 배포에선 단일 값·상위 기관 참조 `institution_ref`), `workspace_id`(default `'default'`, sandbox `'sandbox'`·워크스페이스/환경), `data_scope`(권한 필터).
 - **배포/온보딩 메타(`fds_tenants`)**: `deployment_model`(`MANAGED_DEDICATED`/`SELF_HOSTED`/`SHARED`, 3종), `onboarding_status`(`REQUESTED`/`PROVISIONING`/`DEPLOYED`/`VERIFIED`/`ACTIVE`/`PACKAGE_ISSUED`/`CUSTOMER_DEPLOYED`/`REGISTERED`, 8종), `default_region`, `infra_ref`. 구 `isolation_mode` 컬럼·enum(`SHARED`/`SCHEMA`/`DB`) 폐기. API `DeploymentModel`/`OnboardingStatus` enum, `TenantDto.deploymentModel`/`onboardingStatus`/`region`/`infraRef` 필드와 1:1. 온보딩 엔드포인트는 bo-api 전용(`POST .../onboarding/provision`, `GET .../onboarding`, `POST .../onboarding/register`).
-- **핵심 테이블**: `fds_canonical_events`, `fds_decisions`, `fds_decision_reasons`, `fds_actions`, `fds_cases`, `fds_case_events`, `fds_rules`, `fds_rule_versions`, `fds_rule_simulations`, `fds_feature_catalog`, `fds_risk_groups`, `fds_risk_group_members`, `fds_approval_requests`, `fds_approval_steps`, `fds_api_credentials`, `fds_external_decisions`, `fds_evidence_exports`, `fds_audit_logs`, `fds_idempotency_keys`, `fds_business_documents`, `fds_commerce_orders`, `fds_settlements`, `fds_connector_offsets`, `fds_schema_mappings`, `fds_source_systems`, `fds_subjects`, `fds_accounts`, `fds_instruments`, `fds_transactions`, `fds_tenants`, `fds_workspaces`.
+- **핵심 테이블**: `fds_canonical_events`, `fds_decisions`, `fds_decision_reasons`, `fds_actions`, `fds_cases`, `fds_case_events`, `fds_rules`, `fds_rule_versions`, `fds_rule_simulations`, `fds_feature_catalog`, `fds_risk_groups`, `fds_risk_group_members`, `fds_approval_requests`, `fds_approval_steps`, `fds_api_credentials`, `fds_auth_nonces`, `fds_external_decisions`, `fds_evidence_exports`, `fds_audit_logs`, `fds_idempotency_keys`, `fds_business_documents`, `fds_commerce_orders`, `fds_settlements`, `fds_connector_offsets`, `fds_schema_mappings`, `fds_source_systems`, `fds_subjects`, `fds_accounts`, `fds_instruments`, `fds_transactions`, `fds_tenants`, `fds_workspaces`.
 - **PK 패턴**: `(tenant_id, workspace_id, <natural key>)`. decision/action/case/approval/export/audit는 `UUID` 식별자, event는 원천 `event_id`(VARCHAR).
 - **enum 코드값**: §4 전체(decision 8종, **action_type 22종 — API `ActionType` enum이 정본, §4.8과 1:1**(Travel Rule 제거 V9), case_type 10종(Travel Rule 제거 V9), instrument 12종, **channel_type 21종 closed**(`ChannelType.java`·`ck_fds_events_channel_type` CHECK; hanpass-ph 운영 채널은 `CROSS_BORDER_REMIT`/`DOMESTIC_REMIT`/`CASH_IN`/`WALLET_PAYMENT`/`WALLET_WITHDRAWAL`(+`INBOUND_REMIT`) 5(+1)유형으로 한정, §4.4), **event_family 19종**(`EventFamily.java`·`ck_fds_events_family` CHECK; `REMIT`/`DOMESTIC`/`WALLET` 포함, V21, §4.16), payment_rail 18종, capability 9종, approval_line 6종, approval_status 8종, **transaction_type 12종(§4.19, `fds_transactions.transaction_type` 폐쇄 CHECK)**, idempotency scope 4종(`EVENT`/`DECISION`/`ACTION`/`AML_FEEDBACK`, V19)). `subject_kind` **10종**(`CASE_CLOSE` case 종결 4-eyes + `POLICY_PACK` 규제 팩 토글 4-eyes + `RULE_PARAM` 룰 변수 편집 4-eyes(V7, 대상=`fds_rules.rule_id`) 포함, 설계서 §11.5).
 - **AML cross-ref 컬럼**: `fds_cases.aml_case_id VARCHAR(96) NULL`(API `amlCaseRef`, integration §9.1). FK 아님.
@@ -1012,6 +1040,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-12 | v3.8 | **P0-00 machine-auth v2 credential/replay 스키마 역전파.** §5.29에 `allowed_protocol_versions`(기존 `[v1,v2]`, 신규 `[v2]`)와 실제 AES-GCM `secret_ciphertext`를 반영하고, §5.29a `fds_auth_nonces`(credential-wide PK·hash/digest only·기본 15분 TTL, 정책 `>2×skew`·원자 consume·cleanup 최대 `20×5000/tick`) 및 expiry index를 신설했다. local/demo positive-profile provisioner는 Flyway seed가 아니며 P1-02 운영 lifecycle은 미완료임을 명시했다. §8에 실제 `V14__machine_auth_nonce_replay.sql`을 등재하고 구 hash 컬럼 오기를 전수 제거했다. outbound webhook secret 사용은 동일 ciphertext 복호화 경계로 유지한다. | 코드 truth=FDS V14·`common-security`; 공통 계약=`../api/00-common-machine-auth.md` |
 | 2026-07-10 | v3.7 | **REST 거래 인입 모니터링 조회 인덱스 추가.** V13 `ix_events_rest_tx_received (tenant_id, workspace_id, source_system, received_at DESC) WHERE transaction_ref IS NOT NULL`을 §6에 반영. accepted canonical 거래 row의 24h 건수·마지막 수신 조회를 지원하며 스키마/컬럼 변경 없음. | data-modeler |
 | 2026-07-10 | v3.6 | **FDS 고객 프로필 CDD-authoritative upsert 정합.** AML CDD outbox/internal API non-null 값은 갱신, null 보존, 거래 snapshot은 빈 값 bootstrap만 허용. V11 원천 eventId/occurredAt 컬럼으로 역전 도착 과거 projection을 차단. | data-modeler |
 | 2026-07-09 | v3.5 | **FDS 룰베이스 확장 — 고객 프로파일 스냅샷·distinct velocity 반영(코드=truth, V10, feature/fds-rule-nationality-metric-conditions).** (1) §8 저장소 마이그레이션 표에 `V10__subject_profile_and_distinct_velocity_features.sql`(1:1) 행 추가 + "현행 V1~V9, 누락 없음" → "V1~V10"로 정정(헤더 Flyway 범위 표기도 V1~V10 로 동기). (2) §5.6 `fds_subjects` 에 비-PII 프로파일 컬럼 3종 `nationality varchar(2)`·`registered_at`·`kyc_completed_at` 행 추가 + COALESCE 보존 upsert 노트(거래 이벤트의 미동봉 null 이 CDD 원천 마스터를 지우지 않음, `SubjectStateJpaAdapter`) — feature `customer.nationality`(STRING)·`customer.signupAgeDays`/`customer.kycAgeDays`(NUMBER = floor((occurredAt−타임스탬프)/일), 음수 0 클램프, 부재 시 미노출) 원천, 기존 `customer.accountAgeDays` 보존(무회귀). (3) §5.17 `rule_json` velocity `distinct_count`·`field` 문법 노트 신설 — `field` 닫힌 화이트리스트 `{receiveCountry, channelType}`(`RuleDslParser.DISTINCT_FIELDS`), `distinct_count` 필수·`count`/`sum` 금지(폐그래머), 사전계산 키 `velocity.distinct_count.<field>.subject.<window>`(window 10m/1h/6h/24h). (4) §5.20 feature catalog V10 시드 노트(Subject 3종 + Velocity distinct 8종, `ON CONFLICT DO UPDATE` 멱등). | data-modeler. 코드=truth. 근거=`services/fds-svc/src/main/resources/db/migration/V10__subject_profile_and_distinct_velocity_features.sql`·`domain/rule/{VelocityAggregate,RuleCondition,RuleDslParser,DomainFeatureKeys}`·`adapter/out/persistence/{SubjectStateJpaEntity,SubjectStateJpaAdapter,CanonicalEventJpaRepository}`·`adapter/out/feature/FeatureComputeAdapter`·aegis-aml 491f46e. |
