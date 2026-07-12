@@ -668,6 +668,8 @@ canonical varchar 경계는 DB §3.15와 동일하게 ingest 전에 검증한다
 
 > **RA 모델 관리 DTO `scenario`·`parameters`(bo-api BFF, 코드=truth).** bo-api 의 RA 모델 관리 read model `RaModel`(`GET /api/v1/bo/aml/ra-models`)과 그 하위 `RaModelVersion` 은 model-level 축 **`scenario`(ONBOARDING/ONGOING, DB §3.9 `aml_risk_models.scenario` 1:1)** 와 **`parameters`(JSON, DB §3.9 `aml_risk_models.parameters` 1:1)** 를 노출한다 — `RaModelVersion.scenario`/`parameters` 는 소유 `RaModel` 을 승계(같은 modelCode 의 버전은 동일 scenario)해 버전 행이 모델 그룹 밖에서도 자기서술적이다. 운영 family는 `KR_DEFAULT_RA=ONBOARDING`, `KR_ONGOING_RA=ONGOING` 두 개로 고정한다. FE는 `scenario`를 배지에 표시하고, 저장된 전체 정의를 scenario별 typed form으로 엄격 파싱해 ONBOARDING 가중치·CDD 파생 규칙과 ONGOING 가중치·STR/CTR/FDS 규칙을 독립 편집한다. 필수/미지/타입 오류 필드나 family-scenario 불일치는 UI 기본값으로 합성하지 않고 편집·시뮬레이션·활성화를 차단한다. enum 2종 = `ONBOARDING`(1차·온보딩·`KR_DEFAULT_RA`) / `ONGOING`(2차·상시·`KR_ONGOING_RA`, STR/CTR/FDS 발동 시 거래 가중 재평가→주기 단축→EDD 자동 개시). ONGOING 재평가 결과는 §3.3 `RiskScoreResponse.{scenario, reassessmentAlerts, reviewShortened}` 로 화면에 표시한다(bo-api `RaDtos.{ReassessmentAlert,ReviewShortened}` 1:1).
 
+> **bo-api 프로필 `riskSummary.riskGrade` 등급 폴백 체인은 §3.9 후주 참조** — 고객 프로필 aggregate 의 `riskGrade`(top-level → `latestRiskScore.riskGrade` → `LOW`, `AmlCustomerProfileService#resolveGrade`)는 프로필 응답 절(§3.9 `CustomerProfileDto` 후주)에 명문화한다.
+
 ### 3.3b RiskDistributionResponse → `GET /api/v1/admin/aml/risk-scores/distribution` (DB `aml_risk_scores`)
 
 | 필드 | 타입 | 설명 |
@@ -1017,6 +1019,8 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 > raw PII(이름·주민번호·여권번호 원문) 미노출. 식별은 `customerRef`(토큰), 매칭 보조는 `*Hash`만(DB §2.2). PII 원문 접근은 `aml:pii:reveal` scope+감사 필요(§1.6).
 >
 > **bo-api 화면 aggregate `CustomerProfile.riskSummary.mandatoryHighRisk`(당연고위험) 파생(run5 #3).** 위 엔진 evidence `CustomerProfileDto` 는 mandatory(당연고위험 강제 상향) 필드를 싣지 않는다. bo-api 프로필 화면 aggregate(`GET /api/v1/bo/aml/customers/{ref}/profile`)는 동일 위임 컨텍스트의 RA read(`GET /aml/customers/{ref}/risk` → `RiskScoreResponse.{mandatoryHighRisk, mandatoryHighRiskReasons, forcedFloorEvidence}`, §3.3)를 재사용해 `riskSummary.mandatoryHighRisk`(**boolean\|null**) 를 합성한다 — `isPep=true` 면 사유에 `PEP` 포함, RA read 실패 시 `null`(미상, `false` 단정 금지). stub(비운영) 경로는 RA stub 을 단일 소스로 하여 프로필 등급·사유·재확인주기가 RA 상세(§3.3)와 일치한다(PEP 승인·RISK_OVERRIDE 폐루프 양 read 동형, run5 #4).
+>
+> **bo-api 화면 aggregate `CustomerProfile.riskSummary.riskGrade` 등급 폴백 체인(코드=truth, `AmlCustomerProfileService#resolveGrade`, v9.46).** bo-api 프로필 화면 aggregate 의 `riskSummary.riskGrade` 는 엔진 profile 의 top-level `riskGrade`(위 표 §CustomerProfileDto `riskGrade`) 를 그대로 쓰지 않고 **폴백 체인 — ① top-level `riskGrade` → ② `latestRiskScore.riskGrade`(§CustomerProfileDto `latestRiskScore` 요약) → ③ `LOW`** 로 해소한다. 엔진 evidence profile 이 top-level `riskGrade` 를 **null/blank 로 내리는 계약**(실측)이라 top-level 만 매핑하면 등급이 `LOW` 로 기본값 처리되는 반면 `riskScore` 는 `latestRiskScore.riskScore`(예 `85.39`)를 그대로 써서, `riskSummary` 가 `(riskGrade=LOW, riskScore=85.39)` 로 **모순**되던 결함이 있었다(같은 회원의 `GET .../risk`(§3.3)는 HIGH). 폴백은 top-level 부재 시 **최신 RA 점수 행의 등급으로 내려가** `riskScore`↔`riskGrade` 두 필드를 **동일 소스(최신 RA 점수 행)에 정렬**한다. **① top-level·② latest 가 둘 다 부재(null/blank)할 때만** 최종 `LOW` 기본값을 쓴다(상위 요구서 미정의 지점 — **가정 A4로 진행: 코드=truth**). bo-api 는 등급 코드값을 재해석하지 않고 passthrough(FE i18n 라벨) — 폴백은 **소스 선택**일 뿐 vocab 변환이 아니다.
 
 `ActivitySummaryDto`(GET `/evidence/aml/customers/{customerRef}/activity-summary` 응답 — EDD 소득정합성 판단 재료, read-only 수치 집계, raw PII 미노출):
 
@@ -2336,6 +2340,7 @@ eAMLA 제출은 **raw PII 미전송** — 토큰화된 보고 참조만 전달�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-12 | **bo-api 프로필 `riskSummary.riskGrade` 등급 폴백 체인 명문화(§3.9 `CustomerProfileDto` 후주, §3.3 포인터, 계약 변경 없음).** 고객 프로필 aggregate `riskSummary.riskGrade` 가 엔진 evidence profile top-level `riskGrade` → `latestRiskScore.riskGrade` → 최종 `LOW` 순으로 폴백해 riskScore↔riskGrade 를 동일 소스로 정렬((LOW, 85.39) 모순 방지, 가정 A4)함을 §3.9 후주에 추가(§3.3 은 포인터). 표기 정합 파생일 뿐 엔진 판정 미변경·스키마/계약 변경 없음. | docs-only 역전파. 코드=truth. 근거=bo-api `aml/profile/service/AmlCustomerProfileService#resolveGrade`(L390~407). plan §6.1·§3.9 동기화. |
 | 2026-07-12 | **AML lifecycle 폐루프 API 역전파.** CDD exact replay 불변 업무결정 응답, engine-owned REPORT_RULE_PARAM 상신/5필드 응답 검증, origin-alert handoff, case-linked STR/CTR type·target 검증, case PENDING/reject/type-matched REPORTED 및 case→report lock, report 반려 후 재상신과 인증 maker 경계를 반영했다. | 코드=truth. aml V41~V43. |
 | 2026-07-11 | **WLF 엔진 가변 설정·적용 증거 API 추가(AML-WLF-005).** `GET/POST /api/v1/admin/aml/wlf-engine-config[:change]`와 bo-api 미러를 신설해 Policy Pack 단일 원장/`POLICY_PACK` 4-eyes 위에서 SANCTIONS·PEP별 6가중치·negative penalty·review/high-confidence band를 관리한다. screening 응답에 결과 생성 시점 `appliedPolicy`(profile·config/rule version·definition hash·threshold·band)를 additive 영속 투영하고, admin simulation `sourceTypes` 필터 및 적용정책 응답을 명문화했다. HIGH는 우선순위 evidence일 뿐 자동 TRUE_MATCH가 아니다. | api-designer. 코드=truth. aml V37~V38·bo-api V15·`verify_aml_wlf_config_closed_loop.py`. |
 | 2026-07-10 | **CDD→FDS 고객 프로필 동기화 계약 추가.** §2.1 step 7f에 CDD accepted 트랜잭션의 `FDS_CUSTOMER_PROFILE` outbox와 PII-safe payload, replay/dedup, relay retry 경계를 명시. AML DB V32가 outbox aggregate CHECK 7종을 허용한다. `registeredAt`·`kyc.kycVerifiedAt`은 `docs/aml-data.md` §12.2 정본. | api-designer |
