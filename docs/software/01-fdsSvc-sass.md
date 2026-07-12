@@ -1,5 +1,7 @@
 # hanpass-ph FDS(fds-svc) 소프트웨어 아키텍처 설계서
 
+> 공통 inbound machine-auth 정본: [`../design/api/00-common-machine-auth.md`](../design/api/00-common-machine-auth.md) (P0-00 wire v2·credential version·durable nonce). 아웃바운드 webhook 서명은 별도 계약이다.
+
 ## 목차
 
 1. [문서 목적](#1-문서-목적)
@@ -1324,9 +1326,13 @@ Workspace-Id: default
 Source-System: remit-svc
 Idempotency-Key: remit-svc:remit-evt-001
 X-Api-Key: ...
-X-Timestamp: 2026-06-06T19:00:00Z
+X-Timestamp: 2026-07-12T00:00:00Z
+X-Auth-Version: 2
+X-Nonce: AAECAwQFBgcICQoLDA0ODw
 X-Signature: hmac-sha256=...
 ```
+
+인바운드 HMAC canonical bytes는 UTF-8/LF/no trailing LF의 `preamble/version/METHOD/rawPath/rawQuery/Tenant-Id/fixed 9-key scopeContext/content digest/timestamp/nonce` 순서이며 세부 문법은 [공통 machine-auth 정본](../design/api/00-common-machine-auth.md)만 따른다. FDS workspace는 `Workspace-Id` 부재 시 `default`, source header는 `Source-System`만 인정한다. filter/scope coverage는 normalized servlet route로 판단하고 HMAC은 raw path를 고정하며, ambiguous raw path와 duplicate singleton header는 nonce 소비 전에 거부한다. `X-Trace-Id`/`X-Correlation-Id`는 관측성에는 전파하지만 9-key context 밖이다. 구 `timestamp/apiKey/method/path/[actor]/body` 공식은 기존 credential 전환 호환용 v1이며 RFC3339 offset timestamp를 계속 받지만, 신규 client는 UTC `Z` v2를 사용한다. signed client는 redirect를 자동 추종하지 않는다. bo-api 공용 engine `RestClient`도 `DONT_FOLLOW`를 강제하지만 bo-api→FDS signer는 P0-04 미완료다.
 
 ### 12.2 Queue Connector
 
@@ -1450,7 +1456,7 @@ SaaS FDS는 고객사 내부 시스템이 API로 직접 사용할 수 있는 외
 
 API 제공 원칙:
 
-- 모든 API는 tenant, source system, idempotency key, request signature를 기본으로 한다.
+- 모든 API는 tenant, source system, idempotency key, request signature를 기본으로 한다. machine credential은 wire v2에서 raw query·scope context·최종 body digest와 16-byte nonce(기본 TTL 15분, 정책상 `>2×timestamp skew`)를 함께 결합한다. 만료 nonce cleanup은 기본 1분 주기·최대 `20×5000/tick`의 짧은 batch다.
 - 실시간 거래 판단 API와 비동기 event ingest API의 기존 분리 계약을 유지한다. 요청 한 번으로 결과가 필요한 연동사를 위해 동일 use case를 순서대로 호출하는 additive `/events/evaluate`를 제공한다.
 - API 응답은 고객 서비스가 바로 action할 수 있는 decision code와 reason code를 포함한다.
 - 원천 payload는 core schema에 직접 저장하지 않고 canonical event로 정규화한다.
@@ -1484,6 +1490,10 @@ POST /api/v1/fds/decisions/evaluate
 Tenant-Id: tenant-a
 Source-System: domestic-transfer
 Idempotency-Key: transfer:T20260606-0001:evaluate
+X-Api-Key: ...
+X-Timestamp: 2026-07-12T00:00:00Z
+X-Auth-Version: 2
+X-Nonce: AAECAwQFBgcICQoLDA0ODw
 X-Signature: hmac-sha256=...
 ```
 
@@ -1506,11 +1516,15 @@ API 인증·권한:
 
 | 방식 | 용도 |
 |---|---|
-| API Key + HMAC | 서버 간 기본 연동 |
+| API Key + HMAC wire v2 | 서버 간 기본 연동. canonical/replay/credential transition 정본=`../design/api/00-common-machine-auth.md`; 기존 row `[v1,v2]`, 신규 row `[v2]` |
 | OAuth2 Client Credentials | 중대형 고객·권한 scope 세분화 |
 | mTLS | 금융회사·고위험 action API |
 | IP allowlist | 운영망 고정 고객 |
-| Webhook signature | 고객 callback 위변조 방지 |
+| Webhook signature | 고객 callback 위변조 방지. outbound `HMAC-SHA256(secret, timestamp + "." + rawBody)`로 inbound v2와 혼용 금지 |
+
+> local/demo simulator credential provisioning과 bootstrap bypass는 명시적 `local|demo` positive profile + opt-in에서만 동작하고 Flyway business seed가 아니다. 다른 profile은 property가 있어도 fail-closed한다.
+>
+> **미완료 경계(2026-07-12)**: P0-01(`/aml/v1/**` filter), P0-04(내부 service-auth·bo-api→FDS signer), P0-14(multipart 최종 raw-byte signer), P1-02(credential 생성/scope/유예회전/폐기/last-used·rate/network/workload 통제)는 미완료다. 공통 계약의 존재만으로 해당 경로나 운영 lifecycle 적용 완료를 주장하지 않는다. valid v2 nonce는 HMAC 성공 뒤 scope/controller보다 먼저 소비되므로 downstream 오류에도 재사용할 수 없고, 업무 멱등 replay는 새 nonce를 사용한다.
 
 권한 scope(정본: API 명세 §2.3/§9, **11종** — 한국어 설명은 API §2.3/OpenAPI §10과 동일):
 
@@ -2366,6 +2380,7 @@ hanpass-ph FDS(`fds-svc`)는 Hanpass `FdsSvc`를 참조 구현으로 삼되, 그
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-12 | v3.2 | **P0-00 공통 inbound machine-auth wire v2 설계 전환.** §12.1/§12.8을 `../design/api/00-common-machine-auth.md` 정본으로 바꾸고 normalized servlet routing/ambiguous path·duplicate singleton 거부, raw query·고정 9-key scopeContext(trace/correlation 제외)·body digest, v1 offset/v2 UTC `Z`, nonce TTL `>2×skew`·cleanup `20×5000/tick`, signed redirect 거부와 local/demo positive provisioning을 반영했다. P0-01/P0-04/P0-14·P1-02 lifecycle 미완료를 명시하고 outbound webhook 공식은 inbound v2와 분리했다. | system-architect. 코드 truth=`common-security`, FDS V14, bo-api `RestClientConfig`/`RestClientConfigTest`, Python simulator transport |
 | 2026-07-10 | v3.1 | **운영 화면을 단일 FDS REST 거래 인입 API로 정정.** source system별 엔진 집계는 내부 입력으로 유지하고 `/fds/connectors`는 `POST /api/v1/fds/events` 한 행에 API 상태·24h 전체 합계·최신 수신·TPS 합계를 표시한다. bo-api/bo-web cache tenant/workspace 격리 포함. | system-architect |
 | 2026-07-10 | v3.0 | **Canonical store 기반 REST 거래 인입 실측 관측 흐름 추가.** §17에서 `fds_canonical_events.received_at`·`transaction_ref IS NOT NULL` accepted row를 tenant/workspace/source별 24h 건수·마지막 수신·60초 TPS로 집계하는 저수준 admin API와 bo-api→`/fds/connectors` 표시 흐름을 확정. replay/duplicate 비가산, PII 미노출. | system-architect |
 | 2026-07-10 | v2.9 | **국적·가입/KYC 경과일 프로필 원천을 AML CDD outbox로 정본화.** §5.2에 CDD→FDS 사전 materialization, 거래 승인 경로 무외부조회, 거래 snapshot fallback 우선순위를 추가. | system-architect |

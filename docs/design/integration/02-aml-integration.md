@@ -6,6 +6,7 @@
 > 정본: `.claude/skills/_shared/aegis-stack.md`(4서비스 모노레포·비동기 SQS·멀티테넌시·PII 마스킹·4-eyes·Policy Pack STR/CTR).
 > 입력 설계서: `docs/software/02-amlSvc-sass.md`(§8 Canonical Event Taxonomy·§12 TM·§13 결재·§14 Reporting·§15 외부연동·§19 감사).
 > 동기화 대상: `docs/design/db/02-aml-db.md`(테이블·컬럼·enum), `docs/design/api/02-aml-api.md`(엔드포인트·DTO·scope·에러).
+> 공통 inbound 인증 정본: [`../api/00-common-machine-auth.md`](../api/00-common-machine-auth.md) (wire v2 canonical request·credential version·durable nonce·전환/회전).
 > 참조 구현(코드 truth, 책임 서비스 `services/aml-svc`, 실제 패키지 `com.aegis.aml`): `adapter/in/rest/AmlEventController`(REST ingest)·`adapter/in/sqs/FdsDecisionConsumer`(`@SqsListener` FDS 결정 소비)·`adapter/in/sqs/ReportSubmissionCallbackConsumer`(FIU 회신)·`adapter/out/messaging`(outbox relay 라우터·SQS publisher)·`adapter/out/webhook`(서명 webhook relay)·`adapter/out/submission`(규제 제출 어댑터)·`adapter/out/feed`·`adapter/in/scheduled`(watchlist reconciliation).
 > 명칭·필드·타입·enum·엔드포인트는 위 코드·정본·DB·API 와 일치한다. 충돌 시 **코드(truth) > 정본 > 설계서 > DB/API** 순으로 우선하며, 추측 명칭은 도입하지 않는다.
 
@@ -63,6 +64,10 @@ flowchart LR
 - **직렬화 규약**: 모든 큐·webhook 메시지 키는 **camelCase**로 직렬화하고 DB 컬럼(snake_case)과 1:1 매핑한다(예 `submissionErrorCode`↔`submission_error_code`, `payloadHash`↔`payload_hash`, `schemaVersion`↔`schema_version`). enum 코드값은 DB §5·API §3와 동일하며 도메인 verb·별칭은 정본 enum 으로 환원해 전파한다(예 WLF `POTENTIAL_MATCH`→`POSSIBLE_MATCH`).
 - **`eventFamily`는 입력 필드가 아니다(서버 파생)**: consumer 가 `eventType` 접두(`<family>`)에서 도출하는 **읽기전용 파생값**이다(코드 truth: `EventFamily.fromEventType`). aml-svc 는 별도 `event_family` 컬럼을 두지 않고 `aml_canonical_events.event_type`(VARCHAR(80))에 `<family>.<verb>` 전체를 저장하므로, `eventFamily`는 라우팅·관측성·webhook envelope(API §8.2)용 투영(projection)으로만 쓴다.
 - **운영자 집계 API 경계**: 대시보드·서비스 관리·운영자 감사 조회는 **bo-api**가 소유·집약·인증한다(API §9 정본). aml-svc(엔진)는 저수준 데이터 API·비동기 큐만 제공하며, 본 연동 명세는 운영자 집계 엔드포인트를 정의하지 않는다.
+- REST inbound machine-auth는 raw path/query·Tenant-Id·AML `workspace=default`·고정 9-key scopeContext·최종 body digest·±5분 timestamp·16-byte nonce를 함께 서명하고 nonce를 credential-wide 원자 소비한다([공통 인증 정본](../api/00-common-machine-auth.md)). 기본 TTL 15분은 `2×skew`보다 엄격히 길고 cleanup은 기본 1분마다 최대 `20×5000` row다. source header는 `Source-System`만 정본이다. 기존 credential은 `[v1,v2]`, 신규 credential은 `[v2]`이며 명시적 v2 실패를 v1로 fallback하지 않는다. v1은 RFC3339 offset timestamp 호환을 유지하고 v2는 UTC `Z`만 허용한다.
+- 서버는 servlet normalized route로 filter/scope coverage를 판단하면서 raw path를 서명하고, dispatch 의미가 달라질 수 있는 ambiguous raw path와 duplicate singleton header를 body/nonce 처리 전에 거부한다. signed client는 redirect를 자동 추종하지 않고 target 변경 시 새 nonce로 다시 서명한다. bo-api 공용 engine `RestClient`는 `DONT_FOLLOW`를 강제하며 origin 302·target 0회·`X-Api-Key` 미전달을 실제 검증한다. `X-Trace-Id`/`X-Correlation-Id`는 관측성 계보로 전파하지만 고정 9-key scopeContext에는 포함하지 않는다.
+- local/demo credential bootstrap/provisioner는 `local|demo` positive profile + opt-in에서만 허용되고 Flyway business seed가 아니다. AML simulator와 bo-api는 서로 다른 ID/secret을 사용한다. BO credential은 10개 endpoint scope에 더해 `COMPLIANCE` authority token을 보유하며, STR 감사 actor/maker는 서명된 `X-User-Subject`에서 파생한다(BO edge의 사용자 RBAC와 엔진 role/scope 이중 강제).
+- **미완료 경계(2026-07-12)**: `/aml/v1/**` filter coverage(P0-01), AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer(P0-04), multipart raw-byte signer(P0-14), 생성·scope 변경·유예회전·폐기·last-used·사용 조건(P1-02)은 미완료다. 본 연동 문서의 v2 계약만으로 해당 호출 경로나 credential lifecycle 적용 완료를 주장하지 않는다.
 - **hanpass-ph REST 업무 분류(2026-07-01 코드 정합)**: FDS 탐지 결정과 AML TM은 같은 실시간 거래 payload(`memberRef`,`transactionRef`,`channel`,`amount`,`currency`,`counterpartyRef`,`corridor`)를 기준으로 한다. 여기 나열 키는 AML 엔진 저장 flat canonical payload(정본 표 = API §2.1a "엔진 저장 flat canonical payload")의 부분집합이며, `corridor` 는 서버 파생 문자열(`{reg}-{dest}`, 예 `PH-PH`), `counterpartyRef` 는 단일 canonical 상대방 토큰(flat payload·WLF screen key·vault 공유)이다 — 키 전수·파생 규칙 정본은 API §2.1a flat payload 표를 참조한다. FDS는 룰 기반 실시간 차단/보류/허용 결정, AML TM은 동일 거래 feed를 CTR/STR 사후 모니터링 evidence로 사용한다. AML REST 수신 카탈로그는 거래 TM 1종(`/transactions/evaluate`) + 고객 라이프사이클 4종(CDD 승인·정보수정·KYC/CDD 재이행·EDD) + RA 1종 + WLF 1종으로 운영 화면에 분류한다(API §2.1 주석).
 
 ### 1.2 어댑터 매핑 (헥사고날, 코드 truth)
@@ -184,6 +189,7 @@ flowchart LR
 | `webhook.callback.requested` | screening/case/report 상태 변경 | `subjectRef`·`eventName`(API §8.1, aggregate `WEBHOOK`) | **SQS 미경유** — `OutboxRelayRouter`가 `WebhookSenderPort`로 서명 HTTP 전송. 콜백 URL 원천 = `aml_api_credentials`(`credential_type=WEBHOOK enabled`).`webhook_url`(DB §3.15, 구현 `V17`). 공유 secret = 동일 행 `secret_ciphertext`(서명 시점만 복호). **`aml_source_systems` 에는 webhook URL 컬럼 없음**(fds-svc `fds_api_credentials.webhook_url` 미러) |
 
 > webhook 아웃박스 row 는 서비스 콜백 envelope(API §8.2 정본)을 발행한다(코드 truth `WebhookOutboxEmitter`). envelope 키: `schemaVersion`(`aml.webhook.v1`)·`eventName`(`AmlScreeningResolved`/`AmlCaseStatusChanged`/`AmlReportSubmitted`)·`eventFamily`(`screening`/`case`/`report`, **`eventName` 접두에서 서버 파생** — 입력 아님)·`eventId`·`tenantId`·`dataScope`·`occurredAt`·`traceId`·`data`. 모든 키 camelCase, `data`는 token/hash·마스킹만(원문 미포함). 서명·재시도·멱등은 API §8.3/§8.4 정본.
+> **서명 경계**: 위 outbound webhook은 `HMAC-SHA256(secret, timestamp + "." + rawBody)`를 유지한다. 이는 [inbound machine-auth v2](../api/00-common-machine-auth.md)의 preamble/raw query/scopeContext/content digest/nonce canonical bytes와 별개이며 혼용하지 않는다.
 
 ---
 
@@ -295,7 +301,8 @@ sequenceDiagram
     participant APP as AmlEventIngestService
     participant DB as aml_canonical_events
     participant TM as EvaluateTransaction
-    CB->>REST: ingest(Tenant-Id, Idempotency-Key, body)
+    CB->>REST: ingest(Tenant/Source/Idempotency + Timestamp + Auth-Version:2 + Nonce + Signature + body)
+    REST->>REST: normalized route/ambiguous path·duplicate header gate → v2 HMAC → nonce 원자 consume
     REST->>APP: ingest(command)
     APP->>APP: header/body 일치 → tenant active → source/schema 검증
     APP->>APP: EventFamily.fromEventType (strict gate; 미등재 ⇒ REJECTED)
@@ -314,6 +321,8 @@ sequenceDiagram
 
 ### 5.1a 중립 동기 수집 → 검증 → 토큰화 → WLF + CTR/STR (단일 POST, 코드=truth)
 
+> **P0-01 미완료**: `/aml/v1/transaction-events`의 공통 machine-auth filter coverage는 2026-07-12 현재 후속 범위다. 아래 업무 흐름은 유지되지만, P0-01 완료 증거 전에는 P0-00 v2 보호가 적용됐다고 간주하지 않는다. client가 보내는 v2 header만으로 서버 filter coverage를 대체할 수 없다.
+
 ```mermaid
 sequenceDiagram
     participant SRC as 원천/시뮬레이터
@@ -325,7 +334,7 @@ sequenceDiagram
     participant VAULT as aml_pii_vault
     participant WLF as ScreenSubject
     participant TM as EvaluateTm → CTR/STR
-    SRC->>REST: Envelope(5 product) + Tenant-Id + Idempotency-Key(=eventId)
+    SRC->>REST: Envelope(5 product) + Tenant-Id + Idempotency-Key(=eventId) + v2 headers (server filter=P0-01 pending)
     REST->>APP: toDomain()
     APP->>VAL: validate(event, tenantBaseCurrency)
     alt 위반 존재
@@ -712,6 +721,7 @@ aml-svc 엔진은 `aml_tenants`의 `deployment_model`/`onboarding_status`/`infra
 
 | 일자 | 버전 | 변경 | 비고 |
 |---|---|---|---|
+| 2026-07-12 | v3.3 | **P0-00 공통 inbound machine-auth wire v2 연동 전환.** REST ingest sequence를 normalized servlet route/ambiguous path·duplicate singleton gate→v2 HMAC→credential-wide nonce 원자 consume→업무 멱등 순으로 정정하고 canonical 공식은 `../api/00-common-machine-auth.md`를 단일 정본으로 참조했다. AML `workspace=default`, v1 offset/v2 UTC `Z`, TTL `>2×skew`, cleanup `20×5000/tick`, signed redirect 거부, trace/correlation context 제외, local/demo simulator/BO credential 분리와 BO `COMPLIANCE`·signed actor 경계를 반영했다. P0-01/P0-04/P0-14와 P1-02 lifecycle은 미완료다. outbound webhook `timestamp + "." + rawBody`는 inbound v2와 분리해 유지했다. | integration-designer. 코드 truth=`common-security`, AML V44, bo-api AML signer·`RestClientConfig`/`RestClientConfigTest`, Python simulator transport |
 | 2026-07-10 | v3.2 | **AML CDD→FDS 고객 프로필 outbox/REST 동기화 추가.** §1 토폴로지·경계·adapter 표에 `FDS_CUSTOMER_PROFILE` route와 `HttpFdsCustomerProfileSenderAdapter` 추가, §4.4에 PII-safe payload·memberRef/workspace·멱등/authoritative update 규칙 명시. AML V32가 aggregate CHECK를 7종으로 확장. | integration-designer |
 | 2026-07-09 | v3.1 | **Travel Rule 기능 전면 제거 정합(코드=truth).** (1) 헤더 닫힌 enum 보존 주석에서 `travel-rule` 패밀리 제거·`EventFamily` **19종** 명시 + `travel-rule.*` 이벤트 미수용(`NeutralEventValidator`/strict gate 거부) 명문화. (2) §9 제목·TOC `규제 제출 연동(STR/CTR/Travel Rule)`→`(STR/CTR)`, 앵커 동기화. (3) §9.1 `report_type` enum `STR/CTR/TRAVEL_RULE/…`→**`STR/CTR/EDD_REGISTER/WLF_REGISTER/RA_REPORT/AUDIT_EXPORT`**(코드 truth `ReportType` 6종). (4) **§9.3 Travel Rule 소절 삭제**(TravelRuleController/Service/도메인·`aml_travel_rule_transfers` 삭제) — 후속 §9.4→§9.3 재번호. (5) §3.2 `fds.case.escalated` 케이스 매핑에서 `REQUEST_TRAVEL_RULE_INFO`→`VASP_TRAVEL_RULE_REVIEW` 행 제거, §5.3 시퀀스 `VASP_...` 제거. (6) §8.3 subject_type 행에서 `TRAVEL_RULE_EXCEPTION` 제거(`ApprovalSubjectType` 20종). (7) §13 잔존 노트 — Travel Rule 항 삭제, `EventFamily`(19종)·projection·`case_type`(`CaseType` 11종)에서 `travel-rule`/`VASP_TRAVEL_RULE_REVIEW` 제거·삭제 명시. (8) §1 직렬화 예시·adapter 표·`aegis-stack` 참조에서 Travel Rule 제거. **STR/CTR 제출·FDS 위임(`OPEN_AML_CASE`) 흐름 자체는 유지·CRYPTO_OFF_RAMP TM 시나리오 존치**. 과거 changelog 행은 역사 기록으로 보존. | 코드=truth. 근거=aegis-aml 84997e1(feature/remove-travel-rule)·aml `EventFamily`(19종)/`ReportType`(6종)/`CaseType`(11종)/`ApprovalSubjectType`(20종)·`NeutralEventValidator`·V31 DROP(fds V9·bo-api V14 동반). integration-designer |
 | 2026-07-07 | v2.9 | **제재명단 파서 country(ISO-2) fallback 체인 반영(코드=truth, fix/wlf-entity-country-fds-phpequiv).** §9 fetch·파싱 절의 attributes 에 `country?(ISO-2 매치 키)` 추가 + fallback 체인 명문화 — OFAC `nationality → citizenship → addressList/address/country`, UN `NATIONALITY/VALUE(스코프 파싱, 문서순 첫 VALUE 오인 제거) → INDIVIDUAL_ADDRESS·ENTITY_ADDRESS/COUNTRY`. 배경: 단체(ENTITY)·선박은 국적 블록이 없어 country 부재 → 수취인(이름+국가 2필드, 최대 0.65) 스크리닝이 임계 0.65 에 도달 불가(제재 기업 수취인 영구 미탐)이던 결함 해소. 기적재 엔트리는 동일 버전 SKIP_UNCHANGED 라 재파싱되지 않음 — 신선 DB 재수집 또는 신규 publish 버전부터 반영. | 코드=truth. 근거=`OfacSdnXmlParser`·`UnConsolidatedXmlParser`(+파서 단위테스트 fixture 주소 블록). 시뮬레이터 `demo_ingest.py` 제재 수취인 선정도 country 보유 엔트리로 한정. |
