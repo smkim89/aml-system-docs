@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **9.47** | **2026-07-12** | **Hanpass Global Team** | **AML-PP-001 Policy Pack 관리 화면 제거(코드=truth, aegis-aml fix/watchlist-enum-labels-policy-pack-removal) + 명단 화면 enum 라벨 표기 결함 수정.** ① **화면 제거** — 범용 Policy Pack 관리(`/aml/policy-pack`, AML-PP-001)를 제거(§12-A.9 제거 스텁, § 번호 보존). 개별 룰 관리 화면(TM AML-TM-002·RA AML-RA-002·WLF AML-WLF-005·CDD AML-CDD-001·국가위험 AML-CTRY-001)이 정책 기준 편집을 각자 소관으로 제공하므로 범용 화면이 중복. **Policy Pack 데이터 모델·`POLICY_PACK` 4-eyes·`policy-packs:change` API 계약은 불변** — 화면 접점만 AML-WLF-005(typed 투영·편집)·TNT-002 ④(서비스별 뷰·변경 상신)로 대체. §1.0 IA 탐지·심사 정책 leaf 제거(설정 AML 메뉴 24→23), §13.2 ④·§부록 화면-API/subjectType/역할 표의 AML-PP-001 참조 정리. ② **명단·심사 화면 상태 라벨 표기 결함** — 워치리스트 소스/엔트리/임포트 상태·내부명단 오탐면제 상태·주체구분 옵션·WLF 심사 결재 상태·RA 상세 단계 라벨이 i18n 키(`enum.*`) 원문으로 노출되던 결함을 `enumLabel` 정본 헬퍼 경유로 수정(구현 상세 — 카탈로그 키·화면 구성 불변). | 근거=aegis-aml bo-web `lib/nav.ts`·`app/(authorized)/aml/policy-pack` 삭제·`AmlPolicyPackManager`/`useAmlPolicyPack`/`lib/aml-policy-pack` 삭제·`enumLabel` 적용 7파일. PPT 재빌드는 후속. |
 | **9.46** | **2026-07-12** | **Hanpass Global Team** | **§6.1 BR-006a 신설(2차 상시 RA 당연고위험 강제 floor 승계) + resolveGrade riskSummary 등급 폴백 역전파(코드=truth, docs-only 역전파, aml-lifecycle-closed-loop-20).** ① **§6.1 BR-006a 신설** — 2차(ONGOING) 재산정이 1차(ONBOARDING) baseline 의 당연고위험 강제 floor(`mandatoryHighRisk=true ∧ ¬isOverride`)를 승계함을 명문화: (a) `mandatoryHighRisk=true` (b) reasons 순서보존 dedupe 병합 (c) `factor_breakdown.forcedFloor` 마커 승계(legacy 부재 시 `{floor:HIGH,reasons,evidence:[]}` 합성, 가정 A2) (d) floor 미만 등급 상향 + 액션·주기 재산정. override baseline 은 승계 제외(가정 A1). baseline floor 종류(국가위험/명단/HRR) 무관 승계·신규 사유 코드 없음·**마이그레이션 신규 없음**(기존 V13 컬럼·`factor_breakdown` JSONB 재사용). ② **API §3.9 riskSummary 등급 폴백** — bo-api BFF `resolveGrade` 가 엔진 profile top-level `riskGrade` → `latestRiskScore.riskGrade` → `LOW` 순으로 폴백해 riskScore↔riskGrade 를 동일 소스로 정렬((LOW, 85.39) 모순 방지, 가정 A4)함을 API §3.9 `CustomerProfileDto` 후주에 명문화(§3.3 은 포인터). **정본 부재 → 확장 상태였던 지점을 코드 truth 로 역전파**(스키마/API 계약 변경 없음). | 근거=aml-svc `application/usecase/OngoingRaService#inheritMandatoryFloor`(L169·L239~287)·`domain/risk/ForcedFloorMarker`, bo-api `aml/profile/service/AmlCustomerProfileService#resolveGrade`(L390~407). DB §3.9 후주·API §3.9 동기화. 마이그레이션 신규 없음. 코드=truth. PPT 재빌드는 후속. |
 | **9.45** | **2026-07-12** | **Hanpass Global Team** | **CDD→1차 RA→WLF/TM/FDS→2차 RA→케이스→STR/CTR 보고 실 REST 폐루프 및 4-eyes 불변식 보강.** CDD 응답에 exact replay 불변 `APPROVE/REJECT/EDD_REQUIRED`+RA snapshot(동일 key 다른 body=409), 고정 CTR/STR 룰 파라미터를 aml-svc 소유 `REPORT_RULE_PARAM` 결재로 전환, 알림당 case·case당 type-matched report 1건 및 case-linked draft/detail/deeplink, case 종결 `PENDING_APPROVAL`/반려복원/`STR_REVIEW→STR`·`CTR_REVIEW→CTR` REPORTED 제출검증, principal 기반 maker 신뢰경계를 적용한다. RA/CDD 상세는 CDD profile·WLF 근거·exact activity/case/screening·실제 관계/UBO edge·별도 최근 거래상대방 count·30일 서버-paged 거래 feed를 엔진 read model로 표시하고 `degraded`를 0으로 위장하지 않는다. simulator는 동일 거래 snapshot으로 WLF 선검사 후 AML/FDS를 평가하며 설정 A/B·replay 불변·원복을 disposable 격리 DB live gate로 검증한다. | 근거=aegis-aml aml V41~V43, CDD decision/case-linked report/RA evidence DTO, `scripts/verify_aml_lifecycle_closed_loop.py`. 코드=truth. |
 | **9.44** | **2026-07-11** | **Hanpass Global Team** | **AML-WLF-005 WLF 엔진 조절 신설(`/aml/wlf-engine`, 설정 › 탐지·심사 정책, Markdown-only).** RA 모델 관리와 같은 설정 라이프사이클을 WLF에 적용해 ① 버전 현황 ② 프로필 기준(SANCTIONS/PEP 하위 탭) ③ 시뮬레이션을 제공하고, 프로필별 6가중치(NAME/DATE_OF_BIRTH/COUNTRY/DOCUMENT/ADDRESS/RELATIONSHIP)·negative penalty·검토 임계·고신뢰 임계를 편집한다. 별도 설정 저장소를 만들지 않고 **Policy Pack 파라미터를 유일 정본**으로 사용하는 typed projection/editor이며 변경은 기존 `POLICY_PACK` 4-eyes로 상신한다. PEP/RCA는 PEP 프로필, 나머지 명단군은 SANCTIONS 프로필을 적용하고, 신규 스크리닝 결과의 `appliedPolicy`에 프로필·임계·confidenceBand·configVersion·ruleVersion·definitionHash를 스냅샷해 WLF 검토에서 표시한다. 단건 simulation은 ACTIVE 프로필과 `sourceTypes`로 명단군을 선택하며, 실제 REST 인입 시뮬레이터로 설정 A/B에 따른 PEP/제재 밴딩 변화·룰버전·멱등 replay·기존 결과 불변·원설정 복원을 폐루프 검증한다. 구 BR-009의 “별도 설정 없음/읽기 전용”은 “전용 typed 편집 화면 + Policy Pack 단일 저장·결재”로 개정. | 근거=AML-WLF-005·API/DB/설계서 WLF 설정 계약. PPT 원본 슬라이드 없음(Markdown-only), 재빌드는 후속. |
@@ -122,7 +123,7 @@
 | **운영** | 케이스·처리 | 케이스 관리(AML-CASE-001/002) |
 | **운영** | 거버넌스·보고 | 규제 보고 STR/CTR(AML-REP-001/002) · 기관 RBA 보고(AML-IRA-001) · 결재 대기함(AML-APR-001) |
 | **설정** | 연동·데이터 | 서비스 관리(AML-TNT-001/002/003) · Ingest 카탈로그(AML-ING-001) · 명단 소스·임포트(AML-WL-001/002) · 내부 명단·오탐 면제(AML-WL-003) · 소스 시스템 관리(AML-AUD-001 ③ 파생) |
-| **설정** | 탐지·심사 정책 | TM 시나리오 관리(AML-TM-002) · RA 모델 관리(AML-RA-002) · **WLF 엔진 조절(AML-WLF-005)** · CDD 체크리스트 정책(AML-CDD-001) · 국가위험 관리(AML-CTRY-001) · Policy Pack(AML-PP-001) |
+| **설정** | 탐지·심사 정책 | TM 시나리오 관리(AML-TM-002) · RA 모델 관리(AML-RA-002) · **WLF 엔진 조절(AML-WLF-005)** · CDD 체크리스트 정책(AML-CDD-001) · 국가위험 관리(AML-CTRY-001) |
 | **설정** | 감사·증적·내부통제 | 내부통제 교육(AML-EDU-001) · 감사 로그·증적 Export(AML-AUD-001) |
 
 **혼재 메뉴 분리(운영 ↔ 설정):**
@@ -1550,19 +1551,9 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-002**: **[정정 후 재제출]** 은 `SUBMISSION_FAILED` 상태에서만 활성 — 본문 정정(검토중 복귀) 후 **기존 제출 4-eyes 결재 절차(`:submit`)를 그대로 재사용**하며 재제출 횟수(`resubmitCount`)·회차별 제출/회신 이력을 보존. 기각/취소는 전용 엔드포인트 `:reject`([기각])·`:cancel`로 수행 — 사유 코드(`reasonCode`) 필수 + 보고 책임자(`REPORTING_OFFICER`) 4-eyes(§9.1 BR-002, API §2.7).
 - **BR-003**: 본문 PII는 hash/token 보존(원문 미저장). tipping-off — 본 화면 열람은 감사 기록, STR 진행 사실 비전담 노출 금지(설계서 §19.2a).
 
-### 12-A.9 AML-PP-001 · Policy Pack 관리 (앞단, 4-eyes)
+### 12-A.9 AML-PP-001 · Policy Pack 관리 — **제거됨(2026-07-12, v9.47)**
 
-| 항목 | 내용 |
-|------|------|
-| **기능 ID** | AML-PP-001 |
-| **권한** | 조회·변경 상신 `aml:admin:policy`🔒(변경) |
-| **API** | `POST .../policy-packs:change`🔒(subjectType=`POLICY_PACK`) · `aml_tenants.policy_pack_code` |
-
-- **구성**: 탭 `적용 팩/기준금액`/`변경 상신·이력`. ① 적용 팩 — **기본 팩(한국 기본팩 `KR_DEFAULT`·필수 baseline·잠금)** + **확장 plugin(국가·업권, 토글 추가)** · effective 버전, ② 보고 기준금액(CTR 고액현금·STR·분할 의심 임계, effective version), ③ 영역별 기본 반영(CDD/STR/CTR/Sanctions/PEP·RCA/VASP/RA임계/Privacy/Audit, 설계서 §19.1 — **기본팩 일괄 구성·개별 토글 아님**).
-- **BR-001**: 변경(파라미터·확장 토글) = 4-eyes(`POLICY_PACK`·준법감시 책임자). 상신 → 승인 → tenant policy pack effective version 갱신(EXECUTED). 법령·감독규정 변경 가능성으로 effective version 관리(설계서 §14.3).
-- **BR-002**: CTR/STR 기준금액(기본팩 파라미터)은 AML-REP-001/002·AML-TM-002에 연동. **기본 팩(KR_DEFAULT)은 AML 최소 요건 일괄 적용(필수·잠금)**, **국가·업권 확장은 기본팩 위에 별도 plugin으로 토글 추가**(설계서 §5.5·§19.1). TNT-002 ④ 정책팩 탭(서비스별 뷰)과 동일 모델.
-- **BR-003**: **기본 팩(KR_DEFAULT)은 필수 baseline·잠금** — 개별 영역(CDD·STR/CTR·Sanctions/PEP·RCA/VASP·Privacy/Audit)은 일괄 적용으로 **개별 토글 불가**(AML 최소 요건). TNT-002 ④ BR-004와 동일.
-- **BR-004**: **확장 Policy Pack은 plugin 토글** — 국가·업권 확장을 기본팩 위에 추가 활성화(4-eyes `POLICY_PACK`). **(FDS와 차이**: AML=단일 baseline 번들+확장, FDS=법령·관할별 named pack 개별 토글 — 의도된 모델 차이, TNT-002 ④ BR-005 참조.)
+> **화면 제거 스텁(§ 번호 보존).** Policy Pack 전용 관리 화면(`/aml/policy-pack`)은 2026-07-12 제거되었다 — 개별 룰 관리 화면(TM 시나리오 관리 AML-TM-002 · RA 모델 관리 AML-RA-002 · WLF 엔진 조절 AML-WLF-005 · CDD 체크리스트 정책 AML-CDD-001 · 국가위험 관리 AML-CTRY-001 · 보고 룰 파라미터 AML-REP-*)이 정책 기준 편집을 각자 소관으로 제공하므로 범용 화면이 중복이었다. **Policy Pack 데이터 모델·4-eyes 계약은 불변**: `aml_policy_packs` 단일 원장, `POST .../policy-packs:change`🔒(subjectType=`POLICY_PACK`), effective version 관리(설계서 §14.3), 기본 팩 `KR_DEFAULT`(필수 baseline·잠금)+확장 plugin(토글) 모델(§5.5·§19.1)은 그대로 유지되며 — 화면 접점만 AML-WLF-005(typed 투영·편집)와 TNT-002 ④ 정책팩 탭(서비스별 뷰·변경 상신)으로 대체된다. 과거 이력(v4.0 신설·v5.7/v5.8 상호작용 모델)은 역사 기록으로 유지.
 
 ### 12-A.10 AML-MBR-001 · 회원관리 — 회원원장·CDD/EDD 히스토리 (조회, 문서 미정의 → 코드 truth로 신설)
 
@@ -1710,7 +1701,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 #### 비즈니스 규칙
 
-- **BR-001 (단일 정본)**: AML-WLF-005는 별도 설정 테이블/로컬 저장소가 아니라 **Policy Pack `aml_policy_packs.parameters`의 `wlf.*` typed 키 집합을 투영·편집**한다. 범용 Policy Pack 화면(AML-PP-001)과 본 화면이 같은 정의·버전·`definitionHash`를 가리켜야 하며, 한쪽에서 변경된 ACTIVE 정의가 다른 쪽 조회에 즉시 일치해야 한다.
+- **BR-001 (단일 정본)**: AML-WLF-005는 별도 설정 테이블/로컬 저장소가 아니라 **Policy Pack `aml_policy_packs.parameters`의 `wlf.*` typed 키 집합을 투영·편집**한다. 정책팩 변경을 상신하는 다른 접점(TNT-002 ④ 정책팩 탭)과 본 화면이 같은 정의·버전·`definitionHash`를 가리켜야 하며, 한쪽에서 변경된 ACTIVE 정의가 다른 쪽 조회에 즉시 일치해야 한다(범용 Policy Pack 화면 AML-PP-001은 제거됨 — §12-A.9 스텁).
 - **BR-002 (닫힌 스키마 검증)**: 프로필 집합은 SANCTIONS/PEP, 가중치 집합은 위 6종으로 고정한다. 모든 수는 유한한 `0..1`, 프로필별 가중치 합은 양수, `0 ≤ reviewThreshold < highConfidenceThreshold ≤ 1`, reason은 필수다. 키 누락·미지 키·NaN/Infinity·역전 임계는 상신 전에 거부한다.
 - **BR-003 (버전·결재·동시성)**: 변경 상신은 조회한 `expectedActiveRuleVersion`을 필수로 보내며 현재 적용 정책팩(`status=ACTIVE && active=true`)과 다르면 409로 재조회시킨다. 두 프로필 전체 정의를 canonicalize해 candidate configVersion·WLF 전용 ruleVersion을 증가시키고 `definitionHash`를 계산한다. pack당 미결 DRAFT는 1건만 허용하며 기존 `POLICY_PACK` 결재를 생성한다. maker/checker는 인증 principal에서만 서버 파생하고 body `checkerId`로 다른 명의를 주입할 수 없다. 호출자 예약/소급 적용시각은 받지 않고 승인 EXECUTED 시각부터 신규 평가에 적용한다. 반려 후보는 `REJECTED`로 종결한다. 승인 전 ACTIVE와 평가 결과는 바뀌지 않으며 WLF 파라미터가 아닌 Policy Pack 변경은 WLF ruleVersion을 불필요하게 증가시키지 않는다.
 - **BR-004 (평가 적용)**: 평가 시작 시 ACTIVE 전체 정의를 1회 pin하고 모든 후보에 같은 ruleVersion을 적용한다. 각 후보 엔트리는 명단군에 해당하는 프로필의 가중합과 negative penalty로 계산한다. **후보가 0건이면 reviewThreshold가 0이어도 status와 `confidenceBand`는 모두 `NO_MATCH`**이며, 후보가 존재할 때 `score < reviewThreshold`는 `NO_MATCH`, 이상은 `POSSIBLE_MATCH`; `highConfidenceThreshold` 이상은 `confidenceBand=HIGH`로 우선순위만 높인다. **고신뢰도 분석가 4-eyes 없이 자동 `TRUE_MATCH`가 아니다.** 동률은 entryId 안정 순서로 결정한다.
@@ -1936,7 +1927,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 │  STR / CTR             의심거래 보고 / 1거래 1천만원↑ 현금거래 수집·검증  │
 │  Sanctions·PEP·RCA / VASP  명단 필터링·정치인(PEP/RCA) · VASP 위험 스크리닝 │
 │  RA 임계 / Privacy·Audit  고위험 0.75↑→EDD / 최소수집·append-only 증적   │
-│  [기본팩 전체·확장·버전 이력 ▶ → AML-PP-001]                             │
+│  [정책 기준 편집 ▶ → AML-WLF-005 · AML-RA-002 · AML-TM-002]              │
 │  ※ 정책팩 변경(파라미터·확장 토글)은 2인 결재(4-eyes, POLICY_PACK) 필요  │
 │                          [정책팩 변경 상신]   [← 이전: 소스 시스템]       │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -1947,17 +1938,17 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | 항목(표시) | 필드 | 설명 |
 |------|------|------|
 | 기본 정책팩 코드 | `policy_pack_code` | 한국 기본팩(`KR_DEFAULT`) — **필수 baseline·잠금(끄기 불가)**, AML 최소 요건 일괄 적용 |
-| 버전 | `policyPackVersion` | 현재 적용(effective) 버전 — AML-PP-001과 동일 값(v12) |
+| 버전 | `policyPackVersion` | 현재 적용(effective) 버전 — WLF 엔진 조절(AML-WLF-005)이 표시하는 Policy Pack 버전과 동일 값(v12) |
 | CTR 기준금액 / RA 위험 임계 | `ctrThreshold` / `raHighThreshold` | 기본팩 **파라미터**(1거래 1천만원 이상 현금거래 / 0.75) — effective 버전 종속·4-eyes 변경, CTR 표기는 "1거래 1천만원 이상 현금거래(정책팩 정본 기준)"로 통일 |
 | 확장 plugin | — | **국가(jurisdiction)·업권 확장 plugin** — 기본팩 위에 **토글로 추가 활성화**(현재 hanpass-ph: KR 단일·확장 없음) |
-| 기본팩 구성 미리보기 | — | KR_DEFAULT 영역별 기본 반영(CDD·STR/CTR·Sanctions/PEP·RCA/VASP·RA임계·Privacy/Audit) — **일괄 적용(개별 토글 아님)** + `[→ AML-PP-001]` 드릴다운 |
+| 기본팩 구성 미리보기 | — | KR_DEFAULT 영역별 기본 반영(CDD·STR/CTR·Sanctions/PEP·RCA/VASP·RA임계·Privacy/Audit) — **일괄 적용(개별 토글 아님)**. 영역별 기준 편집은 소관 화면(AML-WLF-005·AML-RA-002·AML-TM-002·AML-CDD-001·AML-CTRY-001) 드릴다운 |
 
 **비즈니스 규칙**
 
 - **BR-001**: 정책팩 현황은 읽기 전용. 별도 정책팩 조회 엔드포인트는 없으며 `GET /api/v1/bo/aml/tenants/{tenantId}` 응답의 `policyPackCode` 필드에서 **파생 표시**한다(API §3.16 TenantDto 정본).
-- **BR-002**: 정책팩 변경(파라미터·확장 토글)은 **4-eyes(2인 결재, subjectType=`POLICY_PACK`)** 필수. `[정책팩 변경 상신]` 버튼 → `POST .../policy-packs:change` → 결재 대기함(AML-PP-001 연계, AML-APR-001에서 승인·반려).
-- **BR-003**: 정책팩 상세 관리(팩 생성·버전 이력)는 AML-PP-001에서 운영합니다(소관 분리).
-- **BR-004**: **기본 팩(KR_DEFAULT)은 필수 baseline·잠금** — 개별 영역(CDD·STR/CTR·Sanctions/PEP·RCA/VASP·RA임계·Privacy/Audit)은 **일괄 적용으로 개별 토글 불가**(AML 최소 요건). `[기본팩 전체 보기 ▶ → AML-PP-001]`로 영역별 상세·버전 이력 확인. effective 버전은 AML-PP-001과 **동일 값(v12)으로 정합**.
+- **BR-002**: 정책팩 변경(파라미터·확장 토글)은 **4-eyes(2인 결재, subjectType=`POLICY_PACK`)** 필수. `[정책팩 변경 상신]` 버튼 → `POST .../policy-packs:change` → 결재 대기함(AML-APR-001에서 승인·반려).
+- **BR-003**: 범용 Policy Pack 관리 화면(AML-PP-001)은 제거되었다(§12-A.9 스텁) — 정책 기준 편집은 각 소관 화면(WLF=AML-WLF-005·RA=AML-RA-002·TM=AML-TM-002·CDD=AML-CDD-001·국가위험=AML-CTRY-001)에서 수행하고, 본 탭은 서비스별 정책팩 현황·변경 상신 접점을 유지한다.
+- **BR-004**: **기본 팩(KR_DEFAULT)은 필수 baseline·잠금** — 개별 영역(CDD·STR/CTR·Sanctions/PEP·RCA/VASP·RA임계·Privacy/Audit)은 **일괄 적용으로 개별 토글 불가**(AML 최소 요건). 영역별 상세 기준은 소관 화면(AML-WLF-005 등)에서 확인. effective 버전은 WLF 엔진 조절(AML-WLF-005) 표시 버전과 **동일 값(v12)으로 정합**.
 - **BR-005**: **확장 Policy Pack은 plugin 토글** — 국가·업권 확장을 기본팩 위에 추가 활성화(설계서 §5.5·§19.1 "국가·업권별 확장은 plugin으로 추가"). 확장 토글도 4-eyes(POLICY_PACK). **(FDS와 차이**: AML은 단일 `KR_DEFAULT` baseline 번들(필수·잠금)+확장 plugin, FDS(SFDS-TNT-002 ④)는 **법령·관할별 규제 팩을 개별 토글하는 카탈로그** 모델 — 서비스별 규제 책임 범위 차이로 의도된 구조. FDS PRD §3.2 ④ BR-006 참조.)
 
 ---
@@ -2043,7 +2034,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | AML-TNT-002 ① | 설정 › 연동·데이터 | 서비스 상세 — 기본 정보 탭 | **bo-api** `GET /api/v1/bo/aml/tenants/{tenantId}` · `PUT /api/v1/bo/aml/tenants/{tenantId}` (displayName·status 변경) |
 | AML-TNT-002 ② | 설정 › 연동·데이터 | 서비스 상세 — 배포·온보딩 탭 (구 AML-TNT-004 통합) | **bo-api** `GET .../tenants/{tenantId}/onboarding` · `POST .../onboarding/provision` (P8, MANAGED_DEDICATED 전용, 202) · `POST .../onboarding/register` (P8, SELF_HOSTED 전용) |
 | AML-TNT-002 ③ | 설정 › 연동·데이터 | 서비스 상세 — 소스 시스템 탭 | **bo-api** `GET .../source-systems` (`Tenant-Id` 헤더, API §1.1 — 연결 현황 조회, AML-AUD-001 연계) |
-| AML-TNT-002 ④ | 설정 › 연동·데이터 | 서비스 상세 — 정책팩 탭 | **bo-api** `GET /api/v1/bo/aml/tenants/{tenantId}` (`policyPackCode` 파생 표시) · `POST /api/v1/admin/aml/policy-packs:change`🔒(POLICY_PACK, 2인, AML-PP-001 연계) |
+| AML-TNT-002 ④ | 설정 › 연동·데이터 | 서비스 상세 — 정책팩 탭 | **bo-api** `GET /api/v1/bo/aml/tenants/{tenantId}` (`policyPackCode` 파생 표시) · `POST /api/v1/admin/aml/policy-packs:change`🔒(POLICY_PACK, 2인) |
 | AML-TNT-003 | 설정 › 연동·데이터 | 서비스 등록 (별도 생성 화면 — 배포 유형 선택 + 온보딩 신청) | **bo-api** `POST /api/v1/bo/aml/tenants` (201, onboarding_status=REQUESTED 초기화) → 성공 후 AML-TNT-002 ① 이동 |
 | AML-WLF-001 | 운영 › 조사·모니터링 | WLF 검토 — ① 검토 필요 (master-detail + 판정 상신) | (엔진) `GET .../screenings?status=POSSIBLE_MATCH` · `GET .../screenings/{id}` · `GET .../watchlist-entries` · `POST .../screenings/{id}/decision`🔒(WLF_DECISION) · `POST .../screenings/fp-whitelist`🔒(FP_WHITELIST) |
 | AML-WLF-002 | 운영 › 조사·모니터링 | WLF 검토 — ② 상위 승인 (4-eyes, 결재 엔진) | (엔진) `GET .../screenings?status=ESCALATED` · `GET .../approvals?status=SUBMITTED&subjectType=WLF_DECISION` · `GET .../approvals/{id}` · `POST .../approvals/{id}:approve`🔒 · `POST .../approvals/{id}:reject`🔒 |
@@ -2063,7 +2054,6 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | AML-CASE-002 | 운영 › 케이스·처리 | 케이스 상세(드릴다운) | `GET/PATCH .../cdd/cases/{id}` · `POST .../cdd/cases/{id}/timeline` · `:close`🔒 · `:reject-relationship`🔒 |
 | AML-REP-001 | 운영 › 거버넌스·보고 | 규제 보고(STR/CTR 후보 목록) | `GET/POST .../reports` · `POST .../reports/{reportId}:reject`🔒([기각])·`:cancel`🔒(사유 코드 필수, REPORTING_OFFICER 4-eyes). 행 클릭 → AML-REP-002 |
 | AML-REP-002 | 운영 › 거버넌스·보고 | 보고 상세/제출(드릴다운) | `GET .../reports/{id}` · `POST .../reports/{id}:submit`🔒 · `:reject`🔒·`:cancel`🔒(사유 코드 필수, REPORTING_OFFICER 4-eyes) |
-| AML-PP-001 | 설정 › 탐지·심사 정책 | Policy Pack 관리 | (엔진) `POST .../policy-packs:change`🔒(POLICY_PACK) · `aml_tenants.policy_pack_code` |
 | ~~AML-TR-001~~ | — | ~~Travel Rule 이전/예외~~ — **제거됨(2026-07-09 Travel Rule 전면 제거, aegis-aml 84997e1·aml V31·bo-api V14)** | — |
 | AML-APR-001 | 운영 › 거버넌스·보고 | 결재 대기함 | `GET .../approvals?status=SUBMITTED` · `GET .../approvals/{id}` · `:approve` · `:reject` |
 | AML-AUD-001 | 설정 › 감사·증적·내부통제 | 감사 로그·증적 Export·소스 시스템 관리(③ 소스탭 — **v9.4 메뉴 leaf `소스 시스템 관리` `/aml/audit?tab=source-systems` 진입점 추가 노출**) | 운영자 감사 집계=**bo-api** `GET /api/v1/bo/aml/audit`(엔진 `GET .../audit-events` 저수준 위임); (엔진) `POST /evidence/aml/exports` · `GET /evidence/aml/exports/{id}` · `GET .../source-systems` · `POST .../source-systems`🔒 |
@@ -2128,7 +2118,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | `STR_SUBMIT` / `CTR_SUBMIT` **(재사용)** | 규제 보고 — 기각·취소 | `reports/{id}:reject` · `reports/{id}:cancel` (`reportType` 분기, **신규 subjectType 없이 결재 사이클 재사용** — 사유 코드 `reasonCode` 필수, CTR 제외 시 `ctrExemptionCode` 병기, API §10 정본) | 보고 책임자 (자기승인 금지) |
 | `SECRET_CHANGE` | 소스 시스템 | `source-systems`(POST) | 보안 관리자 |
 | `COUNTRY_RISK` | 국가위험 관리(AML-CTRY-001) | `country-risk:change` | 준법감시 책임자 |
-| `POLICY_PACK` | Policy Pack 관리(AML-PP-001) · WLF 엔진 조절(AML-WLF-005) | `policy-packs:change` · `wlf-engine-config:change`(동일 Policy Pack payload/결재 정본) | 준법감시 책임자 |
+| `POLICY_PACK` | WLF 엔진 조절(AML-WLF-005) · 서비스 상세 정책팩 탭(AML-TNT-002 ④) | `policy-packs:change` · `wlf-engine-config:change`(동일 Policy Pack payload/결재 정본) | 준법감시 책임자 |
 | `CHECKLIST_CHANGE` | CDD/EDD 체크리스트 정책 변경(AML-CDD-001) | `cdd/checklists/{id}`(PUT) | 준법감시 책임자 |
 | `PERIODIC_REVIEW_CHANGE` | CDD/EDD 재심사 주기 변경(AML-CDD-001) | `cdd/periodic-review-policy`(PUT) | 준법감시 책임자 |
 | `REPORT_RULE_PARAM` | CTR/STR 고정 룰 임계·변수 변경(AML-STAT-001) | `report-rules/{ruleCode}:update-params` | 준법감시 책임자(`COMPLIANCE_MANAGER`, 엔진 소유 V41) |
@@ -2245,7 +2235,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 |---|---|---|
 | `MAKER_CHECKER` | Maker-Checker | WLF 판정(AML-WLF-001/002)·오탐 면제·명단 import(AML-WL-002)·등급 조정(AML-RA-002 ④) |
 | `AML_OFFICER` | AML 책임자 | 케이스 종결·관계거절(AML-CASE-001/002) |
-| `COMPLIANCE_MANAGER` | 준법감시 책임자 | RA 모델 활성화(AML-RA-002)·TM 시나리오(AML-TM-002)·국가위험(AML-CTRY-001)·정책팩(AML-PP-001)·**WLF 엔진 조절(AML-WLF-005)**·체크리스트/재심사 주기(AML-CDD-001) |
+| `COMPLIANCE_MANAGER` | 준법감시 책임자 | RA 모델 활성화(AML-RA-002)·TM 시나리오(AML-TM-002)·국가위험(AML-CTRY-001)·정책팩 변경 상신(AML-TNT-002 ④)·**WLF 엔진 조절(AML-WLF-005)**·체크리스트/재심사 주기(AML-CDD-001) |
 | `REPORTING_OFFICER` | 보고 책임자 | STR/CTR 제출·기각·취소·CTR 제외 처리·재제출(AML-REP-001/002)·CTR 임계 변경(`CTR_THRESHOLD`) |
 | `SECURITY_ADMIN` | 보안 관리자 | 소스 시스템 secret 변경(AML-AUD-001 ③) |
 | `EXECUTIVE_APPROVAL` | 임원 | 대량 정책 변경·고위험 고객 일괄 처리(예외적) |
@@ -2276,6 +2266,6 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | 보고서·통계 [53~58] | STR 보고/미보고 현황·지연일수·룰별 퍼널·유효성·KYC 통계 | **AML-STAT-001 신설(§12-B.3)** + AML-DASH-001 + **KYC 통계=AML-RA-001 CDD·RA 처리 현황 탭(v9.6, §5.1 BR-007)** | **신설** (**KYC 통계 상세 backlog 해소 v9.6** — kycStatus 분포·RA 처리 상태·인입·기간별 처리량, `pipeline-stats`) |
 | 시스템관리 — 결재선·임계치 결재 [62~64] | 결재 라우팅 정의·임계값 변경 결재 | AML-APR-001 + 부록 C·G(결재 라인 사전) — 결재선 정의는 bo-api IAM 소관 | 충족 (§1.6 경계) |
 | 시스템관리 — 사용자·권한 4계층·로그 [66~75] | RBAC(그룹>직무>메뉴>페이지 CRUD)·접근 감사 | bo-api(Spring Security)·AML-AUD-001 — IAM 화면은 bo-api PRD 소관 | 충족 (§1.6 경계) |
-| 시스템관리 — 공통코드·기준값·모니터링·쿼리 [76~80] | 코드 사전·파라미터·인터페이스 모니터링 | 정책팩 파라미터(AML-PP-001)·소스 시스템(AML-AUD-001 ③) | 충족 (저수준 운영 도구는 화면 비대상) |
+| 시스템관리 — 공통코드·기준값·모니터링·쿼리 [76~80] | 코드 사전·파라미터·인터페이스 모니터링 | 정책팩 파라미터(AML-WLF-005·AML-TNT-002 ④)·소스 시스템(AML-AUD-001 ③) | 충족 (저수준 운영 도구는 화면 비대상) |
 
 > **벤치마크 횡단 관찰(설계 반영 원칙)**: ① 실계 시스템은 **모든 변경성 데이터에 전자결재(Maker-Checker)** 를 적용 — 본 PRD 4-eyes(부록 C) 체계와 합치. ② **룰 라이프사이클 분해**(정의→임계값→시뮬레이션→배치→효과성 평가)에서 효과성 평가가 누락돼 있었음 → AML-STAT-001로 폐루프 완성. ③ **기관 위험평가(RBA 지표 보고)와 내부통제(교육·자격)** 는 한국 시장 필수 운영 업무로 SaaS 차별화 요소 → KR 확장 plugin(IRA)·공통 모듈(EDU)로 수용. ④ **(v7.0 갱신)** 1차 backlog 6건 중 5건 반영 — 내부 명단 등록 UI·White List 만료 관리(→AML-WL-003), 당연고위험 레지스트리(→AML-HRR-001), CDD 프로필 원장(→AML-CDD-002), 보고기관 정보 설정(→AML-TNT-002 ① 보강). ⑤ **(v9.6 갱신)** **KYC 통계 상세 backlog 해소** — AML-RA-001 `CDD·RA 처리 현황` 탭(§5.1 BR-007)으로 kycStatus 분포·RA 처리 상태(평가완료/재평가대기/미평가)·인입 회원(24h/7d/30d)·기간별 처리량을 수용(bo-api `GET /api/v1/bo/aml/ra/pipeline-stats`, 엔진 `customers/pipeline-stats` 위임, 출처 `aml_customers`·`aml_risk_scores`). **잔여 후속 backlog: KYE 임직원 스크리닝(bo-api IAM 연계), 대시보드 일배치 파이프라인 스텝 시각화.**
