@@ -45,7 +45,7 @@
 
 `fds-svc`(FDS 엔진)가 "거래 이상징후 탐지와 실시간 action"을 담당한다면, `aml-svc`는 고객·상대방·거래 패턴 중심의 자금세탁·제재·고위험고객 관리를 담당한다(§2.2). 본 문서는 hanpass-ph 단일 서비스의 AML 엔진을 기술하며, 비-hanpass 금융 도메인(카드 PG·가상자산 거래소·무역/TBML·이커머스 정산·B2B 인보이스)으로의 일반화는 본 엔진의 운영 범위가 아니다(스키마·enum에 잔존하는 미사용 값은 §4·§8·§12에서 명시).
 
-> **멀티테넌트.** 엔진은 멀티테넌트 격리 구조(전 테이블 `tenant_id` 선두 PK, 전용 배포 기본 §16)를 코드 차원에서 유지한다. 운영 대상 테넌트는 hanpass-ph(`tenant_demo`) 단일이며, 본 문서의 거래·시나리오·명단 예시는 모두 `tenant_demo` 시드(Flyway V19/V22/V26/V28) 기준이다.
+> **멀티테넌트.** 엔진은 멀티테넌트 격리 구조(전 테이블 `tenant_id` 선두 PK, 전용 배포 기본 §16)를 코드 차원에서 유지한다. 운영 대상 테넌트는 hanpass-ph(`tenant_demo`) 단일이다. 과거 Flyway seed의 거래·시나리오·명단 예시는 migration 역사로만 보존하며, P0-02 이후 production 최종 상태에서는 V45가 알려진 demo 복합 fingerprint를 격리한다. reference config 예시는 explicit `demo` profile에서만 복원되고 업무 데이터는 REST로 인입한다(§19.2b).
 
 ---
 
@@ -173,7 +173,7 @@ hanpass-ph AmlSvc는 고객 위험평가(RA), 요주의 명단 필터링(WLF), C
 
 ## 4. hanpass-ph 거래 유형
 
-`aml-svc`가 모니터링하는 hanpass-ph 거래는 6개 채널(`transaction.channelType`)로 정규화된다(데모 시드 Flyway V26 기준).
+`aml-svc`가 모니터링하는 hanpass-ph 거래는 코드·canonical 계약 기준 6개 채널(`transaction.channelType`)로 정규화된다. 아래 목록은 Flyway business seed가 아니다.
 
 | 채널(`channelType`) | hanpass-ph 거래 | AML 관점 주요 리스크 |
 |---|---|---|
@@ -589,7 +589,7 @@ UBO는 단순 JSON 배열이 아니라 별도 관계 graph로 관리한다.
 
 ### 10.1 명단 source (`WatchlistSourceType` 닫힌 enum)
 
-`WatchlistSourceType` enum(DB §3.6)은 닫힌 집합이다. hanpass-ph는 제재·PEP를 핵심으로 운영하며, 데모 시드는 `DEMO_SANCTIONS`(SANCTIONS) source를 사용한다(V19/V26).
+`WatchlistSourceType` enum(DB §3.6)은 닫힌 집합이다. hanpass-ph는 제재·PEP를 핵심으로 운영한다. 구 `DEMO_SANCTIONS` seed와 entry는 V29에서 제거됐고 P0-02 V45가 알려진 demo source fingerprint의 ACTIVE 잔존을 다시 격리한다. demo 명단 entry는 Flyway가 아니라 REST simulator가 공개 OFAC/UN 동기화와 SIM_PEP 등록·import로 만든다.
 
 | Source type | 예시 | hanpass-ph |
 |---|---|---|
@@ -615,7 +615,7 @@ UBO는 단순 JSON 배열이 아니라 별도 관계 graph로 관리한다.
 
 ### 10.2a 거래당 sender/receiver screening (hanpass-ph 해외송금)
 
-해외송금(`CROSS_BORDER_REMIT`)은 sender(회원, `TargetType=CUSTOMER`)와 receiver(수취인, `TargetType=COUNTERPARTY`)를 **각각 screening**하고, `ScreenCommand.transactionRef`(송금 거래번호)로 한 쌍을 묶어 WLF 화면이 거래당 sender+receiver로 그룹핑한다(`ScreenSubjectUseCase`). 중립 거래 인입의 자동 WLF와 시뮬레이터의 명시적 `/api/v1/aml/screen` 재확인은 sender=`eventId`, receiver=`eventId:receiver` 멱등키를 공유해 역할별 물리 결과를 1행으로 유지한다. 검토 큐는 기존 재스크리닝 이력을 삭제하지 않고 거래번호+역할별 최신 결과만 현재 행으로 투영한다. 데모 시드는 sender 매치(JUAN/MARIA, V19)에 더해 수취국(PH/VN/ID) receiver 제재 엔트리 3종(V26)을 등재해 진양성을 재현한다. raw PII는 입력·저장하지 않으며 매칭 입력은 토큰/hash다(§19.2).
+해외송금(`CROSS_BORDER_REMIT`)은 sender(회원, `TargetType=CUSTOMER`)와 receiver(수취인, `TargetType=COUNTERPARTY`)를 **각각 screening**하고, `ScreenCommand.transactionRef`(송금 거래번호)로 한 쌍을 묶어 WLF 화면이 거래당 sender+receiver로 그룹핑한다(`ScreenSubjectUseCase`). 중립 거래 인입의 자동 WLF와 시뮬레이터의 명시적 `/api/v1/aml/screen` 재확인은 sender=`eventId`, receiver=`eventId:receiver` 멱등키를 공유해 역할별 물리 결과를 1행으로 유지한다. 검토 큐는 기존 재스크리닝 이력을 삭제하지 않고 거래번호+역할별 최신 결과만 현재 행으로 투영한다. 데모 진양성용 sender/receiver 엔트리와 screening 결과는 명시적 demo REST setup/ingest가 생성하며 Flyway business seed를 사용하지 않는다. raw PII는 입력·저장하지 않으며 매칭 입력은 토큰/hash다(§19.2).
 
 ### 10.3 Scoring
 
@@ -713,7 +713,7 @@ WLF scoring parameter가 바뀔 때만 WLF config version과 definition hash 기
 
 ### 12.1 TM scenario (`TmScenario` 닫힌 enum, 10종)
 
-`TmScenario` enum(DB §5.6)은 10종으로 닫혀 있다. hanpass-ph 데모(`tenant_demo`)는 송금/월렛 거래에 맞는 시나리오를 ACTIVE로 시드한다(Flyway V19/V22/V26/V28). 시나리오 정의는 tenant별 `aml_tm_scenarios`에 version·DSL·threshold로 저장되며, `TmScenarioDslParser`(`and`/`or`/`cmp`/`velocity`)와 `TmEvaluationEngine`이 평가한다.
+`TmScenario` enum(DB §5.6)은 10종으로 닫혀 있다. 송금/월렛 reference scenario의 과거 seed는 V45가 production에서 `SUPERSEDED`로 격리하고 explicit `demo` profile의 repeatable만 최신 정의를 ACTIVE로 복원한다. 시나리오 정의는 tenant별 `aml_tm_scenarios`에 version·DSL·threshold로 저장되며, `TmScenarioDslParser`(`and`/`or`/`cmp`/`velocity`)와 `TmEvaluationEngine`이 평가한다.
 
 | Scenario(코드값) | 설명 | hanpass-ph(데모 ACTIVE) |
 |---|---|---|
@@ -1778,6 +1778,14 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 4. **열람 감사** — STR 관련 화면의 열람·조회는 `aml_audit_events`에 작업자·대상·시각을 기록한다(원문 열람은 §19.2 `RAW_DATA_ACCESS` 규약 동일). 감사 actor는 브라우저/body 입력이 아니라 bo-api principal에서 파생해 machine-auth v2로 서명한 `X-User-Subject`를 사용한다.
 5. **이중 authority 경계** — BO edge에서 사용자 `AML_COMPLIANCE` RBAC를 먼저 강제하고, bo-api→aml-svc 전용 machine credential도 `COMPLIANCE` authority token과 필요한 endpoint scope를 보유해야 한다. 엔진 `RoleGuard`/`ScopeGuard`를 생략하지 않는다.
 
+### 19.2b 운영 seed·secret 경계 (P0-02)
+
+- 정규 Flyway/Java migration location의 최종 상태는 호출 가능한 demo credential과 알려진 demo 복합 fingerprint의 ACTIVE tenant·source·watchlist/country-risk source·checklist·country risk·policy pack·RA model·TM scenario·미종결 approval을 허용하지 않는다. 적용된 V1~V44는 checksum 불변으로 두고 V45 forward migration이 business/audit 계보를 보존한 채 `OFFBOARDED`/`DISABLED`/`SUPERSEDED`/`CANCELLED`로 격리하며, status가 없는 CTR threshold·PH banking calendar reference row는 exact seed tenant에 한해 제거한다.
+- `tenant_demo`는 hanpass-ph 운영 ID로도 쓰이므로 ID 단독이나 `demo` 부분 문자열은 demo 판정 근거가 아니다. V2 immutable seed timestamp·actor·표시명·배포 metadata의 exact composite가 일치하는 row만 quarantine하고, `Demotech`/`Democracy`/`demographic`을 포함해 같은 ID를 운영 metadata로 정상 provision한 tenant는 허용한다.
+- `classpath:db/demo` repeatable reference 설정은 명시적 `demo` profile에서만 정규 migration 뒤 실행한다. tenant와 source·FATF country source·CTR threshold·PH calendar·최신 평가 reference config만 재활성화/복원하며 credential ciphertext·watchlist entry·customer/event·alert/case/report·pending approval을 만들지 않는다. 업무 데이터는 `customer.cdd.completed`부터 시작하는 서명된 REST simulator 폐루프가 생성한다.
+- active profile이 비면 configured default profile을 effective profile로 사용한다. production-class effective profile(`prod`/`production`/`aws`)은 `local`/`demo` 혼합, scalar/indexed environment의 `db/demo` location, active demo fingerprint를 readiness 전에 거부한다. credential cipher key·PII HMAC key·evidence download token secret은 secret manager가 독립 생성해 주입한 Base64/Base64URL random material(복호화 기준 각각 32 bytes 이상)이어야 하며 decoded key material 재사용, blank·공개 기본값·잘못된 encoding·저엔트로피 값은 startup 실패다. 오류·감사 로그에는 secret이나 fingerprint를 남기지 않는다.
+- P0-02 rollback은 배포 실패 시 같은 secret-manager current version을 복원하는 절차다. machine credential lifecycle은 P1-02, KMS `keyId`·tenant/resource AAD·dual-read·background re-encryption·key-use audit는 P1-03 범위이며 P0-02로 구현 완료를 주장하지 않는다.
+
 ### 19.3 감사
 
 다음은 모두 append-only audit 대상이다.
@@ -2017,6 +2025,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-12 | **P0-02 운영 Flyway demo seed·기본 secret 분리.** §19.2b에 AML V45 forward quarantine, explicit `demo`/`db/demo` reference config, REST-only business data, production profile/secret/DB startup gate를 반영했다. `tenant_demo` ID 단독은 fingerprint가 아니며 P1-02 credential lifecycle·P1-03 keyId/AAD/dual-read/re-encryption은 완료 범위에서 제외했다. API/DTO/event 계약은 변경하지 않았다. | system-architect. 코드 truth=AML V45·demo repeatable·`ProductionSafetyValidator` |
 | 2026-07-12 | **P0-01 AML 중립 거래 인입 auth-first 경계 반영.** §15 namespace/Public API에 `/aml/v1/**`를 정식 등재하고 route별 v2-only와 두 ingest의 실제 filter chain·`aml:event:write`를 확정했다. scope/role attribute 부재는 공통 local-bootstrap `Boolean.TRUE` marker 외 403, 인증 실패 업무 row 0, valid-signed scope 403 nonce 보존, neutral `X-Data-Scope` tamper 401을 명시했다. Neutral `Source-System` 선택과 `Idempotency-Key` body eventId fallback은 endpoint-specific 예외로 고정했다. | API/DB schema 무변경. 코드 truth=AML filter/guard·실 filter-chain REST 테스트 |
 | 2026-07-12 | **P0-00 공통 inbound machine-auth wire v2 설계 전환.** §15.1/§15.7을 `../design/api/00-common-machine-auth.md` 정본으로 바꾸고 normalized servlet routing/ambiguous path·duplicate singleton 거부, raw query·AML `workspace=default`·고정 9-key scopeContext(trace/correlation 제외)·body digest, v1 offset/v2 UTC `Z`, nonce TTL `>2×skew`·cleanup `20×5000/tick`, signed redirect 거부와 local/demo positive provisioning을 반영했다. simulator/BO AML credential 분리, BO `COMPLIANCE` authority와 signed `X-User-Subject` STR 감사 actor 경계를 명시했다. P0-01/P0-04/P0-14·P1-02 lifecycle은 미완료이며 outbound webhook 공식은 inbound v2와 분리했다. | system-architect. 코드 truth=`common-security`, AML V44, bo-api AML signer·`RestClientConfig`/`RestClientConfigTest`, Python simulator transport |
 | 2026-07-12 | **실 REST AML lifecycle 폐루프 역전파.** CDD exact replay 업무결정 projection(V42), engine-owned `REPORT_RULE_PARAM` 4-eyes(V41), 알림-case/case-type별 STR·CTR report 유일성·비삭제 upgrade remediation·case→report lock·`PENDING_APPROVAL`/반려복원/type-matched REPORTED 선조건(V43), principal maker 신뢰경계, RA 상세 실 evidence와 simulator 동일 거래 snapshot/WLF 선검사·설정 A/B 원복 게이트를 반영했다. | 코드=truth. 근거=aegis-aml `feature/aml-lifecycle-closed-loop`, API/DB §V41~V43. |

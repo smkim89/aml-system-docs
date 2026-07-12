@@ -5,7 +5,7 @@
 > 공통 inbound 인증 정본: [`../api/00-common-machine-auth.md`](../api/00-common-machine-auth.md) (wire v2·credential version·nonce replay 의미론).
 > 책임 서비스: **`services/fds-svc`** (Java 25, Spring Boot 3.5.x, 헥사고날, `adapter/out/persistence`). AML 규제 케이스는 `aml-svc`, 결재·감사·IAM 운영은 `bo-api`가 별도 스키마로 보유한다.
 >
-> **대상 시스템 = hanpass-ph**: 한국→필리핀 해외송금(`CROSS_BORDER_REMIT`) + 필리핀 국내송금(`DOMESTIC_REMIT`) + 지갑(월렛충전 `CASH_IN`·월렛결제 `WALLET_PAYMENT`·ATM/지갑출금 `WALLET_WITHDRAWAL`) 5거래유형의 AML/FDS RegOps 백오피스. 운영 테넌트는 단일(`tenant_demo` = hanpass-ph). 본 문서는 그 데이터 모델을 실제 저장소 Flyway(V1~V14)·도메인 enum과 1:1로 확정한다.
+> **대상 시스템 = hanpass-ph**: 한국→필리핀 해외송금(`CROSS_BORDER_REMIT`) + 필리핀 국내송금(`DOMESTIC_REMIT`) + 지갑(월렛충전 `CASH_IN`·월렛결제 `WALLET_PAYMENT`·ATM/지갑출금 `WALLET_WITHDRAWAL`) 5거래유형의 AML/FDS RegOps 백오피스. 운영 테넌트는 단일(`tenant_demo` = hanpass-ph). 본 문서는 그 데이터 모델을 실제 저장소 Flyway(V1~V15)·도메인 enum과 1:1로 확정한다.
 
 ## 목차
 1. [범위·원칙](#1-범위원칙)
@@ -594,7 +594,7 @@ case의 다중 data-scope(다대다).
 >
 > **velocity 시간창 semantics(count/sum/distinct_count 공통)**: 창 경계는 `occurred_at >= (occurredAt−window)` — **반개구간 하한만 있고 상한이 없다**. 실시간 정순 인입(이벤트 `occurredAt` 단조 증가) 전제에서만 `(asOf−window, asOf]` 와 동치가 된다. 과거 시점으로 백데이트 인입(후방 격리)하면 이미 적재된 "미래" 이벤트가 창 집계에 섞이므로, 시뮬레이터·백필 트래픽은 반드시 **전방(미래)+정순**으로 시간대를 격리해야 한다 — 데모 S9b 시나리오(국적·distinct 룰 grounding)는 anchor+7일 전방 격리를 사용한다(`scripts/demo_ingest.py` `_S9B_BASE_MIN`).
 >
-> **phpEquivalent 임계 정본(hanpass-ph, 현행 V2 seed)**: 데모 금액 임계 룰은 `transaction.phpEquivalent`(PHP 환산, `FeatureComputeAdapter`) feature로 정렬한다. USD×56 환산으로 데모 결정 동등을 유지하며 PH CTR(₱500,000)을 참고한다. 데모 5룰: `CROSS_BORDER_REMIT` REVIEW ≥ ₱280,000(USD 5,000) · `CASH_IN` BLOCK ≥ ₱560,000(USD 10,000) · `DOMESTIC_REMIT` REVIEW ≥ ₱112,000(USD 2,000) · `WALLET_PAYMENT` REVIEW ≥ ₱168,000(USD 3,000) · `WALLET_WITHDRAWAL` CHALLENGE ≥ ₱84,000(USD 1,500). hanpass에 없는 카드(`CARD_NOT_PRESENT`) 룰은 V2 seed에서 `status='DISABLED'`(행 보존·발화 중지). 데모 룰 시드는 `tenant_demo` scope·고정 UUID 기준이다.
+> **phpEquivalent 임계 reference config(hanpass-ph, 역사적 V2 seed)**: 금액 임계 룰은 `transaction.phpEquivalent`(PHP 환산, `FeatureComputeAdapter`) feature로 정렬한다. USD×56 환산으로 demo 결정 동등을 유지하며 PH CTR(₱500,000)을 참고한다. reference 5룰: `CROSS_BORDER_REMIT` REVIEW ≥ ₱280,000(USD 5,000) · `CASH_IN` BLOCK ≥ ₱560,000(USD 10,000) · `DOMESTIC_REMIT` REVIEW ≥ ₱112,000(USD 2,000) · `WALLET_PAYMENT` REVIEW ≥ ₱168,000(USD 3,000) · `WALLET_WITHDRAWAL` CHALLENGE ≥ ₱84,000(USD 1,500). hanpass에 없는 카드(`CARD_NOT_PRESENT`) 룰은 항상 `DISABLED`다. V15가 알려진 고정 UUID reference를 production에서 비활성화하고 explicit `demo` profile repeatable만 5룰을 다시 활성화한다. 룰 정의는 평가 구성이고 event/decision/case 같은 business seed는 아니다.
 
 ### 5.18 fds_rule_versions
 rule version rollback 증적(§2.1).
@@ -782,7 +782,9 @@ API key/OAuth2 client/webhook을 `(tenant, workspace)`에 바인딩. HMAC은 검
 
 credential rotation은 신규 credential ID 병행 발급→client 전환→최대 clock skew(5분)+nonce TTL(15분) 경과→구 credential 비활성화를 기본으로 한다([공통 인증 §6](../api/00-common-machine-auth.md#6-credential-전환회전)). 명시적 v2 실패 후 v1 fallback은 금지한다. 단, 생성·scope 변경·유예회전·폐기·last-used 이력과 credential별 사용 조건은 **P1-02 미완료 범위**이므로 이 권장 절차만으로 credential lifecycle 완료를 주장하지 않는다.
 
-local/demo REST simulator credential은 Flyway data seed가 아니다. 명시적 `local|demo` positive profile과 opt-in property가 함께 켜진 경우에만 환경의 32자 이상 secret을 정상 cipher로 암호화해 v2-only row로 provision한다. 그 밖의 profile에는 provisioner가 등록되지 않는다.
+local/demo REST simulator credential은 Flyway data seed가 아니다. 명시적 `local|demo` positive profile과 opt-in property가 함께 켜진 경우에만 환경의 32자 이상 secret을 정상 cipher로 암호화해 v2-only row로 provision한다. 그 밖의 profile에는 provisioner가 등록되지 않는다. P0-02의 V15와 demo repeatable도 credential을 만들지 않는다. V15는 알려진 복합 demo tenant fingerprint 아래의 기존 credential을 `enabled=false`, `secret_ciphertext=NULL`로 격리하며, 재등록은 환경 provisioner만 담당한다.
+
+`secret_ciphertext`를 여는 FDS master key는 DB row가 아니라 secret manager 주입값이다. production-class profile(`prod`/`production`/`aws`)은 Base64/Base64URL decode 기준 32 bytes 이상 random material만 허용하고 blank·공개 demo 값·저엔트로피 값을 startup에서 거부한다. 현 단일-key 암호문은 배포 실패 시 같은 secret-manager current version으로만 rollback하며 online key 교체를 시도하지 않는다. `keyId`·tenant/resource AAD·dual-read·background re-encryption·key-use audit는 **P1-03 미완료 범위**다.
 
 ### 5.29a fds_auth_nonces (P0-00, Flyway V14)
 
@@ -975,12 +977,12 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 
 ## 8. Flyway 마이그레이션 순서
 
-스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V14, 누락 없음)이다.
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V15, 누락 없음)이다.
 
 | 버전 | 파일 | 내용(실제) | 비고 |
 |---|---|---|---|
 | V1 | `V1__baseline.sql` | `CREATE SCHEMA fds` + 현행 baseline 스키마. 핵심/운영 테이블(`fds_tenants`, `fds_workspaces`, `fds_source_systems`, `fds_schema_mappings`, `fds_canonical_events`, `fds_decisions`, `fds_actions`, `fds_cases`, `fds_rule_sets`, `fds_rules`, `fds_feature_catalog`, `fds_risk_groups`, `fds_approval_requests`, `fds_connector_offsets`, outbox/audit 등)와 기본 CHECK/인덱스 포함. `channel_type` 21종, `event_family` 19종, `fds_rules.evaluation_mode` 초기 CHECK(`INLINE_AND_ASYNC`/`ASYNC_ONLY`) 포함 | baseline |
-| V2 | `V2__seed.sql` | `tenant_demo`/`default` seed, source/schema mapping, feature catalog, rule set/rules/rule_versions, demo approval/cases/actions 등 초기 데이터. hanpass-ph phpEquivalent 데모 룰 5종과 `CARD_NOT_PRESENT` disabled 행 포함 | seed |
+| V2 | `V2__seed.sql` | 역사적 `tenant_demo`/`default` seed, source/schema mapping, feature catalog, rule set/rules/rule_versions, demo approval/cases/actions 등 초기 데이터. hanpass-ph phpEquivalent reference 룰 5종과 `CARD_NOT_PRESENT` disabled 행 포함. 적용 파일은 불변이며 V8/V15가 business/config 잔존을 forward 정리한다 | immutable historical seed |
 | V3 | `V3__c1213_rule_pack.sql` | C-1213/M-2025 룰팩 additive seed. `ck_fds_rules_evaluation_mode`를 `INLINE_AND_ASYNC`/`INLINE_ONLY`/`ASYNC_ONLY`로 확장하고 6h velocity·device/geo·behavior/election 룰 7종 및 feature catalog를 upsert | additive seed |
 | V4 | `V4__rule_variables_and_country_groups.sql` | 룰 임계값/가중치/그룹 참조를 `fds_rule_variables`·`fds_risk_groups`·`fds_risk_group_members`로 외부화. C-1213 룰 JSON을 `valueRef`/`groupRef` 기반으로 갱신 | additive seed |
 | V5 | `V5__device_rule_requires_prior_different_device.sql` | device 변경 룰이 이전 device와 다른 경우만 발화하도록 feature catalog/rule JSON을 보강 | additive seed |
@@ -993,6 +995,9 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | V12 | `V12__dynamic_rule_builder_core_features.sql` | `FeatureComputeAdapter`가 계산하는 subject count/sum의 10m/1h/6h/24h core feature 8개를 `_global/default` catalog에 멱등 upsert. catalog-first 룰 화면에서 거래건수·금액합계를 직접 선택하는 정본 | additive seed |
 | V13 | `V13__rest_ingest_monitoring_index.sql` | REST 거래 인입 실측을 위한 partial index `ix_events_rest_tx_received (tenant_id, workspace_id, source_system, received_at DESC) WHERE transaction_ref IS NOT NULL`. 24h accepted 거래 count와 source별 최신 수신 조회 지원 | additive index |
 | V14 | `V14__machine_auth_nonce_replay.sql` | P0-00 machine-auth v2. `fds_api_credentials.allowed_protocol_versions` 추가(기존 row `["v1","v2"]` backfill, 이후 DEFAULT `["v2"]`, non-empty subset CHECK) + `fds_auth_nonces` 생성(PK tenant/workspace/credential/nonce_hash, credential FK CASCADE, request/context hash·content digest·consumed/expires 시각, v2/hash/expiry CHECK) + expiry index | additive auth/replay |
+| V15 | `V15__quarantine_demo_seed_configuration.sql` | P0-02 운영 seed 격리. V1~V14 checksum은 그대로 두고 알려진 **복합 demo fingerprint**(`tenant_demo` + Demo/데모 표시명 또는 exact demo infra ref)가 유지된 경우에만 tenant `OFFBOARDED`, source/mapping/rule/variable 비활성, deployed rule version `ROLLED_BACK`, 해당 demo tenant의 enabled credential disable+ciphertext 폐기, exact 미종결 demo approval `CANCELLED`로 forward 보정한다. ID 단독으로는 customer row를 변경하지 않고 모든 lineage/version row를 보존한다 | additive quarantine |
+
+명시적 `demo` profile만 정규 location 뒤 `classpath:db/demo`를 추가하고 repeatable `R__activate_demo_reference_configuration.sql`을 실행한다. 이 repeatable은 같은 복합 fingerprint의 tenant와 source/mapping/reference rule·variable만 재활성화하며, 의도적으로 비활성인 카드 rule은 복원하지 않는다. credential·event·transaction·decision·action·case·report·pending approval은 만들지 않아 business data의 유일한 유입 경로를 서명된 REST simulator로 유지한다. production-class profile은 `demo`/`local` 혼합과 active demo fingerprint를 readiness 전에 거부한다.
 
 > **consolidate 주의**: 2026-06-30 이전 문서의 구 phase 파일(V10~V22 등)은 현행 저장소에 실재하지 않는다. 해당 스키마·CHECK·demo seed 의미는 V1/V2 baseline·seed와 V3~V6 additive seed로 흡수되었으므로, 본 표가 Flyway 정본이다.
 
@@ -1040,6 +1045,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-12 | v3.9 | **P0-02 운영 Flyway demo seed·기본 secret 분리.** §5.29에 V15 credential quarantine·secret-manager FDS master key startup gate와 P1-02/P1-03 경계를 명시했다. §8에 실제 V15와 explicit `db/demo` repeatable을 추가하고, `tenant_demo` ID 단독이 아닌 표시명/infra의 복합 fingerprint만 격리하며 reference config와 REST-only business data를 분리했다. | 코드 truth=FDS V15·`db/demo/R__activate_demo_reference_configuration.sql`·production safety validators |
 | 2026-07-12 | v3.8 | **P0-00 machine-auth v2 credential/replay 스키마 역전파.** §5.29에 `allowed_protocol_versions`(기존 `[v1,v2]`, 신규 `[v2]`)와 실제 AES-GCM `secret_ciphertext`를 반영하고, §5.29a `fds_auth_nonces`(credential-wide PK·hash/digest only·기본 15분 TTL, 정책 `>2×skew`·원자 consume·cleanup 최대 `20×5000/tick`) 및 expiry index를 신설했다. local/demo positive-profile provisioner는 Flyway seed가 아니며 P1-02 운영 lifecycle은 미완료임을 명시했다. §8에 실제 `V14__machine_auth_nonce_replay.sql`을 등재하고 구 hash 컬럼 오기를 전수 제거했다. outbound webhook secret 사용은 동일 ciphertext 복호화 경계로 유지한다. | 코드 truth=FDS V14·`common-security`; 공통 계약=`../api/00-common-machine-auth.md` |
 | 2026-07-10 | v3.7 | **REST 거래 인입 모니터링 조회 인덱스 추가.** V13 `ix_events_rest_tx_received (tenant_id, workspace_id, source_system, received_at DESC) WHERE transaction_ref IS NOT NULL`을 §6에 반영. accepted canonical 거래 row의 24h 건수·마지막 수신 조회를 지원하며 스키마/컬럼 변경 없음. | data-modeler |
 | 2026-07-10 | v3.6 | **FDS 고객 프로필 CDD-authoritative upsert 정합.** AML CDD outbox/internal API non-null 값은 갱신, null 보존, 거래 snapshot은 빈 값 bootstrap만 허용. V11 원천 eventId/occurredAt 컬럼으로 역전 도착 과거 projection을 차단. | data-modeler |

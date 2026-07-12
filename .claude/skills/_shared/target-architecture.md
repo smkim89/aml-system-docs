@@ -61,6 +61,15 @@
 - **한 고객사 = 한 배포(전용 DB)** 가 기본. "고객사 등록"은 격리 라디오가 아니라 **배포 유형 선택 + 온보딩 신청·상태** 관리다(매니지드는 운영자 카탈로그, self-hosted는 고객 단독 BO).
 - 온보딩 상태머신: `REQUESTED → PROVISIONING → DEPLOYED → VERIFIED → ACTIVE`(매니지드) / `PACKAGE_ISSUED → CUSTOMER_DEPLOYED → REGISTERED`(self-hosted).
 
+### 4.2 운영 seed·secret 경계
+
+- 운영 정규 Flyway location set은 서비스의 `db/migration`(AML의 checksum-pinned Java migration 포함)만 사용하고 `classpath:db/demo`를 포함하지 않는다. 과거 적용 migration은 checksum 불변이며, 알려진 demo 계정·tenant·평가 설정은 신규 forward quarantine migration으로 비활성화한다. `db/demo`의 repeatable reference 설정은 명시적 `demo` profile에서만 추가한다.
+- active profile이 비면 configured default profile을 effective profile로 사용한다. `prod`/`production`/`aws` 중 하나라도 effective profile이면 `local`/`demo` 혼합 또는 scalar/indexed environment property의 `db/demo` location override를 bean/Flyway 생성 전에 거부한다. 운영 최종 DB에는 로그인 가능한 공개 demo 사용자, 알려진 demo 복합 fingerprint의 ACTIVE tenant·평가 설정·credential·미종결 승인이 없어야 한다. demo repeatable도 dependent row마다 같은 복합 fingerprint를 다시 확인하며, 거래·고객·alert·case·report 같은 business data는 Flyway가 아니라 서명된 REST simulator가 생성한다.
+- `tenant_demo`는 hanpass-ph 운영 tenant ID로도 사용하므로 **ID 단독이나 `demo` 부분 문자열은 demo 판정 근거가 아니다**. immutable seed timestamp·actor·표시명·배포 metadata의 exact 조합과 알려진 seed 사용자·provenance·고정 식별자만 격리·startup 거부 대상으로 삼는다. AML의 FATF country source와 status 없는 CTR threshold/banking calendar도 production base에서는 inert/부재하고 explicit demo repeatable에서만 reference 설정으로 복원한다.
+- 최초 운영 `BO_SUPER_ADMIN`은 Flyway가 만들지 않는다. IdP provisioning 또는 secret manager가 한 번만 주입하는 OOB bootstrap secret으로 생성하고, 계정·role 부여·완료 marker를 같은 transaction으로 감사한 뒤 입력을 제거한다.
+- BO session HMAC, FDS credential 암호화 master key, AML credential cipher·PII HMAC·evidence token secret은 secret manager가 독립 생성해 주입한 Base64/Base64URL random material(복호화 기준 32 bytes 이상)만 운영에서 허용한다. AML 세 secret의 decoded material 재사용과 blank·공개 기본값·잘못된 encoding·저엔트로피 값은 readiness 전에 거부하며 오류·감사 로그에 값이나 fingerprint를 남기지 않는다.
+- BO session key 교체는 기존 token 전부 무효화→재로그인을 전제로 한다. P0-02의 key rollback은 배포 실패 시 **같은 secret-manager current version**으로 되돌리는 절차까지만 뜻한다. machine credential 생성·scope·유예 회전·폐기·last-used는 P1-02, 암호문 `keyId`/tenant·resource AAD/dual-read/background re-encryption/key-use audit는 P1-03 범위이며 P0-02 완료로 간주하지 않는다.
+
 ## 5. 개발 착수용 산출물 일습 (ready-to-develop)
 | 단계 | 산출물 | 경로 | 담당 에이전트 |
 |---|---|---|---|
