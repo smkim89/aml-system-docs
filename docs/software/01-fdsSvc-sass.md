@@ -2118,6 +2118,14 @@ CREATE TABLE fds_connector_offsets (
 - 주민등록번호, 카드 PAN, 계좌번호, 여권번호, 휴대폰번호, CI/DI, 가상자산 주소는 별도 민감도 등급을 부여한다(DB §7.1 원문 미저장 대상 집합과 동일 명칭).
 - 원천 payload에 주민등록번호 또는 카드 PAN이 포함되면 ingest 단계에서 reject 또는 tokenization 후 원문 폐기한다.
 
+### 16.1a 운영 seed·secret 경계 (P0-02)
+
+- 정규 `classpath:db/migration`의 최종 상태는 로그인/호출 가능한 demo credential과 알려진 demo 복합 fingerprint의 ACTIVE tenant·source·mapping·rule·variable·미종결 approval을 허용하지 않는다. 적용된 V1~V14는 checksum 불변으로 두고 V15 forward migration이 row/version 계보를 보존한 채 비활성화한다.
+- `tenant_demo`는 hanpass-ph 운영 ID이기도 하므로 ID 단독으로 demo를 판정하지 않는다. Demo/데모 표시명 또는 exact demo infra ref와 알려진 seed 식별자·provenance가 결합된 row만 quarantine하고, 같은 ID를 운영 metadata로 정상 provision한 고객 row는 허용한다.
+- `classpath:db/demo` repeatable reference 설정은 명시적 `demo` profile에서만 정규 migration 뒤 실행한다. tenant와 평가 reference config만 재활성화하며 credential·event·transaction·decision·action·case·report·pending approval은 만들지 않는다. demo 업무 데이터는 서명된 REST simulator가 생성한다.
+- production-class profile(`prod`/`production`/`aws`)은 `local`/`demo` 혼합, active demo fingerprint, blank·공개 기본값·잘못된 encoding·저엔트로피 FDS encryption key를 readiness 전에 거부한다. key는 secret manager가 주입한 Base64/Base64URL random material(복호화 기준 32 bytes 이상)이어야 하며 오류 로그에는 값·fingerprint를 남기지 않는다.
+- P0-02 rollback은 배포 실패 시 같은 secret-manager current version을 복원하는 절차다. machine credential 생성·scope·유예회전·폐기·last-used는 P1-02, 암호문 `keyId`·tenant/resource AAD·dual-read·background re-encryption·key-use audit는 P1-03 범위다.
+
 ### 16.2 한국 시장 기본 규정 pack
 
 | 영역 | 기본 반영 기준 |
@@ -2380,6 +2388,7 @@ hanpass-ph FDS(`fds-svc`)는 Hanpass `FdsSvc`를 참조 구현으로 삼되, 그
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-12 | v3.3 | **P0-02 운영 Flyway demo seed·기본 secret 분리.** §16.1a에 FDS V15 forward quarantine, explicit `demo`/`db/demo` reference config, REST-only business data, production profile/secret/DB startup gate를 반영했다. `tenant_demo` ID 단독은 fingerprint가 아니며 P1-02 credential lifecycle·P1-03 keyId/AAD/dual-read/re-encryption은 완료 범위에서 제외했다. | system-architect. 코드 truth=FDS V15·demo repeatable·production validators |
 | 2026-07-12 | v3.2 | **P0-00 공통 inbound machine-auth wire v2 설계 전환.** §12.1/§12.8을 `../design/api/00-common-machine-auth.md` 정본으로 바꾸고 normalized servlet routing/ambiguous path·duplicate singleton 거부, raw query·고정 9-key scopeContext(trace/correlation 제외)·body digest, v1 offset/v2 UTC `Z`, nonce TTL `>2×skew`·cleanup `20×5000/tick`, signed redirect 거부와 local/demo positive provisioning을 반영했다. P0-01/P0-04/P0-14·P1-02 lifecycle 미완료를 명시하고 outbound webhook 공식은 inbound v2와 분리했다. | system-architect. 코드 truth=`common-security`, FDS V14, bo-api `RestClientConfig`/`RestClientConfigTest`, Python simulator transport |
 | 2026-07-10 | v3.1 | **운영 화면을 단일 FDS REST 거래 인입 API로 정정.** source system별 엔진 집계는 내부 입력으로 유지하고 `/fds/connectors`는 `POST /api/v1/fds/events` 한 행에 API 상태·24h 전체 합계·최신 수신·TPS 합계를 표시한다. bo-api/bo-web cache tenant/workspace 격리 포함. | system-architect |
 | 2026-07-10 | v3.0 | **Canonical store 기반 REST 거래 인입 실측 관측 흐름 추가.** §17에서 `fds_canonical_events.received_at`·`transaction_ref IS NOT NULL` accepted row를 tenant/workspace/source별 24h 건수·마지막 수신·60초 TPS로 집계하는 저수준 admin API와 bo-api→`/fds/connectors` 표시 흐름을 확정. replay/duplicate 비가산, PII 미노출. | system-architect |
