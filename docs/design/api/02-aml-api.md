@@ -23,7 +23,7 @@
 
 > **정본 결정 요약(정합성 리포트 design:api 정정분).** 아래 5건은 본 API 명세를 파생(설계서·연동·태스크·PRD·PPT)의 진실로 확정한다.
 > 1. **운영자 집계 API 소유 경계 = bo-api(§9).** 대시보드(플랫폼·서비스별)·서비스 관리(목록/상세/등록/설정)·운영자 감사 조회 화면이 호출하는 집계 엔드포인트는 **bo-api가 소유·집약·인증**한다. aml-svc(엔진)는 저수준 데이터 API만 제공하며, **본 엔진 API 명세(§2)에는 운영자 집계 엔드포인트(대시보드/서비스/감사)를 추가하지 않는다.** PRD/PPT의 해당 화면은 호출 대상을 bo-api(`/api/v1/bo/aml/**`)로 명시한다. (§2.7 `audit-events`는 엔진 측 append-only 저수준 감사 조회이며, 운영자 화면용 감사 집계는 bo-api가 위임 호출한다.)
-> 2. **마스터 enum = 본 API enum(전수) 정본.** screening_status 마스터는 `NO_MATCH`/`POSSIBLE_MATCH`/`TRUE_MATCH`/`FALSE_POSITIVE`/`AUTO_DISCOUNTED`/`ESCALATED`(§3.2·§5)이며 설계서 예시의 `POTENTIAL_MATCH`/`result`는 `POSSIBLE_MATCH`/`status`로 환원한다. 결재 `subjectType` 마스터는 §3.7 enum(총 16종 — `TM_SCENARIO`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE` 포함)이 정본이며 설계서·PRD·DB §5.16은 이에 동기화한다.
+> 2. **마스터 enum = 본 API enum(전수) 정본.** screening_status 마스터는 `NO_MATCH`/`POSSIBLE_MATCH`/`TRUE_MATCH`/`FALSE_POSITIVE`/`AUTO_DISCOUNTED`/`ESCALATED`다. 결재 `subjectType` 마스터는 §3.7 엔진 enum **21종**(`REPORT_RULE_PARAM` 포함, V41)이 정본이며 설계서·PRD·DB §5.16은 이에 동기화한다.
 > 3. **HTTP 상태코드 = §4 정본.** 멱등 충돌 409·결재 미충족/자기승인 409·payload 변경 409·상태전이 위반 409·screening 검토요구 422·rate limit 429·fail-closed 503을 §4로 확정한다.
 > 4. **Webhook 콜백 계약 = §8 정본.** screening/case/report 상태변경 outbound 콜백 3종·envelope·`X-Signature` HMAC·재시도/멱등을 §8로 확정한다. 설계서 §15.7 'Webhook API'는 본 §8을 정본으로 참조한다.
 > 5. **배포 모델/온보딩 = bo-api 소유, aml-svc 엔진 API 미추가(§9·§3.16).** 서비스(테넌트=서비스) 등록은 격리 토글(구 `isolation_mode` 라디오)이 아니라 **배포 유형 선택(`DeploymentModel`) + 온보딩 신청(`OnboardingStatus` 상태머신)** 흐름이다(정본 §4.1, D-06 결정 확정). `DeploymentModel` 3종·`OnboardingStatus` 8종은 DB §5.28/§5.28a 정본과 1:1(FDS API v1.5 §10 동기화). bo-api 전용 엔드포인트 5종(§5 paths, §9 표) — `GET/POST /api/v1/bo/aml/tenants`, `GET/PUT .../tenants/{tenantId}`, `POST .../onboarding/provision`, `POST .../onboarding/register`, `GET .../onboarding`. `isolationMode` 필드·`isolation_mode` 컬럼·구 enum 전면 폐기. 오픈결정: SELF_HOSTED `registrationToken` 인증 방식(서명·mTLS 등) 상세는 P8 인프라 설계 확정.
@@ -42,7 +42,7 @@
 | 서명 | `X-Signature: hmac-sha256=...` | Public Y | HMAC-SHA256(source `secret_ref` 키). canonical material=`timestamp\napiKey\nmethod\nrequestURI\n[nonblank X-User-Subject\n]rawBody`; actor 없는 Public 요청은 기존 material과 동일, actor가 있는 Admin/Internal 요청은 actor까지 위변조 방지 |
 | 운영자 actor | `X-User-Subject` | Admin/Internal write Y | trusted BFF/mesh가 인증 principal에서 파생. nonblank이면 위 HMAC material에 결합되므로 서명 뒤 actor 교체는 401. 브라우저 임의 입력 금지 |
 | Idempotency | `Idempotency-Key` 헤더 | 쓰기성 Public Y | DB `aml_canonical_events.idempotency_key` UNIQUE(tenant_id,idempotency_key) |
-| Trace | `X-Trace-Id`(없으면 생성) | N | DB `trace_id` 전파(설계서 §20.3). 응답 `X-Trace-Id` 반향 |
+| Trace | `X-Trace-Id`(없으면 생성, 최대 64자) | N | DB `trace_id VARCHAR(64)` 전파(설계서 §20.3). 응답 `X-Trace-Id` 반향. 초과 입력은 persist 전 422 |
 
 권한 scope(**마스터=본 §1.1 enum 전수 정본**, OAuth2/RBAC 공통, 설계서 §15.7·PRD §1.4는 이에 동기화): `aml:event:write`, `aml:screen:evaluate`, `aml:ra:evaluate`, `aml:tm:evaluate`, `aml:case:read`, `aml:case:update`, `aml:evidence:export`, `aml:admin:watchlist`, `aml:admin:source-system`, `aml:admin:policy`, `aml:admin:approval`, `aml:admin:audit`, `aml:pii:reveal`(원문/raw PII 접근, 사유+감사 `RAW_DATA_ACCESS` 필수, §1.6). 총 13종. 설계서 §15.7 'scope 예시'와 PRD §1.4는 본 §1.1 전수 enum을 정본으로 인용한다.
 
@@ -91,7 +91,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 
 | 메서드 | 경로 | scope | 멱등 | 설명 | DB |
 |---|---|---|---|---|---|
-| POST | `/api/v1/aml/events` | `aml:event:write` | Y | canonical AML event 수신(hanpass-ph: `customer.*`/`entity.*`/`beneficial-owner.*`/`transaction.*`/`remit.*`/`domestic.*`/`wallet.*`) | `aml_canonical_events` |
+| POST | `/api/v1/aml/events` | `aml:event:write` | Y | canonical AML event 수신. `customer.cdd.completed`는 동기 1차 RA의 불변 업무결정(`APPROVE`/`REJECT`/`EDD_REQUIRED`)과 score/model snapshot을 함께 반환하며 replay는 최초 결정을 그대로 반환 | `aml_canonical_events`,`aml_cdd_onboarding_decisions` |
 | POST | `/api/v1/aml/events:batch` | `aml:event:write` | Y | 대량 event 배치 수신(queue 대체 동기 경로) | `aml_canonical_events` |
 | GET | `/api/v1/aml/events/{eventId}` | `aml:event:write` | — | 수신 event 상태 조회(idempotency 확인) | `aml_canonical_events` |
 
@@ -109,6 +109,8 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 > - **(b) GEOGRAPHY** = 국적/거주국 × 국가위험 정본(`LookupCountryRiskUseCase.gradeFor`, §2.7 국가위험) → PROHIBITED/HIGH=100·MEDIUM=60·LOW/미등재=15(nationality×residenceCountry **max 결합**).
 > - **(c) CUSTOMER** = `kyc_evidence`(sourceOfFunds·kycLevel·occupation) → `clamp((sofRisk+kycLevelRisk)/2 + occupationRisk)` 엔진 파생. 세 값은 ACTIVE ONBOARDING 맵과 exact code로 조회하고 미등록 값은 각 `default`를 적용한다. `kycLevelRisk`는 고객확인 수행 수준의 통제 잔여위험, `occupationRisk`는 평균 항목이 아닌 가산 조정값이다.
 > 파생 규칙은 ACTIVE ONBOARDING 모델(`KR_DEFAULT_RA`) `parameters` JSONB 정본(V19)이 소비하며 엔진 상수 하드코딩 없음. **fail-safe**: 스크리닝 미가용(워치리스트 stale/미수입) 시 freshness **boolean 선검사**로 1차 RA **평가 보류**(스코어 미생성)하되 CDD 인입 자체는 `ACCEPTED` — 예외 전파로 인입 TX 를 rollback-only 오염시키지 않는다(§15.5·§20.2 fail-closed). `customer.cdd.completed` 외 이벤트는 no-op.
+>
+> **CDD 온보딩 업무결정(V42, 코드=truth).** `customer.cdd.completed`의 최초 ACCEPTED 처리에서 생성된 RA snapshot을 `aml_cdd_onboarding_decisions`에 이벤트/멱등키별 불변 projection으로 저장한다. KYC `REJECTED` 또는 RA `PROHIBITED`는 `REJECT`, EDD 필요·고위험 WLF/보류는 `EDD_REQUIRED`, 나머지는 `APPROVE`다. 응답은 `{decision,scoreId,riskScore,riskGrade,requiredAction,modelVersion,reason}`을 포함한다. replay는 idempotency key 소유 **저장 canonical event의 eventId/source/schema/type/occurredAt/payload/hash/dataScope**와 요청을 비교한다. exact replay만 후속 모델·source enabled/schema 변경과 무관하게 최초 snapshot을 200으로 반환하고, 같은 key의 다른 body는 `409 DUPLICATE`다. legacy 복구에서 projection이 없으면 재평가로 새 결정을 발명하지 않고 `EDD_REQUIRED`로 fail-safe 한다.
 
 > **인입 파이프라인 step 7f — FDS 고객 프로필 동기화 outbox.** 신규 CDD가 ACCEPTED되면 동일 트랜잭션에서 `aggregateType=FDS_CUSTOMER_PROFILE`, `eventType=aml.customer.profile.updated`, `aggregateRef=customerRef` outbox를 생성한다. payload는 `sourceEventId/occurredAt/nationality/country/registeredAt/kycCompletedAt/kycLevel/dataScope`만 포함하고 raw name·DOB·문서 식별자는 제외한다. relay가 FDS 내부 API로 전달하며 실패는 기존 outbox retry/backoff로 재시도하므로 FDS 장애가 AML CDD ingest를 rollback하지 않는다. REPLAYED/DUPLICATE는 step 7f에 도달하지 않아 중복 enqueue하지 않는다.
 
@@ -118,9 +120,9 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 
 | 메서드 | 경로 | scope | 멱등 | 헤더 | 설명 | DB |
 |---|---|---|---|---|---|---|
-| POST | `/aml/v1/transaction-events` | `aml:event:write` | Y | `Tenant-Id`(필수)·`Idempotency-Key`(옵션, 미지정 시 body `eventId` 사용·지정 시 `eventId`와 일치 필수)·`X-Trace-Id`(옵션) | 중립 Envelope 수신 → 검증(422) → PII 토큰화·vault → canonical event 멱등 저장 → WLF + CTR/STR 평가. 응답=수신확인 + 평가요약 | `aml_canonical_events`(+`aml_alerts`·CTR/STR 파생) |
+| POST | `/aml/v1/transaction-events` | `aml:event:write` | Y | `Tenant-Id`(필수)·`Idempotency-Key`(옵션, 미지정 시 body `eventId` 사용·지정 시 `eventId`와 일치 필수)·`X-Trace-Id`(옵션) | 중립 Envelope 수신 → 검증(422) → 비PII 안정 토큰 파생 → canonical event 멱등 저장. 신규 ACCEPTED만 raw PII vault → WLF + CTR/STR 평가하고, REPLAYED/DUPLICATE는 요청-body side-effect 없이 종결. 응답=수신확인 + ACCEPTED 평가요약 | `aml_canonical_events`(+ACCEPTED 한정 `aml_alerts`·CTR/STR 파생) |
 
-**상태코드 매핑**(엔진 `NeutralTransactionEventController#httpStatus` = truth): `ACCEPTED`→`202`, `REPLAYED`(멱등 재전송·동일 payload)→`200`, `DUPLICATE`(동일 키·다른 내용)→`409`, `REJECTED`(검증 실패)→`422`. 검증 실패는 **단일 422** 에 누적 위반 목록을 실어 반환하며 500 을 던지지 않는다(fail-closed).
+**상태코드 매핑**(엔진 `NeutralTransactionEventController#httpStatus` = truth): `ACCEPTED`→`202`, `REPLAYED`(멱등 재전송·동일 canonical payload)→`200`, `DUPLICATE`(동일 키·다른 내용)→`409`, `REJECTED`(검증 실패)→`422`. 검증 실패는 **단일 422** 에 누적 위반 목록을 실어 반환하며 500 을 던지지 않는다(fail-closed). `REPLAYED`/`DUPLICATE`는 raw PII vault·WLF·TM/CTR/STR 전에 즉시 종결되어 재전송 body의 projection/엔진 side-effect가 0건이고 `evaluation=null`이다. canonical payload용 비PII 안정 토큰만 gate 전에 순수 파생한다. raw PII는 canonical hash에 없으므로 신규 `ACCEPTED` body에서만 vault/screening에 사용한다.
 
 **요청 Envelope 스키마**(공통, `NeutralEventRequest` = truth). 상세 블록·Party·Amounts 는 §3.17.
 
@@ -227,7 +229,8 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | 메서드 | 경로 | scope | 멱등 | 설명 | DB |
 |---|---|---|---|---|---|
 | GET | `/api/v1/evidence/aml/customers/{customerRef}/profile` | `aml:evidence:export` | — | 고객 CDD/EDD/RA/WLF 프로필 evidence | 다중 |
-| GET | `/api/v1/evidence/aml/customers/{customerRef}/activity-summary` | `aml:evidence:export` | — | EDD 소득정합성 재료(최근 30일 건수·합계 + 관측기간 월평균, `ActivitySummaryDto`) | `aml_canonical_events` |
+| GET | `/api/v1/evidence/aml/customers/{customerRef}/activity-summary` | `aml:evidence:export` | — | EDD 소득정합성 재료(최근 30일 건수·합계 + 관측기간 월평균 + exact alert/case/screening/관계·UBO edge/최근 거래상대방 집계 + `degraded`, `ActivitySummaryDto`) | `aml_canonical_events`,`aml_alerts`,`aml_cases`,`aml_screening_results`,`aml_relationships` |
+| GET | `/api/v1/evidence/aml/customers/{customerRef}/fund-view?page=&size=` | `aml:evidence:export` | — | 최근 30일 거래피드 서버 페이징(size 1~200) + page-local 자금그래프. 응답 `{transactionFeed,fundGraph,totalCount,degraded}`; totalCount는 exact, `degraded=true`면 0을 실측 0으로 단정하지 않음 | `aml_canonical_events` |
 | GET | `/api/v1/evidence/aml/cases/{caseId}/timeline` | `aml:evidence:export` | — | case timeline evidence | `aml_cases` |
 | GET | `/api/v1/evidence/aml/reports/str-candidates?from&to` | `aml:evidence:export` | — | STR 후보 기간 조회 | `aml_regulatory_reports` |
 | POST | `/api/v1/evidence/aml/exports` | `aml:evidence:export` | Y | evidence pack export 생성(manifest hash) | `aml_evidence_exports` |
@@ -237,7 +240,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 
 | 메서드 | 경로 | scope | 멱등 | 설명 | DB |
 |---|---|---|---|---|---|
-| GET | `/api/v1/bo/aml/subjects/{customerRef}/360` | `aml:case:read` | — | **대상 360° 통합 뷰** — `tx-history-svc` 회원 통합 이력 + `member-svc` CDD/screening(zoloz) + `wallet-svc` `transfer_links` 자금그래프 결합 read model(DB §3.16). RA-003 드릴다운·CASE 타임라인·TM 알림 상세의 공통 골격. 응답 DTO §3.16a `Subject360Dto` | 다중(read model) |
+| GET | `/api/v1/bo/aml/subjects/{customerRef}/360?page=&size=` | `aml:case:read` | — | **대상 360° 통합 뷰** — 엔진 fund-view의 동일 page/size를 관통시키며 `transactionFeedTotalCount` exact count와 `transactionFeedDegraded`를 함께 반환한다. UI의 더 보기는 실제 다음 페이지를 요청·병합한다. RA-003 드릴다운·CASE 타임라인·TM 알림 상세의 공통 골격. 응답 DTO §3.4b `Subject360Dto` | 다중(read model) |
 | GET | `/api/v1/bo/aml/alerts?status=&severity=&sourceOrigin=&rule=&from=&to=&targetRef=&channel=&corridor=&page=&size=` | `aml:case:read` | — | **TM 알림 브라우즈 목록**(AML-TM-001 ①, 출처 AML/FDS/VENDOR·심각도·상태·룰·기간·채널·corridor·대상 필터). 응답 `AlertDto[]`(§3.4a, `ruleCode`). bo-api `AmlTmController`가 aml-svc 위임. **필터 파라미터명 = `rule`**(문자열 CTR/STR 룰 코드 매칭, v9.21 — 레거시 `scenario` 폐기. aml-svc `GET /api/v1/aml/alerts?rule=` 위임 정합) | `aml_alerts` |
 | POST | `/api/v1/bo/aml/alerts/{alertId}:triage` | `aml:case:update` | — | **알림 1차 분류 위임**(`DETECTED`→`TRIAGED`). body optional `AlertTriageRequest{actor?}`. 응답 `AlertActionResponse{alertId, status, caseId?, caseStatus?}`. aml-svc `:triage` 위임(비운영 stub 은 라이브 인메모리 알림 상태 전이·prod 미설정 위임 fail-closed 503 `AML.ENGINE_UNAVAILABLE`, 가정 G7). 감사 `AML_ALERT_TRIAGED`(비-4-eyes) | `aml_alerts` |
 | POST | `/api/v1/bo/aml/alerts/{alertId}:dismiss` | `aml:case:update` | — | **알림 오탐 종결 위임**(`DETECTED`/`TRIAGED`→`DISMISSED`). body `AlertDismissRequest{reason 필수(@NotBlank), actor?}` — **`reason` 공백 시 400**(bo-api 계층에서 사유 필수 강제, G1)으로 오탐율(§12-B.3) 실 분모·감사 근거 확보. 위임 시 optional `{reason, actor}` 를 엔진 `:dismiss` 로 전달. 응답 `AlertActionResponse`. 감사 `AML_ALERT_DISMISSED`(사유 동반) | `aml_alerts` |
@@ -345,7 +348,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 #### 회원원장(member ledger) read (§CDD·DB §3.22f, AML-CDD-004 / AML-MBR-001)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
-| GET | `/api/v1/admin/aml/members/{memberRef}/ledger` | `aml:case:read` | — | 회원원장 요약(현재 `kyc_status`·`risk_grade`·재실사 예정일 + CDD/EDD 이력 카운트). 회원 키 `memberRef`(= `originator.nationalIdentityKey` = `aml_customers.customer_ref`). Masked refs only(raw PII 미노출 §19.2) | `aml_customers` |
+| GET | `/api/v1/admin/aml/members/{memberRef}/ledger` | `aml:case:read` | — | 회원원장 요약(현재 `kyc_status`·`risk_grade`·재실사 예정일 + CDD/EDD 이력 카운트). 회원 키 `memberRef`(= `originator.partyReference` = `aml_customers.customer_ref`); `nationalIdentityKey`는 부재 시 tenant-keyed fallback 토큰. Masked refs only(raw PII 미노출 §19.2) | `aml_customers` |
 | GET | `/api/v1/admin/aml/members/{memberRef}/cdd-history?types=&page=&size=` | `aml:case:read` | — | 회원 CDD/EDD 이력 페이지(최신순). **`types` 반복 파라미터**(예 `types=CDD_INITIAL&types=EDD_OPENED`, 생략 시 전체) enum **6종** `CDD_INITIAL·CDD_REVIEW·EDD_OPENED·EDD_CLOSED·CDD_REISSUE_REQUESTED·EDD_REISSUE_REQUESTED`(DB §3.22f `history_type` = 엔진 `CddHistoryType`, §5.36, V27). 잘못된 유형 토큰은 400. 응답 페이징 봉투 `{ rows, page, size, totalElements, totalPages }`, 행은 masked 스냅샷(`historyId·historyType·kycStatus·riskGrade·sourceEventId·traceId·actor·details·occurredAt`) — raw PII 미노출 | `aml_member_cdd_history` |
 | POST | `/api/v1/admin/aml/cdd/customers/{customerRef}/reissue:request` | `aml:case:update` | — | **CDD/EDD 즉시 재이행 접수(RA 상세 AML-RA-003 '관리자 액션', V27)**. 요청 `ReissueRequest{ reissueType(CDD\|EDD), reason(필수), requestId(멱등키), actor?, traceId? }` — maker 는 위임 시 bo-api principal 파생. 접수 시 `aml_member_cdd_history` 에 `CDD_REISSUE_REQUESTED`/`EDD_REISSUE_REQUESTED` append(`source_event_id='reissue-req:'+requestId` 멱등 — 중복 요청은 `REPLAYED`), 원장 상태 무변경. 응답 `202 ReissueResponse{ requestId, historyId, historyType(CDD_REISSUE_REQUESTED\|EDD_REISSUE_REQUESTED), status(ACCEPTED\|REPLAYED) }`. **실 재이행 수행은 계정계 연동 예정**(`AccountSystemReissuePort` no-op 아답터, 코드 토큰 `TODO(계정계-연동)`) — 계정계가 재수행 후 `customer.cdd.completed` 재인입 시 `CDD_REVIEW` 폐루프. 결재 불요(운영 지시 액션 — 접수+감사 기록, 문서 미정의 지점 가정 명시) | `aml_member_cdd_history` |
 
@@ -396,18 +399,22 @@ bo-api 표면: `GET|POST /api/v1/bo/aml/report-rules/configurable`, `POST .../co
 |---|---|---|---|---|---|
 | GET | `/api/v1/admin/aml/cdd/cases` | `aml:case:read` | — | case 목록(필터: caseType/status/assignedTo) | `aml_cases` |
 | GET | `/api/v1/admin/aml/cdd/cases/{caseId}` | `aml:case:read` | — | case 상세·timeline | `aml_cases` |
-| POST | `/api/v1/admin/aml/cdd/cases` | `aml:case:update` | — | case 생성(수동) | `aml_cases` |
-| PATCH | `/api/v1/admin/aml/cdd/cases/{caseId}` | `aml:case:update` | — | 상태·담당자·우선순위 변경 | `aml_cases` |
+| POST | `/api/v1/admin/aml/cdd/cases` | `aml:case:update` | — | case 생성. `originAlertId`가 없으면 수동 생성, 있으면 alert row를 먼저 잠그고 tenant/target/CTR·STR type/status를 검증한 정상 handoff로만 생성·상태 전이한다. 임의 case의 alert lineage 선점은 거부 | `aml_alerts`,`aml_cases` |
+| PATCH | `/api/v1/admin/aml/cdd/cases/{caseId}` | `aml:case:update` | — | 담당자·우선순위·dueAt 및 working status `OPEN↔INVESTIGATING` 변경. `PENDING_APPROVAL` 진입/이탈과 terminal 전이는 직접 PATCH 불가 | `aml_cases` |
 | POST | `/api/v1/admin/aml/cdd/cases/{caseId}/timeline` | `aml:case:update` | — | 메모·증빙 추가 | `aml_cases` |
 | POST | `/api/v1/admin/aml/cdd/cases/{caseId}:close` | `aml:case:update` | 🔒4-eyes(`EDD_CLOSE`) | **조사 케이스 결재 종결**(`DISMISSED`/`REPORTED`/`CLOSED` 종결). subjectType=`EDD_CLOSE` 4-eyes(상신 maker→승인 checker, maker≠checker) 승인 시 종결. **케이스 유형 무관 — EDD_REVIEW(강화된 고객확인) 뿐 아니라 알림 트리아지·처분 폐루프에서 전환된 조사 케이스(STR_REVIEW·SAR_REVIEW·CDD)도 동일 결재 종결 경로를 공유**한다(엔진 `Case.closeApproved` 는 케이스 유형 가드 없이 존재·비종결 상태 불변식만 강제 — 과거 `EDD_REVIEW` 전용 가드가 STR_REVIEW `:close` 를 400 "case is not an EDD_REVIEW case" 로 거부하던 결함 해소). 회원원장 EDD 종료 이력(`recordEddClosed`, DB §3.22f)은 `EDD_REVIEW` 케이스에만 기록(알림 파생 조사 케이스는 EDD 이력 대상 아님) | `aml_cases`,`aml_approvals` |
 | POST | `/api/v1/admin/aml/cdd/cases/{caseId}:reject-relationship` | `aml:case:update` | 🔒4-eyes | 관계거절/온보딩 보류 확정 | `aml_cases`,`aml_approvals` |
 
+> **케이스 종결·알림 handoff 불변식(V43).** `:close`의 maker는 `X-User-Subject`가 정본이며 body maker는 동일성 assertion일 뿐이다. 상신 성공 즉시 case는 `PENDING_APPROVAL`, checker 승인 시 terminal status로 전이하고 reject 시 직전 조사상태로 복원한다. `REPORTED` 종결은 case type에 맞춰 `STR_REVIEW→STR`, `CTR_REVIEW→CTR`의 연결 보고가 `SUBMITTED` 또는 `ACKNOWLEDGED`일 때만 가능하다. submit과 checker 실행 모두 **case FOR UPDATE→report FOR UPDATE** 순으로 같은 lineage/target/status를 재검증하므로 FIU FAIL callback과 원자적으로 직렬화된다. 다른 case type의 REPORTED는 거부한다. 알림 전환 case는 서버가 알림 종류로 `STR_REVIEW`/`CTR_REVIEW`를 정하고 `(tenant_id,origin_alert_id)`당 하나만 생성한다. handoff 재호출은 alert의 terminal action·recommended type과 기존 case의 tenant/origin/target/type이 모두 같은 경우에만 멱등 replay로 반환하며, 다른 action이나 lineage 불일치는 충돌로 거부한다. 과거 `TRIAGED` alert에 유효한 기존 case만 남은 부분 handoff는 같은 transaction에서 요청 action으로 alert 상태를 동기화하되 case 재생성·재과금은 하지 않는다.
+
 #### Regulatory Reporting (§14)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
-| GET | `/api/v1/admin/aml/reports?reportType=STR&status` | `aml:case:read` + **`COMPLIANCE` role 필수(STR 필터 시)** | — | 보고 목록. **`status` 미지정 ⇒ 전 상태 반환**('전체' 시맨틱, run3 D11 — 기존 `defaultValue="DRAFT"` 드리프트 해소, SUBMITTED/ACKNOWLEDGED 행이 '전체'에서 소실되던 결함). 응답 `ReportSummary[]`는 `createdAt`(기안일)·`reportDeadlineAt`(법정 +5영업일 제출 기한=DB `due_at`)을 포함(run3 D12 — 위임 경로에서 SLA 뱃지·기간 필터가 항상 '-'/빈 목록이던 결함 해소); `slaStatus`는 back-office 가 `reportDeadlineAt` 로 파생(가정 G8, §3.6). **tipping-off 통제(설계서 §19.2a)**: `reportType=STR` 조회 시 COMPLIANCE 전담 role 보유자만 허용 — scope에 `COMPLIANCE` role이 없으면 `403 AML.FORBIDDEN_SCOPE`. 운영자 화면에 정보누설금지(tipping-off) 경고 배너 표시 필요. 열람 이벤트는 `RAW_DATA_ACCESS` 감사 기록 | `aml_regulatory_reports` |
-| POST | `/api/v1/admin/aml/reports` | `aml:case:update` | — | 보고 초안 생성(DRAFT) | `aml_regulatory_reports` |
-| POST | `/api/v1/admin/aml/reports/{reportId}:submit` | `aml:case:update` | 🔒4-eyes(REPORTING_OFFICER) | STR/CTR 제출 | `aml_regulatory_reports`,`aml_approvals` |
+| GET | `/api/v1/admin/aml/reports?reportType=&status=&caseId=` | `aml:case:read` + **`COMPLIANCE` role 필수(STR 필터 시)** | — | 보고 목록. `status` 미지정은 전 상태, `caseId`는 케이스 연결 보고만 필터한다. 응답은 `caseId`·`createdAt`·`reportDeadlineAt`을 포함하며 STR은 tipping-off 통제와 열람 감사를 적용한다 | `aml_regulatory_reports` |
+| GET | `/api/v1/admin/aml/reports/{reportId}` | `aml:case:read` + **STR은 `COMPLIANCE` role 필수** | — | 엔진 저장 보고 상세. `caseId`·보고본문·승인/FIU 제출 계보를 반환하며 STR 비전담에는 존재 자체를 숨긴다 | `aml_regulatory_reports` |
+| POST | `/api/v1/admin/aml/reports` | `aml:case:update` | — | 보고 초안 생성(DRAFT). `caseId` 지정 시 case를 tenant-scoped lock하고 `STR↔STR_REVIEW`/`CTR↔CTR_REVIEW`, 동일 targetRef, 비종결 상태, case/type당 기존 보고 부재를 검증하며 target은 case 원장에서 파생한다 | `aml_cases`,`aml_regulatory_reports` |
+| POST | `/api/v1/admin/aml/reports/str-drafts` | `aml:case:update` + `COMPLIANCE` role | — | body `{caseId}`. `STR_REVIEW` 케이스와 같은 target/발단 transaction의 기존 STR DRAFT를 연결하거나 멱등 생성한다. 케이스당 STR 1건이며 타 케이스 연결·비-DRAFT 재연결은 거부 | `aml_cases`,`aml_regulatory_reports` |
+| POST | `/api/v1/admin/aml/reports/{reportId}:submit` | `aml:case:update` | 🔒4-eyes(REPORTING_OFFICER) | report row를 잠근 뒤 DRAFT/SUBMISSION_FAILED→UNDER_REVIEW와 단일 approval을 원자 생성한다. checker reject 시 UNDER_REVIEW를 DRAFT로 복구해 수정·재상신 가능 | `aml_regulatory_reports`,`aml_approvals` |
 | POST | `/api/v1/admin/aml/reports/{reportId}:reject` | `aml:case:update` | 🔒4-eyes(REPORTING_OFFICER) | 보고 기각(`REJECTED` 전이) — **사유 코드(`reasonCode`) 필수**, 자기승인 금지(설계서 §14.1a) | `aml_regulatory_reports`,`aml_approvals` |
 | POST | `/api/v1/admin/aml/reports/{reportId}:cancel` | `aml:case:update` | 🔒4-eyes(REPORTING_OFFICER) | 보고 취소(`CANCELLED` 전이) — **사유 코드(`reasonCode`) 필수**, CTR 제외 처리(§14.3) 시 `ctrExemptionCode` 병기(설계서 §14.1a) | `aml_regulatory_reports`,`aml_approvals` |
 | GET | `/api/v1/admin/aml/reports/stats/str-delay?period=7d\|30d\|90d` | `aml:case:read` + **`COMPLIANCE` role 필수** | — | STR 보고 지연일수 분포 집계 원천(PRD §12-B.3 ①). 보고별 candidate(`created_at`)→제출(`submitted_at`) 경과를 법정 SLA(§14.4 BR-006) 대비 상대 버킷 `{ON_TIME,D+1~3,D+4~7,D+8~14,D+15+}`으로 분류. **tipping-off 통제(§19.2a)**: COMPLIANCE 전담 role 필수(없으면 `403 AML.FORBIDDEN_SCOPE`), 열람은 `RAW_DATA_ACCESS` 감사. 응답은 집계 카운트만(보고 행·PII 미노출). 0건 → 빈 분포(honest, seed 없음). 응답 DTO §3.6 `DelayBucket[]` (T4 AML-ENG-04 — **확정**) | `aml_regulatory_reports` |
@@ -421,12 +428,14 @@ bo-api 표면: `GET|POST /api/v1/bo/aml/report-rules/configurable`, `POST .../co
 | GET | `/api/v1/bo/aml/report-rules` | `aml:admin:policy` | — | CTR/STR 룰 카탈로그 목록(`AmlReportRuleCatalog` 10종, `status` ACTIVE/DRAFT — EXECUTED 활성화 반영). 응답 `ReportRuleView[]` | (코드 카탈로그) |
 | GET | `/api/v1/bo/aml/report-rules/{ruleCode}` | `aml:admin:policy` | — | 룰 상세(자연어 설명·evaluationMode·actions·reasonCode + **`conditions[]` 발동 조건 행·`params[]` 편집 파라미터 행(resolved 현재값·카탈로그 기본값·min/max·editable)·`pendingParamApprovalId`**) | (코드 카탈로그 + `aml_report_rule_params` 오버라이드) |
 | POST | `/api/v1/bo/aml/report-rules/{ruleCode}:activate` | `aml:admin:policy` | 🔒4-eyes(`REPORT_RULE`) | 룰 활성화 DRAFT→ACTIVE(202 + approvalId, **시뮬레이션 요약 동반**). `STR_MANUAL`은 컴플라이언스 수동 전용 → 파이프라인 활성화 거부(`400`, "rule is manual-only and cannot be activated") | `aml_approvals`(bo-api 스텁 4-eyes) |
-| POST | `/api/v1/bo/aml/report-rules/{ruleCode}:update-params` | `aml:admin:policy` | 🔒4-eyes(`REPORT_RULE_PARAM`, 승인선 `COMPLIANCE`) | 룰 임계·변수 편집 상신(202 + approvalId·payloadHash). body `{makerId, reason?, params{paramKey→value}}` — **룰 단위 전체 파라미터 셋 원자 제출**(`band_lower`/`band_upper` 교차검증이 단건 승인으로 깨지는 것 방지). 카탈로그 스키마 검증(editable+min/max 범위+`band_upper>band_lower`), 스키마 외 키·읽기전용 키(`STR_PEP`/`STR_SANCTION` `name_match_threshold`)·pending 중복 상신 거부. **승인 EXECUTED 시 반영**: stub=`backoffice.aml_report_rule_params`(V9) 로컬 폐루프, 엔진 연결 시 aml-svc admin `:update-params` 위임(운영 fail-closed) — 수정값이 TM CTR/STR 평가에 실적용 | `aml_report_rule_params`(bo-api V9 / aml-svc V22) |
+| POST | `/api/v1/bo/aml/report-rules/{ruleCode}:update-params` | `aml:admin:policy` | 🔒4-eyes(`REPORT_RULE_PARAM`, 승인선 `COMPLIANCE_MANAGER`) | 인증 principal maker로 aml-svc에 상신 자체를 위임하고 엔진의 실제 approvalId를 반환한다. 전체 editable set·AS-IS/TO-BE를 고정하며 checker EXECUTED 전에는 effective 값이 바뀌지 않는다. 스키마/범위/교차검증·maker 위조·self-approval·pending 중복을 차단 | `aml_approvals`,`aml_report_rule_params`(aml-svc V22/V41) |
 | GET | `/api/v1/bo/aml/ctr-thresholds` | `aml:admin:policy` | — | 통화별 CTR 규제 임계 목록(EXECUTED 반영값 우선·변경 대기 표기). 응답 `CtrThresholdView[]`(§3.22a) | `aml_ctr_thresholds` |
 | GET | `/api/v1/bo/aml/ctr-thresholds/{currency}` | `aml:admin:policy` | — | 통화별 CTR 임계 상세 | `aml_ctr_thresholds` |
 | POST | `/api/v1/bo/aml/ctr-thresholds/{currency}:update` | `aml:admin:policy` | 🔒4-eyes(`CTR_THRESHOLD`, 승인선 `REPORTING_OFFICER`) | CTR 규제 임계 변경(202 + approvalId). 엔진 연결 시 bo-api가 aml-svc admin `POST /api/v1/admin/aml/ctr-thresholds/{currency}:update`로 상신을 위임해 AML 결재함에 노출한다. **규제값 hot-reload 우회 불가** — 결재 EXECUTED 시에만 반영(BR-501) | `aml_ctr_thresholds`,`aml_approvals`(aml-svc V23 / 비운영 stub fallback) |
 
-> 4-eyes `CTR_THRESHOLD`는 **aml-svc 엔진 결재 대상**이다(`ApprovalSubjectType`/`aml_approvals.subject_type` CHECK 20종, DB V23). bo-api `AmlCtrThresholdService`는 엔진 연결 시 **`POST /api/v1/admin/aml/ctr-thresholds/{currency}:update`**(scope `aml:admin:policy`, body `{makerId, thresholdAmount, reason}`)로 상신을 위임하고, `GET /api/v1/admin/aml/approvals` 결재함에 `CTR_THRESHOLD`/`REPORTING_OFFICER`로 노출된다. 승인 EXECUTED 시 aml-svc가 `aml_ctr_thresholds`를 upsert하며 운영 엔진 미연결은 fail-closed, 비운영만 stub fallback을 허용한다. `REPORT_RULE`·`REPORT_RULE_PARAM`은 bo-api 애플리케이션 계층 subjectType(`AmlApprovalDtos.SubjectType` 22종)이며, `REPORT_RULE_PARAM` 엔진 반영은 submit-time 위임 패턴이다: 승인 EXECUTED 시점에 bo-api `AmlReportRuleParamService`가 엔진 admin **`POST /api/v1/admin/aml/report-rules/{ruleCode}:update-params`**(aml-svc `ReportRuleParamAdminController`, scope `aml:admin:policy`, body `{params{paramKey→value}, actor}` — 카탈로그 스키마 전량 검증 후 `aml.aml_report_rule_params`(DB §3.22e V22) 원자 upsert·`POLICY_CHANGE` 감사)로 위임하고, 비운영 stub 은 `backoffice.aml_report_rule_params`(V9) 로컬 폐루프로 반영한다. 반영 후 STR 평가 경로(`StrEvaluationService`→`StrSignalDeriver` 인자 주입)가 오버라이드를 resolve 해 bo-api 라이브 TM 평가와 엔진 평가가 parity 를 유지한다. CTR 단건/일합산 임계는 `aml_ctr_thresholds`+`CTR_THRESHOLD` 정본 재사용(이중 정본 금지·absent=미발동 fail-safe 불변).
+엔진 위임 계약은 `GET /api/v1/admin/aml/report-rules/{ruleCode}/params` → `{ruleCode,params,pendingApprovalId}`와 `POST /api/v1/admin/aml/report-rules/{ruleCode}:update-params`(header `X-User-Subject`, body `{makerId,reason,params}`) → `202 {ruleCode,staged,approvalId,status:"SUBMITTED",subjectType:"REPORT_RULE_PARAM"}`다. body `makerId`는 인증 주체와 일치해야 한다.
+
+> 4-eyes `CTR_THRESHOLD`와 `REPORT_RULE_PARAM`은 모두 **aml-svc 엔진 결재 대상**이다. report-rule BFF는 인증 principal에서 maker를 파생해 엔진 `POST /api/v1/admin/aml/report-rules/{ruleCode}:update-params`로 상신 자체를 위임하고 실제 approvalId를 그대로 노출한다. 엔진은 전체 editable set과 AS-IS/TO-BE staged payload/hash를 고정하며 common approval checker가 EXECUTED로 전환할 때만 `aml_report_rule_params`를 원자 upsert한다. `GET /api/v1/admin/aml/report-rules/{ruleCode}/params`는 effective params와 `pendingApprovalId`를 반환한다. 비운영 엔진 미연결에서만 기존 bo-api stub 폐루프를 허용하고 운영은 fail-closed 한다. `REPORT_RULE` 룰 활성화는 bo-api 애플리케이션 승인 경계를 유지한다.
 
 > **bo-api AML-STAT 집계 BFF**: BO 화면은 엔진 admin 원천을 직접 호출하지 않고 `GET /api/v1/bo/aml/stats/str`(STR 일별 보고 추이 + 기존 퍼널/지연/미보고 집계, COMPLIANCE 전담), `GET /api/v1/bo/aml/stats/ctr`(CTR 일별 보고 추이 + 기존 퍼널, STR 통계와 동일 DTO 규격), `GET /api/v1/bo/aml/stats/scenarios`(TM 룰 효과성), `GET /api/v1/bo/aml/stats/report-rules?family=CTR|STR`(룰군별 룰 개요 — CTR·룰 효과성 통계 메뉴는 `family=CTR`(CTR 룰 개요 CTR_SINGLE·CTR_DAILY), STR·룰 효과성 통계 메뉴는 `family=STR`(STR 룰 개요 8종). `family=STR`은 STR 퍼널과 동일한 tipping-off 전담(COMPLIANCE) 게이트 — 비전담 `403 AML.FORBIDDEN_SCOPE`, CTR은 열림. `hitCount30d`/`draftCount`는 라이브 CTR/STR DRAFT store(비운영 stub 폴백) `firedRules` 위 실집계·소스 없으면 0(seed 없음), `status`는 EXECUTED 활성화 반영 ACTIVE/DRAFT)을 호출한다. 네 endpoint는 bo-api 소유 read aggregate(API §9 경계)이며 응답은 집계 카운트만 포함한다. 응답 DTO §3.6/§3.6a `ReportDailyCount`·`ReportRuleOverviewRow`.
 
@@ -524,7 +533,9 @@ bo-api 표면: `GET|POST /api/v1/bo/aml/report-rules/configurable`, `POST .../co
 | `payload` | object | R | 정규화 payload. PII는 `*Ref`/`*Hash`만. raw 금지. **연동 키(원문 금지·keyed HMAC)**: `customer.customerRef`←`member.member_id`, `transaction.transactionRef`←`walletchg.charge_order_id`/`domestic.transaction_id`/`remit.transfer_number`/`*.wallet_transaction_id`, cross-border 거래는 `transaction.corridor`(send/receive country·currency←remit) + `transaction.amountBase`(USD←remit usd_amount/report_amount). **주의**: domestic-svc `member_id` varchar(36) join 정규화 |
 | `payloadHash` | string | — | raw payload sha256(`stored=false`). DB `payload_hash` NOT NULL. **미제공 시 aml-svc ingest 어댑터가 수신 payload의 sha256을 자동 계산하여 INSERT**(서버 자동계산 방식 확정, DB §3.15 결정 주석 2026-06-08). 호출자가 직접 계산해 제공해도 무방(서버 값 우선). |
 
-응답 `IngestEventResponse`: `{ eventId, accepted: boolean, idempotent: boolean, traceId }`.
+canonical varchar 경계는 DB §3.15와 동일하게 ingest 전에 검증한다: tenantId 64, eventId/idempotencyKey 256, sourceSystem 64, schemaVersion/eventType 80, payloadHash 128, dataScope/X-Trace-Id 64자. 초과 입력은 `REJECTED`(HTTP 422)이며 DB DataException/500으로 누출하지 않는다.
+
+응답 `IngestEventResponse`: `{ eventId, accepted, idempotent, traceId, decision?, scoreId?, riskScore?, riskGrade?, requiredAction?, modelVersion?, reason? }`. CDD 외 이벤트는 decision 계열이 null이고, `customer.cdd.completed` ACCEPTED/REPLAYED는 V42 불변 온보딩 decision snapshot을 반환한다.
 
 > **데모 회원 등록 인입 이벤트·`senderHolderName`(비-prod, 데이터 정직화 v9.27, 기능정의서 §1.11 BR-DEMO-HONESTY).** 데모(비-prod stub)는 회원 identity·신고소득의 유일 원천을 **회원 등록 인입 이벤트**로 받는다 — 테스트 인입 페이로드 `{eventType:"member", member:{memberRef, name, nationality, gender, dob, declaredIncomePhp}}` 가 인메모리 member vault(상한·eviction·전송값=열람값 reveal)에 upsert 되며, 미등록 회원의 거래 인입은 identity 의존 판정(명단 매칭·소득 룰)을 skip 한다. 거래 payload 에는 **`senderHolderName`**(nullable, 송금 명의인 이름 — `STR_THIRD_PARTY` 실데이터 신호: 회원 실명과 매처상 불일치 시 발동)이 가산된다. 데모 시드/hash 파생 회원 프로필은 폐기됐다. **비-prod 전용**(prod 프로파일 미노출). raw PII 는 vault reveal(감사 게이트) 로만.
 
@@ -815,9 +826,11 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `pepStatus` | object\|null | **PEP(정치적 주요인물) 상태 요약**(DB §3.3 `aml_customers.is_pep`/`pep_approval_id`, V24). `null` = 거래 전용 주체. `{ isPep(boolean — 경영진 승인 EXECUTED 여부), pepApprovalStatus(string\|null: 진행 중 `PEP_APPROVAL` 결재 상태 `SUBMITTED`/`EXECUTED`/`REJECTED`/null), pepApprovalId(string(uuid)\|null — 확정 결재 증거 링크) }`. 비-PEP은 `isPep=false`. raw PII 미포함(상태·토큰만) |
 | `riskSummary` | object\|null | 위험·활동 요약. `null` = **RA 미산정**(거래 전용 주체이거나, 고객 마스터는 있으나 RA read 실패/미산정 — 이 둘은 `identity.kycStatus`/`raAvailable` 조합으로 구분, 아래 참조). `{ riskGrade(§5.2), riskScore, factorBreakdown, nextReviewDueAt, reviewCadenceMonths(integer\|null — 등급별 재이행주기 정책(§3.22) 파생 재확인 주기, 회원 상세 '다음 재심사 기한'·임박 배지 표시), mandatoryHighRisk(**boolean\|null** — 당연고위험 강제 상향 여부; `null`=미상(위임 경로에서 RA read 로 파생 불가) — `false` 단정 금지, CDD profile §3.9 와 1:1), highRiskRegistryReason(**array&lt;string&gt;** — 당연고위험 레지스트리 사유, 단수 아님), screeningStatus(**실 WLF 최근 판정 상태** — `NO_MATCH`/`POSSIBLE_MATCH`/`TRUE_MATCH`/`FALSE_POSITIVE`/`AUTO_DISCOUNTED`/`ESCALATED`(§3.2 `ScreeningStatus`), 판정 부재/조회 실패 시 `UNKNOWN`. 구 계약의 RA 등급 파생 `REVIEW`/`CLEAR` 폐기 — '스크리닝' 라벨과 실 WLF 판정 의미 정합) }`. PEP 확정 시 `riskGrade`=HIGH 강제 상향(PROHIBITED 아님 — 거래 허용+EDD) |
 | `raAvailable` | boolean | **RA(위험평가) read 성공 여부 마커.** `true`=RA 산정됨(`riskSummary` 채워짐). `false` + `identity.kycStatus != "NO_CUSTOMER_MASTER"` = **RA 미산정(고객 마스터 있음)** — RA read 404/일시 오류. `false` + `identity.kycStatus == "NO_CUSTOMER_MASTER"` = **거래 전용 주체**(고객 마스터 없음). RA 조회만 실패했을 때 identity 를 보존하며 '거래 전용'으로 오강등하지 않기 위한 구분 필드(run5 #5) |
-| `transactionFeed` | array<object> | `tx-history-svc` 통합 이력(충전/국내/해외 타임라인 — `transactionRef`·`channel`·`amount`·`currency`·`corridor`·`direction`·`status`(string optional: `DECIDED`/`MONITORED`/null — 거래 처리 상태)·`occurredAt`). stub/빈 배열 가능 |
+| `transactionFeed` | array<object> | 최근 30일 통합 이력의 요청 페이지(`transactionRef`·`channel`·`amount`·`currency`·`corridor`·`counterpartyRef`(마스킹 토큰)·`direction`·`status`(`DECIDED`/`MONITORED`/null)·`occurredAt`). 빈 배열 가능 |
+| `transactionFeedTotalCount` | integer(long) | 최근 30일 거래 exact count. 현재 배열 길이와 독립이며 다음 페이지 존재 여부의 정본 |
+| `transactionFeedDegraded` | boolean | count/page 조회 실패 또는 부분 강등. true이면 빈 배열·0건을 실제 무거래로 단정하지 않고 화면 경고 표시 |
 | `fundGraph` | object | `wallet-svc` `transfer_links` 자금그래프(funnel — 노드/엣지 요약, token). `source=PLACEHOLDER_NO_TRANSFER_LINKS` 가능(자금이체 링크 미연동) |
-| `caseStrSummary` | object | 케이스·STR 건수 요약 `{ alertCount, openCaseCount, caseCount, strCount }`. 알림/케이스 건수는 **대상(`targetRef`) 서버 필터**로 산출한다(TM 알림 목록 §2.5a·CDD 케이스 목록 `GET .../cdd/cases`(§2.7) 과 동일 필터 오버로드 — 전체 최신 N건 스캔이 아니라 대상 한정 조회라 목록↔집계 카운트가 정합, run5 #6). **STR 건수는 준법감시 전담 scope 한정 투영(tipping-off §19.2a)** |
+| `caseStrSummary` | object | 케이스·STR 건수 요약 `{ alertCount, openCaseCount, caseCount, strCount }`. 알림·케이스 건수는 엔진 `activity-summary`의 **대상(`targetRef`) exact count**를 재사용하며 목록 page/size와 무관하다. `openCaseCount`의 비종결은 `OPEN`·`INVESTIGATING`·`PENDING_APPROVAL`이다. 고객 profile이 없는 거래전용 주체도 같은 exact endpoint를 조회하고, 엔진 강등/순수 stub일 때만 대상 필터 목록으로 폴백한다. **STR 건수는 준법감시 전담 scope 한정 투영(tipping-off §19.2a)** |
 | `assembledAt` | string(date-time) | 데이터 신선도 — read model 조립 시각(nullable) |
 
 > read-only 집계 파생. raw PII 미노출(token/hash·마스킹). 엔진 `GET /aml/customers/{customerRef}/profile`·`/risk` + canonical events(transaction.*) + relationships(`USES_ACCOUNT`/`REPEATED_PAYEE`)를 결합하며 별도 영속 테이블 없음(DB §3.16).
@@ -877,7 +890,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `dueAt` / `closedAt` | string(date-time) | — | SLA·종결 |
 
 `CreateCaseRequest`(수동 케이스 생성, `POST .../cdd/cases`): `{ caseType, targetRef?, priority?, assignedTo?, dueAt?, originAlertId?, originScreeningId?, eddTrigger? }` — `originAlertId`(알림→케이스 전환)·`originScreeningId`(RA→EDD 착수)·`eddTrigger` 는 발단 계보로 **생성→재조회에서 실값 영속**(run3 D5·D8, 전부 optional).
-`CaseCloseRequest`(🔒4-eyes): `{ resolution, reason, makerId }` → 결재 상신.
+`CaseCloseRequest`(🔒4-eyes): `{ resolution, reason, makerId }` → 결재 상신. `makerId`는 인증 principal과 같은지 확인하는 호환 assertion이며 서버는 인증 주체만 maker로 저장한다.
 `CaseTimelineEntryRequest`: `{ kind, note, evidenceRefs[] }`.
 
 ### 3.6 RegulatoryReportDto (Admin, DB `aml_regulatory_reports`)
@@ -903,6 +916,8 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 
 `ReportSubmitRequest`(🔒4-eyes): `{ makerId, reason, approvalLine: "REPORTING_OFFICER" }`.
 
+`CaseLinkedStrDraftRequest`: `{ caseId }` → `RegulatoryReportDto`. 같은 case 재호출은 같은 STR draft를 반환하며 `(tenant_id,case_id)`당 STR 하나를 보장한다. 보고 상신의 `makerId`도 인증 principal과 일치해야 한다.
+
 `ReportRejectRequest`/`ReportCancelRequest`(🔒4-eyes, §2.7 `:reject`/`:cancel`): `{ makerId, reasonCode(string ●, 사유 코드 필수), reason(string △), approvalLine: "REPORTING_OFFICER" }` — `:cancel`로 CTR 제외 처리(§14.3) 시 `ctrExemptionCode`(●) 병기. **종결(`REJECTED`/`CANCELLED`) 시 `reasonCode`는 `aml_regulatory_reports.closure_reason_code`(DB §3.12)에 영속**되어 미보고 사유 분포(§2.7 `unreported-reasons`)의 집계 원천이 된다(T4 AML-ENG-04 — **확정**).
 
 `DelayBucket`(§2.7 `reports/stats/str-delay` 응답, T4 AML-ENG-04 — **확정**): `{ bucketCode(enum: ON_TIME/D1_3/D4_7/D8_14/D15_PLUS), label(string), count(long) }` — 5종 버킷 0-fill 고정 배열(분포 모양 안정). 보고 행·PII 미노출(집계 카운트만). 지연 기준 = candidate(`created_at`)→제출(`submitted_at`) 경과의 법정 SLA(§14.4 BR-006, STR=결재승인+3영업일) 대비 상대 일수. SUBMITTED 미도달 건은 지연 모수에서 제외(미보고 사유 분포로 분류).
@@ -924,7 +939,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `approvalId` | string(uuid) | PK |
-| `subjectType` | enum | `WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL`/`TM_SCENARIO`/`RISK_OVERRIDE`/`EDD_CLOSE`/`STR_SUBMIT`/`CTR_SUBMIT`/`WATCHLIST_IMPORT`/`COUNTRY_RISK`/`POLICY_PACK`/`SECRET_CHANGE`/`RELATIONSHIP_REJECT`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`/`IRA_SUBMIT`/`HIGH_RISK_REGISTRY`/`PEP_APPROVAL`/`CTR_THRESHOLD`/`HRR_REGISTRATION` (총 **20종**. `TM_SCENARIO`=`tm-scenarios/{code}:activate`🔒 결재. `CHECKLIST_CHANGE`=CDD/EDD checklist 정책 변경. `PERIODIC_REVIEW_CHANGE`=periodic review 주기 변경. `IRA_SUBMIT`=기관위험평가(IRA) 회차 제출/취소(`SUBMIT`\|`reportId` / `CANCEL`\|`reportId` subjectRef 접두, T1 AML-ENG-01·부록 E v6.0-2 확정). `HIGH_RISK_REGISTRY`=당연고위험 레지스트리 참조 리스트 변경(`UPDATE`\|`<version>` subjectRef, 전체 staged payload drift guard, 결재 EXECUTED 시 적용 + RA 강제 상향 트리거, T2 AML-ENG-02·부록 E v7.0 확정). `PEP_APPROVAL`=PEP(정치적 주요인물) 경영진 승인(승인선 `EXECUTIVE_APPROVAL`, subjectRef=customer_ref, staged payload `tenant\|customerRef\|action=PEP` drift guard, 결재 EXECUTED 시 `aml_customers.is_pep=TRUE`+`PEP_INDIVIDUALS` 등재(tier HIGH)+RA HIGH 강제 상향 폐루프, 거래 허용+EDD). `CTR_THRESHOLD`=CTR 규제 임계 변경(엔진 결재 대상, 승인선 `REPORTING_OFFICER`, subjectRef=currency — §2.7 CTR/STR 룰·임계 관리, DB V23). `HRR_REGISTRATION`=RA 당연고위험 회원 등재 승인(승인선 `EXECUTIVE_APPROVAL` 고위경영진 수동승인, subjectRef=customerRef — RA `mandatoryHighRisk` CUSTOMER 산출 시 엔진 자동 상신(maker `system:ra-engine`) + RA 상세 수동 상신 `POST .../high-risk-registry/registrations`(§2), 이미 등재/PENDING 멱등 no-op, 결재 EXECUTED 시에만 `RA_HIGH_RISK_CUSTOMERS` 등재+RA 강제 상향, DB V28). §2.7·PRD §11.1 동기화. DB §5.16 동기화 대상) |
+| `subjectType` | enum | 엔진 결재 대상 **21종**: `WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL`/`TM_SCENARIO`/`RISK_OVERRIDE`/`EDD_CLOSE`/`STR_SUBMIT`/`CTR_SUBMIT`/`WATCHLIST_IMPORT`/`COUNTRY_RISK`/`POLICY_PACK`/`SECRET_CHANGE`/`RELATIONSHIP_REJECT`/`CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`/`IRA_SUBMIT`/`HIGH_RISK_REGISTRY`/`PEP_APPROVAL`/`CTR_THRESHOLD`/`HRR_REGISTRATION`/`REPORT_RULE_PARAM`. `REPORT_RULE_PARAM`은 룰 코드가 subjectRef이고 승인선 `COMPLIANCE_MANAGER`; `tenant\|ruleCode\|afterPairs\|beforePairs` staged payload를 checker 실행 때 검증·적용한다. 나머지 상세는 DB §5.16 정본 |
 | `subjectRef` | string | 대상(case_id/report_id 등) |
 | `approvalLine` | enum | §5.12 approval_line |
 | `status` | enum | §5.13 approval_status **7종(API 노출, `DRAFT` 제외)**: `SUBMITTED`/`APPROVED`/`REJECTED`/`CANCELLED`/`EXPIRED`/`EXECUTED`/`EXECUTION_FAILED`. `DRAFT`는 내부 엔진 전이 상태로 외부 미노출(§1.5) |
@@ -934,7 +949,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `reason` | string | 사유 |
 | `stagedPayload` | string\|null | **상신 시점 고정 canonical payload**(상세 전용, DB §3.16 `staged_payload`). 결재함 **상신 내용·변경 전→후(as-is/to-be) 파생 소스** — masked/tokenized only(원문 PII 미저장 §19.2). `null`=live 파생 subject/legacy(run3 D13) |
 | `detail` | string\|null | 결재 상세 상신 내용 요약. `CTR_THRESHOLD`는 `<currency> CTR 임계 변경 상신` 형태로 파생한다. |
-| `changes` | array\|null | 결재 상세 변경 전→후 표. 원소 `{ label, before, after }`. `CTR_THRESHOLD`는 `stagedPayload=tenant\|currency\|toAmount\|reason\|fromAmount`에서 AS-IS(`fromAmount`)와 TO-BE(`toAmount`)를 파생하며 legacy payload는 현재 엔진 임계값을 AS-IS fallback으로 표시한다. |
+| `changes` | array\|null | 결재 상세 변경 전→후 표. 원소 `{ label, before, after }`. `CTR_THRESHOLD`는 `tenant\|currency\|toAmount\|reason\|fromAmount`, `REPORT_RULE_PARAM`은 `tenant\|ruleCode\|afterPairs\|beforePairs` staged payload에서 AS-IS/TO-BE를 파생한다. |
 | `submittedAt` | string(date-time)\|null | **상신일시**(DB §3.16 `created_at` 매핑, 신규 컬럼 없음·가정 G5). 결재함 정렬(desc) 기준. `null`=live 파생 subject(run3 D13) |
 | `expiresAt` / `executedAt` | string(date-time) | 만료·실행(결재≠실행 분리). `expiresAt`=결재함 만료 임박 뱃지 원천(`null`=무기한, run3 D13) |
 
@@ -987,6 +1002,11 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `docHash` | string | 신분증번호 HMAC(DB `doc_hash`, 마스킹) |
 | `kycEvidence` | object | KYC checklist 상태(DB `kyc_evidence` JSONB, 원문 아님) |
 | `nextReviewDueAt` | string(date-time) | 주기적 재확인 예정(DB `next_review_due_at`) |
+| `nationality` | string\|null | CDD에서 보존한 PII-safe ISO 국적 코드 |
+| `country` | string\|null | 고객 원장의 ISO 국가 코드 |
+| `onboardingAt` | string(date-time)\|null | AML 고객 원장 최초 온보딩 시각 |
+| `registeredAt` | string(date-time)\|null | 소스 시스템 등록 시각(CDD canonical projection) |
+| `birthYearMasked` | string\|null | 안전하게 영속된 마스킹 생년만 허용. 현 canonical projection에 정본이 없으면 null이며 raw vault 값으로 합성하지 않음 |
 | `isPep` | boolean | **PEP(정치적 주요인물) 여부**(DB `aml_customers.is_pep`, V24). 경영진 승인(`PEP_APPROVAL`) EXECUTED 시 TRUE. TRUE면 `riskGrade`=HIGH 강제 상향(거래 허용+EDD) |
 | `pepApprovalStatus` | enum\|null | 진행 중/확정 `PEP_APPROVAL` 결재 상태(`SUBMITTED`/`EXECUTED`/`REJECTED`, 미상신=null). 결재함(§3.7 ApprovalDto)에서 파생 |
 | `pepApprovalId` | string(uuid)\|null | PEP 확정 결재 증거 링크(DB `aml_customers.pep_approval_id`, 마스킹 불요·식별 PII 아님). 비-PEP은 null |
@@ -1008,8 +1028,15 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `observedMonths` | integer | 관측월수(첫 거래~asOf 올림, 최소 1; 거래 0건이면 `1`) |
 | `currency` | string | 금액 통화(항상 `PHP`) |
 | `windowDays` | integer | 최근 집계 창 일수(30) |
+| `alertCount` | integer(long) | 대상의 전체 AML 알림 exact count(목록 page/size 절단 없음) |
+| `caseCount` | integer(long) | 대상의 전체 케이스 exact count |
+| `openCaseCount` | integer(long) | 대상의 비종결 케이스 exact count(`OPEN`·`INVESTIGATING`·`PENDING_APPROVAL`) |
+| `screeningCount` | integer(long) | 대상의 스크리닝 결과 exact count |
+| `relationshipCount` | integer(long) | `aml_relationships`의 tenant-scoped outbound 관계·UBO edge 수. 거래 상대방 수가 아님 |
+| `recentCounterpartyCount` | integer(long) | 최근 30일 canonical 거래의 distinct `counterpartyRef` 수 |
+| `degraded` | boolean | 하나 이상의 집계 소스 실패/부분 강등. true이면 수치 0을 실측 0건으로 단정하지 않음 |
 
-> **위임 wire 필드명 정본(코드=truth).** 엔진 응답 필드명은 `recentSumPhp`·`monthlyAvgPhp`(금액에 `Php` 접미)이다. bo-api aggregate(`GET /api/v1/bo/aml/customers/{ref}/profile` → `transactionActivity`)는 이 wire 를 역직렬화하며 record 내부명(`recentSum`·`monthlyAvgAmount`)에 Jackson `@JsonProperty` 별칭(`recentSumPhp`·`monthlyAvgPhp`)을 부여해 매핑한다 — 별칭 미부여 시 두 금액이 null 로 매핑돼 위임 경로 EDD 소득정합성 신호(`incomeMultiple` = 월평균/신고소득 상한)가 상시 무력화된다. `recentCount`·`observedMonths`·`currency` 는 wire·record 필드명이 동일.
+> **위임 wire 필드명 정본(코드=truth).** 엔진 응답 필드명은 `recentSumPhp`·`monthlyAvgPhp`(금액에 `Php` 접미)이다. bo-api aggregate(`GET /api/v1/bo/aml/customers/{ref}/profile` → `transactionActivity`)는 이 wire 를 역직렬화하며 record 내부명(`recentSum`·`monthlyAvgAmount`)에 Jackson `@JsonProperty` 별칭(`recentSumPhp`·`monthlyAvgPhp`)을 부여해 매핑한다 — 별칭 미부여 시 두 금액이 null 로 매핑돼 위임 경로 EDD 소득정합성 신호(`incomeMultiple` = 월평균/신고소득 상한)가 상시 무력화된다. `recentCount`·`observedMonths`·`currency`·`alertCount`·`caseCount`·`openCaseCount` 는 wire·record 필드명이 동일.
 
 `SourceSystemDto`: `{ sourceSystem, ingestMode(§5.14), schemaVersion, authMode(API_KEY_HMAC/OAUTH2/MTLS), failurePolicy(MANUAL_REVIEW/FAIL_CLOSED/DELAY_ALLOWED), status(enum 2종: `ACTIVE`/`DISABLED` — DB §3.2 `aml_source_systems.status` 정본), enabled, createdAt(date-time), updatedAt(date-time) }`. `secretRef`는 응답에서 마스킹.
 
@@ -1330,7 +1357,7 @@ components:
     SourceSystem: { name: Source-System, in: header, required: true, schema: { type: string } }
     IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
     Signature: { name: X-Signature, in: header, required: true, schema: { type: string } }
-    TraceId: { name: X-Trace-Id, in: header, required: false, schema: { type: string } }
+    TraceId: { name: X-Trace-Id, in: header, required: false, schema: { type: string, maxLength: 64 } }
     UserSubject:
       name: X-User-Subject
       in: header
@@ -2154,7 +2181,7 @@ paths:
 | 정책 자율운영(§2.6: checklist·periodic review·country risk·policy pack) | admin 정책 엔드포인트 §2.7(CDD/EDD checklist·periodic-review-policy·country-risk·policy-packs) 신설, 변경은 🔒4-eyes(§10) |
 | Policy Pack STR/CTR | reports 엔드포인트·report_type enum(§2.7, §3.6) |
 | 표준 에러·페이지네이션·멱등·버저닝 | §1.2~§1.4, §4(HTTP 상태코드 정본) |
-| DB 명칭(테이블·컬럼·enum) | 식별자·enum 모두 DB §3/§5와 1:1(각 표 DB 열·각주). `payload_hash` NOT NULL — **서버 자동계산(2026-06-08)으로 §3.1 `payloadHash` optional 전환**(미제공 시 ingest 어댑터 sha256 자동 INSERT). `CaseDto.originFdsCaseRef`·`RegulatoryReportDto.approvalId`·`ScreenResponse.targetRef/targetType/decidedBy/decidedAt` DB 컬럼 1:1 추가. `WatchlistEntryDto`·`CustomerProfileDto` 신설(DB §3.7·§3.3·§3.4 정합). `subjectType` enum 16종 확정(CHECKLIST_CHANGE·PERIODIC_REVIEW_CHANGE 추가, DB §5.16 동기화 대상). `EventCategory` 10종 OpenAPI schema 신설. |
+| DB 명칭(테이블·컬럼·enum) | 식별자·enum 모두 DB §3/§5와 1:1. `payload_hash`는 서버 자동계산, `subjectType`은 V41 기준 엔진 21종(`REPORT_RULE_PARAM` 포함). `EventCategory` 10종 OpenAPI schema. |
 | Webhook 콜백(outbound) | §8(3종·envelope·`X-Signature` HMAC·재시도/멱등) — 설계서 §15.7 'Webhook API' 정본 |
 | 운영자 집계 = bo-api 소유 | 대시보드/서비스/감사 집계는 bo-api(`/api/v1/bo/aml/**`), 엔진 API §2에 미추가(§0·§9) |
 | 배포 모델/온보딩(deployment topology) = bo-api 소유, aml-svc 엔진 API 미추가 | 서비스(테넌트=서비스) 등록은 격리 토글이 아니라 **배포 유형 선택 + 온보딩 신청/상태**다. enum `DeploymentModel{MANAGED_DEDICATED, SELF_HOSTED, SHARED}`(3종) · `OnboardingStatus{REQUESTED, PROVISIONING, DEPLOYED, VERIFIED, ACTIVE, PACKAGE_ISSUED, CUSTOMER_DEPLOYED, REGISTERED}`(8종, §5 OpenAPI)는 DB `aml_tenants.deployment_model`/`onboarding_status` 정본과 1:1(§3.16·§5). `TenantDto`는 `tenantId`/`deploymentModel`/`onboardingStatus`/`region`(=`default_region`)/`infraRef`(=`infra_ref`) — **`isolationMode` 필드 폐기**. 온보딩 엔드포인트(bo-api 전용): `POST /api/v1/bo/aml/tenants/{tenantId}/onboarding/provision`(프로비저닝 트리거), `GET /api/v1/bo/aml/tenants/{tenantId}/onboarding`(상태 조회), `POST /api/v1/bo/aml/tenants/{tenantId}/onboarding/register`(self-hosted 등록 콜백). 상태머신: 매니지드 `REQUESTED→PROVISIONING→DEPLOYED→VERIFIED→ACTIVE` / self-hosted `REQUESTED→PACKAGE_ISSUED→CUSTOMER_DEPLOYED→REGISTERED` / SHARED `REQUESTED→ACTIVE`. tenant_id 라우팅: 전용 배포는 배포=서비스 단일, SHARED만 `Tenant-Id` 헤더 행 라우팅(§9·§1.1). |
@@ -2257,7 +2284,7 @@ paths:
 | `POST .../source-systems`(secret 변경) | `SECRET_CHANGE` | source credential 변경 | `aml:admin:source-system` |
 | `POST .../high-risk-registry/registrations` | **`HRR_REGISTRATION`** | **RA 당연고위험 회원 등재 — 고위경영진 수동승인**(승인선 `EXECUTIVE_APPROVAL`. RA 엔진 자동 상신(maker `system:ra-engine`) + RA 상세 수동 상신 공용 진입점, 이미 등재/PENDING 멱등 no-op `200 status=NOOP`, 결재 EXECUTED 시에만 `RA_HIGH_RISK_CUSTOMERS` 등재+RA 강제 상향, DB §5.16 V28) | `aml:admin:high-risk-registry` |
 
-> 본 표로 설계서 §13.4 4-eyes 대상 전수(16종)가 진입 엔드포인트와 1:1 매핑된다. `STR_SUBMIT`·`CTR_SUBMIT`은 동일 경로(`:submit`)이되 `reportType` 파라미터로 분기되며, COMPLIANCE(STR)/REPORTING_OFFICER(CTR) 전담 결재 라인이 구분된다(설계서 §14.1a·§19.2a 정본). 보고 기각·취소(`:reject`/`:cancel`)는 **신규 subjectType 없이** `STR_SUBMIT`/`CTR_SUBMIT` 결재 사이클을 재사용하며 전이 종류(REJECT/CANCEL)·사유 코드는 결재 payload(`payload_hash` 고정)에 포함된다(설계서 §14.1a) — 결재 라인은 두 전이 모두 `REPORTING_OFFICER`. `COUNTRY_RISK`/`POLICY_PACK`은 §3.7 enum 정본이며 §2.7 `country-risk:change`/`policy-packs:change`가 결재 생성 트리거다. `CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`는 §3.7 enum 정본(총 16종); DB §5.16 동기화 대상. PRD §11.1·설계서 §13.5 동기화 대상.
+> 본 표와 §2.7 관리 API는 설계서 §13.4 4-eyes 대상 전수를 진입 엔드포인트와 매핑한다. `REPORT_RULE_PARAM`은 V41부터 engine-owned이고 `STR_SUBMIT`·`CTR_SUBMIT`은 보고 종류별 승인선을 사용한다. 보고 기각·취소는 신규 subject 없이 제출 결재 사이클을 재사용한다.
 >
 > **WLF 판정 폐루프 예외 규칙(코드=truth, `ScreeningOperationsService`/`ApprovalDispatchService`)** — `POST .../screenings/{id}/decision`·`POST .../screenings/fp-whitelist` 로 산출되는 판정 상태(§5.5)는 4-eyes 적용 시점이 판정별로 갈린다:
 > - **`ESCALATED`(상위승인) = staging(지연 적용).** 판정을 즉시 반영하지 않고 4-eyes 상신(`subjectType=WLF_DECISION`, SUBMITTED)한다. **checker 승인(EXECUTED) 시점에만** 실제 상태 전이가 반영된다(maker≠checker·`payload_hash` 고정). 상신·미승인 구간에는 원 판정 상태가 유지된다(성급한 상태 오염 방지).
@@ -2292,8 +2319,10 @@ CTR/STR 모니터링 통합(feature/aml-ctr-str-monitoring, 2026-07-01)이 aml-s
 
 구체 CTR 통화 임계값은 카탈로그가 아니라 per-tenant `aml_ctr_thresholds`(§3.22a, `CtrThresholdPort`). `STR_MANUAL`만 DRAFT(off by default) — `AmlReportRuleCatalog.activeRules()`는 9종.
 
+`STR_VELOCITY_CASH`의 rolling cash window는 평가 거래를 정확히 1회 포함한다. 중립 canonical 저장의 바깥 transaction과 STR `REQUIRES_NEW` 평가가 분리되어 현재 행이 아직 보이지 않으면 `EvaluateStrCommand`의 triggerRef/channelType/동결 PHP 금액으로 현재 cash 행을 합성한다. 이미 조회된 동일 triggerRef가 있으면 합성하지 않아 전용 STR·재평가 경로의 이중 집계를 막는다. 따라서 effective `count_threshold=N`은 N번째 현금성 거래에서 즉시 발동한다.
+
 ### 11.4 CTR freeze·집계 (BR-501)
-CTR 평가(`CtrEvaluationService`)는 거래의 **freeze 된 서버 파생 PHP환산액(`amountPhpEq`)을 재계산하지 않는다**(BR-501, canonical 이벤트 윈도우의 phpEquivalent 그대로). `CTR_SINGLE`=단건 amountPhpEq ≥ 임계, `CTR_DAILY`=동일 영업일 현금거래 합산 ≥ 임계(다건 보완재). (테넌트,주체,영업일)당 CTR DRAFT 정확히 1건(부분 UNIQUE `ux_aml_ctr_draft`, DB §3.12) — 후속 현금거래는 `report_amount`에 정확히 1회 누적(`accumulateCtr`, 경합 시 재시도). `due_at`=거래 영업일 +5영업일 17:00 PHT(§11.2).
+CTR 평가(`CtrEvaluationService`)는 거래의 **freeze 된 서버 파생 PHP환산액(`amountPhpEq`)을 재계산하지 않는다**(BR-501). neutral ingest는 canonical 저장의 바깥 transaction과 CTR/STR `REQUIRES_NEW` 경계 및 허용 범위 내 원천↔엔진 시계 오차에도 현재 거래를 잃지 않도록 command의 현재-event `phpEquivalent`를 우선 사용한다. 이 값은 canonical `amounts`에서 서버가 확정한 동일 동결값이다. 현재-event 신호가 없는 레거시·직접 TM 호출만 canonical 이벤트 윈도우로 폴백하며, 두 경로 모두 값이 없으면 금액 룰은 fail-safe 미발동한다. `CTR_SINGLE`=단건 amountPhpEq ≥ 임계, `CTR_DAILY`=동일 영업일 현금거래 합산 ≥ 임계(다건 보완재). (테넌트,주체,영업일)당 CTR DRAFT 정확히 1건(부분 UNIQUE `ux_aml_ctr_draft`, DB §3.12) — 후속 현금거래는 `report_amount`에 정확히 1회 누적(`accumulateCtr`, 경합 시 재시도). `due_at`=거래 영업일 +5영업일 17:00 PHT(§11.2).
 
 ### 11.5 STR 사유코드 UPSERT
 STR 평가(`StrEvaluationService`)는 (테넌트,트리거)당 STR DRAFT 정확히 1건(부분 UNIQUE `ux_aml_str_draft`, DB §3.12) — 동일 트리거에서 여러 STR 룰이 발화하면 **제2 DRAFT 를 만들지 않고** 각 사유코드(`StrReasonCode`)를 `str_reason_codes` JSONB 집합에 fold(UPSERT). `STR_SANCTION`만 RESTRICT(차단) 액션 동반.
@@ -2307,6 +2336,7 @@ eAMLA 제출은 **raw PII 미전송** — 토큰화된 보고 참조만 전달�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-12 | **AML lifecycle 폐루프 API 역전파.** CDD exact replay 불변 업무결정 응답, engine-owned REPORT_RULE_PARAM 상신/5필드 응답 검증, origin-alert handoff, case-linked STR/CTR type·target 검증, case PENDING/reject/type-matched REPORTED 및 case→report lock, report 반려 후 재상신과 인증 maker 경계를 반영했다. | 코드=truth. aml V41~V43. |
 | 2026-07-11 | **WLF 엔진 가변 설정·적용 증거 API 추가(AML-WLF-005).** `GET/POST /api/v1/admin/aml/wlf-engine-config[:change]`와 bo-api 미러를 신설해 Policy Pack 단일 원장/`POLICY_PACK` 4-eyes 위에서 SANCTIONS·PEP별 6가중치·negative penalty·review/high-confidence band를 관리한다. screening 응답에 결과 생성 시점 `appliedPolicy`(profile·config/rule version·definition hash·threshold·band)를 additive 영속 투영하고, admin simulation `sourceTypes` 필터 및 적용정책 응답을 명문화했다. HIGH는 우선순위 evidence일 뿐 자동 TRUE_MATCH가 아니다. | api-designer. 코드=truth. aml V37~V38·bo-api V15·`verify_aml_wlf_config_closed_loop.py`. |
 | 2026-07-10 | **CDD→FDS 고객 프로필 동기화 계약 추가.** §2.1 step 7f에 CDD accepted 트랜잭션의 `FDS_CUSTOMER_PROFILE` outbox와 PII-safe payload, replay/dedup, relay retry 경계를 명시. AML DB V32가 outbox aggregate CHECK 7종을 허용한다. `registeredAt`·`kyc.kycVerifiedAt`은 `docs/aml-data.md` §12.2 정본. | api-designer |
 | 2026-07-09 | **Travel Rule 기능 전면 제거 역전파(코드=truth, feature/remove-travel-rule, aml V31·bo-api V14).** (1) **§2.7 Regulatory Reporting 표에서 travel-rule 엔드포인트 2행 삭제** — `GET .../travel-rule/transfers`·`POST .../travel-rule/transfers/{ref}:resolve-exception` 제거. (2) **§3.7 `ApprovalDto.subjectType` 21→20종** — `TRAVEL_RULE_EXCEPTION` enum 행 제거(`ApprovalSubjectType` 20종 코드 정합). (3) **§3.8 `EvidenceExportRequest.exportType`에서 `TRAVEL_RULE` 제거**(`ExportType` 9종). (4) **§3.14 `TravelRuleTransferDto` 섹션을 제거 스텁으로 대체** — `aml_travel_rule_transfers` 테이블·`TravelRuleTransferDto`·`CompletenessStatus`·`TravelRuleRiskStatus` enum 삭제, 섹션 번호는 타 문서 § 참조 보존 위해 유지. (5) **§3.10 FdsEscalation `action` enum에서 `REQUEST_TRAVEL_RULE_INFO` 제거**(fds `ActionType` 22종 정합, `OPEN_AML_CASE`/`REGULATORY_REPORT` 위임 유지). (6) **§5 OpenAPI에서 `TravelRuleTransferDto` schema·`/travel-rule/transfers` path 삭제**. (7) **§6 BO 매핑 `Travel Rule exception` 행·§7 동기화 `Policy Pack STR/CTR/Travel Rule`·§8 `AmlReportSubmitted`·§10 4-eyes `TRAVEL_RULE_EXCEPTION` 행·policy pack/reports 제출 서술의 "STR/CTR/Travel Rule"→"STR/CTR"** 전수 정정. 유지: FATF R.16 당사자 정보 요건(`counterparty` 인입 계약 필수 규칙 — CROSS_BORDER_REMITTANCE)은 규제 근거·라이브 검증 규칙이라 존치(422 규칙 ⑦). | api-designer. 코드=truth. 근거=aegis-aml 84997e1(feature/remove-travel-rule)·삭제된 aml `TravelRuleController`·bo-api `AmlTravelRuleController`·`ApprovalSubjectType`(20)·`CaseType`(11)·`ReportType`(6)·`ExportType`(9)·`EventFamily`(19)·`CompletenessStatus`/`TravelRuleRiskStatus` 삭제·Flyway aml V31·bo-api V14. |
