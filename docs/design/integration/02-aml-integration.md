@@ -67,7 +67,7 @@ flowchart LR
 - REST inbound machine-auth는 raw path/query·Tenant-Id·AML `workspace=default`·고정 9-key scopeContext·최종 body digest·±5분 timestamp·16-byte nonce를 함께 서명하고 nonce를 credential-wide 원자 소비한다([공통 인증 정본](../api/00-common-machine-auth.md)). 기본 TTL 15분은 `2×skew`보다 엄격히 길고 cleanup은 기본 1분마다 최대 `20×5000` row다. source header는 `Source-System`만 정본이다. 기존 credential은 `[v1,v2]`, 신규 credential은 `[v2]`이며 명시적 v2 실패를 v1로 fallback하지 않는다. v1은 RFC3339 offset timestamp 호환을 유지하고 v2는 UTC `Z`만 허용한다.
 - 서버는 servlet normalized route로 filter/scope coverage를 판단하면서 raw path를 서명하고, dispatch 의미가 달라질 수 있는 ambiguous raw path와 duplicate singleton header를 body/nonce 처리 전에 거부한다. signed client는 redirect를 자동 추종하지 않고 target 변경 시 새 nonce로 다시 서명한다. bo-api 공용 engine `RestClient`는 `DONT_FOLLOW`를 강제하며 origin 302·target 0회·`X-Api-Key` 미전달을 실제 검증한다. `X-Trace-Id`/`X-Correlation-Id`는 관측성 계보로 전파하지만 고정 9-key scopeContext에는 포함하지 않는다.
 - local/demo credential bootstrap/provisioner는 `local|demo` positive profile + opt-in에서만 허용되고 Flyway business seed가 아니다. AML simulator와 bo-api는 서로 다른 ID/secret을 사용한다. BO credential은 10개 endpoint scope에 더해 `COMPLIANCE` authority token을 보유하며, STR 감사 actor/maker는 서명된 `X-User-Subject`에서 파생한다(BO edge의 사용자 RBAC와 엔진 role/scope 이중 강제).
-- **미완료 경계(2026-07-12)**: `/aml/v1/**` filter coverage(P0-01), AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer(P0-04), multipart raw-byte signer(P0-14), 생성·scope 변경·유예회전·폐기·last-used·사용 조건(P1-02)은 미완료다. 본 연동 문서의 v2 계약만으로 해당 호출 경로나 credential lifecycle 적용 완료를 주장하지 않는다.
+- **적용·미완료 경계(2026-07-12)**: P0-01로 `/aml/v1/**`는 실제 filter coverage이며 두 AML ingest는 `aml:event:write`를 강제한다. 남은 미완료는 AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer(P0-04), multipart raw-byte signer(P0-14), 생성·scope 변경·유예회전·폐기·last-used·사용 조건(P1-02)이다. 본 연동 문서의 v2 계약만으로 이 잔여 호출 경로나 credential lifecycle 적용 완료를 주장하지 않는다.
 - **hanpass-ph REST 업무 분류(2026-07-01 코드 정합)**: FDS 탐지 결정과 AML TM은 같은 실시간 거래 payload(`memberRef`,`transactionRef`,`channel`,`amount`,`currency`,`counterpartyRef`,`corridor`)를 기준으로 한다. 여기 나열 키는 AML 엔진 저장 flat canonical payload(정본 표 = API §2.1a "엔진 저장 flat canonical payload")의 부분집합이며, `corridor` 는 서버 파생 문자열(`{reg}-{dest}`, 예 `PH-PH`), `counterpartyRef` 는 단일 canonical 상대방 토큰(flat payload·WLF screen key·vault 공유)이다 — 키 전수·파생 규칙 정본은 API §2.1a flat payload 표를 참조한다. FDS는 룰 기반 실시간 차단/보류/허용 결정, AML TM은 동일 거래 feed를 CTR/STR 사후 모니터링 evidence로 사용한다. AML REST 수신 카탈로그는 거래 TM 1종(`/transactions/evaluate`) + 고객 라이프사이클 4종(CDD 승인·정보수정·KYC/CDD 재이행·EDD) + RA 1종 + WLF 1종으로 운영 화면에 분류한다(API §2.1 주석).
 
 ### 1.2 어댑터 매핑 (헥사고날, 코드 truth)
@@ -121,6 +121,13 @@ flowchart LR
 ### 3.1a 인바운드 — 중립(canonical) 동기 수집 (`POST /aml/v1/transaction-events`, 코드=truth)
 
 위 §3.1 의 `POST /api/v1/aml/events` REST ingest 가 canonical 이벤트 정본 경로다. 이와 **병존**하는 **동기 REST 단일 수집 표면**이 소스 중립(canonical) 수집 API 다(API 02-aml §2.1a). 원천 시스템은 5 product(해외송금·국내송금·카드결제·월렛충전·월렛결제)를 단일 Envelope(`docs/aml-data.md` §3~§7)로 **하나의 POST** 로 보내고, aml-svc 는 그 요청 안에서 WLF + CTR/STR 을 동기 팬아웃한다(별도 큐 왕복 없음). 시뮬레이터·데모·경량 원천은 이 경로를 사용한다. 대량 비동기 ingest 는 `aml-canonical-events` consumer 가 아직 없어 net-new 후속이다(§2.1).
+
+P0-01부터 `/aml/v1/**`는 common machine-auth filter의 실제 coverage이며 본 endpoint와 §3.1
+canonical ingest 모두 `aml:event:write`를 요구한다. `/aml/v1/**` authenticated traffic은 migration 전
+dual credential에도 route policy로 v2-only다. Neutral `Source-System`은 선택이고 제공 시 서명
+context에만 exact 결합되며 서버 소유 neutral source mapping을 덮어쓰지 않는다. `Idempotency-Key`는
+생략 시 body `eventId`를 사용한다. `X-Data-Scope`는 P0-01에서 무결성 결합만 하므로 서명 뒤 tamper는
+401이지만 credential별 data-scope allowlist는 도입하지 않는다.
 
 | product(중립) | canonical eventType | EventFamily | engine channelType | 후속 usecase(동기 팬아웃) | 산출 |
 |---|---|---|---|---|---|
@@ -321,7 +328,10 @@ sequenceDiagram
 
 ### 5.1a 중립 동기 수집 → 검증 → 토큰화 → WLF + CTR/STR (단일 POST, 코드=truth)
 
-> **P0-01 미완료**: `/aml/v1/transaction-events`의 공통 machine-auth filter coverage는 2026-07-12 현재 후속 범위다. 아래 업무 흐름은 유지되지만, P0-01 완료 증거 전에는 P0-00 v2 보호가 적용됐다고 간주하지 않는다. client가 보내는 v2 header만으로 서버 filter coverage를 대체할 수 없다.
+> **P0-01 적용 완료**: `/aml/v1/**`는 normalized servlet route 기준 common machine-auth
+> filter의 실제 coverage다. scope/role attribute 부재는 filter가 local/demo opt-in에서 설정한 공통
+> `Boolean.TRUE` bootstrap marker 외에는 403이며, 테스트도 attribute를 직접 주입하지 않고 실제
+> filter chain을 통과한다.
 
 ```mermaid
 sequenceDiagram
@@ -334,29 +344,35 @@ sequenceDiagram
     participant VAULT as aml_pii_vault
     participant WLF as ScreenSubject
     participant TM as EvaluateTm → CTR/STR
-    SRC->>REST: Envelope(5 product) + Tenant-Id + Idempotency-Key(=eventId) + v2 headers (server filter=P0-01 pending)
-    REST->>APP: toDomain()
-    APP->>VAL: validate(event, tenantBaseCurrency)
-    alt 위반 존재
-        VAL-->>APP: [violations]
-        APP-->>REST: REJECTED
-        REST-->>SRC: 422 { violations[] }
-    else 유효
-        APP->>TOKEN: subjectRef=partyReference(업무참조), counterpartyRef=안정 토큰 파생
-        APP->>ING: ingest(flat canonical payload, targetRef=subjectRef(업무참조)/counterpartyRef=토큰)
-        alt DUPLICATE(동일 키 다른 내용)
-            ING-->>APP: DUPLICATE
-            APP-->>REST: 409 { status=DUPLICATE, evaluation=null }
-        else REPLAYED(동일 canonical payload)
-            ING-->>APP: REPLAYED
-            APP-->>REST: 200 { status=REPLAYED, evaluation=null }
-        else 신규 ACCEPTED
-            ING-->>APP: ACCEPTED
-            APP->>VAULT: sender/receiver raw PII 암호문 upsert
-            APP->>WLF: screen(sender; receiver=remit/domestic) — best-effort
-            APP->>TM: evaluate(signed amountBase, channelType) → CTR/STR 사이드이펙트
-            TM-->>APP: alerts[]
-            APP-->>REST: 202 ACCEPTED + evaluation{decision,alertCount,firedRuleCodes,screened}
+    SRC->>REST: Envelope(5 product) + Tenant-Id + Idempotency-Key(=eventId) + v2 headers
+    REST->>REST: normalized route/raw-path gate → v2 HMAC → nonce consume → aml:event:write
+    alt 인증·scope 실패
+        REST-->>SRC: 401 AML-AUTH-001/002 또는 403 AML-AUTHZ-002
+        Note over REST,TM: controller/usecase 미진입 → canonical/PII/WLF/TM/CTR·STR/RA 업무 row 0<br/>valid-signed scope 403은 이미 소비한 auth nonce 유지
+    else 인증·scope 통과
+        REST->>APP: toDomain()
+        APP->>VAL: validate(event, tenantBaseCurrency)
+        alt 위반 존재
+            VAL-->>APP: [violations]
+            APP-->>REST: REJECTED
+            REST-->>SRC: 422 { violations[] }
+        else 유효
+            APP->>TOKEN: subjectRef=partyReference(업무참조), counterpartyRef=안정 토큰 파생
+            APP->>ING: ingest(flat canonical payload, targetRef=subjectRef(업무참조)/counterpartyRef=토큰)
+            alt DUPLICATE(동일 키 다른 내용)
+                ING-->>APP: DUPLICATE
+                APP-->>REST: 409 { status=DUPLICATE, evaluation=null }
+            else REPLAYED(동일 canonical payload)
+                ING-->>APP: REPLAYED
+                APP-->>REST: 200 { status=REPLAYED, evaluation=null }
+            else 신규 ACCEPTED
+                ING-->>APP: ACCEPTED
+                APP->>VAULT: sender/receiver raw PII 암호문 upsert
+                APP->>WLF: screen(sender; receiver=remit/domestic) — best-effort
+                APP->>TM: evaluate(signed amountBase, channelType) → CTR/STR 사이드이펙트
+                TM-->>APP: alerts[]
+                APP-->>REST: 202 ACCEPTED + evaluation{decision,alertCount,firedRuleCodes,screened}
+            end
         end
     end
     Note over APP,TM: 동기 HOLD 오케스트레이션 없음(가정 G6, decision=PASS/REPORT advisory)<br/>WLF 실패는 인입 실패로 전파 안 함(screened=false)
@@ -690,6 +706,7 @@ aml-svc 엔진은 `aml_tenants`의 `deployment_model`/`onboarding_status`/`infra
 | Capability | 큐/엔드포인트 | 멱등 | 4-eyes | PII | 규제 |
 |---|---|---|---|---|---|
 | Event ingest | `POST /api/v1/aml/events`(REST) | UNIQUE idempotency_key | — | ref/hash only | — |
+| Neutral transaction ingest | `POST /aml/v1/transaction-events`(REST, machine-auth v2 + `aml:event:write`) | `Idempotency-Key` 또는 body `eventId`; UNIQUE idempotency_key | — | ACCEPTED만 transient→vault, canonical은 ref/hash | WLF+CTR/STR fan-out |
 | 실시간 screening | `POST /api/v1/aml/screen` | Idempotency-Key | — | 일시처리·폐기 | Sanctions/PEP |
 | TM evaluate | `POST /api/v1/aml/transactions/evaluate` | tx natural key | — | ref/hash | — |
 | FDS escalation 소비 | `aml-fds-decision` / `POST /internal/v1/aml/fds-escalations` | (origin_fds_case_ref, fds_event_id) | — | ref | STR 후보 |
@@ -721,6 +738,7 @@ aml-svc 엔진은 `aml_tenants`의 `deployment_model`/`onboarding_status`/`infra
 
 | 일자 | 버전 | 변경 | 비고 |
 |---|---|---|---|
+| 2026-07-12 | v3.4 | **P0-01 AML neutral ingest auth-first 연동 경계 확정.** `/aml/v1/**` 실제 filter coverage·route별 v2-only와 두 ingest의 `aml:event:write`를 반영하고, §5.1a를 normalized route→v2 HMAC→nonce consume→scope→controller 순서로 변경했다. scope/role attribute 부재는 공통 `Boolean.TRUE` bootstrap marker 외 403, 인증 실패 업무 row 0, valid-signed scope 403 nonce 보존을 명시했다. Neutral `Source-System`/`Idempotency-Key` 예외와 `X-Data-Scope` tamper 401 경계를 §3.1a에 고정하고 capability 표에 neutral ingest를 추가했다. | API/DB schema 무변경. 코드 truth=AML filter/guard·실 filter-chain REST 테스트 |
 | 2026-07-12 | v3.3 | **P0-00 공통 inbound machine-auth wire v2 연동 전환.** REST ingest sequence를 normalized servlet route/ambiguous path·duplicate singleton gate→v2 HMAC→credential-wide nonce 원자 consume→업무 멱등 순으로 정정하고 canonical 공식은 `../api/00-common-machine-auth.md`를 단일 정본으로 참조했다. AML `workspace=default`, v1 offset/v2 UTC `Z`, TTL `>2×skew`, cleanup `20×5000/tick`, signed redirect 거부, trace/correlation context 제외, local/demo simulator/BO credential 분리와 BO `COMPLIANCE`·signed actor 경계를 반영했다. P0-01/P0-04/P0-14와 P1-02 lifecycle은 미완료다. outbound webhook `timestamp + "." + rawBody`는 inbound v2와 분리해 유지했다. | integration-designer. 코드 truth=`common-security`, AML V44, bo-api AML signer·`RestClientConfig`/`RestClientConfigTest`, Python simulator transport |
 | 2026-07-10 | v3.2 | **AML CDD→FDS 고객 프로필 outbox/REST 동기화 추가.** §1 토폴로지·경계·adapter 표에 `FDS_CUSTOMER_PROFILE` route와 `HttpFdsCustomerProfileSenderAdapter` 추가, §4.4에 PII-safe payload·memberRef/workspace·멱등/authoritative update 규칙 명시. AML V32가 aggregate CHECK를 7종으로 확장. | integration-designer |
 | 2026-07-09 | v3.1 | **Travel Rule 기능 전면 제거 정합(코드=truth).** (1) 헤더 닫힌 enum 보존 주석에서 `travel-rule` 패밀리 제거·`EventFamily` **19종** 명시 + `travel-rule.*` 이벤트 미수용(`NeutralEventValidator`/strict gate 거부) 명문화. (2) §9 제목·TOC `규제 제출 연동(STR/CTR/Travel Rule)`→`(STR/CTR)`, 앵커 동기화. (3) §9.1 `report_type` enum `STR/CTR/TRAVEL_RULE/…`→**`STR/CTR/EDD_REGISTER/WLF_REGISTER/RA_REPORT/AUDIT_EXPORT`**(코드 truth `ReportType` 6종). (4) **§9.3 Travel Rule 소절 삭제**(TravelRuleController/Service/도메인·`aml_travel_rule_transfers` 삭제) — 후속 §9.4→§9.3 재번호. (5) §3.2 `fds.case.escalated` 케이스 매핑에서 `REQUEST_TRAVEL_RULE_INFO`→`VASP_TRAVEL_RULE_REVIEW` 행 제거, §5.3 시퀀스 `VASP_...` 제거. (6) §8.3 subject_type 행에서 `TRAVEL_RULE_EXCEPTION` 제거(`ApprovalSubjectType` 20종). (7) §13 잔존 노트 — Travel Rule 항 삭제, `EventFamily`(19종)·projection·`case_type`(`CaseType` 11종)에서 `travel-rule`/`VASP_TRAVEL_RULE_REVIEW` 제거·삭제 명시. (8) §1 직렬화 예시·adapter 표·`aegis-stack` 참조에서 Travel Rule 제거. **STR/CTR 제출·FDS 위임(`OPEN_AML_CASE`) 흐름 자체는 유지·CRYPTO_OFF_RAMP TM 시나리오 존치**. 과거 changelog 행은 역사 기록으로 보존. | 코드=truth. 근거=aegis-aml 84997e1(feature/remove-travel-rule)·aml `EventFamily`(19종)/`ReportType`(6종)/`CaseType`(11종)/`ApprovalSubjectType`(20종)·`NeutralEventValidator`·V31 DROP(fds V9·bo-api V14 동반). integration-designer |

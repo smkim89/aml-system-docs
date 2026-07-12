@@ -14,13 +14,15 @@
 
 | Plane | base path | 호출자 | 인증 | 비고 |
 |---|---|---|---|---|
-| **Public API** (서비스 연동) | `/api/v1/aml/...`, `/api/v1/evidence/aml/...` | hanpass-ph 트랜잭션 마이크로서비스(`member-svc`(회원/CDD)·`walletchg-svc`(충전)·`domestic-svc`(국내이체)·`remit-svc`(해외송금)·`wallet-svc`(지갑)·`inbound-svc`(인바운드)) | API Key+HMAC wire v2([공통 정본](00-common-machine-auth.md)) / OAuth2 / mTLS (§15.7, D-13) | event ingest·screening·RA·TM·evidence |
+| **Public API** (서비스 연동) | `/api/v1/aml/...`, `/aml/v1/...`, `/api/v1/evidence/aml/...` | hanpass-ph 트랜잭션 마이크로서비스(`member-svc`(회원/CDD)·`walletchg-svc`(충전)·`domestic-svc`(국내이체)·`remit-svc`(해외송금)·`wallet-svc`(지갑)·`inbound-svc`(인바운드)) | API Key+HMAC wire v2([공통 정본](00-common-machine-auth.md)) / OAuth2 / mTLS (§15.7, D-13) | event ingest·중립 거래 ingest·screening·RA·TM·evidence |
 | **Internal API** (엔진 간) | `/internal/v1/aml/...` | `fds-svc`(fraud escalation), 내부 스케줄러 | API Key + HMAC wire v2 목표([공통 정본](00-common-machine-auth.md); P0-04 전 경로 전환 미완료, `X-Internal-Service` 선택; mesh mTLS 는 P8 보강, T11/AML-ENG-05·T3) | fds↔aml event 연계(D-07 event 우선) |
 | **Admin API** (운영 콘솔) | `/api/v1/admin/aml/...` | `bo-api`만 (bo-web은 bo-api 경유) | BO edge 세션/JWT+RBAC+data-scope, bo-api→aml-svc는 별도 machine-auth v2 credential | 명단·정책·case·결재·감사·evidence 관리 |
 
 > **bo-web은 Admin API를 직접 호출하지 않는다.** 정본 §3·§4: `bo-web → bo-api(REST only) → aml-svc admin API`. 본 문서의 Admin API는 bo-api가 호출하는 aml-svc 계약이며, bo-web↔bo-api 계약은 bo-api 측 PRD/스펙에서 파생한다.
 
-모든 plane 공통 버저닝: `/api/v1`, `/internal/v1`. breaking change는 `/api/v2`로 분기(병행 운영).
+plane 버저닝은 일반 Public/Admin `/api/v1`, 중립 거래 Public `/aml/v1`, Internal
+`/internal/v1`이다. 중립 수집은 기존 공개 계약을 보존하는 명시적 namespace 예외이며 breaking
+change는 각각 `/api/v2` 또는 `/aml/v2`로 분기해 병행 운영한다.
 
 > **정본 결정 요약(정합성 리포트 design:api 정정분).** 아래 5건은 본 API 명세를 파생(설계서·연동·태스크·PRD·PPT)의 진실로 확정한다.
 > 1. **운영자 집계 API 소유 경계 = bo-api(§9).** 대시보드(플랫폼·서비스별)·서비스 관리(목록/상세/등록/설정)·운영자 감사 조회 화면이 호출하는 집계 엔드포인트는 **bo-api가 소유·집약·인증**한다. aml-svc(엔진)는 저수준 데이터 API만 제공하며, **본 엔진 API 명세(§2)에는 운영자 집계 엔드포인트(대시보드/서비스/감사)를 추가하지 않는다.** PRD/PPT의 해당 화면은 호출 대상을 bo-api(`/api/v1/bo/aml/**`)로 명시한다. (§2.7 `audit-events`는 엔진 측 append-only 저수준 감사 조회이며, 운영자 화면용 감사 집계는 bo-api가 위임 호출한다.)
@@ -39,24 +41,36 @@
 |---|---|---|---|
 | Tenant | `Tenant-Id` 헤더 (Public/Internal) / bo-api 세션 클레임 (Admin) | Y | DB `tenant_id`(테넌트=서비스, 상위 기관 institution이 운영하는 서비스 1종·1 기관 : N 서비스). 전용 배포(`MANAGED_DEDICATED`/`SELF_HOSTED`)에서는 배포=서비스 단일 값(라우팅은 배포 엔드포인트 단위). `SHARED` 배포에서만 `Tenant-Id` 헤더 행 라우팅·RLS `app.current_tenant` 세션변수로 강제 |
 | Workspace | wire v2 canonical `workspace=default` | — | AML은 물리 workspace/header를 사용하지 않으며 항상 `default`로 서명 |
-| Source System | `Source-System` 헤더 | Public Ingest/Screen Y | DB `aml_source_systems.source_system`. source header의 유일한 정본 이름이며 `X-Source-System` 등 alias는 거부. 미등록 source는 거부 |
-| Data-scope | machine 요청 `X-Data-Scope` / bo-api 토큰 클레임 `dataScope` / 쿼리 `dataScope` | N | DB `data_scope`(영업점·법인그룹 하위 격리, 정본 §4). machine header 값은 wire v2 `scopeContext.data-scope`에 결합 |
+| Source System | `Source-System` 헤더 | Public Ingest/Screen Y (§2.1a 예외) | DB `aml_source_systems.source_system`. source header의 유일한 정본 이름이며 `X-Source-System` 등 alias는 거부. 미등록 source는 거부. 단, 중립 거래 ingest는 아래 endpoint-specific 예외를 따른다 |
+| Data-scope | machine 요청 `X-Data-Scope` / bo-api 토큰 클레임 `dataScope` / 쿼리 `dataScope` | N | DB `data_scope`(영업점·법인그룹 하위 격리, 정본 §4). machine header 값은 wire v2 `scopeContext.data-scope`에 결합. §2.1a에서는 P0-01 기준 무결성 결합만 하며 별도 credential allowlist를 추가하지 않음 |
 | Credential | `X-Api-Key` | HMAC Y | `aml_api_credentials.credential_id`; DB에는 AES-GCM `secret_ciphertext`만 저장 |
 | Timestamp | `X-Timestamp` | HMAC Y | RFC3339 UTC(`Z`), 서버 기준 ±5분 |
 | Auth version / nonce | `X-Auth-Version: 2` / `X-Nonce` | v2 Y | nonce=16 random bytes canonical base64url-no-padding 22자, credential-wide 기본 TTL 15분(`>2×skew`) |
 | 서명 | `X-Signature: hmac-sha256=...` | HMAC Y | UTF-8/LF/no trailing LF, raw path/query·Tenant-Id·고정 9-key scopeContext·raw-body digest·timestamp·nonce 공식은 [공통 machine-auth 정본](00-common-machine-auth.md)만 따른다. 구 v1 공식은 전환 호환 전용 |
 | 운영자 actor | `X-User-Subject` | Admin/Internal write Y | trusted BFF/mesh가 인증 principal에서 파생. wire v2 `scopeContext.user-subject`에 결합되므로 서명 뒤 actor 교체는 401. 브라우저 임의 입력 금지 |
-| Idempotency | `Idempotency-Key` 헤더 | 쓰기성 Public Y | DB `aml_canonical_events.idempotency_key` UNIQUE(tenant_id,idempotency_key) |
+| Idempotency | `Idempotency-Key` 헤더 | 쓰기성 Public Y (§2.1a 예외) | DB `aml_canonical_events.idempotency_key` UNIQUE(tenant_id,idempotency_key). 중립 거래 ingest는 생략 시 body `eventId`를 사용 |
 | Trace | `X-Trace-Id`(없으면 생성, 최대 64자) | N | DB `trace_id VARCHAR(64)` 전파(설계서 §20.3). 응답 `X-Trace-Id` 반향. singleton이나 고정 9-key scopeContext 밖. 초과 입력은 persist 전 422 |
 | Correlation | `X-Correlation-Id` | N | 호출/업무 상관 계보. 고정 9-key scopeContext와 현재 singleton 거부 목록 밖 |
 
 credential `allowed_protocol_versions`와 service policy의 교집합만 허용한다. migration 이전 row는 `["v1","v2"]`, 신규 row는 `["v2"]`가 기본이며 명시적 v2 실패를 v1로 fallback하지 않는다. v1 timestamp는 기존 RFC3339 offset 표기를 호환하고 v2는 canonical UTC `Z`만 허용한다. nonce는 HMAC 검증 후 scope/controller 전에 별도 트랜잭션으로 소비하므로 downstream 오류에도 재사용할 수 없고, 업무 replay는 새 nonce로 인증한 뒤 §1.4 멱등 결과를 받는다. TTL은 반드시 `2×timestamp skew`보다 엄격히 길며, 만료 cleanup 기본값은 1분마다 최대 `20×5000` row다.
 
+route policy는 위 교집합을 더 좁힐 수 있다. §2.1a `/aml/v1/**`는 migration 전 dual credential에도
+v2-only이며, 다른 기존 AML route의 측정된 v1→v2 전환은 유지한다.
+
 서버는 servlet normalized route로 filter/scope coverage를 판단하고 raw URI를 HMAC에 사용한다. dot/encoded-separator/matrix/double-slash 등 ambiguous raw path와 duplicate singleton header는 body read·credential lookup·nonce 소비 전에 generic 401이다. signed client는 redirect를 자동 추종하지 않고 target 변경 시 새 timestamp/nonce로 재서명한다. bo-api 공용 engine `RestClient`는 `DONT_FOLLOW`를 명시해 실제 origin 302를 그대로 반환하고 target 0회·`X-Api-Key` 미전달을 검증한다. `X-Trace-Id`/`X-Correlation-Id`는 관측성에는 계속 전파하지만 9-key context에는 추가하지 않는다.
 
 local/demo bootstrap/provisioner는 명시적 `local|demo` positive profile + opt-in에서만 허용되는 infrastructure 편의이며 Flyway business seed가 아니다. AML REST simulator와 bo-api는 서로 다른 credential ID/secret을 사용한다. bo-api credential은 endpoint scope 10종과 별도 `COMPLIANCE` authority token을 포함한다. 엔진 STR 열람 감사·maker identity는 v2로 서명된 `X-User-Subject`에서 파생하며 body 자기주장은 identity source가 아니다.
 
-> **미완료 경계(2026-07-12)**: P0-00 공통 기반과 bo-api→AML JSON signer는 구현됐지만 `/aml/v1/**` filter coverage(P0-01), AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer(P0-04), multipart 최종 raw-byte client 전환(P0-14), credential 생성·scope 변경·유예회전·폐기·last-used·rate/network/workload 통제(P1-02)는 미완료다. 특히 §2.1a `/aml/v1/transaction-events`는 P0-01 전까지 v2 적용 완료로 간주하지 않는다([공통 정본 §7](00-common-machine-auth.md#7-후속-태스크-경계)).
+scope 또는 role request attribute가 없으면 공통 filter가 local/demo positive profile과 opt-in을 확인한
+뒤 내부 request attribute에 정확히 `Boolean.TRUE`로 설정한 bootstrap marker가 있는 경우만 허용한다.
+그 밖에는 `ScopeGuard`가 403 `AML-AUTHZ-002`, `RoleGuard`가 403 `AML.FORBIDDEN_SCOPE`로 닫으며,
+marker는 wire header나 호출자 입력이 아니다.
+
+> **적용·미완료 경계(2026-07-12)**: P0-01로 `/aml/v1/**`가 실제 filter coverage에 포함되어
+> §2.1a `/aml/v1/transaction-events`도 공통 v2와 `aml:event:write`를 강제한다. 남은 미완료는
+> AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer(P0-04), multipart 최종 raw-byte client
+> 전환(P0-14), credential 생성·scope 변경·유예회전·폐기·last-used·rate/network/workload 통제(P1-02)다
+> ([공통 정본 §7](00-common-machine-auth.md#7-후속-태스크-경계)).
 
 권한 scope(**마스터=본 §1.1 enum 전수 정본**, OAuth2/RBAC 공통, 설계서 §15.7·PRD §1.4는 이에 동기화): `aml:event:write`, `aml:screen:evaluate`, `aml:ra:evaluate`, `aml:tm:evaluate`, `aml:case:read`, `aml:case:update`, `aml:evidence:export`, `aml:admin:watchlist`, `aml:admin:source-system`, `aml:admin:policy`, `aml:admin:approval`, `aml:admin:audit`, `aml:pii:reveal`(원문/raw PII 접근, 사유+감사 `RAW_DATA_ACCESS` 필수, §1.6). 총 13종. 설계서 §15.7 'scope 예시'와 PRD §1.4는 본 §1.1 전수 enum을 정본으로 인용한다.
 
@@ -132,9 +146,28 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 
 소스 중립(canonical) 수집 API. 해외송금·국내송금·카드결제·월렛충전·월렛결제 5개 product 를 **단일 Envelope**(`docs/aml-data.md` §3~§7, ISO 20022/FATF R.16/ISO 4217·3166·8601)로 수신하고, 하나의 POST 로 WLF 스크리닝 + CTR/STR 평가(TM 파이프라인)를 팬아웃한다. 기존 `POST /api/v1/aml/events`(§3.1, 내부 canonical 저장 경로)와 별개의 공개 수집 표면이며, 원천 시스템은 자기 컬럼을 이 표준 필드로 매핑만 하면 동일 API 로 인입한다.
 
+P0-01부터 normalized route `/aml/v1/**`는 공통 machine-auth filter의 실제 coverage다. 이 endpoint와
+`POST /api/v1/aml/events`는 모두 `aml:event:write`를 요구하며, scope/role attribute 부재는 공통
+filter가 설정한 local-bootstrap `Boolean.TRUE` marker 외에는 403으로 닫힌다.
+
 | 메서드 | 경로 | scope | 멱등 | 헤더 | 설명 | DB |
 |---|---|---|---|---|---|---|
-| POST | `/aml/v1/transaction-events` | `aml:event:write` | Y | `Tenant-Id`(필수)·`Idempotency-Key`(옵션, 미지정 시 body `eventId` 사용·지정 시 `eventId`와 일치 필수)·`X-Trace-Id`(옵션) | 중립 Envelope 수신 → 검증(422) → 비PII 안정 토큰 파생 → canonical event 멱등 저장. 신규 ACCEPTED만 raw PII vault → WLF + CTR/STR 평가하고, REPLAYED/DUPLICATE는 요청-body side-effect 없이 종결. 응답=수신확인 + ACCEPTED 평가요약 | `aml_canonical_events`(+ACCEPTED 한정 `aml_alerts`·CTR/STR 파생) |
+| POST | `/aml/v1/transaction-events` | `aml:event:write` | Y | v2 필수=`Tenant-Id`·`X-Api-Key`·`X-Auth-Version: 2`·`X-Timestamp`·`X-Nonce`·`X-Signature`·`Content-Type: application/json`; 업무=`Idempotency-Key`(옵션, 미지정 시 body `eventId` 사용·지정 시 `eventId`와 일치 필수); 선택=`Source-System`·`X-Data-Scope`·`X-Trace-Id` | 인증·scope 통과 뒤 중립 Envelope 수신 → 검증(422) → 비PII 안정 토큰 파생 → canonical event 멱등 저장. 신규 ACCEPTED만 raw PII vault → WLF + CTR/STR 평가하고, REPLAYED/DUPLICATE는 요청-body side-effect 없이 종결. 응답=수신확인 + ACCEPTED 평가요약 | `aml_canonical_events`(+ACCEPTED 한정 `aml_alerts`·CTR/STR 파생) |
+
+**중립 endpoint-specific header 예외.** 일반 Public ingest의 `Source-System`/`Idempotency-Key` 필수
+규칙과 달리, 본 endpoint의 canonical `source_system`/`schema_version`은 server property
+`aml.neutral.source-system`/`aml.neutral.schema-version`으로 결정하고 Envelope `institutionId`는 별도
+보고기관 provenance로 flat payload에 보존한다. `Source-System`은 선택이며 제공되면 v2
+`scopeContext`에 exact 결합되지만 server-owned 업무 source를 덮어쓰지 않는다. `Idempotency-Key`는
+생략 시 body `eventId`를 사용한다.
+`X-Data-Scope`도 선택이며 서명 뒤 값을 바꾸면 401 `AML-AUTH-002`다. P0-01은 valid signature로
+새로 서명한 data-scope에 대한 credential allowlist/인가 정책이나 DB 컬럼을 추가하지 않는다.
+
+**인증 실패 무부작용.** 401/403 요청은 controller/usecase에 도달하지 않아
+`aml_canonical_events`·`aml_pii_vault`·`aml_screening_results`·`aml_alerts`·
+`aml_regulatory_reports`·`aml_risk_scores` 업무 row를 만들지 않는다. 다만 정상 서명 뒤
+`aml:event:write` 부족으로 거부된 403은 공통 검증 순서에 따라 nonce가 이미 소비되어
+`aml_auth_nonces` row가 유지된다.
 
 **상태코드 매핑**(엔진 `NeutralTransactionEventController#httpStatus` = truth): `ACCEPTED`→`202`, `REPLAYED`(멱등 재전송·동일 canonical payload)→`200`, `DUPLICATE`(동일 키·다른 내용)→`409`, `REJECTED`(검증 실패)→`422`. 검증 실패는 **단일 422** 에 누적 위반 목록을 실어 반환하며 500 을 던지지 않는다(fail-closed). `REPLAYED`/`DUPLICATE`는 raw PII vault·WLF·TM/CTR/STR 전에 즉시 종결되어 재전송 body의 projection/엔진 side-effect가 0건이고 `evaluation=null`이다. canonical payload용 비PII 안정 토큰만 gate 전에 순수 파생한다. raw PII는 canonical hash에 없으므로 신규 `ACCEPTED` body에서만 vault/screening에 사용한다.
 
@@ -151,7 +184,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | `occurredAt` | string(date-time) | R | ISO-8601 offset 포함 |
 | `valueDate` | string(date) | — | 결제/정산일 |
 | `channel` | enum | — | `MOBILE_APP`/`WEB`/`BRANCH`/`API`/`KIOSK` |
-| `institutionId` | string | R | 보고기관 식별자(멀티 소스 구분). 엔진 canonical `sourceSystem`으로 매핑(가정 G8) |
+| `institutionId` | string | R | 보고기관 식별자 provenance. flat payload에 보존하며 server-owned canonical `sourceSystem`과 별개(가정 G8) |
 | `status` | string | R | 원천 거래 최종 상태 |
 | `originator` | object(Party) | R | 주체 고객. `nationalIdentityKey` 필수(CTR 최소요건 §9). §3.17 Party |
 | `amounts` | object | R | 금액 블록. `baseAmount`/`baseCurrency` 필수, `baseCurrency`=테넌트 규제통화(가정 G3). §3.17 Amounts |
@@ -196,7 +229,7 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 | `product` | string | `CROSS_BORDER_REMITTANCE`/`DOMESTIC_TRANSFER`/`CARD_PAYMENT`/`WALLET_TOPUP`/`WALLET_PAYMENT` |
 | `eventLifecycle` | string | `eventType`(`CREATED`/`COMPLETED`/`CANCELLED`/`REFUNDED`/`REVERSED`) |
 | `relatedReference` | string | 원거래 참조(reversal 시). 부재 시 키 미기록 |
-| `institutionId` | string | 보고기관 식별자(canonical `sourceSystem` 매핑, 가정 G8) |
+| `institutionId` | string | 보고기관 식별자 provenance. 입력값을 보존하며 canonical `sourceSystem`은 server property에서 결정(가정 G8) |
 | product 신호 | — | `product` 블록별 비PII STR/FDS 신호(`addProductSignals`=truth): REMIT=`destinationCountry`/`payoutPartner`/`relationshipToBeneficiary`/`payoutMethod`, DOMESTIC=`accountHolderNameMatch`/`fundingSourceType`, CARD=`mcc`/`merchantRef`/`merchantCountry`/`balanceBefore`/`balanceAfter`, WALLET_TOPUP=`fundingInstrumentType`/`balanceBefore`/`balanceAfter`/`walletId`, WALLET_PAYMENT=`mcc`/`merchantRef`/`balanceBefore`/`balanceAfter`/`walletId`(값 있을 때만 기록) |
 
 - **`corridor` 서버 파생 규칙**(`corridor()` = truth): 발신국 = 테넌트 규제국(`aml.neutral.regulatory-country`, 기본 `PH`). `DOMESTIC_TRANSFER` → `{reg}-{reg}`(예 `PH-PH`), `CROSS_BORDER_REMITTANCE` → `{reg}-{destinationCountry}`(destinationCountry 부재 시 `counterparty.residenceCountry` 폴백; 둘 다 없으면 키 미기록), `WALLET_*`/`CARD_PAYMENT` → 키 미기록. **flat `corridor` 는 문자열**이며, 입력 §3.17 remittance 블록/§4.2·`corridor` object(nested `{ sendCountry, receiveCountry, sendCurrency, receiveCurrency }`)는 발신측이 싣는 **상세 입력 구성요소**다 — 엔진은 이를 저장 시 위 문자열로 평탄 파생하므로, 룰 윈도우가 소비하는 corridor 정본은 **본 flat 문자열**이고 §3.4d/§3.4a `relatedTransactions[].corridor` 도 이 문자열을 상속한다.
@@ -1306,18 +1339,25 @@ RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenari
 
 ## 4. 표준 에러 모델
 
-`{ "error": { "code", "message", "details": [], "traceId" } }`. 도메인 오류는 `AML.<UPPER_SNAKE>`, 공통 machine-auth filter 오류는 `AML-AUTH-*`를 사용한다.
+Controller/domain 오류는 `{ "error": { "code", "message", "details": "...", "timestamp": "..." } }` envelope를
+사용한다. Controller보다 앞에서 종결하는 공통 machine-auth filter 오류는
+`{ "code", "status", "detail" }` flat JSON이며 `AML-AUTH-*`/`AML-AUTHZ-*` code를 사용한다.
+`ScopeGuard`/`RoleGuard` 같은 controller advice 오류는 전자 envelope와 `AML.<UPPER_SNAKE>` 또는
+`AML-AUTHZ-*` code를 따른다. 클라이언트는 HTTP status와 code를 기준으로 처리하고 인증 detail을
+원인 oracle로 해석하지 않는다.
 
 | HTTP | code | 발생 |
 |---|---|---|
 | 400 | `AML.BAD_REQUEST` | 스키마 검증 실패(필수 누락·타입·enum 위반) |
 | 400 | `AML.UNKNOWN_SOURCE_SYSTEM` | 미등록 `Source-System` |
-| 401 | `AML.UNAUTHENTICATED` | 인증 실패(키/토큰) |
+| 401 | `AML-AUTH-001` | 공통 machine-auth 대상 경로에서 `Tenant-Id` 또는 `X-Api-Key` 누락 |
+| 401 | `AML.UNAUTHENTICATED` | legacy application-layer 인증 실패 alias. 공통 machine-auth filter는 `AML-AUTH-001/002` 사용 |
 | 401 | `AML.INVALID_SIGNATURE` | legacy application-layer alias. 공통 machine-auth filter는 상세 원인을 노출하지 않고 아래 `AML-AUTH-002` 사용 |
 | 401 | `AML-AUTH-002` | generic machine-auth 실패(credential/protocol/version/nonce/timestamp/canonical/signature/replay 원인 비공개) |
 | 503 | `AML-AUTH-003` | nonce replay store 불가 — 인증 fail-closed |
 | 413 | `AML-AUTH-004` | 인증 raw-body 상한 초과 |
-| 403 | `AML.FORBIDDEN_SCOPE` | scope/RBAC 부족 |
+| 403 | `AML-AUTHZ-002` | scope 부족 또는 `ScopeGuard` request attribute 부재. 공통 local-bootstrap `Boolean.TRUE` marker만 예외 |
+| 403 | `AML.FORBIDDEN_SCOPE` | COMPLIANCE 같은 dedicated role 부족 또는 `RoleGuard` authority attribute 부재. 같은 bootstrap marker만 예외 |
 | 403 | `AML.TENANT_MISMATCH` | tenant/data-scope 경계 위반(RLS) |
 | 404 | `AML.SCREENING_NOT_FOUND` / `AML.CASE_NOT_FOUND` / `AML.REPORT_NOT_FOUND` / `AML.APPROVAL_NOT_FOUND` | 리소스 없음 |
 | 409 | `AML.IDEMPOTENCY_CONFLICT` | 동일 키 다른 payload |
@@ -2367,6 +2407,7 @@ eAMLA 제출은 **raw PII 미전송** — 토큰화된 보고 참조만 전달�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-12 | **P0-01 AML 중립 거래 인입 인증 우회 차단 동기화.** Public plane에 `/aml/v1/**`를 등재하고 §1.1/§2.1a에서 실제 common filter coverage, route별 v2-only, 두 ingest의 `aml:event:write`, scope/role attribute 부재 시 공통 local-bootstrap `Boolean.TRUE` marker 외 403, 인증 실패 업무 row 0과 valid-signed scope 403 nonce 보존을 확정했다. Neutral `Source-System`/`Idempotency-Key` endpoint 예외와 `X-Data-Scope` tamper 401만 명시하고 credential별 data-scope 인가 모델은 추가하지 않았다. §4 오류를 `AML-AUTH-001/002`·`AML-AUTHZ-002`·`AML.FORBIDDEN_SCOPE`와 정렬했다. | API/DB schema 무변경. 코드 truth=AML filter registration/spec·`ScopeGuard`·`RoleGuard`·실 filter-chain REST 테스트 |
 | 2026-07-12 | **P0-00 공통 inbound machine-auth wire v2 동기화.** §0/§1.1을 `00-common-machine-auth.md` 정본으로 전환해 normalized servlet routing/ambiguous path·duplicate singleton 거부, raw path/query·AML `workspace=default`·고정 9-key scopeContext(trace/correlation 제외)·body digest, v1 offset/v2 UTC `Z`, nonce TTL `>2×skew`·cleanup `20×5000/tick`, signed redirect 거부와 local/demo positive provisioning을 반영했다. simulator/BO AML credential 분리, BO `COMPLIANCE` authority와 signed `X-User-Subject` STR 감사 actor 경계를 명시했다. P0-01/P0-04/P0-14와 P1-02 lifecycle은 미완료이며 §8 outbound webhook 공식은 inbound v2와 별개다. | 코드 truth=`common-security`, AML V44, bo-api AML signer·`RestClientConfig`/`RestClientConfigTest`, `test-vectors/machine-auth-v2.json`, Python simulator transport |
 | 2026-07-12 | **당연고위험(HRR) 폐루프 시각화 API 역전파(§2.7 `mandatoryHighRisk` 필터 param 추가 + bo-api 공개 등재 상태 read-back 위임 명문화).** ① **§2.7 `GET .../risk-scores` 에 `mandatoryHighRisk`(당연고위험) 서버 필터 param 추가** — additive·optional 3-value(`true`=당연고위험만·`false`=일반만·미지정=무필터), `aml_risk_scores.mandatory_high_risk` outer 필터. bo-api `GET /api/v1/bo/aml/risk-scores` passthrough(위임 server-param + client post-filter 이중, stub `RiskScore.mandatoryHighRisk` post-filter). ② **bo-api 공개 read-back 위임 `GET /api/v1/bo/aml/high-risk-registry/registrations/{customerRef}`(scope `aml:case:read`) 명문화** — 엔진 admin read-back(§2 HRR surface, `aml:admin:high-risk-registry`)을 RA 상세(PRD §12-A.4 BR-006) 폐루프 흐름도 바인딩용 공개 조회 표면으로 노출(응답 `HrrRegistrationState`·위임/stub/운영 fail-closed 3분기). 승인/반려는 기존 공통 결재함 `:approve`/`:reject`(scope `aml:admin:approval`) 재사용(신설 없음). 엔진 계약 변경 없음. | docs 역전파. 코드=truth. 근거=aml-svc `RiskScoreAdminController`(`mandatoryHighRisk`)·`RiskScoreJpaAdapter`, bo-api `AmlRaService`(passthrough)·`AmlHighRiskRegistryController.registrationState`·`AmlHighRiskRegistryService.registrationState`·`HighRiskRegistryDtos.HrrRegistrationState`·`V16__demo_executive_checker.sql`. PRD §12-A.4 BR-006·§12-B.6 BR-006·§03 §4.2 동기화. |
 | 2026-07-12 | **bo-api 프로필 `riskSummary.riskGrade` 등급 폴백 체인 명문화(§3.9 `CustomerProfileDto` 후주, §3.3 포인터, 계약 변경 없음).** 고객 프로필 aggregate `riskSummary.riskGrade` 가 엔진 evidence profile top-level `riskGrade` → `latestRiskScore.riskGrade` → 최종 `LOW` 순으로 폴백해 riskScore↔riskGrade 를 동일 소스로 정렬((LOW, 85.39) 모순 방지, 가정 A4)함을 §3.9 후주에 추가(§3.3 은 포인터). 표기 정합 파생일 뿐 엔진 판정 미변경·스키마/계약 변경 없음. | docs-only 역전파. 코드=truth. 근거=bo-api `aml/profile/service/AmlCustomerProfileService#resolveGrade`(L390~407). plan §6.1·§3.9 동기화. |

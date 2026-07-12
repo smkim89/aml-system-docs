@@ -1524,7 +1524,7 @@ API 인증·권한:
 
 > local/demo simulator credential provisioning과 bootstrap bypass는 명시적 `local|demo` positive profile + opt-in에서만 동작하고 Flyway business seed가 아니다. 다른 profile은 property가 있어도 fail-closed한다.
 >
-> **미완료 경계(2026-07-12)**: P0-01(`/aml/v1/**` filter), P0-04(내부 service-auth·bo-api→FDS signer), P0-14(multipart 최종 raw-byte signer), P1-02(credential 생성/scope/유예회전/폐기/last-used·rate/network/workload 통제)는 미완료다. 공통 계약의 존재만으로 해당 경로나 운영 lifecycle 적용 완료를 주장하지 않는다. valid v2 nonce는 HMAC 성공 뒤 scope/controller보다 먼저 소비되므로 downstream 오류에도 재사용할 수 없고, 업무 멱등 replay는 새 nonce를 사용한다.
+> **적용·미완료 경계(2026-07-12)**: P0-01로 AML `/aml/v1/**` filter coverage는 완료됐다. 남은 미완료는 P0-04(내부 service-auth·bo-api→FDS signer), P0-14(multipart 최종 raw-byte signer), P1-02(credential 생성/scope/유예회전/폐기/last-used·rate/network/workload 통제)다. 공통 계약의 존재만으로 이 잔여 경로나 운영 lifecycle 적용 완료를 주장하지 않는다. valid v2 nonce는 HMAC 성공 뒤 scope/controller보다 먼저 소비되므로 downstream 오류에도 재사용할 수 없고, 업무 멱등 replay는 새 nonce를 사용한다.
 
 권한 scope(정본: API 명세 §2.3/§9, **11종** — 한국어 설명은 API §2.3/OpenAPI §10과 동일):
 
