@@ -143,6 +143,9 @@ replay 불변식은 다음과 같다.
 
 - `allowed_protocol_versions`는 non-empty JSON array이며 값은 `v1`/`v2` 부분집합이다.
 - migration 당시 **기존 credential row는 `["v1","v2"]`로 backfill**, migration 이후 **신규 credential은 `["v2"]`가 기본**이다. service policy가 이 allowlist를 더 좁힐 수 있다.
+- normalized API route policy도 service/credential 교집합을 더 좁힐 수 있다. P0-01의 AML
+  `/aml/v1/**`는 migration 전 credential이 `["v1","v2"]`여도 v2-only이며, 다른 기존 AML/FDS
+  route의 측정된 전환은 유지한다.
 - header가 없으면 transition 동안 legacy v1, 명시적 `X-Auth-Version: 1`은 v1, 명시적 `2`는 v2로만 검증한다. **v2 실패 후 v1 재검증 fallback은 없다.** v1 timestamp parser는 기존 client 호환을 위해 RFC3339 offset 표기(예: `+09:00`)를 유지하되 서명에는 전송 문자열을 그대로 사용한다. v2 timestamp는 canonical UTC `Z` 표기만 허용한다.
 - v1 canonical material(`timestamp/apiKey/method/path/[actor]/body`)은 전환 호환용 legacy일 뿐 신규 client가 복제할 계약이 아니다. query·tenant·scope·nonce를 결합하는 본 v2를 사용한다.
 - v1 사용량이 14일 연속 0이고 등록 client 전환 증거가 확보되면 service policy에서 v1을 끈다. 이후 credential allowlist도 v2-only로 축소한다.
@@ -154,9 +157,23 @@ AML local/demo는 REST simulator용 `SIMULATOR_AML_API_KEY`/`SIMULATOR_AML_HMAC_
 
 ## 7. 후속 태스크 경계
 
-P0-00은 공통 protocol·credential version·durable nonce 기반만 닫는다. 다음 항목은 **2026-07-12 현재 미완료**이며 본 문서 존재만으로 적용 완료를 주장하지 않는다.
+P0-00은 공통 protocol·credential version·durable nonce 기반을 닫았고, P0-01은 AML
+`/aml/v1/**`를 normalized servlet route 기준 실제 filter 대상에 포함했다. 이에 따라
+`POST /api/v1/aml/events`와 `POST /aml/v1/transaction-events`는 모두 `aml:event:write`를
+요구하며 `/aml/v1/**` authenticated traffic은 route policy로 v2-only다. scope/role request
+attribute가 없으면 공통 filter가 local/demo positive profile과
+opt-in을 확인한 뒤 내부 request attribute에 정확히 `Boolean.TRUE`로 설정한 bootstrap marker가
+있는 경우만 허용하고, 그 밖에는 403으로 fail-closed한다. marker는 외부 wire header가 아니며
+호출자가 스스로 주장할 수 없다.
 
-- **P0-01**: `/aml/v1/**` 중립 거래 인입 filter coverage.
+P0-01 인증 실패는 controller/usecase에 진입하지 않으므로 canonical event·PII vault·WLF·TM·CTR/STR·RA
+업무 row를 만들지 않는다. 단, 정상 서명 검증 뒤 scope에서 거부된 403은 §4 순서대로 인증 nonce를 이미
+소비하므로 `aml_auth_nonces` row는 유지된다. Neutral ingest의 `X-Data-Scope`는 P0-01에서 v2
+canonical 무결성에만 결합한다. 기존 서명 뒤 값을 바꾸면 401이고, valid signature로 새로 서명한 값에
+대한 credential별 data-scope allowlist/인가 모델은 이 작업에서 추가하지 않는다.
+
+다음 항목은 **2026-07-12 현재 미완료**이며 본 문서 존재만으로 적용 완료를 주장하지 않는다.
+
 - **P0-04**: AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer 전환.
 - **P0-14**: multipart client가 최종 raw bytes를 한 번만 만들고 동일 bytes를 digest/sign/send하는 전환과 production capability guard.
 - **P1-02**: 전 machine credential 경로 적용, 생성·scope 변경·유예회전·폐기·last-used 영속 이력, credential별 rate/network/workload 조건과 비민감 실패 metric. P0-00의 protocol allowlist·암호화·권장 회전 절차만으로 이 운영 수명주기가 완료된 것은 아니다.
@@ -167,4 +184,5 @@ P0-00은 공통 protocol·credential version·durable nonce 기반만 닫는다.
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-12 | P0-01 AML neutral ingest 인증 우회 차단. `/aml/v1/**` 실제 filter coverage, 두 AML ingest의 `aml:event:write`, scope/role attribute 부재 시 공통 `Boolean.TRUE` bootstrap marker 외 403, 인증 실패 업무 row 0, valid-signed scope 403의 nonce 보존, neutral `X-Data-Scope` tamper 401 경계를 확정했다. | API/DB 스키마 무변경. AML filter/guard·실 filter-chain 테스트가 코드 truth |
 | 2026-07-12 | P0-00 공통 inbound machine-auth wire v2 신규 정본. versioned canonical request, normalized servlet routing과 ambiguous raw-path 거부, duplicate singleton 거부, raw query, 고정 9-key scopeContext(trace/correlation 제외), raw-body digest, v1 offset 호환/v2 UTC `Z`, durable nonce(TTL `>2×skew`, 기본 cleanup `20×5000/tick`), signed redirect 거부, local/demo positive provisioning, BO `COMPLIANCE` actor 경계, generic error, credential transition, 고정 벡터와 후속 P0/P1 범위를 확정. | 코드 truth=`services/common-security`, `scripts/machine_auth.py`, bo-api `RestClientConfig`/`RestClientConfigTest`, AML V44, FDS V14 |

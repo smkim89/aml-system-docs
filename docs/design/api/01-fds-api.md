@@ -62,7 +62,7 @@
 - v2 요청은 `Tenant-Id`·최종 raw path/query·FDS workspace·scope context·최종 body bytes·timestamp·nonce를 함께 서명한다. `Source-System`만 source header 정본이며 alias는 허용하지 않는다. credential/service policy 교집합으로 protocol을 제한하고 기존 row=`[v1,v2]`, 신규 row=`[v2]` 전환 정책을 적용한다. v1은 RFC3339 offset timestamp 호환을 유지하지만 v2는 UTC `Z`만 허용한다.
 - filter coverage/scope는 servlet normalized route로 판단하고 HMAC은 raw URI를 고정한다. dot segment·encoded separator·matrix parameter·double slash 등 모호한 raw path와 보안/canonical singleton header 중복은 body/credential/nonce 처리 전에 generic 401이다. signed client는 redirect를 자동 추종하지 않고 새 target에 새 nonce로 재서명한다. bo-api 공용 engine `RestClient`도 `DONT_FOLLOW`를 강제해 302 target으로 machine header를 전달하지 않는다(단, bo-api→FDS signer 자체는 P0-04 미완료).
 - nonce TTL 기본 15분은 `2 × timestamp skew`보다 엄격히 길어야 하고, 만료 row는 기본 1분마다 최대 `20 × 5,000`건을 짧은 batch로 정리한다. local/demo simulator credential provisioner와 bootstrap bypass는 명시적 `local|demo` positive profile + opt-in에서만 허용되며 Flyway business seed가 아니다.
-- **미완료 경계(2026-07-12)**: P0-00 공통 기반은 확정됐지만 `/aml/v1/**` filter(P0-01), 내부 service-auth와 bo-api→FDS signer(P0-04), multipart 최종 raw-byte client 전환(P0-14), credential 폐기·유예회전·last-used·rate/network/workload 통제(P1-02)는 미완료다. 본 명세만으로 해당 경로나 machine credential lifecycle 적용 완료를 주장하지 않는다([공통 정본 §7](00-common-machine-auth.md#7-후속-태스크-경계)).
+- **적용·미완료 경계(2026-07-12)**: P0-01로 AML `/aml/v1/**` filter coverage는 완료됐다. 남은 미완료는 내부 service-auth와 bo-api→FDS signer(P0-04), multipart 최종 raw-byte client 전환(P0-14), credential 폐기·유예회전·last-used·rate/network/workload 통제(P1-02)다. 본 명세만으로 이 잔여 경로나 machine credential lifecycle 적용 완료를 주장하지 않는다([공통 정본 §7](00-common-machine-auth.md#7-후속-태스크-경계)).
 
 ### 2.2 격리 컨텍스트 (필수 헤더)
 | 헤더 | 매핑 컬럼 | 필수 | 설명 |

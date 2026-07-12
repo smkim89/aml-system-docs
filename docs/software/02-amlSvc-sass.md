@@ -1056,7 +1056,7 @@ STR/CTR은 법정 보고 기한을 SLA로 관리한다. 기한 임박·초과는
 
 ## 15. 외부 시스템 연동 방식
 
-> **경로 네임스페이스 정본(API §0, 3-plane).** 모든 엔드포인트는 plane으로 분리한다: 고객사 연동=Public `/api/v1/aml/...`·`/api/v1/evidence/aml/...`, 엔진 간=Internal `/internal/v1/aml/...`, 운영 콘솔(bo-api 전용)=Admin `/api/v1/admin/aml/...`. 아래 예시의 `/v1/...` 표기는 모두 `/api/v1/...`(Public) 또는 plane별 경로로 읽는다.
+> **경로 네임스페이스 정본(API §0, 3-plane).** 모든 엔드포인트는 plane으로 분리한다: 고객사 연동=Public `/api/v1/aml/...`·중립 거래 `/aml/v1/...`·`/api/v1/evidence/aml/...`, 엔진 간=Internal `/internal/v1/aml/...`, 운영 콘솔(bo-api 전용)=Admin `/api/v1/admin/aml/...`. `/aml/v1/...`는 기존 중립 수집 공개 계약을 보존하는 명시적 Public namespace 예외다. 아래 예시의 `/v1/...` 표기는 각 plane별 정본 경로로 읽는다.
 
 ### 15.1 REST Push
 
@@ -1075,6 +1075,12 @@ X-Signature: hmac-sha256=...
 ```
 
 요청 HMAC wire v2는 UTF-8/LF/no trailing LF의 `preamble/version/METHOD/rawPath/rawQuery/Tenant-Id/fixed 9-key scopeContext/content digest/timestamp/nonce` 순서를 사용하며 세부 문법은 [공통 machine-auth 정본](../design/api/00-common-machine-auth.md)만 따른다. AML은 물리 workspace 없이 `scopeContext.workspace=default`, source header는 `Source-System`만 인정한다. filter/scope coverage는 normalized servlet route로 판단하고 HMAC은 raw path를 고정하며, ambiguous raw path와 duplicate singleton header는 nonce 소비 전에 거부한다. `X-Trace-Id`/`X-Correlation-Id`는 관측성에는 전파하지만 9-key context 밖이다. `X-User-Subject`는 고정 context에 결합한다. 구 `timestamp/apiKey/method/path/[actor]/body` 공식은 기존 credential 전환 호환용 v1이며 RFC3339 offset timestamp를 계속 받지만, 신규 client는 UTC `Z` v2를 사용한다. signed client는 redirect를 자동 추종하지 않는다. bo-api 공용 engine `RestClient`도 `DONT_FOLLOW`로 origin 302를 그대로 반환하고 target 호출·machine header 전달을 막는다.
+
+P0-01부터 `POST /api/v1/aml/events`와 `POST /aml/v1/transaction-events`는 모두 실제 filter
+chain에서 인증과 `aml:event:write`를 강제한다. `/aml/v1/**` authenticated traffic은 migration 전
+dual credential에도 route policy로 v2-only다. 후자는 neutral-specific 계약에 따라
+`Source-System`이 선택이며, 제공 시 signed context에는 결합되지만 서버 소유 source mapping을
+덮어쓰지 않는다. `Idempotency-Key`도 생략 시 body `eventId`를 사용한다(API §2.1a).
 
 ### 15.2 Real-time Screening API
 
@@ -1138,7 +1144,7 @@ hanpass-ph 내부 서비스(member·remit/wallet·recipient)와 운영 콘솔(bo
 
 API 제공 원칙:
 
-- 모든 API는 tenant, source system, idempotency key, request signature를 기본으로 한다.
+- 모든 Public API는 tenant와 request signature를 기본으로 한다. source system과 idempotency key의 필수 여부는 endpoint 계약을 따르며, 중립 거래 ingest는 `Source-System` 선택·`Idempotency-Key` 생략 시 body `eventId` 사용 예외다.
 - 실시간 WLF/수취인 screening API와 비동기 AML event ingest API를 분리한다.
 - AML 판단 결과는 고객에게 직접 노출하지 않고 고객사 시스템이 보류·추가확인·거절·case 생성으로 해석한다.
 - 원천 PII는 최소화하고, matching에 필요한 원문은 일시 처리 후 token/hash reference만 저장한다.
@@ -1149,7 +1155,7 @@ API 제공 원칙:
 
 | API group | plane | 용도 | 대표 endpoint |
 |---|---|---|---|
-| Ingest API | Public | 회원·거래·수취인 event 수신 | `POST /api/v1/aml/events` |
+| Ingest API | Public | 회원·거래·수취인 canonical event 및 중립 거래 수신 | `POST /api/v1/aml/events`, `POST /aml/v1/transaction-events` |
 | Screening API | Public | WLF/제재/PEP 실시간 screening(sender/receiver) | `POST /api/v1/aml/screen` |
 | Risk Assessment API | Public | 회원 위험평가 | `POST /api/v1/aml/risk-assessments/evaluate` |
 | TM API | Public | 거래 모니터링 평가·alert 생성 | `POST /api/v1/aml/transactions/evaluate` |
@@ -1211,7 +1217,15 @@ API 인증·권한:
 
 > nonce 기본 TTL 15분은 정책상 `2×timestamp skew`보다 엄격히 길고, 만료 cleanup은 기본 1분 주기·최대 `20×5000/tick`의 짧은 batch다. local/demo bootstrap/provisioner는 명시적 `local|demo` positive profile + opt-in에서만 동작하며 Flyway business seed가 아니다. REST simulator와 bo-api AML 위임은 서로 다른 credential ID/secret을 사용하고, BO credential scope union에는 STR 접근용 `COMPLIANCE` authority token이 포함된다.
 >
-> **미완료 경계(2026-07-12)**: `/aml/v1/**` filter coverage(P0-01), AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer(P0-04), multipart 최종 raw-byte signer(P0-14), P1-02 credential 생성/scope 변경/유예회전/폐기/last-used·rate/network/workload 통제는 미완료다. 특히 `/aml/v1/transaction-events`는 P0-01 완료 증거 전까지 v2 보호 완료로 간주하지 않는다. valid v2 nonce는 HMAC 성공 뒤 scope/controller보다 먼저 소비되므로 downstream 오류에도 재사용할 수 없고, 업무 멱등 replay는 새 nonce를 사용한다.
+> **적용·미완료 경계(2026-07-12)**: P0-01로 `/aml/v1/**` filter coverage와
+> `aml:event:write` 강제가 완료됐다. scope/role request attribute가 없으면 공통 filter가 local/demo
+> opt-in에서 내부 attribute에 설정한 정확한 `Boolean.TRUE` bootstrap marker 외에는 403이다. 인증 실패는
+> canonical event·PII vault·WLF·TM·CTR/STR·RA 업무 row를 만들지 않지만, valid-signed scope 403은
+> scope 검사 전에 소비한 nonce를 유지한다. `X-Data-Scope`는 neutral ingest에서 signed integrity
+> context이므로 서명 뒤 tamper는 401이며 credential별 data-scope allowlist는 P0-01 범위가 아니다.
+> 남은 미완료는 AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer(P0-04), multipart 최종
+> raw-byte signer(P0-14), P1-02 credential lifecycle·rate/network/workload 통제다. 업무 멱등 replay는
+> 새 nonce를 사용한다.
 
 권한 scope(정본=API §1.1 enum 전수, OAuth2/RBAC 공통, 13종):
 
@@ -2003,6 +2017,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-12 | **P0-01 AML 중립 거래 인입 auth-first 경계 반영.** §15 namespace/Public API에 `/aml/v1/**`를 정식 등재하고 route별 v2-only와 두 ingest의 실제 filter chain·`aml:event:write`를 확정했다. scope/role attribute 부재는 공통 local-bootstrap `Boolean.TRUE` marker 외 403, 인증 실패 업무 row 0, valid-signed scope 403 nonce 보존, neutral `X-Data-Scope` tamper 401을 명시했다. Neutral `Source-System` 선택과 `Idempotency-Key` body eventId fallback은 endpoint-specific 예외로 고정했다. | API/DB schema 무변경. 코드 truth=AML filter/guard·실 filter-chain REST 테스트 |
 | 2026-07-12 | **P0-00 공통 inbound machine-auth wire v2 설계 전환.** §15.1/§15.7을 `../design/api/00-common-machine-auth.md` 정본으로 바꾸고 normalized servlet routing/ambiguous path·duplicate singleton 거부, raw query·AML `workspace=default`·고정 9-key scopeContext(trace/correlation 제외)·body digest, v1 offset/v2 UTC `Z`, nonce TTL `>2×skew`·cleanup `20×5000/tick`, signed redirect 거부와 local/demo positive provisioning을 반영했다. simulator/BO AML credential 분리, BO `COMPLIANCE` authority와 signed `X-User-Subject` STR 감사 actor 경계를 명시했다. P0-01/P0-04/P0-14·P1-02 lifecycle은 미완료이며 outbound webhook 공식은 inbound v2와 분리했다. | system-architect. 코드 truth=`common-security`, AML V44, bo-api AML signer·`RestClientConfig`/`RestClientConfigTest`, Python simulator transport |
 | 2026-07-12 | **실 REST AML lifecycle 폐루프 역전파.** CDD exact replay 업무결정 projection(V42), engine-owned `REPORT_RULE_PARAM` 4-eyes(V41), 알림-case/case-type별 STR·CTR report 유일성·비삭제 upgrade remediation·case→report lock·`PENDING_APPROVAL`/반려복원/type-matched REPORTED 선조건(V43), principal maker 신뢰경계, RA 상세 실 evidence와 simulator 동일 거래 snapshot/WLF 선검사·설정 A/B 원복 게이트를 반영했다. | 코드=truth. 근거=aegis-aml `feature/aml-lifecycle-closed-loop`, API/DB §V41~V43. |
 | 2026-07-11 | **WLF 엔진 typed profile·전용 조절 화면 역전파.** Policy Pack 단일 원장/4-eyes를 유지한 채 AML-WLF-005가 SANCTIONS·PEP별 6가중치·negative penalty·review/high-confidence threshold를 투영·상신하도록 §5.3·§10.3a를 개정했다. PEP/RCA→PEP, 그 외→SANCTIONS 매핑, WLF-only rule version, 결과 `appliedPolicy` snapshot, HIGH의 비자동확정 의미를 확정했다. | system-architect. 코드=truth. |
