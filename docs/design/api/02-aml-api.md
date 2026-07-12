@@ -120,9 +120,9 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 
 | 메서드 | 경로 | scope | 멱등 | 헤더 | 설명 | DB |
 |---|---|---|---|---|---|---|
-| POST | `/aml/v1/transaction-events` | `aml:event:write` | Y | `Tenant-Id`(필수)·`Idempotency-Key`(옵션, 미지정 시 body `eventId` 사용·지정 시 `eventId`와 일치 필수)·`X-Trace-Id`(옵션) | 중립 Envelope 수신 → 검증(422) → PII 토큰화·vault → canonical event 멱등 저장 → WLF + CTR/STR 평가. 응답=수신확인 + 평가요약 | `aml_canonical_events`(+`aml_alerts`·CTR/STR 파생) |
+| POST | `/aml/v1/transaction-events` | `aml:event:write` | Y | `Tenant-Id`(필수)·`Idempotency-Key`(옵션, 미지정 시 body `eventId` 사용·지정 시 `eventId`와 일치 필수)·`X-Trace-Id`(옵션) | 중립 Envelope 수신 → 검증(422) → 비PII 안정 토큰 파생 → canonical event 멱등 저장. 신규 ACCEPTED만 raw PII vault → WLF + CTR/STR 평가하고, REPLAYED/DUPLICATE는 요청-body side-effect 없이 종결. 응답=수신확인 + ACCEPTED 평가요약 | `aml_canonical_events`(+ACCEPTED 한정 `aml_alerts`·CTR/STR 파생) |
 
-**상태코드 매핑**(엔진 `NeutralTransactionEventController#httpStatus` = truth): `ACCEPTED`→`202`, `REPLAYED`(멱등 재전송·동일 payload)→`200`, `DUPLICATE`(동일 키·다른 내용)→`409`, `REJECTED`(검증 실패)→`422`. 검증 실패는 **단일 422** 에 누적 위반 목록을 실어 반환하며 500 을 던지지 않는다(fail-closed).
+**상태코드 매핑**(엔진 `NeutralTransactionEventController#httpStatus` = truth): `ACCEPTED`→`202`, `REPLAYED`(멱등 재전송·동일 canonical payload)→`200`, `DUPLICATE`(동일 키·다른 내용)→`409`, `REJECTED`(검증 실패)→`422`. 검증 실패는 **단일 422** 에 누적 위반 목록을 실어 반환하며 500 을 던지지 않는다(fail-closed). `REPLAYED`/`DUPLICATE`는 raw PII vault·WLF·TM/CTR/STR 전에 즉시 종결되어 재전송 body의 projection/엔진 side-effect가 0건이고 `evaluation=null`이다. canonical payload용 비PII 안정 토큰만 gate 전에 순수 파생한다. raw PII는 canonical hash에 없으므로 신규 `ACCEPTED` body에서만 vault/screening에 사용한다.
 
 **요청 Envelope 스키마**(공통, `NeutralEventRequest` = truth). 상세 블록·Party·Amounts 는 §3.17.
 
@@ -2322,7 +2322,7 @@ CTR/STR 모니터링 통합(feature/aml-ctr-str-monitoring, 2026-07-01)이 aml-s
 `STR_VELOCITY_CASH`의 rolling cash window는 평가 거래를 정확히 1회 포함한다. 중립 canonical 저장의 바깥 transaction과 STR `REQUIRES_NEW` 평가가 분리되어 현재 행이 아직 보이지 않으면 `EvaluateStrCommand`의 triggerRef/channelType/동결 PHP 금액으로 현재 cash 행을 합성한다. 이미 조회된 동일 triggerRef가 있으면 합성하지 않아 전용 STR·재평가 경로의 이중 집계를 막는다. 따라서 effective `count_threshold=N`은 N번째 현금성 거래에서 즉시 발동한다.
 
 ### 11.4 CTR freeze·집계 (BR-501)
-CTR 평가(`CtrEvaluationService`)는 거래의 **freeze 된 서버 파생 PHP환산액(`amountPhpEq`)을 재계산하지 않는다**(BR-501, canonical 이벤트 윈도우의 phpEquivalent 그대로). `CTR_SINGLE`=단건 amountPhpEq ≥ 임계, `CTR_DAILY`=동일 영업일 현금거래 합산 ≥ 임계(다건 보완재). (테넌트,주체,영업일)당 CTR DRAFT 정확히 1건(부분 UNIQUE `ux_aml_ctr_draft`, DB §3.12) — 후속 현금거래는 `report_amount`에 정확히 1회 누적(`accumulateCtr`, 경합 시 재시도). `due_at`=거래 영업일 +5영업일 17:00 PHT(§11.2).
+CTR 평가(`CtrEvaluationService`)는 거래의 **freeze 된 서버 파생 PHP환산액(`amountPhpEq`)을 재계산하지 않는다**(BR-501). neutral ingest는 canonical 저장의 바깥 transaction과 CTR/STR `REQUIRES_NEW` 경계 및 허용 범위 내 원천↔엔진 시계 오차에도 현재 거래를 잃지 않도록 command의 현재-event `phpEquivalent`를 우선 사용한다. 이 값은 canonical `amounts`에서 서버가 확정한 동일 동결값이다. 현재-event 신호가 없는 레거시·직접 TM 호출만 canonical 이벤트 윈도우로 폴백하며, 두 경로 모두 값이 없으면 금액 룰은 fail-safe 미발동한다. `CTR_SINGLE`=단건 amountPhpEq ≥ 임계, `CTR_DAILY`=동일 영업일 현금거래 합산 ≥ 임계(다건 보완재). (테넌트,주체,영업일)당 CTR DRAFT 정확히 1건(부분 UNIQUE `ux_aml_ctr_draft`, DB §3.12) — 후속 현금거래는 `report_amount`에 정확히 1회 누적(`accumulateCtr`, 경합 시 재시도). `due_at`=거래 영업일 +5영업일 17:00 PHT(§11.2).
 
 ### 11.5 STR 사유코드 UPSERT
 STR 평가(`StrEvaluationService`)는 (테넌트,트리거)당 STR DRAFT 정확히 1건(부분 UNIQUE `ux_aml_str_draft`, DB §3.12) — 동일 트리거에서 여러 STR 룰이 발화하면 **제2 DRAFT 를 만들지 않고** 각 사유코드(`StrReasonCode`)를 `str_reason_codes` JSONB 집합에 fold(UPSERT). `STR_SANCTION`만 RESTRICT(차단) 액션 동반.

@@ -120,15 +120,15 @@ flowchart LR
 | product(중립) | canonical eventType | EventFamily | engine channelType | 후속 usecase(동기 팬아웃) | 산출 |
 |---|---|---|---|---|---|
 | CROSS_BORDER_REMITTANCE | `remit.transfer.<verb>` | REMIT | `CROSS_BORDER_REMIT` | IngestEvent→Screen(sender+receiver)→EvaluateTm(TM/STR) | `aml_canonical_events`·`aml_screening_results`·`aml_alerts` |
-| DOMESTIC_TRANSFER | `domestic.transfer.<verb>` | DOMESTIC | `DOMESTIC_REMIT` | IngestEvent→Screen(sender)→EvaluateTm(차명 STR) | `aml_canonical_events`·`aml_alerts` |
+| DOMESTIC_TRANSFER | `domestic.transfer.<verb>` | DOMESTIC | `DOMESTIC_REMIT` | IngestEvent→Screen(sender+receiver)→EvaluateTm(차명 STR) | `aml_canonical_events`·`aml_alerts` |
 | CARD_PAYMENT | `transaction.card-payment.<verb>` | TRANSACTION | `CARD_PAYMENT` | IngestEvent→Screen(sender)→EvaluateTm(고위험 MCC 등) | `aml_canonical_events`·`aml_alerts` |
 | WALLET_TOPUP | `wallet.charge.<verb>` | WALLET | `CASH_IN`(현금성=CTR 대상) | IngestEvent→Screen(sender)→EvaluateTm→**CTR/STR** | `aml_canonical_events`·`aml_alerts`(CTR DRAFT) |
 | WALLET_PAYMENT | `wallet.pay.<verb>` | WALLET | `WALLET_PAYMENT` | IngestEvent→Screen(sender)→EvaluateTm(pass-through STR) | `aml_canonical_events`·`aml_alerts` |
 
 - `<verb>`=lifecycle 소문자(`created`/`completed`/`cancelled`/`refunded`/`reversed`). WALLET_TOPUP(`CASH_IN`)만 CTR 현금성 게이트에 걸려 CTR 일합산 DRAFT 를 연다(나머지는 STR/TM 만).
 - **CTR 순증(net)**: reversal verb(CANCELLED/REFUNDED/REVERSED, `relatedReference` 필수)는 signed-negative `amountBase`로 저장되어 동일 `(tenant, subject, bankingDay)` 일합산이 원거래를 순증 차감한다(임계 회피 구조화 탐지).
-- **WLF 범위**: originator(sender)는 전 product 동기 screen, counterparty(receiver)는 CROSS_BORDER_REMITTANCE 만 추가 screen(기존 sender/receiver 2회 계약 §2.2). WLF 실패는 인입 실패로 전파하지 않고(best-effort) 응답 `evaluation.screened=false`로만 표기.
-- **PII 경계**: raw 성명·신분증·계좌·전화는 REST 수신 경계에서만 존재→토큰화·`aml_pii_vault` 적재 후 소멸. canonical payload·응답·로그에는 `targetRef`/`counterpartyRef`·`*Masked`만.
+- **WLF 범위**: 신규 ACCEPTED의 originator(sender)는 전 product 동기 screen, counterparty(receiver)는 CROSS_BORDER_REMITTANCE와 DOMESTIC_TRANSFER에서 추가 screen(기존 sender/receiver 2회 계약 §2.2). WLF 실패는 인입 실패로 전파하지 않고(best-effort) 응답 `evaluation.screened=false`로만 표기. REPLAYED/DUPLICATE는 WLF를 재실행하지 않는다.
+- **PII·멱등 경계**: canonical payload용 `targetRef`/`counterpartyRef` 비PII 안정 토큰만 gate 전에 파생한다. raw 성명·신분증·계좌·전화는 신규 ACCEPTED에서만 `aml_pii_vault` 암호문으로 적재 후 소멸하고 canonical payload·응답·로그에는 남기지 않는다. raw PII는 canonical hash에 포함되지 않으므로 REPLAYED/DUPLICATE 요청 body는 vault/WLF/TM에 사용하지 않으며 `evaluation=null`이다.
 
 ### 3.2 인바운드 — fds-svc → aml-svc (`aml-fds-decision`, D-07)
 
@@ -320,8 +320,9 @@ sequenceDiagram
     participant REST as NeutralTransactionEventController<br/>POST /aml/v1/transaction-events
     participant APP as NeutralTransactionEventService
     participant VAL as NeutralEventValidator(domain)
-    participant VAULT as PiiToken + aml_pii_vault
+    participant TOKEN as PiiToken
     participant ING as IngestAmlEvent(멱등)
+    participant VAULT as aml_pii_vault
     participant WLF as ScreenSubject
     participant TM as EvaluateTm → CTR/STR
     SRC->>REST: Envelope(5 product) + Tenant-Id + Idempotency-Key(=eventId)
@@ -332,15 +333,21 @@ sequenceDiagram
         APP-->>REST: REJECTED
         REST-->>SRC: 422 { violations[] }
     else 유효
-        APP->>VAULT: subjectRef=partyReference(업무참조)·vault upsert(NAME/DOC/…) — PII 속성만 토큰/암호문(§10.2a)
+        APP->>TOKEN: subjectRef=partyReference(업무참조), counterpartyRef=안정 토큰 파생
         APP->>ING: ingest(flat canonical payload, targetRef=subjectRef(업무참조)/counterpartyRef=토큰)
         alt DUPLICATE(동일 키 다른 내용)
-            ING-->>REST: 409
-        else ACCEPTED/REPLAYED
-            APP->>WLF: screen(sender; receiver=remit만) — best-effort
+            ING-->>APP: DUPLICATE
+            APP-->>REST: 409 { status=DUPLICATE, evaluation=null }
+        else REPLAYED(동일 canonical payload)
+            ING-->>APP: REPLAYED
+            APP-->>REST: 200 { status=REPLAYED, evaluation=null }
+        else 신규 ACCEPTED
+            ING-->>APP: ACCEPTED
+            APP->>VAULT: sender/receiver raw PII 암호문 upsert
+            APP->>WLF: screen(sender; receiver=remit/domestic) — best-effort
             APP->>TM: evaluate(signed amountBase, channelType) → CTR/STR 사이드이펙트
             TM-->>APP: alerts[]
-            APP-->>REST: ACCEPTED(202)/REPLAYED(200) + evaluation{decision,alertCount,firedRuleCodes,screened}
+            APP-->>REST: 202 ACCEPTED + evaluation{decision,alertCount,firedRuleCodes,screened}
         end
     end
     Note over APP,TM: 동기 HOLD 오케스트레이션 없음(가정 G6, decision=PASS/REPORT advisory)<br/>WLF 실패는 인입 실패로 전파 안 함(screened=false)
