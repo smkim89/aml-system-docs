@@ -1496,7 +1496,7 @@ API 제공 원칙:
 | Rule Simulation API | rule 변경 영향도 분석 | `POST /api/v1/admin/fds/rules/simulations` | `fds:rule:simulate` |
 | Approval API | 결재 요청 조회·승인·반려(maker-checker) | `GET /api/v1/admin/fds/approvals`, `POST /api/v1/admin/fds/approvals/{approvalRequestId}/approve` | `fds:case:read`(조회)/운영자 IAM(승인·반려) |
 | External Vendor Bridge API | 기존 벤더 decision/alert ingest·dual-run | `POST /api/v1/fds/external-decisions` | `fds:event:write` |
-| Webhook API | decision/case/action callback | `POST {customerWebhookUrl}` | (outbound, signature) |
+| Webhook API | decision/case/action callback + egress SSRF policy(HTTPS-only prod·내부대역 차단·no-redirect, P0-17 §16.1b) | `POST {customerWebhookUrl}` | (outbound, signature) |
 | Admin API | source, schema, key, scope 관리 | `GET /api/v1/admin/fds/source-systems` | `fds:admin:source-system`/`fds:admin:rule`/`fds:admin:group`/`fds:admin:credential` |
 
 `GET /api/v1/admin/fds/source-systems`는 source registry 행마다 동일 `(tenant_id, workspace_id, source_system)`의 `fds_capabilities`를 조회해 `SourceSystemDto.capabilities[]`로 투영한다. 매트릭스가 없거나 revoke-all이면 `[]`가 정본이며, bo-api BFF는 이를 손실 없이 보존한다. configured typed delegate의 bodyless/incomplete 2xx는 성공이나 빈 결과로 대체하지 않고 `502 BO-PROXY-FAILED`로 거부한다.
@@ -2151,6 +2151,10 @@ CREATE TABLE fds_connector_offsets (
 - production-class profile(`prod`/`production`/`aws`)은 `local`/`demo` 혼합, active demo fingerprint, blank·공개 기본값·잘못된 encoding·저엔트로피 FDS encryption key를 readiness 전에 거부한다. key는 secret manager가 주입한 Base64/Base64URL random material(복호화 기준 32 bytes 이상)이어야 하며 오류 로그에는 값·fingerprint를 남기지 않는다.
 - P0-02 rollback은 배포 실패 시 같은 secret-manager current version을 복원하는 절차다. machine credential 생성·scope·유예회전·폐기·last-used는 P1-02, 암호문 `keyId`·tenant/resource AAD·dual-read·background re-encryption·key-use audit는 P1-03 범위다.
 
+### 16.1b Outbound webhook egress 경계 (P0-17)
+
+outbound webhook 대상 URL은 양 엔진 공통 `com.aegis.common.security.egress.WebhookUrlPolicy`(`common-security`, 전송은 `NoRedirectRequestFactory` 결합)가 **앱 계층 1차 방어선**으로 통제한다 — 파싱(production tier(활성 프로파일 `prod`/`production`/`aws`)는 `https`+port 443/8443/기본만·user-info/fragment 금지) → allowlist(`aegis.fds.webhook.allowed-host-suffixes`, 빈 값=비활성) → DNS 해석(전 A/AAAA 레코드 검사 — production은 loopback·RFC1918·`fc00::/7`·link-local(cloud metadata 포함)·multicast·`0.0.0.0/8`·broadcast·CGNAT·IPv4-mapped/NAT64 임베디드 내부 IPv4 거부, 비-production은 link-local(metadata)만 tier 무관 거부) 3단계이며, 등록(notify-channels·credential 상신+승인 apply 재검증)과 매 전송 직전에 적용한다(redirect 미추종, 위반=delivery 실패·기존 FAILED+backoff 계약 유지). DNS rebinding은 JVM DNS positive cache TTL로 TOCTOU 창을 완화할 뿐이므로 **egress proxy/network policy로 엔진 outbound의 내부 대역 접근을 차단하는 배포 백스톱이 필수**이고, 운영 배포는 production-class profile 활성이 전제다(tier 판정 = `ProductionSecretPolicy.isProduction`). 계약·reason code 정본은 API 명세 §9, 운영 절차는 코드 레포 runbook `docs/ops/webhook-egress-policy.md`.
+
 ### 16.2 한국 시장 기본 규정 pack
 
 | 영역 | 기본 반영 기준 |
@@ -2429,6 +2433,7 @@ hanpass-ph FDS(`fds-svc`)는 Hanpass `FdsSvc`를 참조 구현으로 삼되, 그
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-13 | v3.8 | **P0-17 outbound webhook egress SSRF 정책.** §16.1b 신설 — 공통 `WebhookUrlPolicy` 3단계(파싱: production https+443/8443/기본 port만 / allowlist suffix / DNS: 전 A·AAAA 검사, 내부대역·metadata·CGNAT·IPv4-mapped·NAT64 거부)를 앱 계층 1차 방어선으로 확정하고, 등록(notify-channels·credential apply 재검증)+매 전송 재검증·redirect 미추종·기존 FAILED+backoff 계약 유지를 명시했다. egress proxy/network policy 배포 백스톱과 production-class profile 활성 전제를 요건화했다. §12.8 Webhook API row에 egress SSRF policy를 부기했다. | system-architect. 코드 truth=`common-security` `WebhookUrlPolicy`/`NoRedirectRequestFactory`·`WebhookEgressConfiguration`·`HttpWebhookSenderAdapter`; runbook `docs/ops/webhook-egress-policy.md`; DDL 불변 |
 | 2026-07-13 | v3.6 | **P0-04 내부 service-auth·BO→FDS signer 완료.** FDS internal profile 수신을 v2-only/fail-closed scope guard로 닫고 AML profile exact target credential을 추가했다. BO typed 전 동사는 final URI/same bytes로 서명하고 human capability와 machine 9-scope를 분리한다. local lifecycle은 6 purpose credential/bootstrap-off다. | system-architect. 신규 scope=`fds:internal:customer-profile:write`; DDL 없음(JSONB scope 값) |
 | 2026-07-13 | v3.7 | **P0-03 위험그룹 generation ABA hardening·create wire 정합.** create/recreate UUID generation, generation 포함 master/audit hash, ADD/REMOVE `groupGenerationHash`, merchant normalize 정렬 generation snapshot으로 stale approval의 새 incarnation 실행을 차단했다. FDS V17은 generation 미결속 pending을 취소하고, BO V19는 모든 기존 local GROUP payload를 원 JSONB/hash 보존 exact 4필드 tombstone으로 감싸 비종결 4상태만 취소·terminal exact marker만 역사 read-only로 허용한다. configured/local exact 3-field create·duplicate 409도 동기화했다. | system-architect. 코드 truth=FDS V17·`RiskGroupAdminService`·`ApprovalService`·BO V19·`FdsApprovalStubService`·`FdsRuleGroupService` |
 | 2026-07-13 | v3.6 | **P0-03 위험그룹 approval hardening.** `MASTER_UPDATE`의 strict shape+fixed semantic field-order hash를 JSONB reorder 불변 submit/current/apply 공통 helper로 고정했다. business revalidation만 `EXECUTION_FAILED`, persistence 예외는 전체 approval transaction rollback 후 `SUBMITTED` retry로 분리했다. configured BO group projection은 expected ID·enum·필수 actor/time/member와 PUT pending UUID/status를 fail-closed 검증하고 path/body ID mismatch는 delegate 전에 거부한다. | system-architect. 코드 truth=`RiskGroupAdminService`·`ApprovalService`·bo-api `FdsRuleGroupService` |

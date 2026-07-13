@@ -57,7 +57,7 @@ fds-svc는 정본 헥사고날 `adapter/in/sqs`(consumer) · `adapter/out/extern
 | `aml-fds-decision` | FIFO | outbound | fds-svc (AML/규제 후보, `SqsAmlHandoffPublisher`) | **aml-svc** `FdsDecisionConsumer` | `aml-fds-decision-dlq` | `tenantId:eventId(=fdsEventId)` |
 | `fds-action-results.fifo` | FIFO | inbound(ack) | hanpass-ph action adapter | `ActionResultConsumer` (fds-svc) | `fds-action-results-dlq` | — (`FdsActionResult` ack, §4.3) |
 | `aml-fds-feedback` | — | inbound | aml-svc(피드백) | `AmlFeedbackConsumer` (fds-svc) | `aml-fds-feedback-dlq` | — (멱등키 dedup) |
-| webhook(HTTP, 큐 아님) | DB outbox `fds_webhook_outbox` | outbound | fds-svc `HttpWebhookSenderAdapter` | hanpass-ph webhook 수신 endpoint | DLQ=`DEAD_LETTERED` 종단(테이블 내) | — (순서 무관, payloadHash dedup) |
+| webhook(HTTP, 큐 아님) | DB outbox `fds_webhook_outbox` | outbound | fds-svc `HttpWebhookSenderAdapter`(egress SSRF 정책 `WebhookUrlPolicy`+no-redirect, P0-17) | hanpass-ph webhook 수신 endpoint | DLQ=`DEAD_LETTERED` 종단(테이블 내) | — (순서 무관, payloadHash dedup) |
 
 ```mermaid
 flowchart LR
@@ -251,7 +251,7 @@ canonical `eventType` = `<family>.<verb>`. **hanpass-ph 인입 family 는 결제
 
 ### 4.5 Webhook callback (`fds_webhook_outbox` → HTTP) — hanpass-ph 수신
 
-decision/case/action 콜백. **envelope·핵심 payload는 API §9.1/§9.2가 정본**이며 본 예시는 그 래퍼 구조를 따른다. 공통 envelope = `schemaVersion`/`eventFamily`(콜백 그룹핑, 서버 파생)/`eventName`/`eventId`/`tenantId`/`workspaceId`/`occurredAt`/`traceId` + `data{}` 래퍼. `eventName` ∈ `FdsDecisionCreated`/`FdsCaseOpened`/`FdsCaseStatusChanged`/`FdsActionResult`. `X-Signature: hmac-sha256=...`(credential AES-GCM `secret_ciphertext`를 발송 시점에만 복호) 서명 + `X-Webhook-Timestamp`(±5분 replay 방어). `eventId` 기준 멱등(at-least-once). PII 없음(token/마스킹). 키는 모두 camelCase.
+decision/case/action 콜백. **envelope·핵심 payload는 API §9.1/§9.2가 정본**이며 본 예시는 그 래퍼 구조를 따른다. 공통 envelope = `schemaVersion`/`eventFamily`(콜백 그룹핑, 서버 파생)/`eventName`/`eventId`/`tenantId`/`workspaceId`/`occurredAt`/`traceId` + `data{}` 래퍼. `eventName` ∈ `FdsDecisionCreated`/`FdsCaseOpened`/`FdsCaseStatusChanged`/`FdsActionResult`. `X-Signature: hmac-sha256=...`(credential AES-GCM `secret_ciphertext`를 발송 시점에만 복호) 서명 + `X-Webhook-Timestamp`(±5분 replay 방어). `eventId` 기준 멱등(at-least-once). PII 없음(token/마스킹). 키는 모두 camelCase. **전송 직전 egress SSRF 재검증(P0-17, API §9 정본)** — `WebhookUrlPolicy` 위반은 `URL_BLOCKED`, redirect(3xx)는 미추종 `REDIRECT_REFUSED` delivery 실패로 기존 `FAILED`+지수 backoff 계약에 수렴한다(신규 상태 없음).
 
 > **webhook `eventFamily` ≠ canonical `event_family`(DB §4.16, 16종)** — 도메인 분리 주석(정본 = API §9 webhook 계약). webhook envelope의 `eventFamily`는 **콜백 그룹핑 enum**(`decision`/`case`/`action`)으로, `eventName` 접두에서 서버가 도출하는 별개 값 도메인이다. 이는 ingest 경로의 canonical `event_family`(설계서 §8.1 / DB §4.16 16종: `transaction`/`authorization`/…/`market`)와 **동일 키명이지만 다른 값 집합**이며, `decision`/`case`/`action`은 16종 enum 멤버가 아니다. 따라서 §4.1 envelope 표·§4.2 ingest 본문의 `eventFamily`(=canonical `event_family` 파생, 16종)와, 본 §4.5 webhook envelope의 `eventFamily`(=콜백 그룹핑, decision/case/action)는 **경로별로 분리된 도메인**이다. API §9.2 L507 '`eventName` 접두에서 도출(저장 시 DB `event_family`)'의 '저장 시'는 콜백 그룹핑 값을 그대로 16종 enum에 저장한다는 의미가 아니라 콜백 발행 기록의 분류 라벨을 가리킨다(혼동 방지). 신규 키명 도입 없이 API 정본 필드명 `eventFamily`를 유지하되, 값 도메인만 경로별 분리한다.
 
@@ -389,7 +389,7 @@ sequenceDiagram
 | `fds-events` | visibility timeout 후 재수신 | 5회 | consumer는 멱등(재처리 안전) |
 | `fds-actions` | `retry_count` 증가, 지수 백오프 | 5회(`MAX_RETRIES`) | `fds_actions.retry_count`/`error_code` 기록 |
 | `aml-fds-decision` | 재시도 | 5회 | aml-svc ack 없으면 재발행(멱등키=eventId=fdsEventId) |
-| webhook outbox(`fds_webhook_outbox`) | `attempt` 증가, 지수 백오프 | 5회(`RelayWebhookUseCase.MAX_RETRIES`) → `DEAD_LETTERED` | SQS 아님(DB outbox+HTTP). hanpass-ph endpoint 장애 시 backoff 후 종단 |
+| webhook outbox(`fds_webhook_outbox`) | `attempt` 증가, 지수 백오프 | 5회(`RelayWebhookUseCase.MAX_RETRIES`) → `DEAD_LETTERED` | SQS 아님(DB outbox+HTTP). hanpass-ph endpoint 장애 시 backoff 후 종단. 전송 직전 egress SSRF 재검증(P0-17) — `URL_BLOCKED`/`REDIRECT_REFUSED` 위반도 동일 `FAILED`+backoff 경로 |
 
 - 재처리는 **부작용 멱등**이 전제: `fds_canonical_events` upsert, `fds_actions` UNIQUE, `fds_cases.aml_case_id` set은 이미 처리됐으면 no-op.
 - DB write 후 큐 발행 실패 대비: action은 **outbox 패턴**(DB `fds_actions` insert가 진실, relay는 별도 스케줄러가 `status=PENDING/APPROVED` row를 발행)으로 at-least-once 보장.
