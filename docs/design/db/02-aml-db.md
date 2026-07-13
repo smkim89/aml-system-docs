@@ -143,9 +143,10 @@ erDiagram
 | `created_by` | VARCHAR(128) | N | 'system' | 생성 주체(운영자 ID·system·source-system) |
 | `updated_at` | TIMESTAMPTZ | N | now() | 수정 시각(트리거/애플리케이션 갱신) |
 | `updated_by` | VARCHAR(128) | Y | NULL | 최종 수정 주체 |
-| `trace_id` | VARCHAR(64) | Y | NULL | 관측성 traceId 전파(설계서 §20.3). 동일 timeline 추적 |
+| `trace_id` | VARCHAR(64) | Y | NULL | 도메인/canonical lineage 기본 폭. 관측성 traceId 전파(설계서 §20.3). 동일 timeline 추적 |
 
 > append-only 감사 테이블(`aml_audit_events`)·canonical event store(`aml_canonical_events`)는 불변이므로 `updated_*`를 두지 않는다.
+> P0-03 예외: BO/admin audit correlation인 `aml_audit_events.trace_id`만 V46에서 `VARCHAR(128)`로 확장한다. canonical ingest·`aml_canonical_events`·CDD history를 포함한 나머지 `trace_id`는 `docs/aml-data.md`의 64자/422 계약을 유지한다.
 
 ### 2.2 PII 처리 규약 (설계서 §19.2, D-05)
 
@@ -887,13 +888,13 @@ PK: `(tenant_id, approval_id)` · CHECK: `maker_id <> checker_id` (SELF_APPROVAL
 |---|---|---|---|---|
 | `tenant_id` | VARCHAR(64) | N | PK | |
 | `audit_id` | BIGINT (IDENTITY) | N | PK | 순번 |
-| `event_category` | VARCHAR(64) | N | enum | `WATCHLIST_IMPORT`/`WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL_CHANGE`/`RISK_OVERRIDE`/`TM_SCENARIO_CHANGE`/`CASE_APPROVAL`/`REPORT_LIFECYCLE`/`RAW_DATA_ACCESS`/`POLICY_CHANGE` (§19.3) |
+| `event_category` | VARCHAR(64) | N | enum | `WATCHLIST_IMPORT`/`WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL_CHANGE`/`RA_REVIEW`/`RISK_OVERRIDE`/`TM_SCENARIO_CHANGE`/`CASE_APPROVAL`/`REPORT_LIFECYCLE`/`RAW_DATA_ACCESS`/`POLICY_CHANGE` (§19.3, V34) |
 | `actor` | VARCHAR(128) | N | | 주체(운영자/AI agent/system) |
 | `subject_ref` | VARCHAR(256) | Y | | 대상 |
 | `detail` | JSONB | N | | 변경 전후·사유(masked) |
 | `prev_hash` | VARCHAR(128) | Y | | 직전 row hash(hash chain) |
 | `row_hash` | VARCHAR(128) | N | | 본 row hash |
-| `trace_id` | VARCHAR(64) | Y | | |
+| `trace_id` | VARCHAR(128) | Y | | admin 감사 correlation(V46). 명시적 causal trace 우선, 부재 시 request MDC; canonical 계약과 별도 |
 | `created_at` | TIMESTAMPTZ | N | | append-only(수정·삭제 불가) |
 
 PK: `(tenant_id, audit_id)`
@@ -1320,7 +1321,7 @@ hanpass-ph 운영 사용: `SANCTIONS_REVIEW`/`PEP_REVIEW`/`EDD_REVIEW`/`STR_REVI
 
 ## 7. 마이그레이션 순서 (Flyway, additive)
 
-스키마: `aml`. 파일 위치: `services/aml-svc/src/main/resources/db/migration/`. **본 표는 실제 구현 파일(V1~V23, V26~V38, V41~V45, fresh-DB Flyway 검증 통과)과 1:1 일치한다** — 구 누적 마이그레이션 체인(구 phase 단위 `V1~V25`)은 2026-06-30 `AML-ENGINE-FIX: consolidate Flyway baselines`(commit 9a3ac74)로 **검증된 최종 상태의 pg_dump 를 단일 `V1__baseline.sql`(schema-only DDL) + `V2__seed.sql`(data-only bootstrap/demo seed)로 통합(consolidate)**되었다. 이후 CTR/STR 모니터링 통합(feature/aml-ctr-str-monitoring, 2026-07-01)이 `V3`~`V6` 을, 이어 TM 룰코드(`V7`)·실 제재명단 수집(`V8`)·WLF 수취인 임계(`V9`)·워치리스트 브라우즈 인덱스(`V10`)·RA 모델 시나리오(`V11`)·2차 상시 RA(ONGOING) 모델 활성화(`V12`)·RA 당연고위험(HRR 강제 상향) 사유 영속(`V13`)·FP whitelist 등록 메타데이터 영속(`V14`)·케이스 발단(origin) 계보 `origin_screening_id`(`V15`)·국가위험 일일 웹 수집(`V16`)·국가위험 단일 ACTIVE 불변식(`V17`)·국가위험 수집 소스 제공자화(EU 집행위 기본·FATF 대안 provenance, `V18`)·1차 온보딩 RA 엔진 CDD 파생 파라미터 정본(`V19`)·1차 온보딩 RA 국가위험 등급 기반 강제 floor 파라미터(`V20`)·데모 국가위험 수동 기준선(`V21`)·CTR/STR 룰 튜너블 파라미터 오버라이드(`V22`)·CTR 임계 엔진 결재 subject 확장(`V23`)·회원원장 CDD/EDD append-only 이력 신설(`V26`)·CDD/EDD 즉시 재이행 요청 접수 이력 유형 확장(`V27`)·RA 당연고위험 등재 폐루프(`V28`)·데모 시드 비즈니스 데이터 제거(`V29`)·알림 처분 메타(`V30`)·Travel Rule 제거(`V31`)·FDS 프로필 outbox(`V32`)·사용자 정의 보고룰(`V33`)·RA retry/FDS 점수(`V34`)·RA 버전 설정 폐루프(`V35`)·최근 CDD 카탈로그 인덱스(`V36`)·Policy Pack 반려 고아 종결(`V37`)·WLF SANCTIONS/PEP profile 이력 canonical backfill(`V38`)·lifecycle invariant(`V41~V43`)·machine-auth credential/replay(`V44`)·운영 demo fingerprint 격리(`V45`)를 additive 로 얹었다. **V24·V25 및 V39·V40은 예약·공번이며 재사용하지 않는다.** 아래는 코드(truth) 기준.
+스키마: `aml`. 파일 위치: `services/aml-svc/src/main/resources/db/migration/`. **본 표는 실제 구현 파일(V1~V23, V26~V38, V41~V46, fresh-DB Flyway 검증 통과)과 1:1 일치한다** — 구 누적 마이그레이션 체인(구 phase 단위 `V1~V25`)은 2026-06-30 `AML-ENGINE-FIX: consolidate Flyway baselines`(commit 9a3ac74)로 **검증된 최종 상태의 pg_dump 를 단일 `V1__baseline.sql`(schema-only DDL) + `V2__seed.sql`(data-only bootstrap/demo seed)로 통합(consolidate)**되었다. 이후 CTR/STR 모니터링 통합(feature/aml-ctr-str-monitoring, 2026-07-01)이 `V3`~`V6` 을, 이어 TM 룰코드(`V7`)·실 제재명단 수집(`V8`)·WLF 수취인 임계(`V9`)·워치리스트 브라우즈 인덱스(`V10`)·RA 모델 시나리오(`V11`)·2차 상시 RA(ONGOING) 모델 활성화(`V12`)·RA 당연고위험(HRR 강제 상향) 사유 영속(`V13`)·FP whitelist 등록 메타데이터 영속(`V14`)·케이스 발단(origin) 계보 `origin_screening_id`(`V15`)·국가위험 일일 웹 수집(`V16`)·국가위험 단일 ACTIVE 불변식(`V17`)·국가위험 수집 소스 제공자화(EU 집행위 기본·FATF 대안 provenance, `V18`)·1차 온보딩 RA 엔진 CDD 파생 파라미터 정본(`V19`)·1차 온보딩 RA 국가위험 등급 기반 강제 floor 파라미터(`V20`)·데모 국가위험 수동 기준선(`V21`)·CTR/STR 룰 튜너블 파라미터 오버라이드(`V22`)·CTR 임계 엔진 결재 subject 확장(`V23`)·회원원장 CDD/EDD append-only 이력 신설(`V26`)·CDD/EDD 즉시 재이행 요청 접수 이력 유형 확장(`V27`)·RA 당연고위험 등재 폐루프(`V28`)·데모 시드 비즈니스 데이터 제거(`V29`)·알림 처분 메타(`V30`)·Travel Rule 제거(`V31`)·FDS 프로필 outbox(`V32`)·사용자 정의 보고룰(`V33`)·RA retry/FDS 점수(`V34`)·RA 버전 설정 폐루프(`V35`)·최근 CDD 카탈로그 인덱스(`V36`)·Policy Pack 반려 고아 종결(`V37`)·WLF SANCTIONS/PEP profile 이력 canonical backfill(`V38`)·lifecycle invariant(`V41~V43`)·machine-auth credential/replay(`V44`)·운영 demo fingerprint 격리(`V45`)·admin 감사 trace 폭 확장(`V46`)을 additive 로 얹었다. **V24·V25 및 V39·V40은 예약·공번이며 재사용하지 않는다.** 아래는 코드(truth) 기준.
 
 | 버전 | 파일 | 내용 | 의존 |
 |---|---|---|---|
@@ -1365,6 +1366,7 @@ hanpass-ph 운영 사용: `SANCTIONS_REVIEW`/`PEP_REVIEW`/`EDD_REVIEW`/`STR_REVI
 | V43 | `V43__case_alert_report_lifecycle_invariants.sql` | 동일 origin alert당 case 하나와 case/type당 STR·CTR report 하나를 partial UNIQUE로 보장. 기존 중복 행은 삭제하지 않고 lifecycle 진행도가 가장 높은 행을 우선하며 같은 상태는 oldest `(created_at,UUID)`로 결정해 link 유지, 나머지 lineage를 NULL 처리하는 결정적 remediation 후 index 생성. manual/null lineage는 허용 | V42 |
 | V44 | `V44__machine_auth_nonce_replay.sql` | P0-00 machine-auth v2. `aml_api_credentials.allowed_protocol_versions` 추가(기존 row `["v1","v2"]` backfill, 이후 DEFAULT `["v2"]`, non-empty subset CHECK) + `aml_auth_nonces` 생성(PK tenant/credential/nonce_hash, credential FK CASCADE, request/context hash·content digest·consumed/expires 시각, v2/hash/expiry CHECK) + expiry index | V43 |
 | V45 | `V45__quarantine_demo_seed_configuration.sql` | P0-02 운영 seed forward 격리. `tenant_demo` ID나 `demo` 부분 문자열이 아니라 V2 immutable seed의 timestamp·actor·표시명·배포 metadata exact composite가 모두 일치할 때만 credential ciphertext 폐기, source/watchlist/country-risk source 비활성, ACTIVE checklist/country/policy·APPROVED RA model·ACTIVE TM scenario를 inert 상태(`SUPERSEDED`)로 전환한다. status가 없는 CTR threshold·PH banking calendar reference row는 exact tenant에 한해 제거한다. 알려진 seed maker/actor의 미종결 approval은 `CANCELLED`, tenant는 `OFFBOARDED`로 만들며 business·audit 계보는 보존한다 | V44 |
+| V46 | `V46__widen_trace_ids_to_128.sql` | BO/admin 감사 correlation을 위해 `aml_audit_events.trace_id`만 `VARCHAR(64)→VARCHAR(128)`로 확장. `aml_canonical_events`, `aml_member_cdd_history` 등 canonical/업무 lineage의 trace 폭과 `docs/aml-data.md` 최대 64자·422 계약은 변경하지 않는다 | V45 |
 
 명시적 `demo` profile만 정규 migration/Java migration 뒤 `classpath:db/demo`를 추가하고 repeatable `R__activate_demo_reference_configuration.sql`을 실행한다. 같은 exact 복합 fingerprint의 tenant와 source/watchlist/country-risk source, CTR threshold·PH banking calendar, 각 자연키의 최신 checklist/country/policy/RA/TM reference 정의만 재활성화·복원한다. credential ciphertext·watchlist entry·customer/event·alert/case/report·pending approval은 삽입하지 않으며 business data는 REST simulator만 만든다. production-class effective profile은 `local`/`demo` 혼합, `db/demo` location, active demo fingerprint를 readiness 전에 거부한다.
 
@@ -1420,6 +1422,7 @@ hanpass-ph 운영 사용: `SANCTIONS_REVIEW`/`PEP_REVIEW`/`EDD_REVIEW`/`STR_REVI
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-13 | **P0-03 admin 감사 trace 정합(V46).** §2.1 기본 trace 64 계약에 audit-only 예외를 명시하고 `aml_audit_events.trace_id VARCHAR(128)`·11종 event category(`RA_REVIEW` 포함)·명시적 causal trace 우선/MDC fallback을 반영했다. §7에 V46을 추가하되 canonical ingest/history의 64자/422를 그대로 유지했다. | 코드 truth=`V46__widen_trace_ids_to_128.sql`, `AuditEventJpaAdapter`/`AuditEventJpaEntity`; `docs/aml-data.md` 무변경 |
 | 2026-07-12 | **P0-02 운영 Flyway demo seed·기본 secret 분리(V45).** §3.15에 credential quarantine·secret-manager AML cipher/PII/evidence key startup gate와 P1-02/P1-03 경계를 명시했다. §7에 실제 V45와 explicit `db/demo` repeatable을 추가하고, `tenant_demo` ID/부분 문자열이 아닌 V2 immutable seed provenance의 exact 복합 fingerprint만 격리한다. FATF source·CTR threshold·PH calendar를 포함한 reference config와 REST-only business data를 분리했다. API/DTO/event 계약은 변경하지 않았다. | 코드 truth=AML V45·`db/demo/R__activate_demo_reference_configuration.sql`·`ProductionSafetyValidator` |
 | 2026-07-12 | **P0-00 machine-auth v2 credential/replay 스키마 역전파(V44).** §3.15 `aml_api_credentials.allowed_protocol_versions`(기존 `[v1,v2]`, 신규 `[v2]`)와 `aml_auth_nonces`(credential-wide PK·hash/digest only·기본 15분 TTL, `>2×skew`·원자 consume·cleanup 최대 `20×5000/tick`)를 추가하고 §6 보존·§7 실제 migration·§8 정본 매핑을 동기화했다. AML은 물리 workspace 없이 canonical `workspace=default`를 사용한다. local/demo positive-profile provisioner는 simulator/BO credential을 분리하고 BO에 `COMPLIANCE`를 부여하지만, P1-02 운영 lifecycle은 미완료다. | 코드 truth=`V44__machine_auth_nonce_replay.sql`·`common-security`; 공통 계약=`../api/00-common-machine-auth.md` |
 | 2026-07-12 | **2차 상시 RA(ONGOING) 당연고위험 강제 floor 승계 명문화(§3.9 후주, 마이그레이션 신규 없음).** V13 `aml_risk_scores.mandatory_high_risk`·`mandatory_high_risk_reasons` 컬럼과 `factor_breakdown.forcedFloor` 마커가 1차(ONBOARDING) baseline 뿐 아니라 2차(ONGOING) 재산정 행에도 baseline 으로부터 승계 기록됨(`OngoingRaService#inheritMandatoryFloor` — `mandatory_high_risk=true ∧ ¬is_override` 조건, override 제외 가정 A1, legacy 마커 합성 가정 A2, floor 미만 등급/action/next_review_due_at 재산정)을 §3.9 후주에 추가. **스키마·§7 마이그레이션 신규 행 없음**(기존 V13 컬럼·JSONB 재사용). | docs-only 역전파. 코드=truth. 근거=aml-svc `application/usecase/OngoingRaService#inheritMandatoryFloor`(L169·L239~287)·`domain/risk/ForcedFloorMarker`. plan §6.1 BR-006a·API §3.3 동기화. |

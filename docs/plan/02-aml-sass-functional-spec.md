@@ -1364,6 +1364,8 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | **권한** | 감사 조회 `aml:admin:audit` / 증적 export `aml:evidence:export` / 소스 등록·secret `aml:admin:source-system`(🔒 secret) |
 | **API** | **운영자 감사 조회·집계 = bo-api** `GET /api/v1/bo/aml/audit?eventCategory=&actor=&from=&to=`(소유·집약·인증, API §9; 내부적으로 엔진 `GET /admin/aml/audit-events` 저수준 위임). 증적·소스는 엔진 직접: `POST /api/v1/evidence/aml/exports` · `GET /api/v1/evidence/aml/exports/{exportId}` · `GET /api/v1/admin/aml/source-systems` · `POST /api/v1/admin/aml/source-systems`(🔒 secret). |
 
+감사 필터는 BO exact `event` 텍스트 검색과 AML engine enum `eventCategory` 선택을 별도 control/query로 제공한다(11종). 한 필터를 다른 source 의미로 재사용하지 않는다. configured engine의 bodyless/incomplete audit page는 빈 화면 성공으로 대체하지 않고 `502 BO-PROXY-FAILED`로 노출하며, 명시적 `{content:[],totalElements:0}`만 정상 빈 결과다.
+
 #### 화면 레이아웃
 
 ```

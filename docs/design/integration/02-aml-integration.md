@@ -463,7 +463,7 @@ sequenceDiagram
 | 일시 오류(DB lock·외부 timeout) | consumer 예외 → SQS redrive(`FdsDecisionConsumer`·`ReportSubmissionCallbackConsumer`는 예외 재던짐). 아웃박스 relay 는 `FAILED`+`next_attempt_at` 백오프(§8.1) |
 | `maxReceiveCount` 초과 | DLQ 이동 |
 | 결정적 오류(스키마 위반·미등록 source·미등재 family) | REST ingest 는 즉시 `REJECTED`(저장 안 함). 큐는 DLQ + audit |
-| report 제출 실패(`report.submission.failed`) | `aml_regulatory_reports.status=SUBMISSION_FAILED`(`submission_error_code`) → 정정 후 **기존 `:submit` 4-eyes 재사용**, `resubmit_count` 증가·회차별 evidence 보존 |
+| report 제출 실패(`report.submission.failed`) | `aml_regulatory_reports.status=SUBMISSION_FAILED`(`submission_error_code`) → 정정 후 **기존 `:submit` 4-eyes 재사용**, `resubmit_count` 증가·동일 report/evidence 계보와 회차별 결과 보존. local/demo mock reject bucket은 최초 회차만 실패하고 공식 재제출은 ACK(§9.1) |
 
 ### 6.3 DLQ·순서보장
 
@@ -632,8 +632,8 @@ sequenceDiagram
 
 - report_type enum(DB §5.10, 코드 truth `ReportType` 6종): `STR/CTR/EDD_REGISTER/WLF_REGISTER/RA_REPORT/AUDIT_EXPORT`(구 `TRAVEL_RULE` 은 Travel Rule 전면 제거로 삭제).
 - **report_status(8종 정본, DB §5.11)**: `DRAFT`/`UNDER_REVIEW`/`APPROVED`/`SUBMITTED`/`REJECTED`/`CANCELLED`/`ACKNOWLEDGED`/`SUBMISSION_FAILED`. `SUBMITTED`=외부 전송 완료(회신 대기). `ACKNOWLEDGED`=FIU 접수 확정(`fiu_ack_ref` 저장, 종단). `SUBMISSION_FAILED`=전송 실패/FIU 오류 반려(`submission_error_code`).
-- **데모 폐루프**: `sync-close=true`(mock KoFIU)일 때 approve-submit 단계에서 제출 어댑터가 FIU 회신을 동기 결정(`mock.reject-demo`로 ~1/16 SUBMISSION_FAILED 데모). 운영 KoFIU 비동기 회신 시 `ReportSubmissionCallbackConsumer`가 `aml-report-callbacks` 회신을 소비.
-- 제출 식별자(`submitted_ref`)·FIU 접수번호(`fiu_ack_ref`)·결과는 결재 완료와 별도 evidence 로 보존(폐루프). 재제출은 기존 `:submit` 4-eyes 재사용(`resubmit_count` 증가). 신규 report 생성·`supersedesReportId` 방식 미사용.
+- **데모 폐루프**: `sync-close=true`(mock KoFIU)일 때 approve-submit 단계에서 제출 어댑터가 FIU 회신을 동기 결정한다. `mock.reject-demo=true`이면 manifest `evidenceHash` 마지막 hex nibble `0` bucket의 **최초 제출(`resubmit_count=0`)만** `SUBMISSION_FAILED`/`SUBMISSION_REJECTED`가 된다. 같은 report를 공식 `:submit`+새 4-eyes 사이클로 재제출하면 `resubmit_count>0`이므로 동일 bucket이어도 결정적으로 `ACKNOWLEDGED`가 되어 실패→재제출 폐루프를 닫는다. 운영 KoFIU 비동기 회신 시 `ReportSubmissionCallbackConsumer`가 `aml-report-callbacks` 회신을 소비하며 이 mock 전용 선택 규칙을 적용하지 않는다.
+- 제출 식별자(`submitted_ref`)·manifest `evidence_hash`·FIU 접수번호(`fiu_ack_ref`)·결과는 결재 완료와 별도 evidence 로 보존(폐루프). 재제출은 같은 report row에서 기존 `:submit` 4-eyes를 재사용해 `resubmit_count`를 증가시키며 report/evidence 계보를 유지한다. 신규 report 생성·`supersedesReportId` 방식 미사용.
 
 ### 9.2 CTR — 데이터 수집·검증 보조 및 면제(제외) 처리
 
@@ -644,7 +644,7 @@ sequenceDiagram
 ### 9.3 증빙·재제출
 
 - 모든 제출(STR/CTR)은 `aml_evidence_exports`로 manifest hash·row count·query snapshot 저장.
-- **재제출**: `SUBMISSION_FAILED` 건은 기존 report row 유지·보고 본문 정정 후 `:submit` 4-eyes 재사용, `resubmit_count` 증가·회차별 증적(payload/fiu_ack_ref/submission_error_code/결재 이력) append-only 보존.
+- **재제출**: `SUBMISSION_FAILED` 건은 기존 report row 유지·보고 본문 정정 후 `:submit` 4-eyes 재사용, `resubmit_count` 증가·동일 manifest evidence 계보와 회차별 증적(payload/fiu_ack_ref/submission_error_code/결재 이력) append-only 보존. local/demo mock의 reject bucket도 최초 회차만 실패하며 `resubmit_count>0`인 공식 재제출은 ACK한다.
 
 ---
 
@@ -738,6 +738,7 @@ aml-svc 엔진은 `aml_tenants`의 `deployment_model`/`onboarding_status`/`infra
 
 | 일자 | 버전 | 변경 | 비고 |
 |---|---|---|---|
+| 2026-07-13 | v3.5 | **P0-03 mock KoFIU 결정적 실패→재제출 폐루프.** reject-demo bucket은 최초 제출(`resubmit_count=0`)만 `SUBMISSION_REJECTED`로 닫고, 같은 report의 공식 `:submit` 4-eyes 재사용은 evidence 계보를 보존·count를 증가시켜 동일 bucket도 ACK한다. 운영 비동기 callback 계약은 불변이다. | integration-designer. 코드 truth=`MockRegulatorSubmissionAdapter`·`RegulatoryReportService`·`MockRegulatorSubmissionAdapterTest` |
 | 2026-07-12 | v3.4 | **P0-01 AML neutral ingest auth-first 연동 경계 확정.** `/aml/v1/**` 실제 filter coverage·route별 v2-only와 두 ingest의 `aml:event:write`를 반영하고, §5.1a를 normalized route→v2 HMAC→nonce consume→scope→controller 순서로 변경했다. scope/role attribute 부재는 공통 `Boolean.TRUE` bootstrap marker 외 403, 인증 실패 업무 row 0, valid-signed scope 403 nonce 보존을 명시했다. Neutral `Source-System`/`Idempotency-Key` 예외와 `X-Data-Scope` tamper 401 경계를 §3.1a에 고정하고 capability 표에 neutral ingest를 추가했다. | API/DB schema 무변경. 코드 truth=AML filter/guard·실 filter-chain REST 테스트 |
 | 2026-07-12 | v3.3 | **P0-00 공통 inbound machine-auth wire v2 연동 전환.** REST ingest sequence를 normalized servlet route/ambiguous path·duplicate singleton gate→v2 HMAC→credential-wide nonce 원자 consume→업무 멱등 순으로 정정하고 canonical 공식은 `../api/00-common-machine-auth.md`를 단일 정본으로 참조했다. AML `workspace=default`, v1 offset/v2 UTC `Z`, TTL `>2×skew`, cleanup `20×5000/tick`, signed redirect 거부, trace/correlation context 제외, local/demo simulator/BO credential 분리와 BO `COMPLIANCE`·signed actor 경계를 반영했다. P0-01/P0-04/P0-14와 P1-02 lifecycle은 미완료다. outbound webhook `timestamp + "." + rawBody`는 inbound v2와 분리해 유지했다. | integration-designer. 코드 truth=`common-security`, AML V44, bo-api AML signer·`RestClientConfig`/`RestClientConfigTest`, Python simulator transport |
 | 2026-07-10 | v3.2 | **AML CDD→FDS 고객 프로필 outbox/REST 동기화 추가.** §1 토폴로지·경계·adapter 표에 `FDS_CUSTOMER_PROFILE` route와 `HttpFdsCustomerProfileSenderAdapter` 추가, §4.4에 PII-safe payload·memberRef/workspace·멱등/authoritative update 규칙 명시. AML V32가 aggregate CHECK를 7종으로 확장. | integration-designer |

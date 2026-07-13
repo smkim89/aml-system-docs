@@ -19,6 +19,7 @@
 | **Admin API** (운영 콘솔) | `/api/v1/admin/aml/...` | `bo-api`만 (bo-web은 bo-api 경유) | BO edge 세션/JWT+RBAC+data-scope, bo-api→aml-svc는 별도 machine-auth v2 credential | 명단·정책·case·결재·감사·evidence 관리 |
 
 > **bo-web은 Admin API를 직접 호출하지 않는다.** 정본 §3·§4: `bo-web → bo-api(REST only) → aml-svc admin API`. 본 문서의 Admin API는 bo-api가 호출하는 aml-svc 계약이며, bo-web↔bo-api 계약은 bo-api 측 PRD/스펙에서 파생한다.
+> P0-03부터 bo-api의 catch-all `/api/v1/admin/{engine}/**` passthrough는 존재하지 않는다. 모든 AML 운영 기능은 endpoint별 typed bo-api controller/DTO/client와 BO RBAC를 거쳐야 하며, 미등록 admin route는 404다.
 
 plane 버저닝은 일반 Public/Admin `/api/v1`, 중립 거래 Public `/aml/v1`, Internal
 `/internal/v1`이다. 중립 수집은 기존 공개 계약을 보존하는 명시적 namespace 예외이며 breaking
@@ -49,7 +50,7 @@ change는 각각 `/api/v2` 또는 `/aml/v2`로 분기해 병행 운영한다.
 | 서명 | `X-Signature: hmac-sha256=...` | HMAC Y | UTF-8/LF/no trailing LF, raw path/query·Tenant-Id·고정 9-key scopeContext·raw-body digest·timestamp·nonce 공식은 [공통 machine-auth 정본](00-common-machine-auth.md)만 따른다. 구 v1 공식은 전환 호환 전용 |
 | 운영자 actor | `X-User-Subject` | Admin/Internal write Y | trusted BFF/mesh가 인증 principal에서 파생. wire v2 `scopeContext.user-subject`에 결합되므로 서명 뒤 actor 교체는 401. 브라우저 임의 입력 금지 |
 | Idempotency | `Idempotency-Key` 헤더 | 쓰기성 Public Y (§2.1a 예외) | DB `aml_canonical_events.idempotency_key` UNIQUE(tenant_id,idempotency_key). 중립 거래 ingest는 생략 시 body `eventId`를 사용 |
-| Trace | `X-Trace-Id`(없으면 생성, 최대 64자) | N | DB `trace_id VARCHAR(64)` 전파(설계서 §20.3). 응답 `X-Trace-Id` 반향. singleton이나 고정 9-key scopeContext 밖. 초과 입력은 persist 전 422 |
+| Trace | `X-Trace-Id`(없으면 생성) | N | 공통 HTTP/BO/admin 안전 상한은 trim 후 128자·제어문자 금지이고 요청 MDC로 전파한다. **canonical AML ingest는 `docs/aml-data.md` 정본의 최대 64자·초과 422를 유지**하며 `aml_canonical_events` 등 canonical lineage는 `VARCHAR(64)`다. admin 감사 `aml_audit_events.trace_id`만 V46부터 `VARCHAR(128)` |
 | Correlation | `X-Correlation-Id` | N | 호출/업무 상관 계보. 고정 9-key scopeContext와 현재 singleton 거부 목록 밖 |
 
 credential `allowed_protocol_versions`와 service policy의 교집합만 허용한다. migration 이전 row는 `["v1","v2"]`, 신규 row는 `["v2"]`가 기본이며 명시적 v2 실패를 v1로 fallback하지 않는다. v1 timestamp는 기존 RFC3339 offset 표기를 호환하고 v2는 canonical UTC `Z`만 허용한다. nonce는 HMAC 검증 후 scope/controller 전에 별도 트랜잭션으로 소비하므로 downstream 오류에도 재사용할 수 없고, 업무 replay는 새 nonce로 인증한 뒤 §1.4 멱등 결과를 받는다. TTL은 반드시 `2×timestamp skew`보다 엄격히 길며, 만료 cleanup 기본값은 1분마다 최대 `20×5000` row다.
@@ -59,7 +60,9 @@ v2-only이며, 다른 기존 AML route의 측정된 v1→v2 전환은 유지한�
 
 서버는 servlet normalized route로 filter/scope coverage를 판단하고 raw URI를 HMAC에 사용한다. dot/encoded-separator/matrix/double-slash 등 ambiguous raw path와 duplicate singleton header는 body read·credential lookup·nonce 소비 전에 generic 401이다. signed client는 redirect를 자동 추종하지 않고 target 변경 시 새 timestamp/nonce로 재서명한다. bo-api 공용 engine `RestClient`는 `DONT_FOLLOW`를 명시해 실제 origin 302를 그대로 반환하고 target 0회·`X-Api-Key` 미전달을 검증한다. `X-Trace-Id`/`X-Correlation-Id`는 관측성에는 계속 전파하지만 9-key context에는 추가하지 않는다.
 
-local/demo bootstrap/provisioner는 명시적 `local|demo` positive profile + opt-in에서만 허용되는 infrastructure 편의이며 Flyway business seed가 아니다. AML REST simulator와 bo-api는 서로 다른 credential ID/secret을 사용한다. bo-api credential은 endpoint scope 10종과 별도 `COMPLIANCE` authority token을 포함한다. 엔진 STR 열람 감사·maker identity는 v2로 서명된 `X-User-Subject`에서 파생하며 body 자기주장은 identity source가 아니다.
+BO session의 `platformOperator`는 횡단 tenant target을 고르는 data-scope 속성일 뿐 메뉴/IAM·PII reveal·STR/tipping-off 인가 우회가 아니다. 각 typed BFF의 exact scope/role을 계속 검사하며, 전역 wildcard는 `BO_SUPER_ADMIN`의 effective scope `*`만 인정한다.
+
+local/demo bootstrap/provisioner는 명시적 `local|demo` positive profile + opt-in에서만 허용되는 infrastructure 편의이며 Flyway business seed가 아니다. AML REST simulator와 bo-api는 서로 다른 credential ID/secret을 사용한다. bo-api credential은 endpoint scope 10종과 별도 `COMPLIANCE` authority token을 포함한다. 엔진 STR 열람 감사·모든 admin write의 maker/checker/actor identity는 v2로 서명된 `X-User-Subject`에서 파생한다. 공통 filter는 HMAC 성공 뒤 signed subject의 최대 128자·제어문자/CRLF 금지까지 검증한 값만 내부 verified attribute로 만들고 controller는 `TrustedActorResolver`로 이를 읽는다. signed subject 자체가 이 경계를 어기면 generic 401이다. body/query `makerId`·`checkerId`·`actor`는 생략 가능하며, 존재하면 trim·대소문자 무시 기준으로 같은 signed subject인지 확인하는 호환 assertion일 뿐 identity source가 아니다. body assertion 불일치·초과 길이·제어문자는 command 생성 전에 400으로 거부한다.
 
 scope 또는 role request attribute가 없으면 공통 filter가 local/demo positive profile과 opt-in을 확인한
 뒤 내부 request attribute에 정확히 `Boolean.TRUE`로 설정한 bootstrap marker가 있는 경우만 허용한다.
@@ -101,7 +104,7 @@ marker는 wire header나 호출자 입력이 아니다.
 
 ### 1.5 4-eyes(결재) 표기
 
-본 문서에서 **🔒4-eyes** 표기된 엔드포인트는 작성자≠승인자 결재(`aml_approvals`, CHECK `maker_id<>checker_id`)를 거쳐야 실행된다(설계서 §13.4~§13.5). 호출 흐름: `① 상신(maker) → 202 + approvalId(status=SUBMITTED) → ② 승인(checker) → APPROVED → ③ 실행 → EXECUTED`. payload는 `payload_hash`로 고정되어 승인 후 변경 시 무효화. maker와 checker는 모두 브라우저 body가 아니라 인증 principal에서 서버 파생한다. bo-api는 `BackofficePrincipal.email`, aml-svc는 trusted `X-User-Subject`를 checker 단일 정본으로 사용하며, 호환용 body `checkerId`가 있으면 principal과 정확히 같아야 한다. 다른 문자열 주입은 승인/반려 실행 전에 거부한다.
+본 문서에서 **🔒4-eyes** 표기된 엔드포인트는 작성자≠승인자 결재(`aml_approvals`, CHECK `maker_id<>checker_id`)를 거쳐야 실행된다(설계서 §13.4~§13.5). 호출 흐름: `① 상신(maker) → 202 + approvalId(status=SUBMITTED) → ② 승인(checker) → APPROVED → ③ 실행 → EXECUTED`. payload는 `payload_hash`로 고정되어 승인 후 변경 시 무효화. maker와 checker는 모두 브라우저 body가 아니라 인증 principal에서 서버 파생한다. bo-api는 `BackofficePrincipal.email`, aml-svc는 공통 resolver가 반환한 signed `X-User-Subject`를 단일 정본으로 사용한다. 호환용 body `makerId`/`checkerId`/`actor`가 있으면 trim·대소문자 무시 기준으로 같은 subject여야 하며, 다른 문자열 주입은 상신·승인·반려·감사 command 전에 400으로 거부한다. 동일 signed subject의 self-approval은 별도 4-eyes 불변식으로 409다.
 
 > **`DRAFT` 상태는 내부 전이 상태로 API 미노출.** `ApprovalDto.status`(§3.7) 및 API 호출 흐름에서 `DRAFT`는 내부 엔진 초기화 단계이며 외부 호출자(bo-api/bo-web)에게 노출되지 않는다. API 표면 첫 관찰 가능 상태는 `SUBMITTED`(상신 완료, 202 응답)이다(설계서 §13.5 상태머신 대비). PRD/화면은 `DRAFT` 배지 표시 불필요.
 
@@ -565,7 +568,15 @@ bo-api 표면: `GET|POST /api/v1/bo/aml/report-rules/configurable`, `POST .../co
 > **결재 목록 필터 계약(코드=truth, 2026-07-12 feature/aml-hrr-closed-loop-visualization).** 엔진 `GET /api/v1/admin/aml/approvals`(`ApprovalController#queue`)의 `status` 파라미터는 **기본값 SUBMITTED 를 제거**했다 — 미지정 시 전 상태(SUBMITTED/APPROVED/EXECUTED/REJECTED/…)를 수렴 조회한다. 과거 기본 SUBMITTED 는 결재함 "처리됨" 탭·승인 이력·HRR 폐루프 흐름도(PRD §12-A.4 BR-006)가 EXECUTED/REJECTED 를 read 하지 못하던 결함이었다. **대기 큐는 `?status=SUBMITTED` 명시**로 동작(기존 대기 큐 호출부 무변경). 신규 **`subjectType` 필터**(미지정=전 subject, `?subjectType=HRR_REGISTRATION`/`HIGH_RISK_REGISTRY`/… §3.7 값)로 subject 축 좁힘도 서버에서 지원한다(HRR 흐름도·승인 히스토리 탭이 subjectType 로 좁혀 조회). **bo-api `GET /api/v1/bo/aml/approvals?status=&subjectType=` 위임도 동일 의미론** — stub 경로의 `status=null`/`subjectType=null`=무필터와 수렴(위임↔stub parity). 잘못된 `status`/`subjectType` 값은 `ApprovalStatus`/`ApprovalSubjectType.valueOf` 예외 → 400(무필터로 삼키지 않음).
 | GET | `/api/v1/admin/aml/source-systems` | `aml:admin:source-system` | — | source 목록 | `aml_source_systems` |
 | POST | `/api/v1/admin/aml/source-systems` | `aml:admin:source-system` | 🔒4-eyes(secret 변경) | source 등록·secret 변경 | `aml_source_systems`,`aml_approvals` |
-| GET | `/api/v1/admin/aml/audit-events?eventCategory&from&to&actor&subjectRef` | `aml:admin:audit` | — | append-only 감사 조회. `eventCategory` 허용값(DB §3.15 enum 10종): `WATCHLIST_IMPORT`/`WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL_CHANGE`/`RISK_OVERRIDE`/`TM_SCENARIO_CHANGE`/`CASE_APPROVAL`/`REPORT_LIFECYCLE`/`RAW_DATA_ACCESS`/`POLICY_CHANGE` | `aml_audit_events` |
+| GET | `/api/v1/admin/aml/audit-events?eventCategory&from&to&actor&subjectRef&traceId&page&size` | `aml:admin:audit` | — | tenant-scoped append-only 감사 조회. `eventCategory` 허용값(DB §3.15 enum 11종): `WATCHLIST_IMPORT`/`WLF_DECISION`/`FP_WHITELIST`/`RA_MODEL_CHANGE`/`RA_REVIEW`/`RISK_OVERRIDE`/`TM_SCENARIO_CHANGE`/`CASE_APPROVAL`/`REPORT_LIFECYCLE`/`RAW_DATA_ACCESS`/`POLICY_CHANGE`. `actor`는 exact가 아니라 부분검색(`LIKE %value%`), `traceId`는 최대 128자 exact equality다. 응답 `{content,totalElements}`의 exact filtered total, `createdAt DESC, auditId DESC`; normalized `trace_id` 우선·legacy `detail.traceId` fallback | `aml_audit_events` |
+
+> **BO AML 통합 감사(P0-03)**: `GET /api/v1/bo/aml/audit`는 BO exact event 필터 `event`와 engine enum 필터 `eventCategory`를 별도 query로 받는다. `event`를 engine category로 재해석하지 않고 `eventCategory`를 BO event code로 적용하지 않는다. `actor`는 BO/engine 모두 부분검색이고 `traceId`/`subjectId`/`from`/`to`/`page`/`size`는 두 source에 전달한다. bo-api는 BO scoped total + engine `totalElements`를 합산하고 필요한 source page를 수집한 뒤 `occurredAt DESC, sourceService ASC, local id DESC, auditId DESC`로 안정 merge한다. merge를 위해 수집하는 `offset+size`는 최대 10,000행이며 이를 넘으면 400으로 필터/기간 축소를 요구한다. AML engine은 물리 workspace를 갖지 않으므로 unified projection의 engine provenance는 요청 BO tenant + `workspaceId=default`다.
+
+> **configured delegate response integrity(P0-03)**: bo-api의 typed AML 위임은 HTTP 2xx라도 body가 없으면 `502 BO-PROXY-FAILED`로 거부한다. bodyless 성공은 계약이 명시된 `:approve`/`:reject` 등의 별도 204/Void 경로에서만 허용한다. 감사 `{content,totalElements}`는 `content` 누락, 음수/불일치 total, 필수 row(`auditId/eventCategory/actor/detail/createdAt`) 누락을 전체 502로 거부하며, 정상 빈 결과는 `{content:[],totalElements:0}`만 허용한다. 각 engine batch와 이전 page tail→다음 page head는 §2.7 canonical `createdAt DESC, auditId DESC` 순서에 단조여야 하며 out-of-order 2xx는 전체 502다. unified audit은 engine window를 먼저 읽고 local window를 뒤에 읽으며, engine audit list/detail projection 자체는 `PROXY_AML_CALL`을 append하지 않아 반복 offset 조회가 자기 데이터셋을 shift하지 않는다. 일반 AML proxy 호출 감사는 유지한다.
+>
+> admin 감사 write는 명시적으로 전달된 causal trace를 먼저 사용하고, 값이 없을 때만 request MDC `traceId`를 `aml_audit_events.trace_id`에 기록한다. V46은 **이 감사 컬럼만** `VARCHAR(128)`로 넓힌다. canonical ingest와 `aml_canonical_events`·`aml_member_cdd_history` 등 나머지 lineage의 64자/422 계약은 변경하지 않는다.
+>
+> typed AML local projection은 명시적 AML event prefix/allowlist만 포함한다(`AML_`/`PROXY_AML_`/WLF·SCREENING·WATCHLIST·RA·TM·CASE·REPORT·CTR·IRA·HRR 등과 열거된 AML 단건 event). FDS projection도 `FDS_`/`PROXY_FDS_`/`NOTIFY_CHANNEL_CHANGE`만 포함한다. `IAM`/`ROLE`/`SECURITY` 또는 unknown BO event를 “not FDS” 같은 보수집합으로 AML에 편입하지 않는다. 이 횡단/미분류 행은 `BO_SUPER_ADMIN` 전용 generic `/api/v1/bo/audit[/{id}]`에서만 조회한다.
 
 ---
 
@@ -988,6 +999,8 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 `ReportRuleOverviewRow`: `{ ruleCode, family("CTR"|"STR"), reportType, reasonCode, evaluationMode, actions, status, naturalLanguage, hitCount30d, draftCount, lastFiredAt, tuningRecommended, source("BUILT_IN"|"CUSTOM"), conditions[] }`. BUILT_IN은 카탈로그/라이브 보고 store, CUSTOM은 `aml_configurable_report_rules`와 실제 `aml_alerts.scenario_code` lifecycle 집계가 원천이다. 같은 custom 코드에 여러 버전이 있으면 **실제 평가 중인 ACTIVE를 우선 표시**하고, ACTIVE가 없을 때만 최신 DRAFT를 표시한다. custom DRAFT는 발동하지 않으므로 `draftCount=0`; `actions=["TM_ALERT"]`. `conditions[]`는 built-in resolved 파라미터 또는 custom safe DSL leaf를 표시한다.
 
 > **재제출(RESUBMIT)·기각/취소 통제.** `SUBMISSION_FAILED` 건의 정정 후 재제출은 **별도 엔드포인트 없이 기존 `POST .../reports/{reportId}:submit`(🔒 `STR_SUBMIT`/`CTR_SUBMIT`) 신규 결재 사이클을 재사용**하며 서버가 `resubmitCount`를 증가시킨다(연동 §6.2). 보고 기각/취소(`REJECTED`/`CANCELLED`) 전이는 **전용 엔드포인트 `POST .../reports/{reportId}:reject`/`:cancel`(§2.7)** 로 수행하며, CTR 제외 처리(`CANCELLED`+`ctrExemptionCode`)를 포함해 **사유 코드 필수 + 보고책임자 결재(4-eyes, `REPORTING_OFFICER`, 자기승인 금지)** — 설계서 §14.1a/§14.3 정본.
+>
+> **local/demo mock 규제기관 결정적 폐루프(코드=truth).** `aegis.aml.report.submission.mock.reject-demo=true`일 때 `MockRegulatorSubmissionAdapter`는 manifest `evidenceHash`의 마지막 hex nibble이 `0`인 **최초 제출(`resubmitCount=0`)만** `SUBMISSION_FAILED`/`submissionErrorCode=SUBMISSION_REJECTED`로 닫는다. 같은 report에 위 공식 `:submit`+새 4-eyes 사이클을 수행하면 기존 report/evidence 계보를 보존하면서 `resubmitCount`가 1 이상으로 증가하고, 동일 reject bucket이어도 mock은 `ACKNOWLEDGED`/결정적 `fiuAckRef`로 닫는다. 이는 데모 전용 transport 동작이며 운영 비동기 규제기관 callback의 성공/실패 계약을 제한하지 않는다.
 
 ### 3.7 ApprovalDto (Admin, DB `aml_approvals`)
 
@@ -1268,7 +1281,7 @@ RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenari
 |---|---|---|---|
 | `iacTemplate` | string | — | IaC 템플릿 버전(기본: 플랫폼 latest, Terraform 모듈 ref) |
 | `targetRegion` | string | — | 배포 리전 override(기본: tenant `region`) |
-| `requestedBy` | string | R | 요청 운영자 ID |
+| `requestedBy` | string | — | legacy 요청 운영자 assertion(최대 120자). 생략 가능하며 존재하면 인증된 `BackofficePrincipal.email`과 trim·대소문자 무시 기준으로 같아야 한다. persisted onboarding actor의 정본은 session principal |
 
 응답: `202 Accepted` + `{ tenantId, onboardingStatus: "PROVISIONING", infraRef: null, requestedAt }`. `MANAGED_DEDICATED`만 허용 — 다른 deploymentModel이면 `422 AML.ONBOARDING_PROVISION_NOT_APPLICABLE`.
 
@@ -1281,6 +1294,8 @@ RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenari
 | `callbackEndpoint` | string | — | self-hosted 인스턴스 헬스 콜백 URL |
 
 응답: `200 OK` + `{ tenantId, onboardingStatus: "REGISTERED", infraRef: "<instanceId>" }`. `SELF_HOSTED`만 허용 — 다른 deploymentModel이면 `422 AML.ONBOARDING_REGISTER_NOT_APPLICABLE`. `registrationToken` 불일치 시 `401 AML.INVALID_REGISTRATION_TOKEN`.
+
+> provision/register 상태 이력의 actor는 모두 인증된 BO principal에서 파생한다. `requestedBy`는 provision의 일치 assertion일 뿐이고, register의 `instanceId`는 `infraRef`이지 actor가 아니다. assertion 위조는 상태 전이·이력 append 전에 400으로 거부한다.
 
 **`OnboardingStatusResponse`** (GET `/api/v1/bo/aml/tenants/{tenantId}/onboarding`):
 
@@ -1653,11 +1668,10 @@ components:
         policyPackCode: { type: string, default: KR_DEFAULT }
     OnboardingProvisionRequest:
       type: object
-      required: [requestedBy]
       properties:
         iacTemplate: { type: string, description: 'IaC 템플릿 버전(기본: 플랫폼 latest)' }
         targetRegion: { type: string, description: '배포 리전 override(기본: tenant region)' }
-        requestedBy: { type: string }
+        requestedBy: { type: string, maxLength: 120, description: 'optional legacy principal consistency assertion' }
     OnboardingRegisterRequest:
       type: object
       required: [instanceId, registrationToken]
@@ -1704,6 +1718,7 @@ components:
         - WLF_DECISION
         - FP_WHITELIST
         - RA_MODEL_CHANGE
+        - RA_REVIEW
         - RISK_OVERRIDE
         - TM_SCENARIO_CHANGE
         - CASE_APPROVAL
@@ -1711,7 +1726,7 @@ components:
         - RAW_DATA_ACCESS
         - POLICY_CHANGE
       description: >
-        aml_audit_events.event_category 허용값(10종, DB §3.15 enum 정본).
+        aml_audit_events.event_category 허용값(11종, DB §3.15 enum 정본).
         GET /admin/aml/audit-events?eventCategory 파라미터 허용값과 동일.
     WatchlistEntryDto:
       type: object
@@ -2251,7 +2266,7 @@ paths:
 | 정책 자율운영(§2.6: checklist·periodic review·country risk·policy pack) | admin 정책 엔드포인트 §2.7(CDD/EDD checklist·periodic-review-policy·country-risk·policy-packs) 신설, 변경은 🔒4-eyes(§10) |
 | Policy Pack STR/CTR | reports 엔드포인트·report_type enum(§2.7, §3.6) |
 | 표준 에러·페이지네이션·멱등·버저닝 | §1.2~§1.4, §4(HTTP 상태코드 정본) |
-| DB 명칭(테이블·컬럼·enum) | 식별자·enum 모두 DB §3/§5와 1:1. `payload_hash`는 서버 자동계산, `subjectType`은 V41 기준 엔진 21종(`REPORT_RULE_PARAM` 포함). `EventCategory` 10종 OpenAPI schema. |
+| DB 명칭(테이블·컬럼·enum) | 식별자·enum 모두 DB §3/§5와 1:1. `payload_hash`는 서버 자동계산, `subjectType`은 V41 기준 엔진 21종(`REPORT_RULE_PARAM` 포함). `EventCategory` 11종(`RA_REVIEW` 포함) OpenAPI schema. |
 | Webhook 콜백(outbound) | §8(3종·envelope·`X-Signature` HMAC·재시도/멱등) — 설계서 §15.7 'Webhook API' 정본 |
 | 운영자 집계 = bo-api 소유 | 대시보드/서비스/감사 집계는 bo-api(`/api/v1/bo/aml/**`), 엔진 API §2에 미추가(§0·§9) |
 | 배포 모델/온보딩(deployment topology) = bo-api 소유, aml-svc 엔진 API 미추가 | 서비스(테넌트=서비스) 등록은 격리 토글이 아니라 **배포 유형 선택 + 온보딩 신청/상태**다. enum `DeploymentModel{MANAGED_DEDICATED, SELF_HOSTED, SHARED}`(3종) · `OnboardingStatus{REQUESTED, PROVISIONING, DEPLOYED, VERIFIED, ACTIVE, PACKAGE_ISSUED, CUSTOMER_DEPLOYED, REGISTERED}`(8종, §5 OpenAPI)는 DB `aml_tenants.deployment_model`/`onboarding_status` 정본과 1:1(§3.16·§5). `TenantDto`는 `tenantId`/`deploymentModel`/`onboardingStatus`/`region`(=`default_region`)/`infraRef`(=`infra_ref`) — **`isolationMode` 필드 폐기**. 온보딩 엔드포인트(bo-api 전용): `POST /api/v1/bo/aml/tenants/{tenantId}/onboarding/provision`(프로비저닝 트리거), `GET /api/v1/bo/aml/tenants/{tenantId}/onboarding`(상태 조회), `POST /api/v1/bo/aml/tenants/{tenantId}/onboarding/register`(self-hosted 등록 콜백). 상태머신: 매니지드 `REQUESTED→PROVISIONING→DEPLOYED→VERIFIED→ACTIVE` / self-hosted `REQUESTED→PACKAGE_ISSUED→CUSTOMER_DEPLOYED→REGISTERED` / SHARED `REQUESTED→ACTIVE`. tenant_id 라우팅: 전용 배포는 배포=서비스 단일, SHARED만 `Tenant-Id` 헤더 행 라우팅(§9·§1.1). |
@@ -2314,7 +2329,7 @@ paths:
 | 온보딩 프로비저닝 트리거(매니지드 IaC) | `POST /api/v1/bo/aml/tenants/{tenantId}/onboarding/provision` | bo-api 온보딩 워크플로우(`onboarding_status` 전이 → `aml_tenants` 갱신 트리거) |
 | 온보딩 상태 조회(읽기) | `GET /api/v1/bo/aml/tenants/{tenantId}/onboarding` | bo-api 온보딩 상태(`deployment_model`/`onboarding_status`/`infra_ref`·이력) |
 | self-hosted 인스턴스 등록 콜백 | `POST /api/v1/bo/aml/tenants/{tenantId}/onboarding/register` | bo-api 등록 수신(self-hosted 인스턴스 → `onboarding_status=REGISTERED`) |
-| 운영자 감사 화면 | `GET /api/v1/bo/aml/audit?eventCategory&actor&from&to` | bo-api 감사 집약(+ aml-svc `GET /admin/aml/audit-events` 저수준 위임) |
+| 운영자 감사 화면 | `GET /api/v1/bo/aml/audit?event&eventCategory&actor&traceId&subjectId&from&to&page&size` | explicit AML-domain BO local row + aml-svc `{content,totalElements}` 저수준 page를 exact-total/stable-order merge. actor=부분검색, merge window=`offset+size≤10,000`, engine workspace provenance=`default` |
 
 - **운영자 IAM·승인 라인 정책**: bo-api 소유. aml-svc는 엔진 측 결재 게이트(`aml_approvals`)와 엔진 append-only 감사(`aml_audit_events`)만 보유한다.
 
@@ -2407,6 +2422,8 @@ eAMLA 제출은 **raw PII 미전송** — 토큰화된 보고 참조만 전달�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-13 | **P0-03 local/demo mock 규제 제출 실패→공식 재제출 폐루프 명문화.** reject-demo bucket은 최초 제출(`resubmitCount=0`)만 `SUBMISSION_REJECTED`로 실패하고, 동일 report의 기존 `:submit` 4-eyes 재사용은 evidence 계보를 보존·count를 증가시킨 뒤 ACK한다. | 코드 truth=`MockRegulatorSubmissionAdapter`·`RegulatoryReport.toUnderReview`·`MockRegulatorSubmissionAdapterTest` |
+| 2026-07-13 | **P0-03 AML admin trusted actor·typed delegation·감사 집계 경계.** common filter가 HMAC 성공 뒤 signed subject의 128자/제어문자 경계를 검증한 값만 verified attribute로 승격하고, `TrustedActorResolver`가 admin write의 maker/checker/actor를 파생한다. invalid signed subject는 generic 401, legacy body/query claim은 생략 가능·대소문자 무시 일치 assertion(불일치 400), 같은 signed actor의 self-approval은 409다. `platformOperator`는 data-scope일 뿐 PII/STR/IAM 우회가 아니고 wildcard `*`만 전역 우회다. bo-api catch-all engine proxy는 삭제하고 typed BFF만 허용한다. AML audit engine은 actor 부분검색·traceId·`{content,totalElements}`를 제공하며 BO는 exact `event`/engine `eventCategory`, 10,000행 merge window, exact total·stable merge와 workspace provenance `default`를 사용한다. V46은 audit trace만 128자로 넓히고 canonical 64자/422는 유지한다. AmlTenant provision/register actor도 principal에서 파생한다. | wire/canonical 필드 삭제 없음. typed AML projection은 explicit AML event만 포함하고 IAM/ROLE/SECURITY/unknown은 generic BO_SUPER_ADMIN surface로 격리 |
 | 2026-07-12 | **P0-01 AML 중립 거래 인입 인증 우회 차단 동기화.** Public plane에 `/aml/v1/**`를 등재하고 §1.1/§2.1a에서 실제 common filter coverage, route별 v2-only, 두 ingest의 `aml:event:write`, scope/role attribute 부재 시 공통 local-bootstrap `Boolean.TRUE` marker 외 403, 인증 실패 업무 row 0과 valid-signed scope 403 nonce 보존을 확정했다. Neutral `Source-System`/`Idempotency-Key` endpoint 예외와 `X-Data-Scope` tamper 401만 명시하고 credential별 data-scope 인가 모델은 추가하지 않았다. §4 오류를 `AML-AUTH-001/002`·`AML-AUTHZ-002`·`AML.FORBIDDEN_SCOPE`와 정렬했다. | API/DB schema 무변경. 코드 truth=AML filter registration/spec·`ScopeGuard`·`RoleGuard`·실 filter-chain REST 테스트 |
 | 2026-07-12 | **P0-00 공통 inbound machine-auth wire v2 동기화.** §0/§1.1을 `00-common-machine-auth.md` 정본으로 전환해 normalized servlet routing/ambiguous path·duplicate singleton 거부, raw path/query·AML `workspace=default`·고정 9-key scopeContext(trace/correlation 제외)·body digest, v1 offset/v2 UTC `Z`, nonce TTL `>2×skew`·cleanup `20×5000/tick`, signed redirect 거부와 local/demo positive provisioning을 반영했다. simulator/BO AML credential 분리, BO `COMPLIANCE` authority와 signed `X-User-Subject` STR 감사 actor 경계를 명시했다. P0-01/P0-04/P0-14와 P1-02 lifecycle은 미완료이며 §8 outbound webhook 공식은 inbound v2와 별개다. | 코드 truth=`common-security`, AML V44, bo-api AML signer·`RestClientConfig`/`RestClientConfigTest`, `test-vectors/machine-auth-v2.json`, Python simulator transport |
 | 2026-07-12 | **당연고위험(HRR) 폐루프 시각화 API 역전파(§2.7 `mandatoryHighRisk` 필터 param 추가 + bo-api 공개 등재 상태 read-back 위임 명문화).** ① **§2.7 `GET .../risk-scores` 에 `mandatoryHighRisk`(당연고위험) 서버 필터 param 추가** — additive·optional 3-value(`true`=당연고위험만·`false`=일반만·미지정=무필터), `aml_risk_scores.mandatory_high_risk` outer 필터. bo-api `GET /api/v1/bo/aml/risk-scores` passthrough(위임 server-param + client post-filter 이중, stub `RiskScore.mandatoryHighRisk` post-filter). ② **bo-api 공개 read-back 위임 `GET /api/v1/bo/aml/high-risk-registry/registrations/{customerRef}`(scope `aml:case:read`) 명문화** — 엔진 admin read-back(§2 HRR surface, `aml:admin:high-risk-registry`)을 RA 상세(PRD §12-A.4 BR-006) 폐루프 흐름도 바인딩용 공개 조회 표면으로 노출(응답 `HrrRegistrationState`·위임/stub/운영 fail-closed 3분기). 승인/반려는 기존 공통 결재함 `:approve`/`:reject`(scope `aml:admin:approval`) 재사용(신설 없음). 엔진 계약 변경 없음. | docs 역전파. 코드=truth. 근거=aml-svc `RiskScoreAdminController`(`mandatoryHighRisk`)·`RiskScoreJpaAdapter`, bo-api `AmlRaService`(passthrough)·`AmlHighRiskRegistryController.registrationState`·`AmlHighRiskRegistryService.registrationState`·`HighRiskRegistryDtos.HrrRegistrationState`·`V16__demo_executive_checker.sql`. PRD §12-A.4 BR-006·§12-B.6 BR-006·§03 §4.2 동기화. |
