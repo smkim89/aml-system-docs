@@ -315,7 +315,7 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 | POST | `/api/v1/admin/fds/connectors/{connectorId}/resume` | connector 재개(`connector_status`→`HEALTHY`, offset 유지 후 소비 재개) | `fds:admin:source-system` | — |
 | POST | `/api/v1/admin/fds/connectors/{connectorId}/replay` | replay/reconciliation 트리거 | `fds:admin:source-system` | — |
 | GET | `/api/v1/admin/fds/notify-channels` | tenant 알림 채널 목록(설계서 §13.2 alert channel — `channel`(`SLACK`/`EMAIL`/`WEBHOOK`)·`target`(채널명/주소/URL)·`events`(구독 이벤트, §9.1 webhook eventName 부분집합)). DTO §5.22, `fds_notify_channels`(DB §5.34) | `fds:admin:source-system` | — |
-| PUT | `/api/v1/admin/fds/notify-channels` | tenant 알림 채널 설정 변경(전체 교체, 멱등). `SFDS_TENANT:ADMIN` 전용·감사 기록(`NOTIFY_CHANNEL_CHANGE`, PRD TNT-002 ⑤ BR-001). webhook URL 변경은 credential 서명키 정책(rotate) 연계(헤더 `X-Webhook-Url-Changed`). DTO §5.22 | `fds:admin:source-system` | — |
+| PUT | `/api/v1/admin/fds/notify-channels` | tenant 알림 채널 설정 변경(전체 교체, 멱등). `SFDS_TENANT:ADMIN` 전용·감사 기록(`NOTIFY_CHANNEL_CHANGE`, PRD TNT-002 ⑤ BR-001). webhook URL 변경은 credential 서명키 정책(rotate) 연계(헤더 `X-Webhook-Url-Changed`). WEBHOOK `target`은 egress SSRF 정책(P0-17, §9) 파싱+DNS 해석 검증 통과 필수 — 위반 시 400(reason code). DTO §5.22 | `fds:admin:source-system` | — |
 | GET | `/api/v1/admin/fds/credentials` | API credential 목록(secret 미노출) | `fds:admin:credential` | — |
 | POST | `/api/v1/admin/fds/credentials` | credential 생성(secret 1회 반환) | `fds:admin:credential` | **필수(SECURITY_ADMIN)** |
 | POST | `/api/v1/admin/fds/credentials/{credentialId}/rotate` | secret/webhook 회전 | `fds:admin:credential` | **필수(SECURITY_ADMIN)** |
@@ -635,6 +635,8 @@ ApprovalDecisionRequest(approve/reject): `comment`(string △). checker는 토�
 요청: `credentialType`(enum `API_KEY`/`OAUTH2_CLIENT`/`MTLS`/`WEBHOOK` ●), `scopes`(string[] ●), `ipAllowlist`(string[] △), `webhookUrl`(string △).
 응답(생성 1회만): `credentialId`, `secret`(평문 1회 반환 후 미보존 — 이후 AES-GCM `secret_ciphertext`만), `scopes`. 조회 응답에는 raw secret/ciphertext 모두 미노출.
 
+> **`webhookUrl` egress SSRF 검증(P0-17, §9)**: CREATE 상신 시 egress 정책(파싱·allowlist·DNS 해석) 검증 통과 필수 — 위반은 결재 요청 생성 전 400(reason code). 승인 **apply 시점에 staged `webhookUrl`을 재검증**한다(상신~승인 사이 DNS 변경 방어) — apply 재검증 위반은 적용 실패로 기록되고 credential은 반영되지 않는다.
+
 **CredentialDto (GET /admin/fds/credentials 조회 응답)** — `fds_api_credentials` (DB §5.29). secret 필드 미포함.
 | 필드 | 타입 | 매핑 |
 |---|---|---|
@@ -796,7 +798,7 @@ tenant 알림 채널 1건(설계서 §13.2 alert channel, PRD TNT-002 ⑤). GET�
 | 필드 | 타입 | 매핑 | 설명 |
 |---|---|---|---|
 | channel | enum notify_channel_type (3종 `SLACK`/`EMAIL`/`WEBHOOK`) | `channel` | 미지원 값 400 `FDS-VALIDATION-001` |
-| target | string(512) | `target` | 채널명/주소/URL. WEBHOOK은 `http(s)` URL 강제 |
+| target | string(512) | `target` | 채널명/주소/URL. WEBHOOK은 `http(s)` URL 강제 + egress SSRF 정책(P0-17, §9) 파싱·allowlist·DNS 해석 검증 통과 필수(위반 400, reason code) |
 | events | enum[] (§9.1 webhook eventName 4종 부분집합) | `events`(CSV) | null/빈 배열 허용. 미지원 값 400 `FDS-VALIDATION-001` |
 
 > 멱등: `(channel, target)` 자연키 기준 전체교체 — 동일 payload 재PUT 시 동일 최종 상태·중복 감사 없음. 변경 시 `fds_audit_logs`(`audit_action=NOTIFY_CHANNEL_CHANGE`) 1건. webhook target URL 변경 시 응답 헤더 `X-Webhook-Url-Changed: true` + 감사 detail `rotateRequired=true`(서명키 rotate 정책 §13.2 BR-003 연계 신호 — 실제 rotate 상신/실행은 credential admin 4-eyes 경로). 엔진 scope `fds:admin:source-system`만 강제, 운영자 역할(`SFDS_TENANT:ADMIN`) 게이트는 bo-api 소유(후속 T16).
@@ -876,6 +878,8 @@ bo-api V19 이전 local `GROUP` 이력은 API projection에서 임의로 현 gen
 설계서 §12.8 'Webhook API'를 정본으로 확정한다. fds-svc는 decision/case/action 이벤트를 서비스 등록 URL로 **outbound HTTP POST** 발행한다(`fds_api_credentials.credential_type=WEBHOOK`, `webhook_url`/AES-GCM `secret_ciphertext` 사용, `/admin/fds/credentials/{id}/rotate`로 회전). bo-web/bo-api 운영자 화면과 무관한 **서비스 서버 간 콜백** 채널이다.
 
 > **전송 어댑터 구현 확정(T10)**: 전송은 `fds_webhook_outbox`(DB §5.35, transactional outbox) + 스케줄드 디스패처(`WebhookRelayScheduler`/`WebhookRelayService`/`HttpWebhookSenderAdapter`, 연동 §6.2.2)로 실현된다 — 도메인 변경 트랜잭션 내 enqueue → `SELECT … FOR UPDATE SKIP LOCKED` 클레임 → 서명 POST → 2xx `DISPATCHED` / 비2xx·타임아웃 `FAILED`+지수 backoff(MAX 5) → `DEAD_LETTERED`(DLQ + `WEBHOOK_DEAD_LETTER` 감사). `sandbox`는 미발행(shadow). **아웃바운드 webhook** 서명 material(`timestamp + "." + rawBody`)은 [인바운드 machine-auth v2](00-common-machine-auth.md)의 preamble/query/scopeContext/digest/nonce canonical bytes와 별개이며 혼용하지 않는다. fds/aml 양 엔진 아웃바운드 공식은 동일하다(AML §8.3).
+
+> **egress SSRF 정책(P0-17)**: outbound webhook 대상 URL은 양 엔진 공통 `com.aegis.common.security.egress.WebhookUrlPolicy`(`common-security` 모듈, 전송은 `NoRedirectRequestFactory` 결합)가 **3단계 검증**으로 통제한다. ① **파싱** — absolute URI·host 필수, user-info/fragment 금지(금지 시 각 `USER_INFO_FORBIDDEN`/`FRAGMENT_FORBIDDEN`). production tier(활성 프로파일 `prod`/`production`/`aws`)는 `https`만 + port 443/8443/스킴 기본만 허용, 비-production은 `http`/`https`·port 무제한(로컬 수신기 허용). ② **allowlist** — `aegis.fds.webhook.allowed-host-suffixes`(env `FDS_WEBHOOK_ALLOWED_HOST_SUFFIXES`, 콤마 구분·빈 값=비활성) 설정 시 host가 suffix와 일치(`.` 경계 또는 exact host, 대소문자 무시)해야 한다. ③ **DNS 해석** — 반환된 **모든 A/AAAA 레코드**를 검사한다. production은 loopback·RFC1918·`fc00::/7`·link-local(cloud metadata `169.254.169.254`/`fe80::` 포함)·multicast·`0.0.0.0/8` 전체·broadcast·CGNAT(`100.64/10`)와 IPv4-mapped(`::ffff:`)·NAT64(`64:ff9b::/96`) 임베디드 내부 IPv4 전부 거부, 비-production은 link-local(metadata)만 tier 무관 거부하며, mixed answer 중 1건이라도 위험이면 URL 전체 거부. 위반 **reason code 9종** = `NOT_ABSOLUTE`/`HOST_MISSING`/`SCHEME_NOT_ALLOWED`/`USER_INFO_FORBIDDEN`/`FRAGMENT_FORBIDDEN`/`PORT_NOT_ALLOWED`/`HOST_NOT_ALLOWLISTED`/`HOST_UNRESOLVABLE`/`ADDRESS_BLOCKED`. **적용 시점** — 등록(notify-channels PUT §4.8/§5.22, credential CREATE 상신+승인 apply 재검증 §5.13) + **매 전송 직전 재검증**(위반=`URL_BLOCKED` delivery 실패). **redirect 미추종** — `setInstanceFollowRedirects(false)`로 3xx는 `REDIRECT_REFUSED` delivery 실패로 기록한다(hop 미추적, 기존 `FAILED`+지수 backoff 계약 유지·신규 상태 없음). **한계·백스톱** — DNS rebinding은 검증과 connect가 같은 JVM DNS positive cache TTL 내에 이뤄져 TOCTOU 창을 완화할 뿐이므로, egress proxy/network policy로 내부 대역 outbound를 차단하는 배포 요건이 백스톱이다(운영 runbook = 코드 레포 `docs/ops/webhook-egress-policy.md`).
 
 ### 9.1 이벤트 타입 (`eventName`)
 | eventName | 트리거 | 발행 주체(엔진) | 핵심 payload |
@@ -1885,6 +1889,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-13 | v4.9 | **P0-17 outbound webhook egress SSRF 정책.** §9에 양 엔진 공통 `WebhookUrlPolicy` 3단계 검증(파싱: absolute·host 필수·user-info/fragment 금지·production https+443/8443/기본 port만 / allowlist: `aegis.fds.webhook.allowed-host-suffixes` suffix 일치·빈 값=비활성 / DNS: 전 A·AAAA 레코드 검사, production 내부대역·metadata·CGNAT·IPv4-mapped·NAT64 전부 거부, 비-production은 link-local만 tier 무관 거부), reason code 9종, redirect 미추종(3xx=`REDIRECT_REFUSED` delivery 실패, 기존 FAILED+backoff 계약 유지), DNS rebinding 한계·egress proxy 백스톱을 신설했다. §4.8/§5.22 notify-channels WEBHOOK target 등록 검증(위반 400), §5.13 credential CREATE `webhookUrl` 상신 400+승인 apply 재검증(위반=적용 실패)을 명시했다. | 코드 truth=`common-security` `WebhookUrlPolicy`/`NoRedirectRequestFactory`, `NotifyChannelAdminService`, `CredentialAdminService`, `HttpWebhookSenderAdapter`; runbook `docs/ops/webhook-egress-policy.md`; DDL 불변 |
 | 2026-07-13 | v4.8 | **P0-04 내부 profile·BO→FDS machine-auth 완료.** `/internal/v1/fds/**`를 wire v2-only filter coverage에 넣고 customer profile에 exact AML caller/dataScope 및 전용 scope를 강제했다. BO typed client는 exact target credential/final URI/same bytes signer만 사용하며 unsigned fallback이 없다. OpenAPI security scope와 internal PUT path를 총 12종 정본에 동기화했다. | 코드 truth=`IngestAuthenticationFilter`·`CustomerProfileInternalController`·`FdsEngineClient`; DDL 불변 |
 | 2026-07-13 | v4.7 | **P0-03 위험그룹 generation·create 계약 정합.** §5.10/§5.18/§5.20에 master/member/merchant-normalize generation binding과 delete/recreate ABA 차단을 반영했다. bo-api V19는 모든 기존 local GROUP payload를 원 JSONB/hash 보존 exact 4필드 tombstone으로 이관하고 비종결 4상태만 취소하며 terminal exact marker만 역사 read-only로 허용한다. §5.17a 및 OpenAPI에 Java `RiskGroupUpsertRequest` exact 3-field POST와 201/400/403/409를 추가하고, 일반 field validation 400과 scoped create-only conflict `FDS-STATE-CONFLICT` 409를 분리했다. | 코드 truth=FDS V17·`RiskGroupAdminService`·`ApprovalService`, BO V19·`FdsApprovalStubService`·`FdsRuleGroupService` |
 | 2026-07-13 | v4.6 | **P0-03 위험그룹 결재 무결성·트랜잭션·BO projection 강화.** `MASTER_UPDATE` hash는 JSONB key 순서와 무관한 고정 semantic field order를 submit/current/apply에 공통 적용한다. business 재검증만 `EXECUTION_FAILED`; master/audit persistence 예외는 승인 트랜잭션 전체 rollback 후 `SUBMITTED` 재시도로 고정했다. configured BO 위임은 exact group ID·enum·필수 actor/time/member 필드와 PUT pending UUID/status를 fail-closed 검증하고 path/body ID 불일치를 위임 전에 거부한다. OpenAPI PUT도 전용 `RiskGroupMasterUpdateRequest`와 202 current projection+pending UUID/status로 교정했다(POST create 불변). | 코드 truth=`RiskGroupAdminService.canonicalMasterUpdatePayload`·`ApprovalService`·`FdsRuleGroupService.fromEngine/updateRiskGroup` |
