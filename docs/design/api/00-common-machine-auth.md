@@ -159,7 +159,15 @@ replay 불변식은 다음과 같다.
 
 로컬 credential은 business/demo Flyway seed가 아니라 명시적 infrastructure provisioning이다. active profile이 nonempty이고 모든 값이 exact `local` 또는 `demo`인 **positive profile allowlist**와 opt-in property가 모두 참일 때만 provisioner가 생기며, bootstrap bypass property도 같은 판정에서만 효력이 있다. `local+demo`는 허용하지만 no-profile/custom/staging/production과 `local+staging`·`demo+qa` 같은 mixed profile에서는 property가 설정돼도 bypass를 무시하고 fail-closed한다. provisioner는 32자 이상 환경 secret을 정상 cipher로 암호화해 v2-only row로 저장하고 startup 뒤 평문 참조를 제거한다.
 
-AML local/demo는 REST simulator용 `SIMULATOR_AML_API_KEY`/`SIMULATOR_AML_HMAC_SECRET`과 bo-api 위임용 `BO_AML_API_KEY`/`BO_AML_HMAC_SECRET`을 서로 다른 credential ID/secret으로 provision한다. bo-api credential의 scope union에는 STR 접근용 `COMPLIANCE` authority가 포함된다. FDS local/demo provisioner는 simulator credential을 별도로 만든다. 이 편의 provisioner는 운영 credential lifecycle 구현의 대체물이 아니다.
+P0-04 이후 local/demo는 여섯 logical caller-purpose class를 서로 다른 credential ID/secret으로
+provision한다: simulator→AML, simulator→FDS, BO→AML, BO→FDS, AML→FDS customer profile,
+FDS→AML escalation. “여섯”은 global secret 수가 아니라 purpose 분리를 뜻하며, shared deployment의
+credential은 exact `(purpose, tenantId, workspaceId)` target에 귀속된다. BO→AML credential의 scope
+union에는 STR 접근용 `COMPLIANCE`와 internal PII reveal용 `aml:pii:reveal`이 포함된다. BO→FDS는
+운영 typed API용 9 scope만 가지며 ingest/decision/internal-profile scope를 가지지 않는다. 서비스 간
+credential은 각각 `fds:internal:customer-profile:write` 또는
+`aml:internal:fds-escalation:write` 단일 scope만 가진다. 이 편의 provisioner는 운영 credential
+lifecycle 구현의 대체물이 아니다.
 
 ## 7. 후속 태스크 경계
 
@@ -184,9 +192,18 @@ P0-03은 signed `X-User-Subject`와 업무 actor 사이의 마지막 경계를 �
 marker에 한정한다. 이는 machine-auth scope 검사와 maker≠checker 4-eyes 검사를 모두 보완하며 어느 쪽도
 대체하지 않는다.
 
-다음 항목은 **2026-07-12 현재 미완료**이며 본 문서 존재만으로 적용 완료를 주장하지 않는다.
+P0-04는 내부 REST와 BO→FDS의 실제 caller 전환을 완료한다. FDS
+`/internal/v1/fds/**`와 AML `/internal/v1/aml/**`는 normalized route 기준 filter coverage와
+canonical v2-only 정책을 가지며, spoofed `X-Internal-Service`만으로 controller에 진입할 수 없다.
+AML→FDS profile, FDS→AML non-AWS REST fallback, bo-api→FDS typed client는 최종 ASCII URI와 한 번
+직렬화한 동일 body bytes를 sign/send한다. credential resolver는 exact
+`(purpose,tenantId,workspaceId)`만 선택하며 global/cross-target fallback을 허용하지 않는다. 유효한
+서명 뒤 endpoint scope가 부족하면 nonce가 소비된 403, 서명·target·body/context 변조는 401이다.
+BO의 human capability와 engine machine scope는 별도 계층이며 catch-all proxy는 없다. local lifecycle은
+AML/FDS bootstrap bypass를 끈 상태를 정본으로 한다.
 
-- **P0-04**: AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer 전환.
+다음 항목은 **2026-07-13 현재 미완료**이며 본 문서 존재만으로 적용 완료를 주장하지 않는다.
+
 - **P0-14**: multipart client가 최종 raw bytes를 한 번만 만들고 동일 bytes를 digest/sign/send하는 전환과 production capability guard.
 - **P1-02**: 전 machine credential 경로 적용, 생성·scope 변경·유예회전·폐기·last-used 영속 이력, credential별 rate/network/workload 조건과 비민감 실패 metric. P0-00의 protocol allowlist·암호화·권장 회전 절차만으로 이 운영 수명주기가 완료된 것은 아니다.
 
@@ -196,6 +213,7 @@ marker에 한정한다. 이는 machine-auth scope 검사와 maker≠checker 4-ey
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-13 | P0-04 내부 service-auth·BO→FDS 적용. 두 internal prefix를 v2-only로 닫고 AML→FDS profile/FDS→AML REST fallback/BO→FDS typed client가 final URI·same bytes를 서명한다. exact target credential, service별 최소 scope, bootstrap-off local lifecycle, 6 logical purpose provisioning을 확정했다. | wire 공식 변경 없음. 신규 scope=`fds:internal:customer-profile:write`, `aml:internal:fds-escalation:write`; multipart는 P0-14 fail-closed 유지 |
 | 2026-07-13 | P0-03 trusted actor·trace 계약. HMAC 성공 뒤 signed subject의 128자·제어문자 경계를 filter가 검증한 뒤에만 `VERIFIED_USER_SUBJECT_ATTRIBUTE`를 생성하고, `TrustedActorResolver`가 signed/bootstrap-marked subject와 legacy body/query assertion 일치를 검증해 AML admin maker/checker/audit actor의 유일한 입력으로 사용한다. 공통 `X-Trace-Id`는 trim·128자·제어문자 금지 후 MDC로 전파하되 AML canonical ingest는 64자/422 계약을 유지한다. | wire/header/canonical bytes 변경 없음. invalid signed subject/공통 trace=generic 401, body assertion 불일치=400, canonical trace 65~128=422, raw `X-User-Subject` 직접 소비 금지 |
 | 2026-07-12 | P0-01 AML neutral ingest 인증 우회 차단. `/aml/v1/**` 실제 filter coverage, 두 AML ingest의 `aml:event:write`, scope/role attribute 부재 시 공통 `Boolean.TRUE` bootstrap marker 외 403, 인증 실패 업무 row 0, valid-signed scope 403의 nonce 보존, neutral `X-Data-Scope` tamper 401 경계를 확정했다. | API/DB 스키마 무변경. AML filter/guard·실 filter-chain 테스트가 코드 truth |
 | 2026-07-12 | P0-00 공통 inbound machine-auth wire v2 신규 정본. versioned canonical request, normalized servlet routing과 ambiguous raw-path 거부, duplicate singleton 거부, raw query, 고정 9-key scopeContext(trace/correlation 제외), raw-body digest, v1 offset 호환/v2 UTC `Z`, durable nonce(TTL `>2×skew`, 기본 cleanup `20×5000/tick`), signed redirect 거부, local/demo positive provisioning, BO `COMPLIANCE` actor 경계, generic error, credential transition, 고정 벡터와 후속 P0/P1 범위를 확정. | 코드 truth=`services/common-security`, `scripts/machine_auth.py`, bo-api `RestClientConfig`/`RestClientConfigTest`, AML V44, FDS V14 |

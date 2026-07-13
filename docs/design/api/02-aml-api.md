@@ -15,7 +15,7 @@
 | Plane | base path | 호출자 | 인증 | 비고 |
 |---|---|---|---|---|
 | **Public API** (서비스 연동) | `/api/v1/aml/...`, `/aml/v1/...`, `/api/v1/evidence/aml/...` | hanpass-ph 트랜잭션 마이크로서비스(`member-svc`(회원/CDD)·`walletchg-svc`(충전)·`domestic-svc`(국내이체)·`remit-svc`(해외송금)·`wallet-svc`(지갑)·`inbound-svc`(인바운드)) | API Key+HMAC wire v2([공통 정본](00-common-machine-auth.md)) / OAuth2 / mTLS (§15.7, D-13) | event ingest·중립 거래 ingest·screening·RA·TM·evidence |
-| **Internal API** (엔진 간) | `/internal/v1/aml/...` | `fds-svc`(fraud escalation), 내부 스케줄러 | API Key + HMAC wire v2 목표([공통 정본](00-common-machine-auth.md); P0-04 전 경로 전환 미완료, `X-Internal-Service` 선택; mesh mTLS 는 P8 보강, T11/AML-ENG-05·T3) | fds↔aml event 연계(D-07 event 우선) |
+| **Internal API** (엔진 간) | `/internal/v1/aml/...` | `fds-svc`(fraud escalation/risk), bo-api(PII reveal), 내부 scheduler/onboarding caller(screen) | API Key + HMAC wire v2-only([공통 정본](00-common-machine-auth.md)); 모든 endpoint가 scope를 재검사하고, escalation은 exact `fds-svc`+body/header dataScope, PII reveal은 exact `bo-api`를 추가 강제한다. risk/screen은 각 행의 scope가 caller capability 경계다. mesh mTLS는 P8 보강 | fds↔aml event 연계(D-07 event 우선), risk/screen/PII |
 | **Admin API** (운영 콘솔) | `/api/v1/admin/aml/...` | `bo-api`만 (bo-web은 bo-api 경유) | BO edge 세션/JWT+RBAC+data-scope, bo-api→aml-svc는 별도 machine-auth v2 credential | 명단·정책·case·결재·감사·evidence 관리 |
 
 > **bo-web은 Admin API를 직접 호출하지 않는다.** 정본 §3·§4: `bo-web → bo-api(REST only) → aml-svc admin API`. 본 문서의 Admin API는 bo-api가 호출하는 aml-svc 계약이며, bo-web↔bo-api 계약은 bo-api 측 PRD/스펙에서 파생한다.
@@ -62,20 +62,21 @@ v2-only이며, 다른 기존 AML route의 측정된 v1→v2 전환은 유지한�
 
 BO session의 `platformOperator`는 횡단 tenant target을 고르는 data-scope 속성일 뿐 메뉴/IAM·PII reveal·STR/tipping-off 인가 우회가 아니다. 각 typed BFF의 exact scope/role을 계속 검사하며, 전역 wildcard는 `BO_SUPER_ADMIN`의 effective scope `*`만 인정한다.
 
-local/demo bootstrap/provisioner는 명시적 `local|demo` positive profile + opt-in에서만 허용되는 infrastructure 편의이며 Flyway business seed가 아니다. AML REST simulator와 bo-api는 서로 다른 credential ID/secret을 사용한다. bo-api credential은 endpoint scope 10종과 별도 `COMPLIANCE` authority token을 포함한다. 엔진 STR 열람 감사·모든 admin write의 maker/checker/actor identity는 v2로 서명된 `X-User-Subject`에서 파생한다. 공통 filter는 HMAC 성공 뒤 signed subject의 최대 128자·제어문자/CRLF 금지까지 검증한 값만 내부 verified attribute로 만들고 controller는 `TrustedActorResolver`로 이를 읽는다. signed subject 자체가 이 경계를 어기면 generic 401이다. body/query `makerId`·`checkerId`·`actor`는 생략 가능하며, 존재하면 trim·대소문자 무시 기준으로 같은 signed subject인지 확인하는 호환 assertion일 뿐 identity source가 아니다. body assertion 불일치·초과 길이·제어문자는 command 생성 전에 400으로 거부한다.
+local/demo bootstrap/provisioner는 명시적 `local|demo` positive profile + opt-in에서만 허용되는 infrastructure 편의이며 Flyway business seed가 아니다. AML REST simulator, bo-api, FDS escalation은 서로 다른 credential ID/secret을 사용한다. bo-api credential은 endpoint scope union과 별도 `COMPLIANCE`, `aml:pii:reveal` authority token을 포함하고 FDS credential은 `aml:internal:fds-escalation:write`만 가진다. P0-04 local lifecycle은 bootstrap bypass=false가 정본이다. 엔진 STR 열람 감사·모든 admin write의 maker/checker/actor identity는 v2로 서명된 `X-User-Subject`에서 파생한다. 공통 filter는 HMAC 성공 뒤 signed subject의 최대 128자·제어문자/CRLF 금지까지 검증한 값만 내부 verified attribute로 만들고 controller는 `TrustedActorResolver`로 이를 읽는다. signed subject 자체가 이 경계를 어기면 generic 401이다. body/query `makerId`·`checkerId`·`actor`는 생략 가능하며, 존재하면 trim·대소문자 무시 기준으로 같은 signed subject인지 확인하는 호환 assertion일 뿐 identity source가 아니다. body assertion 불일치·초과 길이·제어문자는 command 생성 전에 400으로 거부한다.
 
 scope 또는 role request attribute가 없으면 공통 filter가 local/demo positive profile과 opt-in을 확인한
 뒤 내부 request attribute에 정확히 `Boolean.TRUE`로 설정한 bootstrap marker가 있는 경우만 허용한다.
 그 밖에는 `ScopeGuard`가 403 `AML-AUTHZ-002`, `RoleGuard`가 403 `AML.FORBIDDEN_SCOPE`로 닫으며,
 marker는 wire header나 호출자 입력이 아니다.
 
-> **적용·미완료 경계(2026-07-12)**: P0-01로 `/aml/v1/**`가 실제 filter coverage에 포함되어
-> §2.1a `/aml/v1/transaction-events`도 공통 v2와 `aml:event:write`를 강제한다. 남은 미완료는
-> AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer(P0-04), multipart 최종 raw-byte client
-> 전환(P0-14), credential 생성·scope 변경·유예회전·폐기·last-used·rate/network/workload 통제(P1-02)다
+> **적용 경계(2026-07-13)**: P0-01로 `/aml/v1/**`가 실제 filter coverage에 포함되어
+> §2.1a `/aml/v1/transaction-events`도 공통 v2와 `aml:event:write`를 강제한다. P0-04로
+> `/internal/v1/aml/**` v2-only, receiver endpoint scope, FDS→AML signer, BO→FDS signer를 완료했다.
+> 남은 미완료는 multipart 최종 raw-byte client 전환(P0-14), credential 생성·scope 변경·자동
+> 유예회전·폐기·last-used·rate/network/workload 통제(P1-02)다
 > ([공통 정본 §7](00-common-machine-auth.md#7-후속-태스크-경계)).
 
-권한 scope(**마스터=본 §1.1 enum 전수 정본**, OAuth2/RBAC 공통, 설계서 §15.7·PRD §1.4는 이에 동기화): `aml:event:write`, `aml:screen:evaluate`, `aml:ra:evaluate`, `aml:tm:evaluate`, `aml:case:read`, `aml:case:update`, `aml:evidence:export`, `aml:admin:watchlist`, `aml:admin:source-system`, `aml:admin:policy`, `aml:admin:approval`, `aml:admin:audit`, `aml:pii:reveal`(원문/raw PII 접근, 사유+감사 `RAW_DATA_ACCESS` 필수, §1.6). 총 13종. 설계서 §15.7 'scope 예시'와 PRD §1.4는 본 §1.1 전수 enum을 정본으로 인용한다.
+권한 scope(**마스터=본 §1.1 enum 전수 정본**): public/BO OAuth2·RBAC 13종 `aml:event:write`, `aml:screen:evaluate`, `aml:ra:evaluate`, `aml:tm:evaluate`, `aml:case:read`, `aml:case:update`, `aml:evidence:export`, `aml:admin:watchlist`, `aml:admin:source-system`, `aml:admin:policy`, `aml:admin:approval`, `aml:admin:audit`, `aml:pii:reveal`(원문/raw PII 접근, 사유+감사 `RAW_DATA_ACCESS` 필수, §1.6) + internal machine 전용 `aml:internal:fds-escalation:write` 1종 = **총 14종**. PRD §1.4의 사람 권한 13종은 그대로이며, 설계서 §15.7은 13+1 구분을 본 §1.1에 동기화한다.
 
 ### 1.2 응답 envelope
 
@@ -306,12 +307,12 @@ filter가 설정한 local-bootstrap `Boolean.TRUE` marker 외에는 403으로 �
 
 | 메서드 | 경로 | 호출자 | 설명 | DB |
 |---|---|---|---|---|
-| POST | `/internal/v1/aml/fds-escalations` | `fds-svc` | FDS fraud case → AML case/alert escalation 수신(body §3.10 `FdsEscalationRequest` → `FdsDecisionCommand` 어댑팅, `eventId`=멱등키(없으면 `fraudCaseRef`), `action`=FDS handoff verb, 응답 `{ alertId, accepted }`). SQS `aml-fds-decision` 큐 경로(`FdsDecisionConsumer`)와 **동일 usecase·동일 멱등(DB partial UNIQUE)·동일 감사**(T11/AML-ENG-05). 인증 = **API key + HMAC**(ingest 필터 `AmlIngestAuthenticationFilter` 차용, ADR 2026-06-15 D2; mesh mTLS 는 P8 보강). scope 강제는 호출자(fds-svc) 평면 책임(가정 A5). | `aml_alerts`(source_origin=FDS) |
-| GET | `/internal/v1/aml/customers/{customerRef}/risk` | `fds-svc` | AML high-risk/WLF 상태 조회(FDS risk group 전파용). public `GET /api/v1/aml/customers/{customerRef}/risk`와 동일 `AssessRiskUseCase`·`CustomerRiskResponse` 재사용(가정 A6), 최신 RA 등급 단독(WLF 병합 미정의 → 후속). 미존재 시 404 `AML.NOT_FOUND`. 인증 = **API key + HMAC**(가정 A1, mesh mTLS 는 P8 보강). | `aml_risk_scores`,`aml_screening_results` |
+| POST | `/internal/v1/aml/fds-escalations` | `fds-svc` | FDS fraud case → AML case/alert escalation 수신(body §3.10 `FdsEscalationRequest` → `FdsDecisionCommand` 어댑팅, `eventId`=멱등키(없으면 `fraudCaseRef`), `action`=FDS handoff verb, 응답 `{ alertId, accepted }`). SQS `aml-fds-decision` 큐 경로(`FdsDecisionConsumer`)와 **동일 usecase·동일 멱등(DB partial UNIQUE)·동일 감사**(T11/AML-ENG-05). non-AWS REST fallback은 wire v2-only, `aml:internal:fds-escalation:write`, signed `X-Internal-Service=fds-svc`, body/header dataScope 일치를 수신 엔진에서 강제한다. | `aml_alerts`(source_origin=FDS) |
+| GET | `/internal/v1/aml/customers/{customerRef}/risk` | `fds-svc` | AML high-risk/WLF 상태 조회(FDS risk group 전파용). public `GET /api/v1/aml/customers/{customerRef}/risk`와 동일 `AssessRiskUseCase`·`CustomerRiskResponse` 재사용(가정 A6), 최신 RA 등급 단독(WLF 병합 미정의 → 후속). 미존재 시 404 `AML.NOT_FOUND`. wire v2-only + `aml:case:read`. | `aml_risk_scores`,`aml_screening_results` |
 
 > **RA 검토·설정 계약(2026-07-10)**: `GET /api/v1/aml/customers/{customerRef}/risk`는 최신 점수가 ONGOING이어도 대상의 최신 ONBOARDING 검토를 `onboardingReview`로 함께 반환한다. 상태는 `REQUIRED|COMPLETED|AUTO_COMPLETED`, 필드는 `scoreId/reasonCodes/identityChecked/evidenceChecked/followUpChecked/completionNote/completedBy/completedAt/createdAt`이다. RA model draft 계약은 `scenario`와 `parameters`를 수신하며 ONBOARDING `screening.listTypeScores.{SANCTION,PEP}` 및 ONGOING `ruleSeverityWeights`(STR/CTR/FDS), lookback/count saturation/debounce/EDD 설정을 검증한다. APPROVED/SUPERSEDED 버전 직접 수정은 409/상태 오류이며 신규 DRAFT→simulate→RA_MODEL 4-eyes만 허용한다.
-| POST | `/internal/v1/aml/screen` | 내부 onboarding mesh | 내부 서비스용 동기 screening. public `POST /api/v1/aml/screen`와 동일 `ScreenSubjectUseCase`·`ScreenRequest`/`ScreeningResponse` 재사용(가정 A6), `Idempotency-Key` 헤더 필수(가정 A4·공개 경로 일관). 인증 = **API key + HMAC**(가정 A1, mesh mTLS 는 P8 보강). | `aml_screening_results` |
-| POST | `/internal/v1/aml/pii/reveal` | `bo-api` | 마스킹 PII reveal 정본(입력 `targetRef`/`field`/`reason` → 출력 `value`=이 요청 한정 transient cleartext). **`targetRef` = subject 참조**(회원 `customerRef` 또는 워치리스트 엔트리 `entryId`) — vault·엔진이 이 참조로 원문을 해소한다. 마스킹 **값** 토큰(표시명 마스킹·문서/이름 hash·UBO ref 등)을 `targetRef` 로 보내면 해소 불가(run5 #2). `field` 도메인 7종(`NAME`/`DOC`/`ACCOUNT`/`WALLET`/`NATIONALITY`/`GENDER`/`DOB`, §1.6, 2026-06-29 확장) — 이외 값은 **400 `AML.BAD_REQUEST`**. 인증 = **API key + HMAC**(ingest 필터 `AmlIngestAuthenticationFilter` 차용, T3/AML-ENG-03·ADR 2026-06-15 D2). 엔진측 `RAW_DATA_ACCESS` 감사 1건(마스킹 detail). 역참조 미존재·복호화 실패 시 **503 `AML.SCREENING_UNAVAILABLE`**(fail-closed). **비운영 stub 경로**(bo-api, delegate 미설정)에서 vault·데모 카탈로그 어디에도 없는 미인식 `targetRef` 는 가짜 원문 placeholder 를 반환하지 않고 **404 `AML.PII_TARGET_NOT_FOUND`**(감사 미기록 — 실패가 audit 이전, run5 #2). scope `aml:pii:reveal` 강제는 호출자(bo-api) 평면 책임(§1.6, 가정 A5). mesh mTLS 는 배포계층(P8) 보강. | `aml_pii_vault`(가역암호 vault, DB §3.21) |
+| POST | `/internal/v1/aml/screen` | 내부 onboarding mesh | 내부 서비스용 동기 screening. public `POST /api/v1/aml/screen`와 동일 `ScreenSubjectUseCase`·`ScreenRequest`/`ScreeningResponse` 재사용(가정 A6), `Idempotency-Key` 헤더 필수(가정 A4·공개 경로 일관). wire v2-only + `aml:screen:evaluate`. | `aml_screening_results` |
+| POST | `/internal/v1/aml/pii/reveal` | `bo-api` | 마스킹 PII reveal 정본(입력 `targetRef`/`field`/`reason` → 출력 `value`=이 요청 한정 transient cleartext). **`targetRef` = subject 참조**(회원 `customerRef` 또는 워치리스트 엔트리 `entryId`) — vault·엔진이 이 참조로 원문을 해소한다. 마스킹 **값** 토큰(표시명 마스킹·문서/이름 hash·UBO ref 등)을 `targetRef` 로 보내면 해소 불가(run5 #2). `field` 도메인 7종(`NAME`/`DOC`/`ACCOUNT`/`WALLET`/`NATIONALITY`/`GENDER`/`DOB`, §1.6, 2026-06-29 확장) — 이외 값은 **400 `AML.BAD_REQUEST`**. wire v2-only + `aml:pii:reveal` + exact signed `X-Internal-Service=bo-api`를 수신 엔진에서 강제한다. 엔진측 `RAW_DATA_ACCESS` 감사 1건(마스킹 detail). 역참조 미존재·복호화 실패 시 **503 `AML.SCREENING_UNAVAILABLE`**(fail-closed). **비운영 stub 경로**(bo-api, delegate 미설정)에서 vault·데모 카탈로그 어디에도 없는 미인식 `targetRef` 는 가짜 원문 placeholder 를 반환하지 않고 **404 `AML.PII_TARGET_NOT_FOUND`**(감사 미기록 — 실패가 audit 이전, run5 #2). mesh mTLS는 배포계층(P8) 보강. | `aml_pii_vault`(가역암호 vault, DB §3.21) |
 
 ### 2.7 Admin API (bo-api 전용) — 설계서 §13~§14·§16
 
@@ -1433,6 +1434,7 @@ components:
             aml:admin:approval: approval queue
             aml:admin:audit: audit query
             aml:pii:reveal: reveal raw PII (reason + RAW_DATA_ACCESS audit required)
+            aml:internal:fds-escalation:write: FDS escalation internal write only
     Mtls: { type: mutualTLS }
   parameters:
     TenantId: { name: Tenant-Id, in: header, required: true, schema: { type: string } }
@@ -1449,6 +1451,8 @@ components:
       required: true
       description: trusted BFF/mesh가 인증 principal에서 파생하고 요청 HMAC에 결합하는 actor. 브라우저 임의 입력·서명 뒤 교체 금지.
       schema: { type: string }
+    DataScope: { name: X-Data-Scope, in: header, required: false, schema: { type: string, maxLength: 128 } }
+    InternalService: { name: X-Internal-Service, in: header, required: true, schema: { type: string, enum: [fds-svc, bo-api] } }
   schemas:
     Error:
       type: object
@@ -1461,6 +1465,26 @@ components:
             message: { type: string }
             details: { type: array, items: { type: object } }
             traceId: { type: string }
+    FdsEscalationRequest:
+      type: object
+      required: [fraudCaseRef, targetRef, severity]
+      properties:
+        eventId: { type: string, nullable: true, description: absent이면 fraudCaseRef로 업무 멱등 fallback }
+        fraudCaseRef: { type: string }
+        fdsCaseRef: { type: string, nullable: true }
+        targetRef: { type: string }
+        transactionRef: { type: string, nullable: true }
+        severity: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+        suggestedCaseType: { type: string, nullable: true }
+        action: { type: string, nullable: true }
+        dataScope: { type: string, nullable: true }
+        evidence: { type: object, additionalProperties: true, nullable: true }
+    FdsEscalationResponse:
+      type: object
+      required: [alertId, accepted]
+      properties:
+        alertId: { type: string, format: uuid }
+        accepted: { type: boolean }
     PageMeta:
       type: object
       properties:
@@ -1850,6 +1874,37 @@ components:
             projected: { type: number }
         evaluatedAt: { type: string, format: date-time }
 paths:
+  /internal/v1/aml/fds-escalations:
+    post:
+      summary: FDS fraud-case escalation REST fallback
+      operationId: acceptFdsEscalation
+      security: [ { ApiKeyHmac: [], OAuth2: ['aml:internal:fds-escalation:write'] } ]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/AuthVersion'
+        - $ref: '#/components/parameters/Nonce'
+        - $ref: '#/components/parameters/Timestamp'
+        - $ref: '#/components/parameters/Signature'
+        - $ref: '#/components/parameters/DataScope'
+        - $ref: '#/components/parameters/InternalService'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FdsEscalationRequest' }
+      responses:
+        '202':
+          description: created or business-idempotent existing alert accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FdsEscalationResponse' }
+        '400': { description: valid signature with wrong caller/dataScope or invalid payload }
+        '401': { description: unsigned, invalid signature, target/context/body tamper, or nonce replay }
+        '403': { description: valid signature with insufficient endpoint scope }
   /api/v1/aml/screen:
     post:
       summary: 실시간 WLF/제재/PEP screening
@@ -2422,6 +2477,7 @@ eAMLA 제출은 **raw PII 미전송** — 토큰화된 보고 참조만 전달�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-13 | **P0-04 internal service-auth/OpenAPI 완료.** `/internal/v1/aml/**`를 wire v2-only로 전환하고 endpoint별 scope, escalation exact FDS caller/dataScope, PII exact BO caller를 수신 엔진에서 강제했다. FDS→AML fallback은 exact target/final URI/same bytes signer를 사용하고 신규 internal scope를 포함한 public/BO 13 + machine 1 = 총 14종 및 escalation OpenAPI path를 동기화했다. | 코드 truth=`AmlIngestAuthenticationFilter`·internal controllers·`RestAmlHandoffPublisher`; DDL 불변 |
 | 2026-07-13 | **P0-03 local/demo mock 규제 제출 실패→공식 재제출 폐루프 명문화.** reject-demo bucket은 최초 제출(`resubmitCount=0`)만 `SUBMISSION_REJECTED`로 실패하고, 동일 report의 기존 `:submit` 4-eyes 재사용은 evidence 계보를 보존·count를 증가시킨 뒤 ACK한다. | 코드 truth=`MockRegulatorSubmissionAdapter`·`RegulatoryReport.toUnderReview`·`MockRegulatorSubmissionAdapterTest` |
 | 2026-07-13 | **P0-03 AML admin trusted actor·typed delegation·감사 집계 경계.** common filter가 HMAC 성공 뒤 signed subject의 128자/제어문자 경계를 검증한 값만 verified attribute로 승격하고, `TrustedActorResolver`가 admin write의 maker/checker/actor를 파생한다. invalid signed subject는 generic 401, legacy body/query claim은 생략 가능·대소문자 무시 일치 assertion(불일치 400), 같은 signed actor의 self-approval은 409다. `platformOperator`는 data-scope일 뿐 PII/STR/IAM 우회가 아니고 wildcard `*`만 전역 우회다. bo-api catch-all engine proxy는 삭제하고 typed BFF만 허용한다. AML audit engine은 actor 부분검색·traceId·`{content,totalElements}`를 제공하며 BO는 exact `event`/engine `eventCategory`, 10,000행 merge window, exact total·stable merge와 workspace provenance `default`를 사용한다. V46은 audit trace만 128자로 넓히고 canonical 64자/422는 유지한다. AmlTenant provision/register actor도 principal에서 파생한다. | wire/canonical 필드 삭제 없음. typed AML projection은 explicit AML event만 포함하고 IAM/ROLE/SECURITY/unknown은 generic BO_SUPER_ADMIN surface로 격리 |
 | 2026-07-12 | **P0-01 AML 중립 거래 인입 인증 우회 차단 동기화.** Public plane에 `/aml/v1/**`를 등재하고 §1.1/§2.1a에서 실제 common filter coverage, route별 v2-only, 두 ingest의 `aml:event:write`, scope/role attribute 부재 시 공통 local-bootstrap `Boolean.TRUE` marker 외 403, 인증 실패 업무 row 0과 valid-signed scope 403 nonce 보존을 확정했다. Neutral `Source-System`/`Idempotency-Key` endpoint 예외와 `X-Data-Scope` tamper 401만 명시하고 credential별 data-scope 인가 모델은 추가하지 않았다. §4 오류를 `AML-AUTH-001/002`·`AML-AUTHZ-002`·`AML.FORBIDDEN_SCOPE`와 정렬했다. | API/DB schema 무변경. 코드 truth=AML filter registration/spec·`ScopeGuard`·`RoleGuard`·실 filter-chain REST 테스트 |

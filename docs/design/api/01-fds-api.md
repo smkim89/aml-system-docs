@@ -53,7 +53,7 @@
 ### 2.1 인증 방식 (설계서 §12.8)
 | 방식 | 용도 | 적용 API |
 |---|---|---|
-| API Key + HMAC(`X-Api-Key` + `X-Auth-Version: 2` + `X-Nonce` + `X-Signature`) | 서버 간 기본 연동. wire v2 canonical bytes·raw query·고정 9-key scopeContext·body digest·replay 의미론은 [공통 machine-auth 정본](00-common-machine-auth.md)만 따른다. 구 v1 공식은 기존 credential 전환 호환에만 허용 | 외부 Ingest/Decision/Case/Evidence API |
+| API Key + HMAC(`X-Api-Key` + `X-Auth-Version: 2` + `X-Nonce` + `X-Signature`) | 서버 간 기본 연동. wire v2 canonical bytes·raw query·고정 9-key scopeContext·body digest·replay 의미론은 [공통 machine-auth 정본](00-common-machine-auth.md)만 따른다. 구 v1 공식은 기존 credential 전환 호환에만 허용 | 외부 Ingest/Decision/Case/Evidence API, 내부 customer-profile API, bo-api typed 위임 |
 | OAuth2 Client Credentials (`Authorization: Bearer`) | 권한 scope 세분화 | 외부 API, Admin API(bo-api 위임 토큰) |
 | mTLS | 고위험 action API | Decision/Action 계열 옵션 |
 | Webhook signature(`X-Signature`) | 고객 callback 위변조 방지 | Webhook 송신 |
@@ -61,7 +61,7 @@
 - 인증 주체는 `fds_api_credentials`(`credential_type` = `API_KEY`/`OAUTH2_CLIENT`/`MTLS`/`WEBHOOK`)로 검증. HMAC 검증에는 필요 시 AES-GCM 복호화한 공유 secret을 사용하며 **DB에는 `secret_ciphertext`만 저장**한다(raw secret 미저장·미로그).
 - API key·OAuth2 client·webhook은 `(tenantId, workspaceId)`에 바인딩. cross-workspace 접근은 명시적 scope 필요.
 - v2 요청은 `Tenant-Id`·최종 raw path/query·FDS workspace·scope context·최종 body bytes·timestamp·nonce를 함께 서명한다. `Source-System`만 source header 정본이며 alias는 허용하지 않는다. credential/service policy 교집합으로 protocol을 제한하고 기존 row=`[v1,v2]`, 신규 row=`[v2]` 전환 정책을 적용한다. v1은 RFC3339 offset timestamp 호환을 유지하지만 v2는 UTC `Z`만 허용한다.
-- filter coverage/scope는 servlet normalized route로 판단하고 HMAC은 raw URI를 고정한다. dot segment·encoded separator·matrix parameter·double slash 등 모호한 raw path와 보안/canonical singleton header 중복은 body/credential/nonce 처리 전에 generic 401이다. signed client는 redirect를 자동 추종하지 않고 새 target에 새 nonce로 재서명한다. bo-api 공용 engine `RestClient`도 `DONT_FOLLOW`를 강제해 302 target으로 machine header를 전달하지 않는다(단, bo-api→FDS signer 자체는 P0-04 미완료).
+- filter coverage/scope는 servlet normalized route로 판단하고 HMAC은 raw URI를 고정한다. dot segment·encoded separator·matrix parameter·double slash 등 모호한 raw path와 보안/canonical singleton header 중복은 body/credential/nonce 처리 전에 generic 401이다. signed client는 redirect를 자동 추종하지 않고 새 target에 새 nonce로 재서명한다. bo-api 공용 engine `RestClient`도 `DONT_FOLLOW`를 강제해 302 target으로 machine header를 전달하지 않는다. P0-04부터 bo-api→FDS typed client도 final URI/raw query와 정확히 한 번 직렬화한 body bytes를 wire v2로 서명한다.
 - `/api/v1/evidence/fds/**`도 `/api/v1/fds/**`와 동일한 machine-auth filter의 protected/external
   surface이며 servlet registration 누락을 허용하지 않는다. Evidence는 기존 FDS API이므로
   credential/service가 v1을 함께 허용하는 동안 공통 정본 §6의 v1/v2 이중 전환을 유지하며,
@@ -69,7 +69,7 @@
   `fds:evidence:export` 누락은 403이며 export 생성·download의 actor는 서명 검증 뒤 승격된
   `X-User-Subject`만 사용한다.
 - nonce TTL 기본 15분은 `2 × timestamp skew`보다 엄격히 길어야 하고, 만료 row는 기본 1분마다 최대 `20 × 5,000`건을 짧은 batch로 정리한다. local/demo simulator credential provisioner와 bootstrap bypass는 명시적 `local|demo` positive profile + opt-in에서만 허용되며 Flyway business seed가 아니다.
-- **적용·미완료 경계(2026-07-12)**: P0-01로 AML `/aml/v1/**` filter coverage는 완료됐다. 남은 미완료는 내부 service-auth와 bo-api→FDS signer(P0-04), multipart 최종 raw-byte client 전환(P0-14), credential 폐기·유예회전·last-used·rate/network/workload 통제(P1-02)다. 본 명세만으로 이 잔여 경로나 machine credential lifecycle 적용 완료를 주장하지 않는다([공통 정본 §7](00-common-machine-auth.md#7-후속-태스크-경계)).
+- **적용 경계(2026-07-13)**: P0-04로 `/internal/v1/fds/**` 실제 filter registration과 v2-only 정책, AML profile 최소 scope, bo-api→FDS typed signer를 완료했다. BO credential은 exact `(tenant,workspace)` target에만 해소되며 다른 target/global fallback이 없다. 남은 미완료는 multipart 최종 raw-byte client 전환(P0-14), credential 폐기·자동 유예회전·last-used·rate/network/workload 통제(P1-02)다([공통 정본 §7](00-common-machine-auth.md#7-후속-태스크-경계)).
 
 ### 2.2 격리 컨텍스트 (필수 헤더)
 | 헤더 | 매핑 컬럼 | 필수 | 설명 |
@@ -92,8 +92,13 @@
 - BO의 사람 capability(`SFDS_*`)는 bo-api가 먼저 검사하며 본 표의 engine OAuth2/machine scope(`fds:*`)와 별도 계층이다. `fds:*`를 가진 credential만으로 브라우저 운영자 기능을 열 수 없고, BO 역할명을 engine scope로 대체하지도 않는다. path/query/body target은 bo-api의 인증 tenant/workspace와 먼저 일치시킨 뒤 선택한 target만 위임 header로 전달한다.
 - bo-api target의 `tenantId`/`workspaceId`는 trim 후 최대 64자, `X-Trace-Id`는 최대 128자이며 제어문자(CR/LF 포함)를 금지한다. header를 검증한 뒤에만 request context/MDC를 만들고 path·query·body target을 비교하므로 oversized/control input은 downstream·감사 write 전에 400으로 끝난다. signed `X-User-Subject`는 공통 filter의 128자/제어문자 검증을 통과한 값만 verified attribute로 승격한다(§2.1, 공통 정본).
 
-### 2.3 OAuth2 scope (설계서 §12.8, `fds_api_credentials.scopes`)
-`fds:event:write` · `fds:decision:evaluate` · `fds:case:read` · `fds:case:update` · `fds:evidence:export` · `fds:rule:simulate` · `fds:admin:source-system` · `fds:admin:rule` · `fds:admin:group` · `fds:admin:credential` · `fds:action:write`
+### 2.3 OAuth2/machine scope (설계서 §12.8, `fds_api_credentials.scopes`)
+`fds:event:write` · `fds:decision:evaluate` · `fds:case:read` · `fds:case:update` · `fds:evidence:export` · `fds:rule:simulate` · `fds:admin:source-system` · `fds:admin:rule` · `fds:admin:group` · `fds:admin:credential` · `fds:action:write` · `fds:internal:customer-profile:write`
+
+`fds:internal:customer-profile:write`는 AML CDD projection 전용 최소권한 scope다. BO→FDS machine
+credential은 앞의 운영 typed API 9종(`case:read/update`, `action:write`, `evidence:export`,
+`rule:simulate`, admin 4종)과 exact 일치하며 `event:write`, `decision:evaluate`, 내부 profile scope를
+포함하지 않는다. 전체 정본은 **외부/운영 11종 + internal profile 1종 = 총 12종**이다.
 
 권한 부족 → `403 FDS-AUTHZ-001`. scope 불일치 → `403 FDS-AUTHZ-002`. cross-workspace 접근 차단 → `403 FDS-AUTHZ-003`.
 
@@ -217,9 +222,9 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 
 | 메서드 | 경로 | 설명 | 인증/격리 | 멱등 |
 |---|---|---|---|---|
-| PUT | `/internal/v1/fds/customer-profiles/{memberRef}` | AML `customer.cdd.completed`의 PII-safe 프로필을 `fds_subjects`에 upsert | `Tenant-Id`, `Workspace-Id`(기본 `default`), `X-Internal-Service=aml-svc` + mesh 경계 | `(tenant,workspace,memberRef)` upsert + AML outbox payload hash |
+| PUT | `/internal/v1/fds/customer-profiles/{memberRef}` | AML `customer.cdd.completed`의 PII-safe 프로필을 `fds_subjects`에 upsert | API key + HMAC wire v2-only, exact `(tenant,workspace)` credential, `fds:internal:customer-profile:write`, signed `X-Internal-Service=aml-svc`, signed `X-Data-Scope` | `(tenant,workspace,memberRef)` upsert + AML outbox payload hash |
 
-요청 `CustomerProfileSyncRequest`: `sourceEventId`(필수), `occurredAt`(필수), `nationality`(ISO2), `country`(ISO2), `registeredAt`, `kycCompletedAt`, `kycLevel`, `dataScope`. 원문 이름·DOB·문서 식별자는 금지한다. `kycCompletedAt < registeredAt`은 400 `FDS-VALIDATION-001`. null은 기존값 보존, CDD의 명시 non-null 값은 최신값으로 갱신하며 `(occurredAt, sourceEventId)`가 현재 버전보다 오래된 역전 도착은 204 no-op 처리한다(DB V11).
+요청 `CustomerProfileSyncRequest`: `sourceEventId`(필수), `occurredAt`(필수), `nationality`(ISO2), `country`(ISO2), `registeredAt`, `kycCompletedAt`, `kycLevel`, `dataScope`. body `dataScope`는 signed `X-Data-Scope`와 exact 일치해야 한다. 원문 이름·DOB·문서 식별자는 금지한다. `kycCompletedAt < registeredAt`은 400 `FDS-VALIDATION-001`. null은 기존값 보존, CDD의 명시 non-null 값은 최신값으로 갱신하며 `(occurredAt, sourceEventId)`가 현재 버전보다 오래된 역전 도착은 204 no-op 처리한다(DB V11). unsigned/spoofed caller, signature/context/body tamper는 controller 전에 401이고 profile row를 변경하지 않는다. valid signature의 scope 부족은 nonce 소비 뒤 403이다.
 
 ### 4.4 Case API (외부/위임) — `fds:case:read` / `fds:case:update`
 | 메서드 | 경로 | 설명 | scope | 4-eyes |
@@ -941,6 +946,7 @@ components:
             fds:admin:source-system: 소스/커넥터 관리
             fds:admin:credential: 자격증명 관리
             fds:action:write: 액션 상신
+            fds:internal:customer-profile:write: AML CDD profile internal write only
   parameters:
     TenantId:
       name: Tenant-Id
@@ -982,6 +988,16 @@ components:
       in: header
       required: true
       schema: { type: string, pattern: '^hmac-sha256=[0-9a-f]{64}$' }
+    DataScope:
+      name: X-Data-Scope
+      in: header
+      required: false
+      schema: { type: string, maxLength: 128 }
+    InternalService:
+      name: X-Internal-Service
+      in: header
+      required: true
+      schema: { type: string, enum: [aml-svc] }
   schemas:
     Decision:
       type: string
@@ -1027,6 +1043,19 @@ components:
         idempotencyReplayed: { type: boolean }
         code: { type: string, nullable: true }
         reason: { type: string, nullable: true }
+    CustomerProfileSyncRequest:
+      type: object
+      required: [sourceEventId, occurredAt]
+      description: AML CDD projection. raw name/DOB/document identifier is forbidden.
+      properties:
+        sourceEventId: { type: string }
+        occurredAt: { type: string, format: date-time }
+        nationality: { type: string, minLength: 2, maxLength: 2, nullable: true }
+        country: { type: string, minLength: 2, maxLength: 2, nullable: true }
+        registeredAt: { type: string, format: date-time, nullable: true }
+        kycCompletedAt: { type: string, format: date-time, nullable: true }
+        kycLevel: { type: string, nullable: true }
+        dataScope: { type: string, maxLength: 128, nullable: true }
     TransactionType:
       type: string
       description: 거래 유형(fds_transactions.transaction_type, DB §4.19 폐쇄 12종 — 자유 문자열 금지).
@@ -1329,6 +1358,34 @@ components:
           allOf: [ { $ref: '#/components/schemas/DecisionResponse' } ]
           nullable: true
 paths:
+  /internal/v1/fds/customer-profiles/{memberRef}:
+    servers: [ { url: https://api.fds.example } ]
+    put:
+      summary: AML CDD PII-safe customer profile upsert
+      security: [ { ApiKeyHmac: [] }, { OAuth2: ['fds:internal:customer-profile:write'] } ]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/Timestamp'
+        - $ref: '#/components/parameters/AuthVersion'
+        - $ref: '#/components/parameters/Nonce'
+        - $ref: '#/components/parameters/Signature'
+        - $ref: '#/components/parameters/DataScope'
+        - $ref: '#/components/parameters/InternalService'
+        - name: memberRef
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomerProfileSyncRequest' }
+      responses:
+        '204': { description: upsert, stale no-op, or idempotent replay accepted }
+        '400': { description: signed caller/dataScope semantic mismatch or payload validation failure }
+        '401': { description: unsigned, invalid signature, target/context/body tamper, or nonce replay }
+        '403': { description: valid signature with insufficient endpoint scope }
   /fds/events/evaluate:
     post:
       summary: canonical event 동기 인입 + ACTIVE inline 룰 즉시 판단
@@ -1811,7 +1868,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 - **base path**: `/api/v1`. 외부 `/fds/**`·`/evidence/fds/**`, Admin `/admin/fds/**`.
 - **격리 헤더**: `Tenant-Id`(필수), `Workspace-Id`(default `default`/`sandbox` shadow), `Source-System`, `Idempotency-Key`. `dataScope`는 위임 토큰 claim.
 - **핵심 엔드포인트**: `POST /fds/events`, `POST /fds/decisions/evaluate`, `GET/PATCH /fds/cases/{caseId}`, `POST /fds/cases/{caseId}/actions`, `POST /evidence/fds/exports`, `POST /admin/fds/rules/simulations`, `POST /admin/fds/rules/{ruleId}/activate`, `POST /admin/fds/approvals/{approvalRequestId}/approve`.
-- **OAuth2 scope**: `fds:event:write`/`fds:decision:evaluate`/`fds:case:read`/`fds:case:update`/`fds:evidence:export`/`fds:rule:simulate`/`fds:action:write`/`fds:admin:rule`/`fds:admin:group`/`fds:admin:source-system`/`fds:admin:credential` (전체 11종 `fds:` prefix 형식, §2.3 정본과 동일).
+- **OAuth2/machine scope**: 외부/운영 11종 `fds:event:write`/`fds:decision:evaluate`/`fds:case:read`/`fds:case:update`/`fds:evidence:export`/`fds:rule:simulate`/`fds:action:write`/`fds:admin:rule`/`fds:admin:group`/`fds:admin:source-system`/`fds:admin:credential` + internal profile 전용 `fds:internal:customer-profile:write` = **총 12종**(§2.3 정본과 동일).
 - **에러 코드 prefix**: `FDS-*`(§6). 표준 envelope(RFC7807 + `code`/`traceId`).
 - **응답 enum**: decision 8종·**action_type 22종(API `ActionType` enum이 마스터 정본 §1.1)**·case_type 10종은 DB enum 코드값과 동일(§4 DB). `HOLD_TRANSACTION`은 비정본(→`HOLD_FUNDS`/`BLOCK_TRANSACTION`).
 - **HTTP 상태코드**: 본 §6이 정본. 요청 필드 검증=400, create-only 상태키 충돌(위험그룹 scoped duplicate 포함)=409, 결재 누락=409, maker=checker=409, raw PII=422, rate limit=429.
@@ -1828,6 +1885,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-13 | v4.8 | **P0-04 내부 profile·BO→FDS machine-auth 완료.** `/internal/v1/fds/**`를 wire v2-only filter coverage에 넣고 customer profile에 exact AML caller/dataScope 및 전용 scope를 강제했다. BO typed client는 exact target credential/final URI/same bytes signer만 사용하며 unsigned fallback이 없다. OpenAPI security scope와 internal PUT path를 총 12종 정본에 동기화했다. | 코드 truth=`IngestAuthenticationFilter`·`CustomerProfileInternalController`·`FdsEngineClient`; DDL 불변 |
 | 2026-07-13 | v4.7 | **P0-03 위험그룹 generation·create 계약 정합.** §5.10/§5.18/§5.20에 master/member/merchant-normalize generation binding과 delete/recreate ABA 차단을 반영했다. bo-api V19는 모든 기존 local GROUP payload를 원 JSONB/hash 보존 exact 4필드 tombstone으로 이관하고 비종결 4상태만 취소하며 terminal exact marker만 역사 read-only로 허용한다. §5.17a 및 OpenAPI에 Java `RiskGroupUpsertRequest` exact 3-field POST와 201/400/403/409를 추가하고, 일반 field validation 400과 scoped create-only conflict `FDS-STATE-CONFLICT` 409를 분리했다. | 코드 truth=FDS V17·`RiskGroupAdminService`·`ApprovalService`, BO V19·`FdsApprovalStubService`·`FdsRuleGroupService` |
 | 2026-07-13 | v4.6 | **P0-03 위험그룹 결재 무결성·트랜잭션·BO projection 강화.** `MASTER_UPDATE` hash는 JSONB key 순서와 무관한 고정 semantic field order를 submit/current/apply에 공통 적용한다. business 재검증만 `EXECUTION_FAILED`; master/audit persistence 예외는 승인 트랜잭션 전체 rollback 후 `SUBMITTED` 재시도로 고정했다. configured BO 위임은 exact group ID·enum·필수 actor/time/member 필드와 PUT pending UUID/status를 fail-closed 검증하고 path/body ID 불일치를 위임 전에 거부한다. OpenAPI PUT도 전용 `RiskGroupMasterUpdateRequest`와 202 current projection+pending UUID/status로 교정했다(POST create 불변). | 코드 truth=`RiskGroupAdminService.canonicalMasterUpdatePayload`·`ApprovalService`·`FdsRuleGroupService.fromEngine/updateRiskGroup` |
 | 2026-07-13 | v4.5 | **P0-03 위험그룹 master 4-eyes·unified 감사 보완.** POST create만 즉시 저장+`GROUP_CREATE`하고, PUT은 `GROUP`/`RISK_MANAGER`로 staged하여 202 current projection+UUID/status를 반환한다. 다른 checker가 rename 또는 멤버 0인 `active=false` 정의 삭제를 실제 적용한 뒤에만 `GROUP_UPDATE`(checker, staged causal trace 우선, canonical before/after hash)를 기록한다. 반려·자기승인·실행 실패는 mutation/성공 감사가 없다. §4.9a typed FDS projection에는 성공 이벤트만 포함된다. | 코드 truth=`RiskGroupAdminController`·`RiskGroupAdminService`·`ApprovalService`·`RiskGroupAdminServiceTest` |

@@ -792,7 +792,7 @@ PK: `(history_id)`. 인덱스 `ix_aml_member_cdd_history_member (tenant_id, memb
 | `credential_type` | VARCHAR(32) | N | — | CHECK 4종 | `API_KEY`/`OAUTH2_CLIENT`/`MTLS`/`WEBHOOK` |
 | `secret_ciphertext` | VARCHAR(512) | Y | NULL | | HMAC/OAuth secret 암호문(AES-GCM·현행 단일 key, KMS/keyId는 P1-03). raw secret 미저장 |
 | `webhook_url` | VARCHAR(512) | Y | NULL | | (V17) `WEBHOOK` 자격증명의 고객 콜백 URL — 서명 발송 대상 정본 |
-| `scopes` | JSONB | N | '[]' | | 부여 scope 배열 |
+| `scopes` | JSONB | N | '[]' | | 부여 scope 배열. P0-04 FDS escalation row는 `aml:internal:fds-escalation:write` 하나만, BO row는 기존 union + `aml:pii:reveal` + `COMPLIANCE` |
 | `allowed_protocol_versions` | JSONB | N | `'["v2"]'` | non-empty subset of `v1`/`v2` | migration 이전 row=`["v1","v2"]`, 신규 row=`["v2"]`; service policy와 교집합만 허용 |
 | `enabled` | BOOLEAN | N | TRUE | | 활성 여부 |
 | `created_by/updated_by` | VARCHAR(128) | Y | NULL | | |
@@ -800,7 +800,7 @@ PK: `(history_id)`. 인덱스 `ix_aml_member_cdd_history_member (tenant_id, memb
 
 PK: `(tenant_id, credential_id)` · FK `(tenant_id)`→`aml_tenants`. 마이그레이션에 자격증명 secret 미시드(암호화 at-rest, V2 주석). 명시적 v2 실패 후 v1 fallback은 금지하며, 회전은 새 credential ID 병행 발급→client 전환→clock skew(5분)+nonce TTL(15분) 경과→구 credential 비활성화를 기본으로 한다([공통 인증 §6](../api/00-common-machine-auth.md#6-credential-전환회전)). 단, 생성·scope 변경·유예회전·폐기·last-used 이력과 credential별 사용 조건은 **P1-02 미완료 범위**다.
 
-local/demo provisioner는 Flyway business/demo seed가 아니다. 명시적 `local|demo` positive profile과 opt-in property가 모두 참일 때 환경 secret(32자 이상)을 정상 cipher로 암호화해 v2-only row를 만든다. REST simulator credential과 bo-api AML 위임 credential은 서로 다른 ID/secret으로 저장하며, BO credential의 scope 배열은 STR 접근에 필요한 `COMPLIANCE` authority token을 포함한다. 다른 profile에서는 provisioner가 등록되지 않는다. P0-02 V45와 demo repeatable도 credential을 만들지 않는다. V45는 알려진 demo 복합 fingerprint에 묶인 기존 credential을 `enabled=false`, `secret_ciphertext=NULL`로 격리한다.
+local/demo provisioner는 Flyway business/demo seed가 아니다. 명시적 `local|demo` positive profile과 opt-in property가 모두 참일 때 환경 secret(32자 이상)을 정상 cipher로 암호화해 v2-only row를 만든다. REST simulator, bo-api AML 위임, FDS escalation credential은 서로 다른 ID/secret으로 저장한다. BO credential의 scope 배열은 STR 접근용 `COMPLIANCE`와 internal PII reveal용 `aml:pii:reveal`을 포함하고, FDS row는 `aml:internal:fds-escalation:write`만 가진다. AML credential PK에는 workspace가 없지만 outbound resolver는 exact `(purpose,tenant,workspace)` target을 고르고 AML canonical wire workspace는 항상 `default`다. 다른 profile에서는 provisioner가 등록되지 않는다. P0-02 V45와 demo repeatable도 credential을 만들지 않는다. V45는 알려진 demo 복합 fingerprint에 묶인 기존 credential을 `enabled=false`, `secret_ciphertext=NULL`로 격리한다.
 
 credential cipher key·PII HMAC key·evidence download token secret은 secret manager 주입값이다. production-class profile(`prod`/`production`/`aws`)은 각각 Base64/Base64URL decode 기준 32 bytes 이상 random material만 허용하고 blank·공개 local/demo 값·저엔트로피 값을 startup에서 거부한다. 현 단일-key 암호문은 배포 실패 시 같은 secret-manager current version으로만 rollback하며 online key 교체를 시도하지 않는다. `keyId`·tenant/resource AAD·dual-read·background re-encryption·key-use audit는 **P1-03 미완료 범위**다.
 
@@ -1422,6 +1422,7 @@ hanpass-ph 운영 사용: `SANCTIONS_REVIEW`/`PEP_REVIEW`/`EDD_REVIEW`/`STR_REVI
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-13 | **P0-04 internal minimum-scope credential 정본.** 기존 `scopes JSONB`에 신규 DDL 없이 FDS escalation 전용 scope, BO `aml:pii:reveal` union, simulator/BO/FDS logical purpose 분리를 추가했다. | 코드 truth=`LocalMachineCredentialProvisioner`; 스키마/Flyway 무변경 |
 | 2026-07-13 | **P0-03 admin 감사 trace 정합(V46).** §2.1 기본 trace 64 계약에 audit-only 예외를 명시하고 `aml_audit_events.trace_id VARCHAR(128)`·11종 event category(`RA_REVIEW` 포함)·명시적 causal trace 우선/MDC fallback을 반영했다. §7에 V46을 추가하되 canonical ingest/history의 64자/422를 그대로 유지했다. | 코드 truth=`V46__widen_trace_ids_to_128.sql`, `AuditEventJpaAdapter`/`AuditEventJpaEntity`; `docs/aml-data.md` 무변경 |
 | 2026-07-12 | **P0-02 운영 Flyway demo seed·기본 secret 분리(V45).** §3.15에 credential quarantine·secret-manager AML cipher/PII/evidence key startup gate와 P1-02/P1-03 경계를 명시했다. §7에 실제 V45와 explicit `db/demo` repeatable을 추가하고, `tenant_demo` ID/부분 문자열이 아닌 V2 immutable seed provenance의 exact 복합 fingerprint만 격리한다. FATF source·CTR threshold·PH calendar를 포함한 reference config와 REST-only business data를 분리했다. API/DTO/event 계약은 변경하지 않았다. | 코드 truth=AML V45·`db/demo/R__activate_demo_reference_configuration.sql`·`ProductionSafetyValidator` |
 | 2026-07-12 | **P0-00 machine-auth v2 credential/replay 스키마 역전파(V44).** §3.15 `aml_api_credentials.allowed_protocol_versions`(기존 `[v1,v2]`, 신규 `[v2]`)와 `aml_auth_nonces`(credential-wide PK·hash/digest only·기본 15분 TTL, `>2×skew`·원자 consume·cleanup 최대 `20×5000/tick`)를 추가하고 §6 보존·§7 실제 migration·§8 정본 매핑을 동기화했다. AML은 물리 workspace 없이 canonical `workspace=default`를 사용한다. local/demo positive-profile provisioner는 simulator/BO credential을 분리하고 BO에 `COMPLIANCE`를 부여하지만, P1-02 운영 lifecycle은 미완료다. | 코드 truth=`V44__machine_auth_nonce_replay.sql`·`common-security`; 공통 계약=`../api/00-common-machine-auth.md` |
