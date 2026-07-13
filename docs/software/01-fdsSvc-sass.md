@@ -1352,7 +1352,7 @@ X-Nonce: AAECAwQFBgcICQoLDA0ODw
 X-Signature: hmac-sha256=...
 ```
 
-인바운드 HMAC canonical bytes는 UTF-8/LF/no trailing LF의 `preamble/version/METHOD/rawPath/rawQuery/Tenant-Id/fixed 9-key scopeContext/content digest/timestamp/nonce` 순서이며 세부 문법은 [공통 machine-auth 정본](../design/api/00-common-machine-auth.md)만 따른다. FDS workspace는 `Workspace-Id` 부재 시 `default`, source header는 `Source-System`만 인정한다. filter/scope coverage는 normalized servlet route로 판단하고 HMAC은 raw path를 고정하며, ambiguous raw path와 duplicate singleton header는 nonce 소비 전에 거부한다. `X-Trace-Id`/`X-Correlation-Id`는 관측성에는 전파하지만 9-key context 밖이다. 구 `timestamp/apiKey/method/path/[actor]/body` 공식은 기존 credential 전환 호환용 v1이며 RFC3339 offset timestamp를 계속 받지만, 신규 client는 UTC `Z` v2를 사용한다. signed client는 redirect를 자동 추종하지 않는다. bo-api 공용 engine `RestClient`도 `DONT_FOLLOW`를 강제하지만 bo-api→FDS signer는 P0-04 미완료다.
+인바운드 HMAC canonical bytes는 UTF-8/LF/no trailing LF의 `preamble/version/METHOD/rawPath/rawQuery/Tenant-Id/fixed 9-key scopeContext/content digest/timestamp/nonce` 순서이며 세부 문법은 [공통 machine-auth 정본](../design/api/00-common-machine-auth.md)만 따른다. FDS workspace는 `Workspace-Id` 부재 시 `default`, source header는 `Source-System`만 인정한다. filter/scope coverage는 normalized servlet route로 판단하고 HMAC은 raw path를 고정하며, ambiguous raw path와 duplicate singleton header는 nonce 소비 전에 거부한다. `X-Trace-Id`/`X-Correlation-Id`는 관측성에는 전파하지만 9-key context 밖이다. 구 `timestamp/apiKey/method/path/[actor]/body` 공식은 기존 credential 전환 호환용 v1이며 RFC3339 offset timestamp를 계속 받지만, 신규 client는 UTC `Z` v2를 사용한다. signed client는 redirect를 자동 추종하지 않는다. P0-04부터 bo-api 공용 FDS typed client도 `DONT_FOLLOW`, final ASCII URI/raw query, 한 번 직렬화한 동일 body bytes를 v2 sign/send한다. credential은 exact `(tenant,workspace)` target만 선택한다.
 
 ### 12.2 Queue Connector
 
@@ -1546,9 +1546,9 @@ API 인증·권한:
 
 > local/demo simulator credential provisioning과 bootstrap bypass는 명시적 `local|demo` positive profile + opt-in에서만 동작하고 Flyway business seed가 아니다. 다른 profile은 property가 있어도 fail-closed한다.
 >
-> **적용·미완료 경계(2026-07-12)**: P0-01로 AML `/aml/v1/**` filter coverage는 완료됐다. 남은 미완료는 P0-04(내부 service-auth·bo-api→FDS signer), P0-14(multipart 최종 raw-byte signer), P1-02(credential 생성/scope/유예회전/폐기/last-used·rate/network/workload 통제)다. 공통 계약의 존재만으로 이 잔여 경로나 운영 lifecycle 적용 완료를 주장하지 않는다. valid v2 nonce는 HMAC 성공 뒤 scope/controller보다 먼저 소비되므로 downstream 오류에도 재사용할 수 없고, 업무 멱등 replay는 새 nonce를 사용한다.
+> **적용 경계(2026-07-13)**: P0-04로 `/internal/v1/fds/**` filter/v2-only, AML profile 전용 `fds:internal:customer-profile:write`, BO→FDS exact 9-scope typed signer, FDS→AML REST fallback signer와 bootstrap-off local lifecycle을 완료했다. 남은 미완료는 P0-14(multipart 최종 raw-byte signer), P1-02(credential 생성/scope/자동 유예회전/폐기/last-used·rate/network/workload 통제)다. valid v2 nonce는 HMAC 성공 뒤 scope/controller보다 먼저 소비되므로 downstream 오류에도 재사용할 수 없고, 업무 멱등 replay는 새 nonce를 사용한다.
 
-권한 scope(정본: API 명세 §2.3/§9, **11종** — 한국어 설명은 API §2.3/OpenAPI §10과 동일):
+권한 scope(정본: API 명세 §2.3/§9, **외부/운영 11종 + internal 1종 = 총 12종** — 한국어 설명은 API §2.3/OpenAPI §10과 동일):
 
 - `fds:event:write` — canonical event ingest 쓰기
 - `fds:decision:evaluate` — 실시간 decision 평가 호출
@@ -1561,8 +1561,9 @@ API 인증·권한:
 - `fds:admin:rule` — rule/rule-set/version/feature-catalog 관리
 - `fds:admin:group` — risk group/멤버 관리
 - `fds:admin:credential` — API credential/secret 회전 관리
+- `fds:internal:customer-profile:write` — AML CDD profile 내부 upsert 전용(BO/ingest/decision 미포함)
 
-> scope 설명의 정본은 **API §2.3**이다. 위 11종은 fds-svc 엔진이 검증하는 scope 집합이며, 운영자 IAM(역할↔scope 매핑·승인 라인 정책)은 bo-api가 소유·집약하고 bo-web은 bo-api를 경유한다.
+> scope 설명의 정본은 **API §2.3**이다. 위 12종은 fds-svc 엔진이 검증하는 전체 scope 집합이며, 그중 사람/외부 API 정본은 11종이고 internal profile 1종은 AML workload 전용이다. 운영자 IAM(역할↔scope 매핑·승인 라인 정책)은 bo-api가 소유·집약하고 bo-web은 bo-api를 경유한다.
 
 #### 운영자 집계 API 소유 경계 (bo-api 소유)
 
@@ -1577,7 +1578,7 @@ API 인증·권한:
 | **self-hosted 인스턴스 등록 콜백** | **bo-api** | `POST /api/v1/bo/fds/tenants/{tenantId}/onboarding/register` | 설치 인스턴스 라이선스/콜백 등록(`CUSTOMER_DEPLOYED→REGISTERED`) |
 | 감사 로그 조회 | **bo-api** | `GET /api/v1/bo/fds/audit?subjectKind&subjectId&actor&traceId&from&to&page&size`, `GET /api/v1/bo/fds/audit/{sourceService}/{auditId}` | fds-svc는 scoped `/api/v1/admin/fds/audit-events[/{auditId}]` list/detail만 제공 |
 
-BO typed capability는 route 의미에 맞춘다. FDS health=`SFDS_CONNECTOR:READ`, case evidence timeline=`SFDS_DECISION:READ`, notify-channel GET=`SFDS_TENANT:READ`, notify-channel PUT=`SFDS_TENANT:ADMIN`(platform admin), action 목록·상세=`SFDS_ACTION:OPERATE`다. case patch는 engine 위임 시 HMAC capability assertion이 P0-04로 남아 있으므로 target `status=IN_REVIEW` 요청 전부를 보수적으로 `SFDS_CASE:APPROVE` 사전 게이트한다. local fallback만 실제 current status가 `CLOSED_*`이고 target이 `IN_REVIEW`인 재오픈에 승인 capability·사유·closer≠actor를 요구한다. `platformOperator`는 명시 target data-scope만 확장하고 메뉴/IAM/PII/STR/업무 인가를 우회하지 않는다. wildcard `*`/`BO_SUPER_ADMIN`만 우회하며, `SFDS_PLATFORM_OPS`는 횡단 read-only이고 action·evidence·approval capability가 없다.
+BO typed capability는 route 의미에 맞춘다. FDS health=`SFDS_CONNECTOR:READ`, case evidence timeline=`SFDS_DECISION:READ`, notify-channel GET=`SFDS_TENANT:READ`, notify-channel PUT=`SFDS_TENANT:ADMIN`(platform admin), action 목록·상세=`SFDS_ACTION:OPERATE`다. case patch는 target `status=IN_REVIEW` 요청 전부를 보수적으로 `SFDS_CASE:APPROVE` 사전 게이트한다. 이는 P0-04에서 완료한 BO→FDS HMAC signer와 별개인 **사람 capability 정책**이다. local fallback만 실제 current status가 `CLOSED_*`이고 target이 `IN_REVIEW`인 재오픈에 승인 capability·사유·closer≠actor를 요구한다. `platformOperator`는 명시 target data-scope만 확장하고 메뉴/IAM/PII/STR/업무 인가를 우회하지 않는다. wildcard `*`/`BO_SUPER_ADMIN`만 우회하며, `SFDS_PLATFORM_OPS`는 횡단 read-only이고 action·evidence·approval capability가 없다.
 
 > **고객사 등록 흐름 전환**: 과거 "격리 방식(`isolation_mode`) 토글"은 폐기한다. 등록은 `deployment_model` 선택(매니지드 전용/자체 인프라 설치형/[소규모 공유]) + 온보딩 신청으로 한다. 매니지드 전용은 `POST .../onboarding/provision`이 IaC 파이프라인을 트리거하고 `onboarding_status`가 `PROVISIONING→DEPLOYED→VERIFIED→ACTIVE`로 진행된다(읽기 표시). self-hosted는 패키지 발급 후 `.../onboarding/register` 콜백으로 `REGISTERED`된다. fds-svc 엔진 API(`docs/design/api/01-fds-api.md`)에는 위 온보딩 엔드포인트를 **추가하지 않는다**(운영자 집계 경계).
 
@@ -2428,6 +2429,7 @@ hanpass-ph FDS(`fds-svc`)는 Hanpass `FdsSvc`를 참조 구현으로 삼되, 그
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-13 | v3.6 | **P0-04 내부 service-auth·BO→FDS signer 완료.** FDS internal profile 수신을 v2-only/fail-closed scope guard로 닫고 AML profile exact target credential을 추가했다. BO typed 전 동사는 final URI/same bytes로 서명하고 human capability와 machine 9-scope를 분리한다. local lifecycle은 6 purpose credential/bootstrap-off다. | system-architect. 신규 scope=`fds:internal:customer-profile:write`; DDL 없음(JSONB scope 값) |
 | 2026-07-13 | v3.7 | **P0-03 위험그룹 generation ABA hardening·create wire 정합.** create/recreate UUID generation, generation 포함 master/audit hash, ADD/REMOVE `groupGenerationHash`, merchant normalize 정렬 generation snapshot으로 stale approval의 새 incarnation 실행을 차단했다. FDS V17은 generation 미결속 pending을 취소하고, BO V19는 모든 기존 local GROUP payload를 원 JSONB/hash 보존 exact 4필드 tombstone으로 감싸 비종결 4상태만 취소·terminal exact marker만 역사 read-only로 허용한다. configured/local exact 3-field create·duplicate 409도 동기화했다. | system-architect. 코드 truth=FDS V17·`RiskGroupAdminService`·`ApprovalService`·BO V19·`FdsApprovalStubService`·`FdsRuleGroupService` |
 | 2026-07-13 | v3.6 | **P0-03 위험그룹 approval hardening.** `MASTER_UPDATE`의 strict shape+fixed semantic field-order hash를 JSONB reorder 불변 submit/current/apply 공통 helper로 고정했다. business revalidation만 `EXECUTION_FAILED`, persistence 예외는 전체 approval transaction rollback 후 `SUBMITTED` retry로 분리했다. configured BO group projection은 expected ID·enum·필수 actor/time/member와 PUT pending UUID/status를 fail-closed 검증하고 path/body ID mismatch는 delegate 전에 거부한다. | system-architect. 코드 truth=`RiskGroupAdminService`·`ApprovalService`·bo-api `FdsRuleGroupService` |
 | 2026-07-13 | v3.5 | **P0-03 위험그룹 master 4-eyes·감사 폐루프.** POST create만 즉시 저장+`GROUP_CREATE`하고, PUT은 current projection+UUID/status 202와 `GROUP`/`RISK_MANAGER` staged payload를 만든다. 다른 checker가 rename 또는 멤버 0인 `active=false` 정의 삭제를 적용한 뒤에만 `GROUP_UPDATE`(checker, staged causal trace 우선, canonical before/after SHA-256)를 남긴다. 반려·자기승인·실행 실패는 mutation/성공 감사가 없다. | system-architect. 코드 truth=`RiskGroupAdminController`·`RiskGroupAdminService`·`ApprovalService`·`RiskGroupAdminServiceTest` |

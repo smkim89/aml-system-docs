@@ -377,7 +377,7 @@ com.aegis.aml
 
 > `adapter/in/rest`의 엔드포인트 전체 표면(Public/Internal/Admin)은 **API 명세(`docs/design/api/02-aml-api.md` §2.1~§2.7) 정본**을 참조한다. 본 레이아웃은 plane 경계만 표기하며, **Admin API는 bo-api 전용 운영 콘솔 경계**다(엔진은 저수준 데이터 API만 제공, §15.7 운영자 집계 소유 경계). report 제출·명단 feed·webhook 외부 어댑터는 hanpass-ph 운영에서 Mock/실연동 교체 지점이다(외부 실연동만 후속).
 >
-> **usecase ↔ port/in ↔ scope 매핑(정본 scope=API §1.1).** `ManageCddEddUseCase`·`ReviewStrCtrUseCase`·`ManagePolicyUseCase`는 case/정책 도메인의 세부 유스케이스로, 결재가 필요한 종결·제출 경로는 `ManageCaseUseCase`/`RunApprovalUseCase`로 합류한다(통합 결재 게이트). 보호 scope는 API §1.1을 정본으로 다음과 같이 매핑한다: CDD/EDD 워크플로=`aml:case:read`/`aml:case:update`(EDD 트리거·검토), STR/CTR 작성·제출=`aml:case:update` + 제출 4-eyes(`REPORTING_OFFICER`), STR 화면 조회는 정보누설금지 통제로 `COMPLIANCE` 전담 scope(§19.2a, API §2.7); CDD checklist·periodic review 정책 변경=`aml:admin:policy`(4-eyes `subjectType=CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`, §13.4); 명단=`ManageWatchlistUseCase`=`aml:admin:watchlist`; 결재=`RunApprovalUseCase`=`aml:admin:approval`. scope 코드값 전수(13종)는 API §1.1이 정본이다.
+> **usecase ↔ port/in ↔ scope 매핑(정본 scope=API §1.1).** `ManageCddEddUseCase`·`ReviewStrCtrUseCase`·`ManagePolicyUseCase`는 case/정책 도메인의 세부 유스케이스로, 결재가 필요한 종결·제출 경로는 `ManageCaseUseCase`/`RunApprovalUseCase`로 합류한다(통합 결재 게이트). 보호 scope는 API §1.1을 정본으로 다음과 같이 매핑한다: CDD/EDD 워크플로=`aml:case:read`/`aml:case:update`(EDD 트리거·검토), STR/CTR 작성·제출=`aml:case:update` + 제출 4-eyes(`REPORTING_OFFICER`), STR 화면 조회는 정보누설금지 통제로 `COMPLIANCE` 전담 scope(§19.2a, API §2.7); CDD checklist·periodic review 정책 변경=`aml:admin:policy`(4-eyes `subjectType=CHECKLIST_CHANGE`/`PERIODIC_REVIEW_CHANGE`, §13.4); 명단=`ManageWatchlistUseCase`=`aml:admin:watchlist`; 결재=`RunApprovalUseCase`=`aml:admin:approval`. public/BO scope 13종과 internal FDS escalation machine scope 1종, 총 14종은 API §1.1이 정본이다.
 
 > bo-api·bo-web은 정본의 별도 레이아웃(패키지-바이-피처 / Next.js App Router)을 따르며, 본 문서의 enum·API·규칙·규제 요건을 그대로 입력으로 사용한다. WLF/RA/TM policy builder, case 화면, evidence export UI는 `bo-web`, 결재 matrix·감사·IAM은 `bo-api`에서 구현한다.
 
@@ -1076,7 +1076,7 @@ X-Nonce: AAECAwQFBgcICQoLDA0ODw
 X-Signature: hmac-sha256=...
 ```
 
-요청 HMAC wire v2는 UTF-8/LF/no trailing LF의 `preamble/version/METHOD/rawPath/rawQuery/Tenant-Id/fixed 9-key scopeContext/content digest/timestamp/nonce` 순서를 사용하며 세부 문법은 [공통 machine-auth 정본](../design/api/00-common-machine-auth.md)만 따른다. AML은 물리 workspace 없이 `scopeContext.workspace=default`, source header는 `Source-System`만 인정한다. filter/scope coverage는 normalized servlet route로 판단하고 HMAC은 raw path를 고정하며, ambiguous raw path와 duplicate singleton header는 nonce 소비 전에 거부한다. `X-Trace-Id`/`X-Correlation-Id`는 관측성에는 전파하지만 9-key context 밖이다. `X-User-Subject`는 고정 context에 결합한다. 구 `timestamp/apiKey/method/path/[actor]/body` 공식은 기존 credential 전환 호환용 v1이며 RFC3339 offset timestamp를 계속 받지만, 신규 client는 UTC `Z` v2를 사용한다. signed client는 redirect를 자동 추종하지 않는다. bo-api 공용 engine `RestClient`도 `DONT_FOLLOW`로 origin 302를 그대로 반환하고 target 호출·machine header 전달을 막는다.
+요청 HMAC wire v2는 UTF-8/LF/no trailing LF의 `preamble/version/METHOD/rawPath/rawQuery/Tenant-Id/fixed 9-key scopeContext/content digest/timestamp/nonce` 순서를 사용하며 세부 문법은 [공통 machine-auth 정본](../design/api/00-common-machine-auth.md)만 따른다. AML은 물리 workspace 없이 `scopeContext.workspace=default`, source header는 `Source-System`만 인정한다. filter/scope coverage는 normalized servlet route로 판단하고 HMAC은 raw path를 고정하며, ambiguous raw path와 duplicate singleton header는 nonce 소비 전에 거부한다. `X-Trace-Id`/`X-Correlation-Id`는 관측성에는 전파하지만 9-key context 밖이다. `X-User-Subject`는 고정 context에 결합한다. 구 `timestamp/apiKey/method/path/[actor]/body` 공식은 기존 credential 전환 호환용 v1이며 RFC3339 offset timestamp를 계속 받지만, 신규 client는 UTC `Z` v2를 사용한다. signed client는 redirect를 자동 추종하지 않는다. bo-api 공용 engine `RestClient`도 `DONT_FOLLOW`로 origin 302를 그대로 반환하고 target 호출·machine header 전달을 막는다. P0-04부터 AML `/internal/v1/aml/**`는 v2-only이고 FDS escalation은 `aml:internal:fds-escalation:write`, exact signed caller/dataScope를 수신 엔진에서 강제한다. AML→FDS profile sender도 final member URI와 동일 JSON bytes를 v2 sign/send한다.
 
 P0-01부터 `POST /api/v1/aml/events`와 `POST /aml/v1/transaction-events`는 모두 실제 filter
 chain에서 인증과 `aml:event:write`를 강제한다. `/aml/v1/**` authenticated traffic은 migration 전
@@ -1164,7 +1164,7 @@ API 제공 원칙:
 | CDD/EDD API | Admin | checklist, case, periodic review 관리 (운영 콘솔, bo-api 경유) | `GET /api/v1/admin/aml/cdd/cases` |
 | Regulatory Evidence API | Public | STR/CTR 증적 조회·export | `POST /api/v1/evidence/aml/exports` |
 | Webhook (outbound) | OUT | screening/case/report 상태변경 콜백(서명·재시도/멱등) | `POST {customerWebhookUrl}` (계약=API §8·연동 §3.4) |
-| Admin API | Admin | 명단(watchlist-sources)·RA 정책·TM scenario·country risk·case 관리·CDD/EDD·규제 보고·결재(4-eyes)·감사·data source(source-systems)·key·scope 관리 (bo-api 전용, scope `aml:admin:*`/`aml:case:*`/`aml:evidence:export` — 전수는 **API §1.1 enum 전수 13종** 정본 참조, 본 표는 약식 표기) | `GET /api/v1/admin/aml/watchlist-sources`, `GET /api/v1/admin/aml/source-systems`, `GET /api/v1/admin/aml/cdd/cases` |
+| Admin API | Admin | 명단(watchlist-sources)·RA 정책·TM scenario·country risk·case 관리·CDD/EDD·규제 보고·결재(4-eyes)·감사·data source(source-systems)·key·scope 관리 (bo-api 전용, scope `aml:admin:*`/`aml:case:*`/`aml:evidence:export` — **public/BO 13종**은 API §1.1 정본 참조; 별도 internal machine 1종은 이 plane에 사용하지 않음) | `GET /api/v1/admin/aml/watchlist-sources`, `GET /api/v1/admin/aml/source-systems`, `GET /api/v1/admin/aml/cdd/cases` |
 | 고객사 관리 API | Admin/BO | 고객사 목록·상세, **배포 유형 선택+온보딩 신청**, 설정변경 (bo-api 소유). `deployment_model`/`onboarding_status`/`status`/`default_region`/`infra_ref` (§16.0) | `GET/POST /api/v1/bo/aml/tenants`, `GET/PUT /api/v1/bo/aml/tenants/{tenantId}` |
 | 온보딩 프로비저닝 API | Admin/BO | 매니지드 전용 IaC 파이프라인 트리거 + 단계 진행 (bo-api 소유, 운영자) | `POST /api/v1/bo/aml/tenants/{tenantId}/onboarding/provision` |
 | 온보딩 등록 콜백 API | Admin/BO | self-hosted 설치 인스턴스 등록 콜백(`PACKAGE_ISSUED→CUSTOMER_DEPLOYED→REGISTERED`) | `POST /api/v1/bo/aml/tenants/{tenantId}/onboarding/register` |
@@ -1217,19 +1217,19 @@ API 인증·권한:
 | IP allowlist | 운영망 고정 |
 | Webhook signature | 고객 callback 위변조 방지 (outbound `timestamp + "." + rawBody` HMAC, 계약 정본=API §8.3; inbound v2와 혼용 금지) |
 
-> nonce 기본 TTL 15분은 정책상 `2×timestamp skew`보다 엄격히 길고, 만료 cleanup은 기본 1분 주기·최대 `20×5000/tick`의 짧은 batch다. local/demo bootstrap/provisioner는 명시적 `local|demo` positive profile + opt-in에서만 동작하며 Flyway business seed가 아니다. REST simulator와 bo-api AML 위임은 서로 다른 credential ID/secret을 사용하고, BO credential scope union에는 STR 접근용 `COMPLIANCE` authority token이 포함된다.
+> nonce 기본 TTL 15분은 정책상 `2×timestamp skew`보다 엄격히 길고, 만료 cleanup은 기본 1분 주기·최대 `20×5000/tick`의 짧은 batch다. local/demo bootstrap/provisioner는 명시적 `local|demo` positive profile + opt-in에서만 동작하며 Flyway business seed가 아니다. REST simulator, bo-api AML 위임, FDS escalation은 서로 다른 credential ID/secret을 사용한다. BO credential scope union에는 STR 접근용 `COMPLIANCE`와 `aml:pii:reveal`, FDS credential에는 `aml:internal:fds-escalation:write` 하나만 포함된다.
 >
-> **적용·미완료 경계(2026-07-12)**: P0-01로 `/aml/v1/**` filter coverage와
+> **적용 경계(2026-07-13)**: P0-01로 `/aml/v1/**` filter coverage와
 > `aml:event:write` 강제가 완료됐다. scope/role request attribute가 없으면 공통 filter가 local/demo
 > opt-in에서 내부 attribute에 설정한 정확한 `Boolean.TRUE` bootstrap marker 외에는 403이다. 인증 실패는
 > canonical event·PII vault·WLF·TM·CTR/STR·RA 업무 row를 만들지 않지만, valid-signed scope 403은
 > scope 검사 전에 소비한 nonce를 유지한다. `X-Data-Scope`는 neutral ingest에서 signed integrity
 > context이므로 서명 뒤 tamper는 401이며 credential별 data-scope allowlist는 P0-01 범위가 아니다.
-> 남은 미완료는 AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer(P0-04), multipart 최종
+> P0-04로 AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer를 완료했다. 남은 미완료는 multipart 최종
 > raw-byte signer(P0-14), P1-02 credential lifecycle·rate/network/workload 통제다. 업무 멱등 replay는
 > 새 nonce를 사용한다.
 
-권한 scope(정본=API §1.1 enum 전수, OAuth2/RBAC 공통, 13종):
+권한 scope(정본=API §1.1 enum 전수, public/BO OAuth2·RBAC 13종 + internal machine 1종 = 총 14종):
 
 - `aml:event:write`
 - `aml:screen:evaluate`
@@ -1244,8 +1244,9 @@ API 인증·권한:
 - `aml:admin:approval` (결재 큐·승인/반려)
 - `aml:admin:audit` (append-only 감사 조회)
 - `aml:pii:reveal` (원문/raw PII 접근, 사유+감사 `RAW_DATA_ACCESS` 필수, API §1.6)
+- `aml:internal:fds-escalation:write` (FDS→AML escalation internal write 전용)
 
-> scope 마스터는 **API §1.1 enum(전수 13종)** 이며 본 목록은 이를 정본으로 인용한다(예시 아님). PRD §1.4도 동일 정본을 참조한다.
+> scope 마스터는 **API §1.1 enum(전수 14종)** 이며 본 목록은 이를 정본으로 인용한다(예시 아님). PRD §1.4도 동일 정본을 참조한다.
 
 API 장애 원칙:
 
@@ -2027,6 +2028,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-13 | **P0-04 양방향 내부 REST service-auth 완료.** `/internal/v1/aml/**`를 v2-only로 전환하고 escalation/risk/screen/PII reveal scope를 receiver에서 강제했다. FDS→AML fallback과 AML→FDS profile은 exact target/final URI/same bytes signer를 사용하고 BO→AML union에 `aml:pii:reveal`을 포함한다. | system-architect. 신규 scope=`aml:internal:fds-escalation:write`; SQS primary·DDL 불변 |
 | 2026-07-13 | **P0-03 local/demo mock 규제 제출 실패→공식 재제출 폐루프.** 최초 reject bucket 회차만 `SUBMISSION_REJECTED`; 같은 report의 `:submit` 4-eyes 재사용은 evidence 계보와 회차 이력을 보존하고 `resubmit_count`를 증가시켜 ACK한다. 운영 callback 계약은 불변이다. | system-architect. 코드 truth=`MockRegulatorSubmissionAdapter`·`RegulatoryReport`·`MockRegulatorSubmissionAdapterTest` |
 | 2026-07-12 | **P0-02 운영 Flyway demo seed·기본 secret 분리.** §19.2b에 AML V45 forward quarantine, explicit `demo`/`db/demo` reference config, REST-only business data, production profile/secret/DB startup gate를 반영했다. `tenant_demo` ID 단독은 fingerprint가 아니며 P1-02 credential lifecycle·P1-03 keyId/AAD/dual-read/re-encryption은 완료 범위에서 제외했다. API/DTO/event 계약은 변경하지 않았다. | system-architect. 코드 truth=AML V45·demo repeatable·`ProductionSafetyValidator` |
 | 2026-07-12 | **P0-01 AML 중립 거래 인입 auth-first 경계 반영.** §15 namespace/Public API에 `/aml/v1/**`를 정식 등재하고 route별 v2-only와 두 ingest의 실제 filter chain·`aml:event:write`를 확정했다. scope/role attribute 부재는 공통 local-bootstrap `Boolean.TRUE` marker 외 403, 인증 실패 업무 row 0, valid-signed scope 403 nonce 보존, neutral `X-Data-Scope` tamper 401을 명시했다. Neutral `Source-System` 선택과 `Idempotency-Key` body eventId fallback은 endpoint-specific 예외로 고정했다. | API/DB schema 무변경. 코드 truth=AML filter/guard·실 filter-chain REST 테스트 |

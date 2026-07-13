@@ -777,7 +777,7 @@ API key/OAuth2 client/webhook을 `(tenant, workspace)`에 바인딩. HMAC은 검
 | credential_id | VARCHAR(96) | N | PK | |
 | credential_type | VARCHAR(32) | N | `API_KEY`/`OAUTH2_CLIENT`/`MTLS`/`WEBHOOK` | |
 | secret_ciphertext | VARCHAR(512) | Y | | HMAC/OAuth/webhook 공유 secret의 AES-GCM 암호문. raw secret 미저장 |
-| scopes | JSONB | N | `'[]'` | `fds:event:write` 등 |
+| scopes | JSONB | N | `'[]'` | public/admin scope와 P0-04 내부 최소 scope `fds:internal:customer-profile:write`. BO→FDS row는 운영 typed API exact 9종만 보유하고 ingest/decision/profile scope 제외 |
 | allowed_protocol_versions | JSONB | N | DEFAULT `'["v2"]'`; non-empty subset of `v1`/`v2` | migration 이전 row=`["v1","v2"]`, 신규 row=`["v2"]`; service policy와 교집합만 허용 |
 | ip_allowlist | JSONB | Y | | |
 | webhook_url | VARCHAR(512) | Y | | callback URL |
@@ -787,7 +787,7 @@ API key/OAuth2 client/webhook을 `(tenant, workspace)`에 바인딩. HMAC은 검
 
 credential rotation은 신규 credential ID 병행 발급→client 전환→최대 clock skew(5분)+nonce TTL(15분) 경과→구 credential 비활성화를 기본으로 한다([공통 인증 §6](../api/00-common-machine-auth.md#6-credential-전환회전)). 명시적 v2 실패 후 v1 fallback은 금지한다. 단, 생성·scope 변경·유예회전·폐기·last-used 이력과 credential별 사용 조건은 **P1-02 미완료 범위**이므로 이 권장 절차만으로 credential lifecycle 완료를 주장하지 않는다.
 
-local/demo REST simulator credential은 Flyway data seed가 아니다. 명시적 `local|demo` positive profile과 opt-in property가 함께 켜진 경우에만 환경의 32자 이상 secret을 정상 cipher로 암호화해 v2-only row로 provision한다. 그 밖의 profile에는 provisioner가 등록되지 않는다. P0-02의 V15와 demo repeatable도 credential을 만들지 않는다. V15는 알려진 복합 demo tenant fingerprint 아래의 기존 credential을 `enabled=false`, `secret_ciphertext=NULL`로 격리하며, 재등록은 환경 provisioner만 담당한다.
+local/demo REST credential은 Flyway data seed가 아니다. 명시적 `local|demo` positive profile과 opt-in property가 함께 켜진 경우에만 환경의 32자 이상 secret을 정상 cipher로 암호화해 v2-only row로 provision한다. P0-04 provisioner는 simulator, BO typed delegation, AML customer-profile purpose를 다른 credential ID/secret으로 만들고 exact `(tenant,workspace)` row에 저장한다. BO row는 `fds:case:read/update`, `fds:action:write`, `fds:evidence:export`, `fds:rule:simulate`, admin 4종의 exact 9 scope, AML profile row는 `fds:internal:customer-profile:write` 하나만 가진다. 그 밖의 profile에는 provisioner가 등록되지 않는다. P0-02의 V15와 demo repeatable도 credential을 만들지 않는다. V15는 알려진 복합 demo tenant fingerprint 아래의 기존 credential을 `enabled=false`, `secret_ciphertext=NULL`로 격리하며, 재등록은 환경 provisioner만 담당한다.
 
 `secret_ciphertext`를 여는 FDS master key는 DB row가 아니라 secret manager 주입값이다. production-class profile(`prod`/`production`/`aws`)은 Base64/Base64URL decode 기준 32 bytes 이상 random material만 허용하고 blank·공개 demo 값·저엔트로피 값을 startup에서 거부한다. 현 단일-key 암호문은 배포 실패 시 같은 secret-manager current version으로만 rollback하며 online key 교체를 시도하지 않는다. `keyId`·tenant/resource AAD·dual-read·background re-encryption·key-use audit는 **P1-03 미완료 범위**다.
 
@@ -1056,6 +1056,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-13 | v4.4 | **P0-04 target-bound credential scope 정본.** 기존 `scopes JSONB`에 신규 DDL 없이 AML profile 최소 scope와 BO exact 9-scope purpose를 정의하고 local provisioner의 simulator/BO/AML-profile ID·secret 분리를 명시했다. | 코드 truth=`LocalMachineCredentialProvisioner`; 스키마/Flyway 무변경 |
 | 2026-07-13 | v4.3 | **P0-03 위험그룹 generation ABA hardening.** FDS V17이 `generation_id`를 기존 행 random UUID backfill/default/NOT NULL로 추가하고 generation 증명이 없는 비종결 `GROUP`/`MERCHANT_NORMALIZE` approval을 `CANCELLED`로 이관한다. bo-api companion V19는 모든 기존 local `GROUP` 행을 원 payload/hash 보존 exact 4필드 tombstone으로 감싸고 비종결 4상태만 취소하며, terminal exact marker만 역사 read-only로 허용한다. master/audit hash, ADD/REMOVE `groupGenerationHash`, normalize 정렬 snapshot을 generation에 결속해 delete/recreate stale approval의 새 master/member mutation을 차단한다. | 코드 truth=FDS V17·BO V19·`RiskGroupAdminService`·`ApprovalService`·`FdsApprovalStubService` |
 | 2026-07-13 | v4.2 | **P0-03 위험그룹 approval hash·rollback 의미 강화.** JSONB key order와 무관한 fixed semantic field-order serializer를 submit/current/apply에 공통 적용했다. business 재검증 실패만 `EXECUTION_FAILED`로 확정하고, group save/delete·audit persistence 예외는 approval transaction 전체를 rollback하여 원 row를 `SUBMITTED`·retryable로 유지한다. | 코드 truth=`RiskGroupAdminService.canonicalMasterUpdatePayload`·`ApprovalService.approve` |
 | 2026-07-13 | v4.1 | **P0-03 위험그룹 master 4-eyes·감사 누락 보완.** POST create는 즉시 저장+`GROUP_CREATE`; PUT은 `GROUP`/`RISK_MANAGER` staged payload만 만들고, 다른 checker가 rename 또는 멤버 0인 `active=false` 정의 삭제를 적용한 뒤에만 `GROUP_UPDATE`를 append한다. update actor=checker, trace=staged causal trace 우선, before/after canonical SHA-256이며 반려·자기승인·실행 실패는 row/성공 감사 무변경이다. | 코드 truth=`RiskGroupAdminService`·`ApprovalService`·`RiskGroupAdminServiceTest` |
