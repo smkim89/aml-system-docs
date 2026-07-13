@@ -65,6 +65,7 @@
 
 - **한 고객사 = 한 배포(전용 DB)** 가 기본. "고객사 등록"은 격리 라디오가 아니라 **배포 유형 선택 + 온보딩 신청·상태** 관리다(매니지드는 운영자 카탈로그, self-hosted는 고객 단독 BO).
 - 온보딩 상태머신: `REQUESTED → PROVISIONING → DEPLOYED → VERIFIED → ACTIVE`(매니지드) / `PACKAGE_ISSUED → CUSTOMER_DEPLOYED → REGISTERED`(self-hosted).
+- **`SHARED` 배포 저장 격리(RLS, P0-13)**: 공유 DB 행 격리는 PostgreSQL Row-Level Security 로 강제한다 — 연결 획득 시 새 login 없이 NOLOGIN role 로 `SET ROLE aegis_app_runtime` + `set_config('app.tenant_id'/'app.workspace_id'/'app.elevated', …)`, `tenant_id`(fds/bo 는 `+workspace_id`) 보유 전 테이블에 `FORCE ROW LEVEL SECURITY` + 정책 2종(runtime tenant 일치 OR elevated / owner 전량), GUC 미설정=fail-closed(0 row). 스케줄러·relay·provisioner·platform operator 는 `ElevatedDbContext` elevated escape(코드 실수 방어). 코드 truth=`common-security` `RlsSessionDataSource`, aml V47·fds V18·bo V20, runbook `aegis-aml/docs/ops/db-rls-isolation.md`.
 
 ### 4.2 운영 seed·secret 경계
 
