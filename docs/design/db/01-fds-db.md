@@ -67,6 +67,17 @@
 - `data_scope`는 row 단위 다중 적용을 위해 핵심 운영 테이블(subject/transaction/case)에 `data_scope VARCHAR(128)` 단일 컬럼 + 보조 `fds_case_scopes`(다대다) 패턴 허용. bo-api는 `dataScope` 집합 IN 필터를 fds-svc 조회에 주입한다.
 - 온보딩·배포 메타(`deployment_model`/`onboarding_status`/`default_region`/`infra_ref`)는 `fds_tenants`(§5.1)에 보존한다. 매니지드 전용 IaC 파이프라인 도구·self-hosted 라이선스 발급/검증 방식은 P8 인프라 설계에서 확정(오픈결정).
 
+### 2.3 행 수준 보안(RLS) 저장 격리 — `SHARED` 배포 방어선 (P0-13)
+
+`SHARED` 배포에서 애플리케이션 `WHERE tenant_id = ?`(+`workspace_id`) predicate 누락 실수가 곧 교차 tenant 노출이 되지 않도록, PostgreSQL **Row-Level Security(RLS)** 를 DB 경계 방어선으로 둔다(코드=truth, 운영 runbook `aegis-aml/docs/ops/db-rls-isolation.md`).
+
+- **격리 키**: `(tenant_id, workspace_id)` 2-튜플(§2.2). 애플리케이션 연결은 세션 GUC `app.tenant_id`·`app.workspace_id` 를 게시하고, `workspace_id` 컬럼을 가진 테이블은 정책이 두 값을 함께 검사(`AND`)하며, `fds_tenants`(테넌트 원장) 등 tenant-only 테이블은 `tenant_id` 만 검사한다. workspace 존재 여부는 하드코딩 목록이 아니라 마이그레이션이 `information_schema` 로 테이블별 판정해 정책 predicate 를 자동 분기한다. `data_scope` 는 RLS 키가 아니라 운영자 row-level 권한 필터로 현행 유지한다.
+- **SET ROLE / set_config 모델**: 새 login credential 없이(가정 A1), 클러스터 전역 NOLOGIN role `aegis_app_runtime` 를 두고 애플리케이션 연결 획득 시 `SET ROLE aegis_app_runtime` + `set_config('app.tenant_id'|'app.workspace_id'|'app.elevated', …)` 를 실행한다(common-security `RlsSessionDataSource`). login user 가 superuser/owner 여도 세션이 non-owner role 로 강등되어 RLS 가 강제된다. Flyway 는 감싸지 않은 원본 DataSource(owner 권한)로 실행돼 정책 DDL·후속 데이터 마이그레이션이 전량 접근한다. role/grant 는 aml V47·bo V20 이 먼저 생성했어도 `IF NOT EXISTS` 로 멱등이다.
+- **FORCE RLS + 정책 2종**: `tenant_id` 보유 전 테이블에 `ENABLE`+`FORCE ROW LEVEL SECURITY` 후 ① 정책 runtime(`TO aegis_app_runtime`): `(tenant_id = current_setting('app.tenant_id', true) [AND workspace_id = current_setting('app.workspace_id', true)]) OR current_setting('app.elevated', true) = 'on'`, ② 정책 owner(`TO <owner>`): 전량 허용(FORCE 하에서도 마이그레이션·운영 정비가 가능한 명시적·감사 가능 escape). GUC 미설정 세션은 `current_setting(…, true)=NULL → false → 0 row`(fail-closed).
+- **elevated 경계**: 전 tenant 를 열거/정비하는 경로(스케줄러 `ActionRelay`·`WebhookRelay`·`MachineAuthNonceCleanup`·startup provisioner·production safety validator)는 `ElevatedDbContext.runElevated` 로 감싸 `app.elevated='on'` escape 를 탄다. `set_config` 는 비특권이라 elevated 는 **권한 경계가 아니라 코드 실수 방어**다(가정 A3).
+- **비대상 테이블**: `tenant_id` 컬럼이 없는 전역/참조 테이블과 `flyway_schema_history` 는 격리 키가 없어 RLS 비대상이며, 마이그레이션 DO 루프가 `tenant_id` 보유 테이블만 열거하므로 자동 제외된다. 가드 테스트(`RlsCoverageGuardIntegrationTest`)가 대상 전 테이블의 `relrowsecurity AND relforcerowsecurity` 와 정책 2개 존재를 강제한다.
+- **코드 truth**: `services/fds-svc/.../db/migration/V18__rls_tenant_isolation.sql`, `services/fds-svc/.../global/config/RlsDataSourceConfiguration.java`, `services/common-security/.../rls/*`, `application.yml` `aegis.fds.rls`.
+
 ---
 
 ## 3. ERD
@@ -1056,6 +1067,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-13 | v4.5 | **P0-13 SHARED 배포 DB 격리(RLS) 저장 방어선 역전파(V18).** §2.3 신설 — `SHARED` 배포 행 격리를 PostgreSQL RLS(격리 키 `(tenant_id, workspace_id)` 2-튜플, workspace 보유 테이블은 두 값 AND·tenant-only 테이블은 tenant_id 만 검사·information_schema 자동 분기, SET ROLE `aegis_app_runtime` + `set_config('app.tenant_id'/'app.workspace_id'/'app.elevated', …)` 모델, FORCE RLS + 정책 2종 runtime/owner, elevated 경계=코드 실수 방어, 비대상=tenant_id 없는 전역/참조 테이블)로 명문화. `data_scope` 는 RLS 키가 아니라 권한 필터로 유지(불변). 스키마 컬럼/enum 무변경. | 코드 truth=`services/fds-svc/.../db/migration/V18__rls_tenant_isolation.sql`·`global/config/RlsDataSourceConfiguration.java`·`common-security/.../rls/*`; runbook=`aegis-aml/docs/ops/db-rls-isolation.md` |
 | 2026-07-13 | v4.4 | **P0-04 target-bound credential scope 정본.** 기존 `scopes JSONB`에 신규 DDL 없이 AML profile 최소 scope와 BO exact 9-scope purpose를 정의하고 local provisioner의 simulator/BO/AML-profile ID·secret 분리를 명시했다. | 코드 truth=`LocalMachineCredentialProvisioner`; 스키마/Flyway 무변경 |
 | 2026-07-13 | v4.3 | **P0-03 위험그룹 generation ABA hardening.** FDS V17이 `generation_id`를 기존 행 random UUID backfill/default/NOT NULL로 추가하고 generation 증명이 없는 비종결 `GROUP`/`MERCHANT_NORMALIZE` approval을 `CANCELLED`로 이관한다. bo-api companion V19는 모든 기존 local `GROUP` 행을 원 payload/hash 보존 exact 4필드 tombstone으로 감싸고 비종결 4상태만 취소하며, terminal exact marker만 역사 read-only로 허용한다. master/audit hash, ADD/REMOVE `groupGenerationHash`, normalize 정렬 snapshot을 generation에 결속해 delete/recreate stale approval의 새 master/member mutation을 차단한다. | 코드 truth=FDS V17·BO V19·`RiskGroupAdminService`·`ApprovalService`·`FdsApprovalStubService` |
 | 2026-07-13 | v4.2 | **P0-03 위험그룹 approval hash·rollback 의미 강화.** JSONB key order와 무관한 fixed semantic field-order serializer를 submit/current/apply에 공통 적용했다. business 재검증 실패만 `EXECUTION_FAILED`로 확정하고, group save/delete·audit persistence 예외는 approval transaction 전체를 rollback하여 원 row를 `SUBMITTED`·retryable로 유지한다. | 코드 truth=`RiskGroupAdminService.canonicalMasterUpdatePayload`·`ApprovalService.approve` |

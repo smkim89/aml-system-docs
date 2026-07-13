@@ -123,11 +123,22 @@ erDiagram
 규칙:
 - 모든 운영 테이블 PK 선두는 `tenant_id`. UNIQUE·조회 인덱스도 `tenant_id` 선두.
 - 격리의 **1차 경계는 배포 모델**(§3.1 `aml_tenants.deployment_model`). 전용 배포는 배포 자체가 서비스(테넌트) 경계이며, 본 DDL은 단일 배포 내부 모델을 기술한다(`SHARED` 배포일 때만 `tenant_id` 행 격리가 서비스 간 경계로 동작). 테넌트=서비스이며 그 상위에 기관(institution)이 있다(1 기관 : N 서비스).
-- `SHARED` 배포에서 행 단위 격리는 PostgreSQL **RLS 정책**(`app.current_tenant` 세션 변수)으로 보강한다.
+- `SHARED` 배포에서 행 단위 격리는 PostgreSQL **RLS 정책**으로 보강한다(세션 GUC `app.tenant_id`·`app.elevated` 기반, §1.2).
 - "서비스 등록"은 격리 라디오가 아니라 **배포 유형 선택 + 온보딩 신청·상태**(`onboarding_status`) 관리다. 온보딩 상태머신은 §5.28 참조.
 - `data_scope`(영업점·법인그룹 등 하위 격리)는 `data_scope` 컬럼으로 표현하고 bo-api 권한과 매핑한다(정본 §4).
 - 온보딩·배포 메타(`deployment_model`/`onboarding_status`/`default_region`/`infra_ref`)는 `aml_tenants`(§3.1)에 보존한다. 매니지드 전용 IaC 파이프라인·self-hosted 라이선스 발급/검증 방식은 P8 인프라 설계에서 확정(오픈결정).
 - **서비스 관리(배포/온보딩) 소유 경계**: bo-api가 `deployment_model`/`onboarding_status` 기준으로 소유·집약하며, 온보딩 프로비저닝/상태조회/self-hosted 등록 콜백 엔드포인트는 **bo-api 전용**이다. aml-svc 엔진 API에는 온보딩 엔드포인트를 두지 않는다.
+
+### 1.2 행 수준 보안(RLS) 저장 격리 — `SHARED` 배포 방어선 (P0-13)
+
+`SHARED` 배포에서 애플리케이션 `WHERE tenant_id = ?` predicate 누락 실수가 곧 교차 tenant 노출이 되지 않도록, PostgreSQL **Row-Level Security(RLS)** 를 DB 경계 방어선으로 둔다(코드=truth, 운영 runbook `aegis-aml/docs/ops/db-rls-isolation.md`).
+
+- **격리 키**: `tenant_id` 단일 차원(AML workspace 미도입 — §1.1). 애플리케이션 연결은 세션 GUC `app.tenant_id` 를 게시하고(workspace 는 canonical `default` 고정), 정책이 이를 검사한다. `data_scope` 는 RLS 키가 아니라 운영자 row-level 권한 필터로 현행 유지한다.
+- **SET ROLE / set_config 모델**: 새 login credential 없이(가정 A1), 클러스터 전역 NOLOGIN role `aegis_app_runtime` 를 두고 애플리케이션 연결 획득 시 `SET ROLE aegis_app_runtime` + `set_config('app.tenant_id'|'app.workspace_id'|'app.elevated', …)` 를 실행한다(common-security `RlsSessionDataSource`). 이로써 login user 가 superuser/owner 여도 세션이 non-owner role 로 강등되어 RLS 가 강제된다. Flyway 는 감싸지 않은 원본 DataSource(owner 권한)로 실행돼 정책 DDL·후속 데이터 마이그레이션이 전량 접근한다.
+- **FORCE RLS + 정책 2종**: `tenant_id` 보유 전 테이블에 `ENABLE`+`FORCE ROW LEVEL SECURITY` 후 ① 정책 runtime(`TO aegis_app_runtime`): `tenant_id = current_setting('app.tenant_id', true) OR current_setting('app.elevated', true) = 'on'`, ② 정책 owner(`TO <owner>`): 전량 허용(FORCE 하에서도 마이그레이션·운영 정비가 가능한 명시적·감사 가능 escape). GUC 미설정 세션은 `current_setting(…, true)=NULL → false → 0 row`(fail-closed).
+- **elevated 경계**: 특정 tenant 에 매이지 않고 전 tenant 를 열거/정비하는 경로(스케줄러 6종·outbox relay 열거·startup provisioner·production safety validator)는 `ElevatedDbContext.runElevated` 로 감싸 `app.elevated='on'` escape 를 탄다. `set_config` 는 비특권이라 elevated 는 **권한 경계가 아니라 코드 실수 방어**다(가정 A3).
+- **비대상 테이블**: `tenant_id` 컬럼이 없는 글로벌/참조 테이블(국가·달력·enum 참조 등)과 `flyway_schema_history` 는 격리 키가 없어 RLS 비대상이며, 마이그레이션 DO 루프가 `tenant_id` 보유 테이블만 열거하므로 자동 제외된다. 가드 테스트(`RlsCoverageGuardIntegrationTest`)가 대상 전 테이블의 `relrowsecurity AND relforcerowsecurity` 와 정책 2개 존재를 강제한다.
+- **코드 truth**: `services/aml-svc/.../db/migration/V47__rls_tenant_isolation.sql`, `services/aml-svc/.../global/config/RlsDataSourceConfiguration.java`, `services/common-security/.../rls/{RlsSessionDataSource,ElevatedDbContext,TenantSessionContext,TenantSessionContextProvider}.java`, `application.yml` `aegis.aml.rls`.
 
 ---
 
@@ -1422,6 +1433,7 @@ hanpass-ph 운영 사용: `SANCTIONS_REVIEW`/`PEP_REVIEW`/`EDD_REVIEW`/`STR_REVI
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-13 | **P0-13 SHARED 배포 DB 격리(RLS) 저장 방어선 역전파(V47).** §1.2 신설 — `SHARED` 배포 행 격리를 PostgreSQL RLS(격리 키 `tenant_id` 단일 차원, SET ROLE `aegis_app_runtime` + `set_config('app.tenant_id'/'app.elevated', …)` 모델, FORCE RLS + 정책 2종 runtime/owner, elevated 경계=코드 실수 방어, 비대상=tenant_id 없는 글로벌/참조 테이블)로 명문화. §1.1 stale `app.current_tenant` 세션 변수 표기를 실제 GUC `app.tenant_id`·`app.elevated`(§1.2)로 정정. `data_scope` 는 RLS 키가 아니라 권한 필터로 유지(불변). | 코드 truth=`services/aml-svc/.../db/migration/V47__rls_tenant_isolation.sql`·`global/config/RlsDataSourceConfiguration.java`·`common-security/.../rls/*`; runbook=`aegis-aml/docs/ops/db-rls-isolation.md`; 스키마 컬럼/enum 무변경 |
 | 2026-07-13 | **P0-04 internal minimum-scope credential 정본.** 기존 `scopes JSONB`에 신규 DDL 없이 FDS escalation 전용 scope, BO `aml:pii:reveal` union, simulator/BO/FDS logical purpose 분리를 추가했다. | 코드 truth=`LocalMachineCredentialProvisioner`; 스키마/Flyway 무변경 |
 | 2026-07-13 | **P0-03 admin 감사 trace 정합(V46).** §2.1 기본 trace 64 계약에 audit-only 예외를 명시하고 `aml_audit_events.trace_id VARCHAR(128)`·11종 event category(`RA_REVIEW` 포함)·명시적 causal trace 우선/MDC fallback을 반영했다. §7에 V46을 추가하되 canonical ingest/history의 64자/422를 그대로 유지했다. | 코드 truth=`V46__widen_trace_ids_to_128.sql`, `AuditEventJpaAdapter`/`AuditEventJpaEntity`; `docs/aml-data.md` 무변경 |
 | 2026-07-12 | **P0-02 운영 Flyway demo seed·기본 secret 분리(V45).** §3.15에 credential quarantine·secret-manager AML cipher/PII/evidence key startup gate와 P1-02/P1-03 경계를 명시했다. §7에 실제 V45와 explicit `db/demo` repeatable을 추가하고, `tenant_demo` ID/부분 문자열이 아닌 V2 immutable seed provenance의 exact 복합 fingerprint만 격리한다. FATF source·CTR threshold·PH calendar를 포함한 reference config와 REST-only business data를 분리했다. API/DTO/event 계약은 변경하지 않았다. | 코드 truth=AML V45·`db/demo/R__activate_demo_reference_configuration.sql`·`ProductionSafetyValidator` |
