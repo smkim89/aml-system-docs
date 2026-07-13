@@ -1,6 +1,6 @@
 # 공통 Machine Authentication 계약 (AML/FDS inbound wire v2)
 
-> **상태**: P0-00 정본, 2026-07-12.
+> **상태**: P0-03 trusted actor 경계까지 반영, 2026-07-13.
 > **적용 대상**: `aml-svc`·`fds-svc`의 `IngestAuthenticationFilter`가 보호하는 서버 간 inbound HTTP 요청.
 > **구현 정본**: `aegis-aml/services/common-security`와 저장소 공통 고정 벡터 `aegis-aml/test-vectors/machine-auth-v2.json`.
 
@@ -43,14 +43,18 @@
 | `X-Auth-Version` | v2 요청은 정확히 `2` | version line |
 | `X-Nonce` | CSPRNG 16 bytes를 base64url-no-padding으로 인코딩한 22자 | 독립 line |
 | `X-Signature` | `hmac-sha256=<64 lowercase hex>` | canonical bytes의 HMAC-SHA256 결과 |
-| `X-Trace-Id` | 선택 관측성 식별자 | **서명 밖**(9-key `scopeContext`에 포함하지 않음) |
+| `X-Trace-Id` | 선택 관측성 식별자. 공통 안전 경계=trim 후 128자 이하·ISO 제어문자 금지 | **서명 밖**(9-key `scopeContext`에 포함하지 않음) |
 | `X-Correlation-Id` | 선택 업무/호출 상관 식별자 | **서명 밖**(9-key `scopeContext`에 포함하지 않음) |
 
 HTTP header 이름 자체는 대소문자를 구분하지 않지만, 값은 본 규칙대로 해석한다. blank 값은 absent로 보고, nonblank 값은 trim하거나 alias 치환해 canonical 의미를 보정하지 않는다.
 
 서버가 singleton으로 취급하는 보안·canonical header(`Tenant-Id`, `Workspace-Id`, `X-Data-Scope`, `X-User-Subject`, `X-Internal-Service`, `Source-System`, `Idempotency-Key`, `X-Api-Key`, `X-Timestamp`, `X-Signature`, `X-Auth-Version`, `X-Nonce`, `Content-Type`, `Content-Encoding`)와 `X-Trace-Id`는 각각 한 번만 나타나야 한다. 같은 값이라도 두 field-line으로 보내면 body read·credential lookup·nonce 소비 전에 generic 401로 거부한다. `X-Correlation-Id`는 관측성 전파 값일 뿐 현재 singleton/canonical 목록에는 포함되지 않는다.
 
-`X-User-Subject`는 trusted BFF/mesh가 전달한 actor를 v2 서명에 결합한다. AML STR 조회·기안·상신·거부·취소의 감사 actor/maker는 body의 자기주장 값이 아니라 이 서명된 header에서 파생하며, bo-api AML 위임 credential은 엔진 `RoleGuard`가 요구하는 `COMPLIANCE` authority token을 포함해야 한다. 이는 BO edge의 사용자 `AML_COMPLIANCE` RBAC 검사를 대체하지 않는다.
+`X-Trace-Id`는 duplicate 검사 뒤 공통 `TraceIdPolicy`가 trim·128자·ISO 제어문자 경계를 검증하고 정규화한 값을 controller의 `@RequestHeader`와 MDC `traceId`에 동일 노출한다. 명시적 causal trace를 가진 background/outbox 감사 write는 그 값을 우선하고, 요청 기반 admin write만 값이 없을 때 MDC를 사용한다. 이 128자는 공통 HTTP/감사 안전 상한이다. **AML canonical ingest는 별도 도메인 계약 `docs/aml-data.md`의 최대 64자를 유지**하므로 65~128자 입력도 인증을 통과한 뒤 업무 검증에서 422로 거부된다. `aml_canonical_events`·CDD history 등 canonical lineage의 `trace_id VARCHAR(64)`를 감사 폭에 맞춰 넓히지 않는다.
+
+`X-User-Subject`는 trusted BFF/mesh가 전달한 actor를 v2 서명에 결합한다. HMAC 검증을 통과한 뒤 공통 filter가 최대 128자·제어문자/CRLF 금지 검증까지 마친 값만 내부 `VERIFIED_USER_SUBJECT_ATTRIBUTE`로 승격한다. HMAC이 유효해도 이 subject 경계를 어기면 verified attribute를 만들지 않고 generic 인증 실패(401)로 끝난다. controller는 raw header를 직접 읽지 않고 `TrustedActorResolver`를 사용한다. resolver는 이 signed subject를 maker/checker/actor 정본으로 반환하며, body/query의 기존 actor 필드는 생략 가능하고 존재하면 trim·대소문자 무시 기준으로 같은 subject인지 확인하는 compatibility assertion일 뿐이다. assertion 불일치·누락 actor·잘못된 body 값은 업무 command 전에 400으로 거부한다.
+
+explicit local/demo bootstrap 요청은 공통 filter가 실제 `BOOTSTRAP_BYPASS_ATTRIBUTE=Boolean.TRUE`를 설정한 경우에만 raw `X-User-Subject`를 resolver 입력으로 사용할 수 있다. bootstrap subject도 filter가 같은 128자/제어문자 경계를 먼저 검증한다. 외부 header로 marker를 주장하거나 production에서 bootstrap actor를 사용하는 경로는 없다. bo-api AML 위임 credential은 엔진 `RoleGuard`가 요구하는 `COMPLIANCE` authority token을 포함해야 한다. 이는 BO edge의 사용자 `AML_COMPLIANCE` RBAC 검사를 대체하지 않는다.
 
 ## 3. canonical request
 
@@ -116,6 +120,7 @@ Java server/client와 Python signer가 함께 소비하는 단일 벡터는 **`a
 3. timestamp freshness, version·nonce 문법, canonical request와 HMAC을 검증한다.
 4. **유효한 서명에 한해** nonce를 PostgreSQL에서 원자 소비한다.
 5. nonce 소비가 커밋된 뒤 scope 검사와 controller/usecase를 실행한다.
+6. HMAC 검증 성공 요청에 한해 signed `X-User-Subject`를 내부 verified request attribute로 승격한다. scope/controller는 actor가 필요할 때 이 attribute만 소비한다.
 
 replay 불변식은 다음과 같다.
 
@@ -145,13 +150,14 @@ replay 불변식은 다음과 같다.
 - migration 당시 **기존 credential row는 `["v1","v2"]`로 backfill**, migration 이후 **신규 credential은 `["v2"]`가 기본**이다. service policy가 이 allowlist를 더 좁힐 수 있다.
 - normalized API route policy도 service/credential 교집합을 더 좁힐 수 있다. P0-01의 AML
   `/aml/v1/**`는 migration 전 credential이 `["v1","v2"]`여도 v2-only이며, 다른 기존 AML/FDS
-  route의 측정된 전환은 유지한다.
+  route의 측정된 전환은 유지한다. P0-03에서 filter coverage 누락을 복구한 기존 FDS
+  `/api/v1/evidence/fds/**`도 이 이중 전환 대상이며 `canonicalV2RequiredPathPrefixes`에 포함하지 않는다.
 - header가 없으면 transition 동안 legacy v1, 명시적 `X-Auth-Version: 1`은 v1, 명시적 `2`는 v2로만 검증한다. **v2 실패 후 v1 재검증 fallback은 없다.** v1 timestamp parser는 기존 client 호환을 위해 RFC3339 offset 표기(예: `+09:00`)를 유지하되 서명에는 전송 문자열을 그대로 사용한다. v2 timestamp는 canonical UTC `Z` 표기만 허용한다.
 - v1 canonical material(`timestamp/apiKey/method/path/[actor]/body`)은 전환 호환용 legacy일 뿐 신규 client가 복제할 계약이 아니다. query·tenant·scope·nonce를 결합하는 본 v2를 사용한다.
 - v1 사용량이 14일 연속 0이고 등록 client 전환 증거가 확보되면 service policy에서 v1을 끈다. 이후 credential allowlist도 v2-only로 축소한다.
 - secret 회전은 기존 credential의 in-place overwrite보다 **새 credential ID를 병행 발급**하는 방식을 기본으로 한다. client를 새 ID/secret으로 전환하고, 최대 clock skew(5분)+nonce TTL(15분)이 지난 뒤 구 credential을 비활성화한다. 평문 secret은 발급 채널 밖에 저장·로그하지 않고 DB에는 AES-GCM `secret_ciphertext`만 둔다.
 
-로컬 credential은 business/demo Flyway seed가 아니라 명시적 infrastructure provisioning이다. `local` 또는 `demo`라는 **positive profile allowlist**와 opt-in property가 모두 참일 때만 provisioner가 생기며, bootstrap bypass property도 같은 두 profile에서만 효력이 있다. 그 밖의 profile(no-profile/custom/staging/production 포함)에서는 property가 설정돼도 bypass를 무시하고 fail-closed한다. provisioner는 32자 이상 환경 secret을 정상 cipher로 암호화해 v2-only row로 저장하고 startup 뒤 평문 참조를 제거한다.
+로컬 credential은 business/demo Flyway seed가 아니라 명시적 infrastructure provisioning이다. active profile이 nonempty이고 모든 값이 exact `local` 또는 `demo`인 **positive profile allowlist**와 opt-in property가 모두 참일 때만 provisioner가 생기며, bootstrap bypass property도 같은 판정에서만 효력이 있다. `local+demo`는 허용하지만 no-profile/custom/staging/production과 `local+staging`·`demo+qa` 같은 mixed profile에서는 property가 설정돼도 bypass를 무시하고 fail-closed한다. provisioner는 32자 이상 환경 secret을 정상 cipher로 암호화해 v2-only row로 저장하고 startup 뒤 평문 참조를 제거한다.
 
 AML local/demo는 REST simulator용 `SIMULATOR_AML_API_KEY`/`SIMULATOR_AML_HMAC_SECRET`과 bo-api 위임용 `BO_AML_API_KEY`/`BO_AML_HMAC_SECRET`을 서로 다른 credential ID/secret으로 provision한다. bo-api credential의 scope union에는 STR 접근용 `COMPLIANCE` authority가 포함된다. FDS local/demo provisioner는 simulator credential을 별도로 만든다. 이 편의 provisioner는 운영 credential lifecycle 구현의 대체물이 아니다.
 
@@ -172,6 +178,12 @@ P0-01 인증 실패는 controller/usecase에 진입하지 않으므로 canonical
 canonical 무결성에만 결합한다. 기존 서명 뒤 값을 바꾸면 401이고, valid signature로 새로 서명한 값에
 대한 credential별 data-scope allowlist/인가 모델은 이 작업에서 추가하지 않는다.
 
+P0-03은 signed `X-User-Subject`와 업무 actor 사이의 마지막 경계를 닫는다. AML admin write의 legacy
+`makerId`/`actor`/`checkerId`는 신뢰 원천이 아니며 `TrustedActorResolver`가 반환한 subject와 일치할 때만
+허용한다. verified attribute는 서명 검증 전에 생성하지 않고, bootstrap 예외도 위 positive-profile
+marker에 한정한다. 이는 machine-auth scope 검사와 maker≠checker 4-eyes 검사를 모두 보완하며 어느 쪽도
+대체하지 않는다.
+
 다음 항목은 **2026-07-12 현재 미완료**이며 본 문서 존재만으로 적용 완료를 주장하지 않는다.
 
 - **P0-04**: AML/FDS 내부 service-auth 전 경로와 bo-api→FDS signer 전환.
@@ -184,5 +196,6 @@ canonical 무결성에만 결합한다. 기존 서명 뒤 값을 바꾸면 401�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-13 | P0-03 trusted actor·trace 계약. HMAC 성공 뒤 signed subject의 128자·제어문자 경계를 filter가 검증한 뒤에만 `VERIFIED_USER_SUBJECT_ATTRIBUTE`를 생성하고, `TrustedActorResolver`가 signed/bootstrap-marked subject와 legacy body/query assertion 일치를 검증해 AML admin maker/checker/audit actor의 유일한 입력으로 사용한다. 공통 `X-Trace-Id`는 trim·128자·제어문자 금지 후 MDC로 전파하되 AML canonical ingest는 64자/422 계약을 유지한다. | wire/header/canonical bytes 변경 없음. invalid signed subject/공통 trace=generic 401, body assertion 불일치=400, canonical trace 65~128=422, raw `X-User-Subject` 직접 소비 금지 |
 | 2026-07-12 | P0-01 AML neutral ingest 인증 우회 차단. `/aml/v1/**` 실제 filter coverage, 두 AML ingest의 `aml:event:write`, scope/role attribute 부재 시 공통 `Boolean.TRUE` bootstrap marker 외 403, 인증 실패 업무 row 0, valid-signed scope 403의 nonce 보존, neutral `X-Data-Scope` tamper 401 경계를 확정했다. | API/DB 스키마 무변경. AML filter/guard·실 filter-chain 테스트가 코드 truth |
 | 2026-07-12 | P0-00 공통 inbound machine-auth wire v2 신규 정본. versioned canonical request, normalized servlet routing과 ambiguous raw-path 거부, duplicate singleton 거부, raw query, 고정 9-key scopeContext(trace/correlation 제외), raw-body digest, v1 offset 호환/v2 UTC `Z`, durable nonce(TTL `>2×skew`, 기본 cleanup `20×5000/tick`), signed redirect 거부, local/demo positive provisioning, BO `COMPLIANCE` actor 경계, generic error, credential transition, 고정 벡터와 후속 P0/P1 범위를 확정. | 코드 truth=`services/common-security`, `scripts/machine_auth.py`, bo-api `RestClientConfig`/`RestClientConfigTest`, AML V44, FDS V14 |

@@ -888,7 +888,7 @@ DRAFT
 
 > **`APPROVAL_REQUIRED`는 approval_status가 아니다.** 자금/규제성 action 상신 시 대응 `fds_actions.status`가 `APPROVAL_REQUIRED`(action_status enum, DB §4: `PENDING/APPROVAL_REQUIRED/APPROVED/SENT/ACKED/FAILED/CANCELLED`)로 hold되어 결재 게이트를 거친다. 결재 요청 자체의 상태는 `SUBMITTED`다. 즉 동일 흐름을 action 축(`APPROVAL_REQUIRED`)과 approval 축(`SUBMITTED`)이 각각 표현하며, 두 enum을 혼동하지 않는다(API §4.3/§8 참조).
 
-승인 범위(scope) 원칙: 각 승인은 단일 `payload_hash`에 바인딩되며 `subjectKind`(정본 DB `fds_approval_requests.subject_kind` / API `ApprovalRequestDto.subjectKind` **9종**: `ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`/`POLICY_PACK`), `approvalLine`, `expiresAt`, `maxExecutions`로 범위가 한정된다. 승인 후 payload가 바뀌면 결재를 무효화(`FDS-APPROVAL-PAYLOAD-CHANGED`)한다.
+승인 범위(scope) 원칙: 각 승인은 단일 `payload_hash`에 바인딩되며 `subjectKind`(정본 DB `fds_approval_requests.subject_kind` / API `ApprovalRequestDto.subjectKind` **10종**: `ACTION`/`RULE`/`MAPPING`/`SECRET`/`GROUP`/`EXPORT`/`MERCHANT_NORMALIZE`/`CASE_CLOSE`/`POLICY_PACK`/`RULE_PARAM`), `approvalLine`, `expiresAt`, `maxExecutions`로 범위가 한정된다. FE 결재 필터·라벨도 `RULE_PARAM`을 포함한 이 10종을 사용한다. 이는 감사의 변경 resource `targetKind`(`RULE`/`SOURCE_SYSTEM`/`CONNECTOR`/`NOTIFY_CHANNEL` 등)와 별도 enum이다. 승인 후 payload가 바뀌면 결재를 무효화(`FDS-APPROVAL-PAYLOAD-CHANGED`)한다.
 
 `subjectKind`별 결재 대상은 다음과 같다. case 종결(`POST /fds/cases/{caseId}/close`, 내부감사·규제 case)은 **`CASE_CLOSE`**(`subjectRef=fds_cases.case_id`)로 적재하며 `ACTION`이 아니다(API §8 일치, 4-eyes 게이트 분기 정합).
 
@@ -896,13 +896,28 @@ DRAFT
 |---|---|---|
 | `ACTION` | 자금/규제성 action 상신(`fds_actions`, `subjectRef=action_id`) | 자금 영향 시 필수 |
 | `RULE` | rule 활성화·rollback(`POST /admin/fds/rules/{ruleId}/activate`·`/rollback`) | `COMPLIANCE_MANAGER` |
-| `MAPPING` | field mapping/PII allowlist 변경(`PUT /admin/fds/source-systems/{ss}/mappings`) **및 source system 속성·capability 매트릭스 수정**(`PUT /admin/fds/source-systems/{id}`, `subjectRef=source_system` — source-system 구성 도메인, API §8) | `MAKER_CHECKER` |
-| `GROUP` | risk group 멤버 추가·제거(watchlist/denylist) | `RISK_MANAGER` |
+| `MAPPING` | field mapping/PII allowlist 변경(`requiredBoCapability=SFDS_MAPPING:APPROVE`) 및 source system capabilities-only(`SFDS_ACTION:APPROVE`) / 일반 설정-only(`SFDS_CONNECTOR:OPERATE`) 수정. staged marker는 결재 row 생성 뒤 변경하지 않는 판정 입력이다. `capabilities` 필드가 존재하면 빈 배열 `[]`도 revoke-all 전체 desired set이며 일반 설정과 혼합은 금지 | `MAKER_CHECKER` |
+| `GROUP` | risk group master 수정/비활성(`MASTER_UPDATE`) 및 멤버 추가·제거(watchlist/denylist). master 생성은 비대상. 모든 approval은 상신 당시 group generation에 결속 | `RISK_MANAGER` |
 | `SECRET` | credential 생성·secret/webhook 회전 | `SECURITY_ADMIN` |
 | `EXPORT` | 검사 대응 evidence export 최종본 생성 | `COMPLIANCE_MANAGER` |
-| `MERCHANT_NORMALIZE` | high-risk merchant 정상화(`POST /api/v1/admin/fds/merchants/{merchantRef}/normalize`) | `RISK_MANAGER`(기본) / `EXECUTIVE_APPROVAL`(대규모 예외) |
+| `MERCHANT_NORMALIZE` | high-risk merchant 정상화(`POST /api/v1/admin/fds/merchants/{merchantRef}/normalize`). 대상 group별 generation snapshot에 결속 | `RISK_MANAGER`(기본) / `EXECUTIVE_APPROVAL`(대규모 예외) |
 | `CASE_CLOSE` | 내부감사·규제 case 종결(`subjectRef=case_id`) | `COMPLIANCE_MANAGER` |
 | `POLICY_PACK` | 규제 팩(`compliance_policy`) 토글 변경 — named pack on/off·확장 활성화(`PUT /api/v1/bo/fds/tenants/{tenantId}` compliance_policy, `subjectRef=tenant_id`, §16.2) | `COMPLIANCE_MANAGER` |
+| `RULE_PARAM` | rule 변수(임계값) 변경(`subjectRef=rule_id`) | `COMPLIANCE_MANAGER` |
+
+BO 결재함은 coarse 진입 뒤 row별 exact checker capability를 다시 검사한다. 목록은 인가된 subject만 남긴 뒤 페이지를 자르고 상세·승인·반려는 row를 먼저 읽어 판정한다. `ACTION→SFDS_ACTION:APPROVE`, `RULE|RULE_PARAM→SFDS_RULE:APPROVE`, `SECRET→SFDS_CONNECTOR:APPROVE`, `GROUP|MERCHANT_NORMALIZE→SFDS_GROUP:ADMIN`, `EXPORT|POLICY_PACK→SFDS_REG:APPROVE`, `CASE_CLOSE→SFDS_CASE:APPROVE`, `MAPPING→requiredBoCapability`다. unknown subject 또는 marker 누락/미지 legacy MAPPING은 downstream/local mutation 전에 fail-closed한다. delegated approve는 bo-api가 현재 pending row의 immutable hash를 요청 `payloadHash`와 먼저 비교하고 일치할 때만 engine approve를 호출하며, engine의 독립 검증도 유지한다. local fallback 상신 maker는 인증된 `BackofficeActorResolver` principal이고 `ops.agent` 같은 기본 actor는 없다.
+
+fds-svc 실행도 BO 판정만 신뢰하지 않고 `action↔requiredBoCapability↔payload field shape` 상관을 재검증한다. unknown/mismatch/mixed payload는 아무 effective store도 변경하지 않고 `false`를 반환해 `EXECUTION_FAILED`로 전이한다. valid `SS_UPDATE` capabilities-only는 `CapabilityAdminPort`가 `(tenant_id,workspace_id,source_system)`의 기존 `fds_capabilities`를 삭제한 뒤 전체 desired set을 저장한다. 따라서 `[]`은 저장 없이 삭제만 수행하는 revoke-all이다. general-only는 source registry만 merge하고 valid `MAPPING_CHANGE`는 schema mapping만 ACTIVE로 저장한다. 세 apply path는 서로의 store를 건드리지 않는다.
+
+위험그룹 master는 POST create만 즉시 저장하며 create/recreate마다 새 `generationId`를 발급한다. rename에는 generation을 보존한다. PUT rename/`active=false`는 current projection과 UUID/`APPROVAL_REQUIRED`를 202로 반환하고 `GROUP`/`RISK_MANAGER` approval payload(`action=MASTER_UPDATE`, exact group id/type, 상신 current master `baseMasterHash`, 변경 필드, maker `reason`, 선택적 causal trace)를 hash로 staged한다. `baseMasterHash`는 exact `SHA-256("tenantId|workspaceId|groupId|generationId|groupType|displayName")`이며 `active`는 hash material이 아니라 staged 변경 필드다. 이때 master와 `GROUP_UPDATE`는 변하지 않는다. strict field-shape 검증 뒤 staged hash 입력은 `action`→`groupId`→`groupType`→`baseMasterHash`→선택적 `displayName`→선택적 `active`→`reason`→선택적 `causalTraceId`의 고정 semantic JSON으로 재직렬화한다. PostgreSQL JSONB key 재정렬·원 입력 순서·공백은 무결성 의미가 아니며 submit/current/apply가 같은 `canonicalMasterUpdatePayload` helper를 사용한다. 다른 checker의 실행은 subject/line/action/field shape/hash와 저장 group type/current generation 포함 master hash를 row lock 뒤 재검증하며, `active=false`는 상신 시와 실행 시 모두 멤버 0이어야 그룹 정의를 삭제한다. rename은 checker를 `updated_by`로 저장한다. payload drift·stale base·delete/recreate generation mismatch·멤버 재유입·master state/type 불일치 등 business 재검증이 `false`일 때만 approval을 `EXECUTION_FAILED`로 확정한다. group save/delete 또는 audit append persistence 예외는 삼키지 않고 `ApprovalService.approve` 밖으로 전파하며, 같은 트랜잭션의 step/status/master/audit를 전부 rollback해 원 approval을 `SUBMITTED`·재시도 가능 상태로 유지한다.
+
+GROUP member ADD/REMOVE의 내부 exact payload는 `SHA-256("tenantId|workspaceId|groupId|generationId")`인 required `groupGenerationHash`를 사용한다. ADD canonical order는 `action,groupId,groupGenerationHash,memberRef,memberKind,expiresAt`, REMOVE는 `action,groupId,groupGenerationHash,memberRef`다. `expiresAt` 키는 nullable이어도 생략할 수 없다. submit/current/list/get/approve/apply가 같은 parser·serializer를 사용하고, apply는 group row lock 뒤 current generation hash를 먼저 비교한다. 따라서 그룹 A에서 상신한 멤버 변경을 A 삭제 후 동일 ID의 B에 실행하는 ABA는 mutation 0의 `EXECUTION_FAILED`다.
+
+`MERCHANT_NORMALIZE`는 단순 group ID 목록 대신 groupId 오름차순 exact `groups[{groupId,generationHash}]` snapshot을 staged한다. 모든 `generationHash`는 해당 그룹의 `SHA-256("tenantId|workspaceId|groupId|generationId")`이며 전체 canonical order는 `action,merchantRef,scope,reason,groups`다. current/list/get/approve/apply가 동일 정렬·shape·hash를 재구성하고 checker는 모든 group row lock을 유지한 채 모든 generation을 mutation 전에 검증한다. 하나라도 바뀌면 전체 normalize를 `EXECUTION_FAILED`로 끝내므로 새 generation의 멤버가 제거되지 않는다. FDS `V17__risk_group_generation.sql`은 generation 증명이 없는 `GROUP`/`MERCHANT_NORMALIZE`의 `DRAFT`/`SUBMITTED`/`APPROVED` row를 `CANCELLED`로 이관하고 자동 재결속하지 않는다.
+
+BO local master/member도 같은 generation 불변식을 사용한다. bo-api `V19__cancel_legacy_group_approvals.sql`은 migration 전 존재한 local `GROUP` **모든 행**의 기존 payload를 exact 4필드 `{action:'LEGACY_GENERATION_UNBOUND',migration:'V19',legacyPayload:<old jsonb>,legacyPayloadHash:<old payload_hash>}`로 감싸고 `payload_hash` 컬럼은 변경하지 않는다. `DRAFT`/`SUBMITTED`/`APPROVED`/`APPROVED_PENDING_ENGINE`만 `CANCELLED`로 바꾸며 terminal 상태는 그대로 둔다. terminal exact tombstone은 기존 hash와 `legacyPayloadHash`가 일치할 때만 목록/상세의 역사 read-only projection으로 허용하고 approve/reject/apply는 실행하지 않는다. 4필드 외 추가·누락, marker/action/migration 불일치, 비terminal marker 또는 hash drift는 local GROUP applier로 넘기지 않고 fail-closed한다.
+
+configured bo-api→fds-svc 위험그룹 위임은 HTTP 2xx만으로 성공 처리하지 않는다. 응답의 expected `groupId`, known `groupType`, 필수 `displayName`/`memberCount`/actor/time 필드를 검증하고, PUT은 canonical UUID `approvalRequestId`와 exact `APPROVAL_REQUIRED` status를 추가로 요구한다. 목록·POST의 예기치 않은 pending 메타, foreign ID, 미지 enum, 누락/잘못된 시각은 local fallback으로 대체하지 않고 `502 BO-PROXY-FAILED`다. create는 availability 분기 전에 `groupId`/`groupType`/`displayName`을 nonblank·length·known enum으로 공통 검증하고 fds-svc Java `RiskGroupUpsertRequest`와 exact한 세 필드만 전송한다. local도 기본 이름/type을 합성하지 않으며 동일 scoped ID 중복은 양 경로 모두 `409 FDS-STATE-CONFLICT`, 기존 master/member/audit 무변이다. bo-web→bo-api BFF PUT body의 `groupId`는 nonblank·최대 96자·path exact가 필수이고, null/blank/oversize/mismatch는 engine availability 확인·HTTP delegate·local mutation보다 먼저 400으로 거부한다. 이 검증 뒤 bo-api→fds-svc typed engine request는 path를 identity 정본으로 사용하므로 body `groupId`를 제거하고 `displayName`/`active`/immutable `groupType` echo와 nonblank·최대 500자인 필수 `reason`을 전달한다.
 
 설계 원칙:
 
@@ -1181,7 +1196,7 @@ stateDiagram-v2
 >
 > 매니지드 전용 경로(`REQUESTED→PROVISIONING→DEPLOYED→VERIFIED→ACTIVE`)는 운영자 작업(ops)이며 화면 라디오가 아니다. self-hosted 경로(`PACKAGE_ISSUED→CUSTOMER_DEPLOYED→REGISTERED`)는 플랫폼이 자동 프로비저닝하지 못하므로 산출물 발급·고객 배포 보고·등록만 추적한다. `PROVISIONING` 실패는 재시도하며 감사 대상이다.
 
-#### 11.6.12 risk_group_type (6종) — DB §4.14 정본
+#### 11.6.12 risk_group_type (7종) — DB §4.14 정본
 
 `fds_risk_groups.group_type`. §3.1 group 관리·§10.1 Group feature·watchlist/allowlist/denylist 공통 모델이다.
 
@@ -1193,8 +1208,9 @@ stateDiagram-v2
 | `MULE_NETWORK` | 대포통장 네트워크 |
 | `ALLOWLIST` | 허용목록 |
 | `DENYLIST` | 차단목록 |
+| `RISK_COUNTRY` | 위험 국가/지역 코드 그룹 |
 
-#### 11.6.13 member_kind (3종) — DB §5.22 정본
+#### 11.6.13 member_kind (5종) — DB §5.22 정본
 
 `fds_risk_group_members.member_kind`. risk group 멤버의 token 종류다.
 
@@ -1203,6 +1219,10 @@ stateDiagram-v2
 | `SUBJECT` | 주체(고객/직원) |
 | `INSTRUMENT` | 수단(계좌/카드/주소) |
 | `COUNTERPARTY` | 상대방 |
+| `COUNTRY` | ISO 국가/지역 코드 |
+| `VALUE` | 일반 운영 값(룰 변수/시스템 그룹) |
+
+일반 BO 수동 멤버 폼은 `SUBJECT`/`INSTRUMENT`/`COUNTERPARTY` 3종만 선택지로 노출하고, `COUNTRY`/`VALUE`는 엔진·시스템 관리 그룹에서만 사용한다.
 
 #### 11.6.14 case_event_kind (6종) — DB §5.14 정본
 
@@ -1479,6 +1499,8 @@ API 제공 원칙:
 | Webhook API | decision/case/action callback | `POST {customerWebhookUrl}` | (outbound, signature) |
 | Admin API | source, schema, key, scope 관리 | `GET /api/v1/admin/fds/source-systems` | `fds:admin:source-system`/`fds:admin:rule`/`fds:admin:group`/`fds:admin:credential` |
 
+`GET /api/v1/admin/fds/source-systems`는 source registry 행마다 동일 `(tenant_id, workspace_id, source_system)`의 `fds_capabilities`를 조회해 `SourceSystemDto.capabilities[]`로 투영한다. 매트릭스가 없거나 revoke-all이면 `[]`가 정본이며, bo-api BFF는 이를 손실 없이 보존한다. configured typed delegate의 bodyless/incomplete 2xx는 성공이나 빈 결과로 대체하지 않고 `502 BO-PROXY-FAILED`로 거부한다.
+
 > API group·엔드포인트 전수의 정본은 API 명세(`docs/design/api/01-fds-api.md` §4)다. Action·Approval·External Vendor Bridge는 자금·규제성 action 상신과 4-eyes 결재, 벤더 병행 운영의 핵심 그룹이므로 본 표에 명시한다. Approval API 경로·파라미터(`/admin/` prefix, `{approvalRequestId}`)는 API §4.9, External Vendor Bridge(`POST /api/v1/fds/external-decisions`)는 API §4.10이 정본이다.
 
 > Rule/Group/Credential 등 운영자 위임 Admin API는 `/api/v1/admin/fds/...` 네임스페이스로 제공하며 bo-api가 인증·집약한다(엔진 직접 노출 아님). simulation 경로 정본은 API 명세(`docs/design/api/01-fds-api.md` §4.6)의 `POST /api/v1/admin/fds/rules/simulations`이다.
@@ -1553,11 +1575,13 @@ API 인증·권한:
 | **온보딩 프로비저닝 트리거**(매니지드 전용 IaC 실행) | **bo-api** | `POST /api/v1/bo/fds/tenants/{tenantId}/onboarding/provision` | fds-svc 미제공. bo-api가 IaC 파이프라인 트리거·감사 |
 | **온보딩 상태 조회**(읽기) | **bo-api** | `GET /api/v1/bo/fds/tenants/{tenantId}/onboarding` | `onboarding_status`·단계 이력·`infra_ref` 읽기 표시 |
 | **self-hosted 인스턴스 등록 콜백** | **bo-api** | `POST /api/v1/bo/fds/tenants/{tenantId}/onboarding/register` | 설치 인스턴스 라이선스/콜백 등록(`CUSTOMER_DEPLOYED→REGISTERED`) |
-| 감사 로그 조회 | **bo-api** | `GET /api/v1/bo/fds/audit?subjectKind&actor&from&to` | fds-svc는 `fds_audit_logs` audit row 저수준 조회만 |
+| 감사 로그 조회 | **bo-api** | `GET /api/v1/bo/fds/audit?subjectKind&subjectId&actor&traceId&from&to&page&size`, `GET /api/v1/bo/fds/audit/{sourceService}/{auditId}` | fds-svc는 scoped `/api/v1/admin/fds/audit-events[/{auditId}]` list/detail만 제공 |
+
+BO typed capability는 route 의미에 맞춘다. FDS health=`SFDS_CONNECTOR:READ`, case evidence timeline=`SFDS_DECISION:READ`, notify-channel GET=`SFDS_TENANT:READ`, notify-channel PUT=`SFDS_TENANT:ADMIN`(platform admin), action 목록·상세=`SFDS_ACTION:OPERATE`다. case patch는 engine 위임 시 HMAC capability assertion이 P0-04로 남아 있으므로 target `status=IN_REVIEW` 요청 전부를 보수적으로 `SFDS_CASE:APPROVE` 사전 게이트한다. local fallback만 실제 current status가 `CLOSED_*`이고 target이 `IN_REVIEW`인 재오픈에 승인 capability·사유·closer≠actor를 요구한다. `platformOperator`는 명시 target data-scope만 확장하고 메뉴/IAM/PII/STR/업무 인가를 우회하지 않는다. wildcard `*`/`BO_SUPER_ADMIN`만 우회하며, `SFDS_PLATFORM_OPS`는 횡단 read-only이고 action·evidence·approval capability가 없다.
 
 > **고객사 등록 흐름 전환**: 과거 "격리 방식(`isolation_mode`) 토글"은 폐기한다. 등록은 `deployment_model` 선택(매니지드 전용/자체 인프라 설치형/[소규모 공유]) + 온보딩 신청으로 한다. 매니지드 전용은 `POST .../onboarding/provision`이 IaC 파이프라인을 트리거하고 `onboarding_status`가 `PROVISIONING→DEPLOYED→VERIFIED→ACTIVE`로 진행된다(읽기 표시). self-hosted는 패키지 발급 후 `.../onboarding/register` 콜백으로 `REGISTERED`된다. fds-svc 엔진 API(`docs/design/api/01-fds-api.md`)에는 위 온보딩 엔드포인트를 **추가하지 않는다**(운영자 집계 경계).
 
-> 운영자 집계 경로의 정본은 **bo-api `/api/v1/bo/fds/**`**(API 명세 §11.2)다. 과거 엔진 직접 경로 ~~`GET /api/v1/admin/fds/dashboard|tenants|audit`~~ 표기는 **폐기**한다(API 명세 §1.1 '과거 표기 폐기'와 동일 정렬). PRD/PPT의 대시보드·고객사 관리·감사 조회 화면은 호출 대상을 **bo-api**로 명시한다. 위 집계 엔드포인트를 엔진 API(`docs/design/api/01-fds-api.md` §4)에 추가하지 않는 것이 정본 경계다.
+> 운영자 집계 경로의 정본은 **bo-api `/api/v1/bo/fds/**`**(API 명세 §11.2)다. 과거 엔진 직접 경로 ~~`GET /api/v1/admin/fds/dashboard|tenants|audit`~~ 표기는 **폐기**한다(API 명세 §1.1 '과거 표기 폐기'와 동일 정렬). PRD/PPT의 대시보드·고객사 관리·감사 조회 화면은 호출 대상을 **bo-api**로 명시한다. 위 집계 엔드포인트를 엔진 API(`docs/design/api/01-fds-api.md` §4)에 추가하지 않는 것이 정본 경계다. fds-svc delegate가 없을 때 bo-api local FDS fallback은 production에서 항상 503, non-production도 active `tenant_demo/default` scope에서만 허용하며 local 결재는 인증 principal maker로 그 scope에 생성한다. compliance-policy fallback은 별도 서비스로 다룬다. local payload는 exact `{"base":"KR_BASE","packs":string[],"optional":string[]}`(세 key 필수·추가 key 금지·배열 원소 non-blank)이고 submit은 `POLICY_PACK` 결재만 stage한다. 다른 checker의 exact `SFDS_REG:APPROVE`, immutable hash/scope/payload 검증, `FdsTenantWriter` 적용 성공이 모두 충족되어야 `EXECUTED`와 effective policy 변경이 성립한다. reject/apply 실패는 effective 값을 보존하고, configured engine 오류·invalid response는 local로 강등하지 않고 fail-closed한다.
 
 API 장애 원칙:
 
@@ -2139,7 +2163,7 @@ CREATE TABLE fds_connector_offsets (
 | 가상자산 | 특금법상 VASP 의무, 지갑주소 위험평가 (Travel Rule은 2026-07-09 전면 제거 — aegis-aml 84997e1) |
 | 내부통제 | 금융회사 지배구조법, 내부통제기준, 권한 오남용·4-eyes |
 
-**규제 팩 카탈로그(named pack · BO 토글 단위).** 위 영역을 백오피스(고객사 상세 ④ Policy Pack, 기능정의서 §3.2 ④)에서 고객사별로 토글하는 **named pack**으로 묶는다. `KR_BASE`(한국 기본팩)는 **필수 baseline으로 잠금(끄기 불가)** 이며, 나머지는 개별 토글, `PCI`는 해당 도메인 **계약 후** 활성화한다. (구 `TRAVEL_RULE` 팩은 2026-07-09 Travel Rule 전면 제거로 삭제됨 — aegis-aml 84997e1.) 활성 상태는 `fds_tenants.compliance_policy`(§14.1) JSONB에 저장한다. 토글 변경은 **스테이징 → 영향 미리보기(STR/CTR 영향 건수) → 일괄 상신 → 4-eyes(`subjectKind=POLICY_PACK`, §11.5) → effective** 워크플로를 따른다(즉시 반영 아님). 각 팩이 생성하는 보고 후보 큐는 규제 보고 화면(SFDS-REG-001)으로 연동된다.
+**규제 팩 카탈로그(named pack · BO 토글 단위).** 위 영역을 백오피스(고객사 상세 ④ Policy Pack, 기능정의서 §3.2 ④)에서 고객사별로 토글하는 **named pack**으로 묶는다. `KR_BASE`(한국 기본팩)는 **필수 baseline으로 잠금(끄기 불가)** 이며, 나머지는 개별 토글, `PCI`는 해당 도메인 **계약 후** 활성화한다. (구 `TRAVEL_RULE` 팩은 2026-07-09 Travel Rule 전면 제거로 삭제됨 — aegis-aml 84997e1.) 활성 상태는 `fds_tenants.compliance_policy`(§14.1) JSONB에 저장한다. 토글 변경은 **스테이징 → 영향 미리보기(STR/CTR 영향 건수) → 일괄 상신 → 4-eyes(`subjectKind=POLICY_PACK`, §11.5) → effective** 워크플로를 따른다(즉시 반영 아님). local fallback도 submit에서 policy를 즉시 mutate하지 않고 인증 principal maker의 결재만 stage한다. 다른 checker의 exact `SFDS_REG:APPROVE`와 immutable hash/scope/payload 검증 후 `FdsTenantWriter` 적용이 성공할 때만 `EXECUTED`가 되며, reject/apply 실패 시 기존 effective policy를 유지한다. configured engine 실패·invalid response는 fail-closed한다. 각 팩이 생성하는 보고 후보 큐는 규제 보고 화면(SFDS-REG-001)으로 연동된다.
 
 | 팩 코드 | 표시명 | 기본 | 트리거·보고 양식 | 비고 |
 |---|---|---|---|---|
@@ -2160,10 +2184,26 @@ CREATE TABLE fds_connector_offsets (
 - connector 설정 변경
 - field mapping 변경
 - action capability 변경
+- risk group master 생성/수정
 - case assign/approve/close
 - high-risk action override
 - raw data access
 - admin permission 변경
+
+P0-03에서 감사 조회도 쓰기와 같은 격리 불변식을 사용한다. fds-svc는 헥사고날 query port/usecase를 통해 인증된 `(tenant_id, workspace_id)` 안의 `fds_audit_logs`만 읽고 actor/target/trace/기간 필터·exact total·stable order와 scoped `/{auditId}` direct detail을 `/api/v1/admin/fds/audit-events[/{auditId}]`로 제공한다. bo-api는 `SFDS_AUDIT:READ`를 검사한 뒤 explicit FDS-domain BO row와 engine row를 `sourceService/auditId/tenantId/workspaceId/event/actorSubject/subjectKind/subjectId/traceId/detail/occurredAt` projection으로 exact-total merge하고 `/api/v1/bo/fds/audit/{sourceService}/{auditId}`로 직접 상세 조회한다. merge window는 `offset+size≤10,000`으로 제한하며 정렬은 `occurredAt DESC, sourceService ASC`, 동률 ID는 BO numeric ASC/FDS string ASC다. tenant operator는 자기 복합 scope만, platform operator는 명시 target만 조회한다. IAM/ROLE/SECURITY/unknown BO event는 FDS/AML typed projection에 넣지 않고 `BO_SUPER_ADMIN` generic `/api/v1/bo/audit[/{id}]`에만 둔다. approval `subjectKind` 10종과 감사 resource `targetKind`는 분리한다.
+
+감사 detail은 신규 write와 역사 read 양쪽에서 민감 설정을 방어한다. notify-channel nested `target`은 `sha256:*`, connector 자유입력 `reason`은 `[REDACTED]`로 표면화한다. 신규 BO 감사에는 raw `webhookHosts`를 쓰지 않고 역사 `webhookHosts[]`는 read 시 host별 hash로 치환하며, 민감 event의 malformed JSON은 원문 대신 redacted sentinel로 fail-closed한다. FDS/BO admin 감사 `traceId`는 최대 128자이고 명시적 causal trace를 우선하며 없으면 MDC trace를 사용한다. AML canonical ingest의 trace는 별도 64자/초과 422 계약을 유지한다.
+
+위험그룹 POST master 생성은 DB create-only 원자 삽입이다. 동일 `(tenant_id, workspace_id, group_id)`가 이미 존재하면 `409 FDS-STATE-CONFLICT`를 반환하고 기존 master/member/audit는 모두 무변이로 유지한다. 신규 영속화 성공 뒤에만 `GROUP_CREATE`를 append한다. `group_id`·`group_type`은 생성 후 immutable이며, PUT은 상신 시 아무 master/audit mutation도 하지 않고 다른 checker가 staged rename 또는 멤버 0인 `active=false` 정의 삭제를 실제 적용한 뒤에만 `GROUP_UPDATE`를 append한다. 반려·자기승인·business 재검증 실패는 성공 감사를 만들지 않으며 business failure만 `EXECUTION_FAILED`다. group save/delete 또는 `GROUP_UPDATE` audit append가 실패하면 예외를 전파해 approval step/status와 master/audit write를 모두 rollback하고 원 approval을 `SUBMITTED`로 유지한다. 두 이벤트는 `targetKind=RISK_GROUP`, `targetRef=group_id`다. create actor는 signed end-user subject 기반 trusted actor이고 update actor는 checker다. create trace는 request MDC, update trace는 staged causal trace 우선·부재 시 checker request MDC를 사용한다. 생성은 canonical master after hash, 승인 적용은 before/after hash를 남긴다. 활성 master hash는 `tenant|workspace|group_id|generation_id|group_type|display_name`, 삭제 after hash는 `DELETED|tenant|workspace|group_id|generation_id|group_type` canonical 결합의 SHA-256이다. detail은 create의 action·groupType 또는 update의 `MASTER_UPDATE`·선택적 `active=false`만 남겨 표시명 원문을 복제하지 않는다. 따라서 엔진 저수준 감사와 bo-api unified FDS audit가 같은 위험그룹 행위를 추적하면서도 자유입력 표시명을 payload로 확산하지 않는다.
+
+BO 사람 capability(`SFDS_*`)와 fds-svc machine scope(`fds:*`)는 별도 인가 계층이다. path/query/body target은 bo-api에서 인증 context와 먼저 일치시켜 downstream header와 감사 scope를 하나로 만들고, 충돌은 engine 호출 전에 거부한다. maker/checker/actor는 body가 아니라 공통 machine-auth가 검증한 signed end-user subject에서 파생하며 local approval도 인증 principal을 사용한다.
+
+엔진의 Approval/Action/Case/Feedback/Evidence 및 admin write controller도 이 actor 경계를 독립 적용한다.
+raw/optional subject나 `system` fallback으로 사람 mutation을 기록하지 않으며, `ApprovalRequest`는
+blank/control/128자/대소문자 변형 자기결재를 domain에서 다시 방어한다. `MAPPING`과 `POLICY_PACK`은 staged
+canonical hash·action/required marker·scope/subject·exact policy shape/`KR_BASE`를 승인·apply 경계에서
+재검증한다. 동일 source capability 전체교체는 scoped source-system row의 `PESSIMISTIC_WRITE` lock 안에서
+delete→flush→insert해 서로 다른 approval row 병렬 실행도 정확히 한 desired set 또는 revoke-all로 끝난다.
 
 ### 16.4 검사 대응 자동화 산출물
 
@@ -2388,6 +2428,10 @@ hanpass-ph FDS(`fds-svc`)는 Hanpass `FdsSvc`를 참조 구현으로 삼되, 그
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-07-13 | v3.7 | **P0-03 위험그룹 generation ABA hardening·create wire 정합.** create/recreate UUID generation, generation 포함 master/audit hash, ADD/REMOVE `groupGenerationHash`, merchant normalize 정렬 generation snapshot으로 stale approval의 새 incarnation 실행을 차단했다. FDS V17은 generation 미결속 pending을 취소하고, BO V19는 모든 기존 local GROUP payload를 원 JSONB/hash 보존 exact 4필드 tombstone으로 감싸 비종결 4상태만 취소·terminal exact marker만 역사 read-only로 허용한다. configured/local exact 3-field create·duplicate 409도 동기화했다. | system-architect. 코드 truth=FDS V17·`RiskGroupAdminService`·`ApprovalService`·BO V19·`FdsApprovalStubService`·`FdsRuleGroupService` |
+| 2026-07-13 | v3.6 | **P0-03 위험그룹 approval hardening.** `MASTER_UPDATE`의 strict shape+fixed semantic field-order hash를 JSONB reorder 불변 submit/current/apply 공통 helper로 고정했다. business revalidation만 `EXECUTION_FAILED`, persistence 예외는 전체 approval transaction rollback 후 `SUBMITTED` retry로 분리했다. configured BO group projection은 expected ID·enum·필수 actor/time/member와 PUT pending UUID/status를 fail-closed 검증하고 path/body ID mismatch는 delegate 전에 거부한다. | system-architect. 코드 truth=`RiskGroupAdminService`·`ApprovalService`·bo-api `FdsRuleGroupService` |
+| 2026-07-13 | v3.5 | **P0-03 위험그룹 master 4-eyes·감사 폐루프.** POST create만 즉시 저장+`GROUP_CREATE`하고, PUT은 current projection+UUID/status 202와 `GROUP`/`RISK_MANAGER` staged payload를 만든다. 다른 checker가 rename 또는 멤버 0인 `active=false` 정의 삭제를 적용한 뒤에만 `GROUP_UPDATE`(checker, staged causal trace 우선, canonical before/after SHA-256)를 남긴다. 반려·자기승인·실행 실패는 mutation/성공 감사가 없다. | system-architect. 코드 truth=`RiskGroupAdminController`·`RiskGroupAdminService`·`ApprovalService`·`RiskGroupAdminServiceTest` |
+| 2026-07-13 | v3.4 | **P0-03 FDS RBAC·exact 결재·tenant target·감사 격리.** `platformOperator`는 data-scope 전용이고 wildcard `*`만 인가 우회이며 platform ops는 action/evidence/approval 없는 횡단 read-only다. route별 exact action/case capability, capability `[]` revoke-all 전체교체, 인증 maker·delegated hash 선비교, 별도 compliance staged fallback을 확정했다. §11.5에 immutable `requiredBoCapability`, subject별 목록/상세/결정 필터와 engine apply-time 상관 재검증을 반영했다. §16.3에 audit trace 128, scoped list/direct detail, 10,000행 exact-total merge·BO numeric tie ASC·redaction·domain allowlist를 추가했다. | system-architect. 코드 truth=`FdsAuthorizationPolicy`, `SourceSystemAdminService`/`CapabilityAdminPort`, compliance fallback, audit query/redactor, FDS V16·bo-api V18 |
 | 2026-07-12 | v3.3 | **P0-02 운영 Flyway demo seed·기본 secret 분리.** §16.1a에 FDS V15 forward quarantine, explicit `demo`/`db/demo` reference config, REST-only business data, production profile/secret/DB startup gate를 반영했다. `tenant_demo` ID 단독은 fingerprint가 아니며 P1-02 credential lifecycle·P1-03 keyId/AAD/dual-read/re-encryption은 완료 범위에서 제외했다. | system-architect. 코드 truth=FDS V15·demo repeatable·production validators |
 | 2026-07-12 | v3.2 | **P0-00 공통 inbound machine-auth wire v2 설계 전환.** §12.1/§12.8을 `../design/api/00-common-machine-auth.md` 정본으로 바꾸고 normalized servlet routing/ambiguous path·duplicate singleton 거부, raw query·고정 9-key scopeContext(trace/correlation 제외)·body digest, v1 offset/v2 UTC `Z`, nonce TTL `>2×skew`·cleanup `20×5000/tick`, signed redirect 거부와 local/demo positive provisioning을 반영했다. P0-01/P0-04/P0-14·P1-02 lifecycle 미완료를 명시하고 outbound webhook 공식은 inbound v2와 분리했다. | system-architect. 코드 truth=`common-security`, FDS V14, bo-api `RestClientConfig`/`RestClientConfigTest`, Python simulator transport |
 | 2026-07-10 | v3.1 | **운영 화면을 단일 FDS REST 거래 인입 API로 정정.** source system별 엔진 집계는 내부 입력으로 유지하고 `/fds/connectors`는 `POST /api/v1/fds/events` 한 행에 API 상태·24h 전체 합계·최신 수신·TPS 합계를 표시한다. bo-api/bo-web cache tenant/workspace 격리 포함. | system-architect |

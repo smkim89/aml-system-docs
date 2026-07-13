@@ -1002,6 +1002,8 @@ SUBMISSION_FAILED
 
 > **재제출(RESUBMIT).** `SUBMISSION_FAILED` 건은 보고 본문 정정 후 `UNDER_REVIEW`로 복귀하여 **기존 제출 4-eyes 결재 절차(`:submit`, `STR_SUBMIT`/`CTR_SUBMIT`)를 그대로 재사용**한다. 재제출 횟수(`resubmit_count`)와 회차별 제출·회신 이력은 evidence로 보존한다(연동 §6.2).
 >
+> **local/demo `MockRegulatorSubmissionAdapter` 결정적 동작(코드=truth).** `mock.reject-demo=true`일 때 manifest `evidence_hash` 마지막 hex nibble이 `0`인 bucket은 **최초 제출(`resubmit_count=0`)만** `SUBMISSION_FAILED`/`SUBMISSION_REJECTED`로 닫는다. 같은 report의 공식 `:submit` 4-eyes 재사용은 기존 report/evidence 계보를 보존하면서 `resubmit_count`를 증가시키고, `resubmit_count>0`인 재제출은 동일 bucket이어도 결정적 `ACKNOWLEDGED`/`fiu_ack_ref`로 닫힌다. 운영 규제기관 비동기 callback은 이 mock 전용 선택 규칙과 독립이다.
+>
 > **기각·취소 통제(4-eyes).** STR 후보 기각/보고 취소(`REJECTED`/`CANCELLED`) 전이는 **사유 코드 필수 + 보고책임자 결재(4-eyes, `REPORTING_OFFICER`, 자기승인 금지)** 를 거친다. CTR 제외(면제) 처리(§14.3)도 동일 통제를 재사용한다.
 
 ### 14.2 STR 후보 생성
@@ -2025,6 +2027,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-13 | **P0-03 local/demo mock 규제 제출 실패→공식 재제출 폐루프.** 최초 reject bucket 회차만 `SUBMISSION_REJECTED`; 같은 report의 `:submit` 4-eyes 재사용은 evidence 계보와 회차 이력을 보존하고 `resubmit_count`를 증가시켜 ACK한다. 운영 callback 계약은 불변이다. | system-architect. 코드 truth=`MockRegulatorSubmissionAdapter`·`RegulatoryReport`·`MockRegulatorSubmissionAdapterTest` |
 | 2026-07-12 | **P0-02 운영 Flyway demo seed·기본 secret 분리.** §19.2b에 AML V45 forward quarantine, explicit `demo`/`db/demo` reference config, REST-only business data, production profile/secret/DB startup gate를 반영했다. `tenant_demo` ID 단독은 fingerprint가 아니며 P1-02 credential lifecycle·P1-03 keyId/AAD/dual-read/re-encryption은 완료 범위에서 제외했다. API/DTO/event 계약은 변경하지 않았다. | system-architect. 코드 truth=AML V45·demo repeatable·`ProductionSafetyValidator` |
 | 2026-07-12 | **P0-01 AML 중립 거래 인입 auth-first 경계 반영.** §15 namespace/Public API에 `/aml/v1/**`를 정식 등재하고 route별 v2-only와 두 ingest의 실제 filter chain·`aml:event:write`를 확정했다. scope/role attribute 부재는 공통 local-bootstrap `Boolean.TRUE` marker 외 403, 인증 실패 업무 row 0, valid-signed scope 403 nonce 보존, neutral `X-Data-Scope` tamper 401을 명시했다. Neutral `Source-System` 선택과 `Idempotency-Key` body eventId fallback은 endpoint-specific 예외로 고정했다. | API/DB schema 무변경. 코드 truth=AML filter/guard·실 filter-chain REST 테스트 |
 | 2026-07-12 | **P0-00 공통 inbound machine-auth wire v2 설계 전환.** §15.1/§15.7을 `../design/api/00-common-machine-auth.md` 정본으로 바꾸고 normalized servlet routing/ambiguous path·duplicate singleton 거부, raw query·AML `workspace=default`·고정 9-key scopeContext(trace/correlation 제외)·body digest, v1 offset/v2 UTC `Z`, nonce TTL `>2×skew`·cleanup `20×5000/tick`, signed redirect 거부와 local/demo positive provisioning을 반영했다. simulator/BO AML credential 분리, BO `COMPLIANCE` authority와 signed `X-User-Subject` STR 감사 actor 경계를 명시했다. P0-01/P0-04/P0-14·P1-02 lifecycle은 미완료이며 outbound webhook 공식은 inbound v2와 분리했다. | system-architect. 코드 truth=`common-security`, AML V44, bo-api AML signer·`RestClientConfig`/`RestClientConfigTest`, Python simulator transport |

@@ -18,6 +18,9 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **6.19** | **2026-07-13** | **SM Kim** | **P0-03 위험그룹 generation·create 계약 정합.** POST 필수 `groupId/groupType/displayName`, reason PUT-only, scoped duplicate `409 FDS-STATE-CONFLICT`를 고정했다. master/member/merchant-normalize 결재를 상신 generation에 결속해 delete/recreate stale approval이 새 그룹을 변경하지 않는다. FDS legacy pending은 취소하고, BO V19는 모든 기존 local GROUP payload를 원 JSONB/hash 보존 4필드 tombstone으로 감싸 비종결 4상태만 취소·terminal exact marker만 역사 read-only로 허용한다. | 근거=FDS API §5.10·§5.17a·§5.18·§5.20, DB V17·BO V19, software §11.5. |
+| **6.18** | **2026-07-13** | **SM Kim** | **P0-03 위험그룹 master 4-eyes 화면·결재 정합.** §7.3에서 POST 생성은 즉시 반영, PUT rename/비활성은 current projection+approval UUID/`APPROVAL_REQUIRED` 202 상신으로 분리했다. 승인 전·반려 시 master는 불변이고 다른 `RISK_MANAGER` checker가 rename 또는 멤버 0인 비활성을 적용한다. §16.5에 master update/deactivation=`GROUP`/`RISK_MANAGER` 행을 추가했다. | 근거=FDS API §4.7·§5.18/§5.19·§8, fds-svc `RiskGroupAdminService`·`ApprovalService`. |
+| **6.17** | **2026-07-13** | **SM Kim** | **P0-03 BO FDS RBAC·request target·exact 결재·감사 격리 정합(코드=truth).** `platformOperator`는 data-scope 전용이고 wildcard `*`만 인가 우회다. BO 사람 권한의 exact `SFDS_*` capability를 system/custom role·nav/action에 동일 적용하며 `SFDS_PLATFORM_OPS`는 approval/action/evidence 없는 횡단 read-only다. delegated `IN_REVIEW` 보수 checker, capability `[]` revoke-all·전체교체, 인증 maker·delegated hash 선비교, compliance-policy staged fallback을 확정했다. BO+FDS 감사는 audit trace 128, exact total, 10,000행 merge window, BO numeric tie ASC, typed detail과 history redaction을 사용한다. | 근거=aegis-aml P0-03 common-security/bo-api/fds-svc/aml-svc 구현·bo-api V18·FDS V16. API §4.9a·§11.2, IAM §1·§3·§5 동기화. |
 | **6.16** | **2026-07-10** | **SM Kim** | **FDS REST 인입 모니터링 표시 단위를 단일 논리 API로 정정.** `/fds/connectors`는 source system별 여러 REST 행을 노출하지 않고 `POST /api/v1/fds/events` 한 행에 API 연결 상태·24h accepted 고유 거래 합계·전체 마지막 수신·source별 60초 TPS 합계를 표시한다. source system은 동일 API의 호출 주체이며 low-level 집계 입력으로만 유지한다. API 응답 정상과 거래 미수신을 분리하고, React Query 및 bo-api TTL cache key에 tenant/workspace를 포함해 범위 전환 시 0건/타 테넌트 snapshot 재사용을 차단한다. |
 | **6.15** | **2026-07-10** | **SM Kim** | **FDS REST 거래 인입 실측 모니터링 확정.** `/fds/connectors`에 30초 자동갱신 REST 인입 요약(24h accepted 고유 거래 이벤트·마지막 수신 상대시각·라이브 소스·등록 REST 소스)과 source별 24h 건수/60초 TPS/신호를 표시. 수치 원천은 fds-svc `GET /api/v1/admin/fds/ingest/metrics` → bo-api `/api/v1/bo/fds/ingest/health`; `fds_canonical_events.received_at`, `transaction_ref IS NOT NULL`, tenant/workspace 기준 실측(`MEASURED`). replay/duplicate 비가산. REST 전용 화면은 queue/DLQ/backfill 추정값을 운영 실측처럼 표시하지 않음. |
 | **6.14** | **2026-07-09** | **SM Kim** | **§6.3 SFDS-RULE-003 룰 빌더 전면 개편 — 국적 차원 + 측정항목 기반 조건 + canonical DSL 컴파일(코드=truth, feature/fds-rule-nationality-metric-conditions, fds V10, aegis-aml 491f46e).** ① **고객 국적 차원 신설** — `전 국적(ALL)`(무조건) 또는 특정 ISO2 국적(후보 VN·PH·KR·TH·ID·MM·KH·NP) 선택, 특정 국적은 조건 트리 선두 `cmp customer.nationality = <ISO2>` 노드로 컴파일. ② **채널 범위 `전 채널` 선택지** — `channelScope` NULL(전채널 통합 평가, 목록/상세 표시도 NULL 그대로 + "전채널" 라벨, 기본 채널 치환 금지). ③ **측정항목 기반 조건 빌더** — 자유 텍스트 조건 입력을 폐기하고 공통 컴포넌트 `MetricConditionBuilder`(cmp: 카탈로그 select+valueType별 연산자+값 / velocity: count·sum·distinct_count+distinct 대상(수취국가·이용 채널)+차원 subject+시간창 10m/1h/6h/24h+임계값)로 교체, AND/OR 단층 결합(그룹 괄호 중첩은 쉬운 구성 미지원). ④ **canonical DSL 컴파일 단일 정본** — `buildRuleJson()` 순수 함수가 폼 상태를 엔진 `RuleDslParser` 그래머로 컴파일, DSL(JSON) 토글은 읽기 전용 미리보기(양방향 동기화 폐기), 과거 easy JSON(`stages`/`groupBy`/`thresholdParams`)은 엔진 `validateRuleJson` 거부. 매핑 표·와이어프레임·BR-002(카탈로그 select 만)·BR-003(윈도우 닫힌 집합)·BR-007(단방향 컴파일)·BR-008(DSL 미리보기+문자열 payload)·BR-010(단층 AND/OR·국적 선두 노드) 재작성. 신규 측정항목: `customer.nationality`·`customer.signupAgeDays`·`customer.kycAgeDays`(프로파일 스냅샷, DB V10)·`velocity.distinct_count.*`(API §5.8·DB §5.17). 인라인 시뮬·룰 추천 패널(BR-012/BR-013)은 불변. | 근거=bo-web `components/fds/FdsRuleBuilder.tsx`·`components/common/MetricConditionBuilder.tsx`·`lib/fds-rules.ts`(buildRuleJson·DISTINCT_FIELDS·METRIC_WINDOWS)·`lib/fds-rule-conditions.ts`, bo-api `FdsRuleGroupService`(toEnginePayload·fromEngine channelScope NULL 노출), fds-svc `RuleDslParser`·V10. 코드=truth. PPT 재빌드는 후속. |
@@ -112,7 +115,7 @@
 
 따라서 본 백오피스는 hanpass-ph 준법감시·FDS 운영 화면으로서 다음 두 종류의 사용자를 함께 고려합니다(내부 권한 모델은 멀티테넌시 코드 truth를 유지).
 
-- **플랫폼 운영자** — 시스템 운영 측. hanpass-ph 서비스의 ingest·decision·action·case 건전성, 커넥터 lag, SLA, 데이터 품질을 모니터링·운영합니다.
+- **플랫폼 운영자** — 시스템 운영 측. `platformOperator` 속성으로 서비스 target을 횡단 선택해 ingest·decision·case·감사 건전성을 조회합니다. 이 속성은 메뉴/업무 인가가 아니며 action·evidence·결재 등 조작은 별도 exact capability가 있어야 합니다.
 - **서비스 관리자** — hanpass-ph 측. 자기 서비스(`tenant_demo`)·워크스페이스 범위 안에서 룰·그룹·케이스·규제 보고를 운영합니다.
 
 백오피스는 아래 6가지 운영 책무를 화면으로 제공합니다.
@@ -150,7 +153,7 @@
 |-----------|----------|-----------|------|
 | 플랫폼 대시보드 (전체 서비스) | `SFDS_PLATFORM:READ` | `SFDS_PLATFORM_OPS` | 전 서비스 ingest/decision/action/case·커넥터 건전성 |
 | 서비스별 대시보드 / 전 화면 조회 | `SFDS:READ` | `SFDS_VIEWER` 이상 | 자신의 서비스 스코프 내 조회 |
-| 서비스 목록/상세 조회 | `SFDS_TENANT:READ` | `SFDS_PLATFORM_OPS` / `TENANT_ADMIN` | 서비스 설정 조회 |
+| 서비스 목록/상세 조회 | `SFDS_TENANT:READ` | `SFDS_PLATFORM_OPS` / tenant-bound FDS role | platform은 횡단, non-platform은 자기 서비스 설정만 조회 |
 | 서비스 등록/설정 변경 | `SFDS_TENANT:ADMIN` | `SFDS_PLATFORM_ADMIN` | 격리·리전·보존·마스킹·Policy Pack (플랫폼 운영자 전용) |
 | 커넥터·소스시스템 조회 | `SFDS_CONNECTOR:READ` | `SFDS_VIEWER` | ingest 상태·lag·오류 조회 |
 | 커넥터 운영 (replay·재처리·enable) | `SFDS_CONNECTOR:OPERATE` | `SFDS_OPS` | cursor/offset 운영, 일시중지 |
@@ -174,7 +177,9 @@
 | 감사 로그 조회 | `SFDS_AUDIT:READ` | `SFDS_VIEWER` / 감사 | 룰·커넥터·매핑·case·원문접근 변경 이력 |
 
 > **self-approval 방지**: 같은 사용자 ID 는 작성·승인을 동시 수행할 수 없습니다 (`FDS-APPROVAL-SELF`). 룰·커넥터 secret·필드매핑·Capability·케이스 종결 모두 동일 원칙(`§11.4`). 규제 보고서의 4-eyes 결재(작성자≠승인자)는 본 처리 소관인 **aml-svc** 에서 강제하며 FDS 백오피스 범위가 아닙니다(`§13`).
-> **데이터스코프**: 서비스 관리자/분석가/CS는 자신에게 부여된 서비스 범위의 데이터만 조회·운영합니다. 플랫폼 운영자만 전체 서비스 횡단 조회가 가능하며, 서비스 데이터 원문 접근은 별도 통제(break-glass + 감사)를 따릅니다(`§13.4`).
+> **데이터스코프**: 서비스 관리자/분석가/CS는 자신에게 부여된 서비스 범위의 데이터만 조회·운영합니다. 플랫폼 운영자만 전체 서비스 target을 횡단 선택할 수 있지만 이는 data-scope일 뿐 메뉴·IAM·PII reveal·STR·FDS action 인가를 우회하지 않는다. 전역 우회는 `BO_SUPER_ADMIN`의 effective scope `*`만 가능하며, 서비스 데이터 원문 접근은 별도 통제(break-glass + 감사)를 따릅니다(`§13.4`).
+> **P0-03 구현 확정**: 문서에만 있던 `TENANT_ADMIN`이라는 신규 system role은 만들지 않는다. tenant-bound FDS role은 자기 서비스 read만 가능하고, 서비스 생성·수정·provision/register는 `SFDS_PLATFORM_ADMIN` 또는 `BO_SUPER_ADMIN`의 `SFDS_TENANT:ADMIN`만 허용한다. `SFDS_PLATFORM_OPS`는 횡단 read 전용이다. BO capability(`SFDS_*`)와 fds-svc machine scope(`fds:*`)는 서로 다른 인가 계층이며 한쪽이 다른 쪽을 대신하지 않는다. custom role도 `bo_role_scopes`에 등록한 exact capability로 같은 판정을 받는다.
+> `SFDS_PLATFORM_OPS`의 횡단 read는 `SFDS_PLATFORM/TENANT/DECISION/CASE/AUDIT:READ`에 한정한다. `SFDS_ACTION:OPERATE`와 `SFDS_EVIDENCE:EXPORT`는 포함하지 않으며 action 상태 운영·증적 추출은 tenant write/export 역할 또는 platform admin/super-admin 경계를 따른다.
 
 ### 1.4 데이터 엔티티 (백오피스 관점)
 
@@ -297,13 +302,15 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 |------|------|---------|
 | **서비스 격리** | 전용 배포(매니지드 전용/자체 인프라 설치형)는 **배포 경계가 1차 격리 경계**, SHARED만 행 격리. 격리는 온보딩 프로비저닝의 산출(D-01) | 서비스 상세·등록에 **배포 유형 표시·온보딩 상태(읽기)** |
 | **샌드박스** | `sandbox` 워크스페이스는 별도 격리·**shadow-only**(실제 action 미발행, `fds-actions`/`fds-aml-handoff`/`fds-webhook` 미발행) | 워크스페이스 선택 시 샌드박스 배지·"shadow only" 표시 |
-| **권한 분리** | 플랫폼 운영자 ↔ 서비스 관리자 ↔ 내부 support 권한 분리 | data-scope 기반 화면 노출 |
+| **권한 분리** | 플랫폼 운영자 ↔ 서비스 관리자 ↔ 내부 support 권한 분리 | exact capability 기반 메뉴/액션 + data-scope 기반 row 격리 |
 | **원문 접근 제한** | raw payload·식별자 원문 접근은 원칙적 미제공, 필요 시 break-glass + 감사 | 마스킹 응답, 복호화 UI 없음 |
 | **데이터 레지던시** | 한국 고객은 한국 리전 저장·처리 원칙, 해외 리전은 서비스별 별도 계약 | 서비스 설정에 리전 표시 |
 | **로그 보존** | 금융권 감사 요구에 맞춘 장기 보존 정책 서비스별 설정 | 서비스 설정에 보존 기간 |
 | **PII 원칙** | raw 계좌·카드·주민번호 미저장, 토큰/keyed hash만 저장 | 화면 표시는 BE 마스킹 |
 
 화면 상단에는 사용자 권한에 따라 **서비스 선택 드롭다운 + 워크스페이스 선택**(플랫폼 운영자) 또는 **서비스·워크스페이스 스코프 배지**(서비스 관리자, 자기 스코프 고정)를 노출합니다. cross-workspace 접근은 명시적 권한이 있어야 하며, 없으면 `FDS-AUTHZ-003`으로 차단합니다.
+
+path·query·body가 tenant/workspace target을 받는 BO FDS endpoint는 인증된 `TenantContext`와 중앙 비교한다. non-platform의 target은 바인딩 scope와 정확히 같아야 한다. platform operator는 path/query/body 중 하나로 target을 명시하고, 선택한 값을 handler·downstream `Tenant-Id`/`Workspace-Id`·BO 감사 scope에 동일 적용한다. 둘 이상의 target이 충돌하면 platform 요청도 fail-closed하며, 검증은 service·engine 호출과 감사 insert보다 먼저 끝나야 한다. target은 trim 후 최대 64자, `X-Trace-Id`는 최대 128자이고 제어문자를 금지한다. fds-svc delegate가 없을 때 local fallback은 production에서 항상 503, non-production도 active scope가 정확히 `tenant_demo/default`일 때만 허용한다. scope 부재·다른 tenant/workspace는 503이며 fallback 결재는 현재 scope와 인증 principal maker로만 생성한다. compliance-policy local toggle payload는 exact `{"base":"KR_BASE","packs":string[],"optional":string[]}`(세 key 필수·추가 key 금지·배열 원소 non-blank)만 허용한다. submit은 즉시 적용하지 않고 scoped `POLICY_PACK` 결재로 staged한 뒤 다른 checker가 exact `SFDS_REG:APPROVE`·immutable hash/scope/payload 검증을 통과하고 writer apply가 성공할 때만 `EXECUTED`/effective가 된다. reject/apply 실패는 effective policy를 바꾸지 않으며 구성된 engine 오류/invalid response를 local 값으로 대체하지 않는다.
 
 #### 1.7.1 온보딩 상태 머신 (`onboarding_status`, 배포 모델별)
 
@@ -436,7 +443,7 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 
 ## 3. 서비스 관리
 
-서비스(=테넌트)는 운영의 마스터입니다. 플랫폼 운영자가 서비스를 **등록(마스터 생성)** 하면서 **배포 유형을 선택하고 온보딩을 신청**하며, 리전·보존·마스킹·알림·Capability·Policy Pack 을 설정합니다. 운영 환경에는 hanpass-ph(`tenant_demo`) 단일 서비스가 등록되어 있으며, 본 화면은 그 마스터를 조회·설정하는 용도입니다.
+서비스(=테넌트)는 운영의 마스터입니다. exact `SFDS_TENANT:ADMIN`을 가진 플랫폼 관리자(`SFDS_PLATFORM_ADMIN` 또는 wildcard super-admin)가 서비스를 **등록(마스터 생성)** 하면서 **배포 유형을 선택하고 온보딩을 신청**하며, 리전·보존·마스킹·알림·Capability·Policy Pack 을 설정합니다. `SFDS_PLATFORM_OPS`는 이 변경을 수행하지 못합니다. 운영 환경에는 hanpass-ph(`tenant_demo`) 단일 서비스가 등록되어 있으며, 본 화면은 그 마스터를 조회·설정하는 용도입니다.
 
 > **용어·계층(준법감시실 친화 표기)**: 최상위 **기관(institution)** [시스템을 납품받은 회사 — 여기서는 hanpass]은 **서비스**(화면 표시 용어, 내부 코드 `tenant_id` = 테넌트, 운영 = hanpass-ph)를 운영하며, 그 서비스는 다시 여러 **워크스페이스**(내부 코드 `workspace_id`, 예: 리테일/기업, 운영/샌드박스)를 가질 수 있습니다. 계층은 **기관 → 서비스(테넌트) → 워크스페이스**이며, 테넌트 격리 경계 = 서비스입니다. 워크스페이스 단위로 룰셋·커넥터·케이스 큐·결재가 각각 분리됩니다. 내부 코드(`tenant_id`·`Tenant-Id`·RLS·scope 이름)는 그대로 유지하되 의미만 "서비스"입니다.
 > **배포 모델(`deployment_model`)**: AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배포가 기본**입니다. 서비스별로 ① 기본 **매니지드 전용**(`MANAGED_DEDICATED`, 플랫폼 클라우드에 서비스별 전용 DB·스택, 온보딩 IaC 자동 프로비저닝) ② **자체 인프라 설치형**(`SELF_HOSTED`, 기관 인프라에 Helm/Docker 설치형 패키지, 플랫폼은 산출물·가이드·라이선스만) ③ **소규모 공유**(`SHARED`, 소규모/체험용 공유 DB + tenant 행 격리) 중 **온보딩 프로비저닝으로 결정**합니다. 격리는 화면 라디오 즉석 선택이 아니라 온보딩 프로비저닝의 산출이며, 진행 상태는 `onboarding_status`(8종)로 읽기 표시합니다(`§1.7.1`). 호출 대상은 모두 bo-api(`/api/v1/bo/fds/tenants/**` + `/onboarding/**`)이며 bo-web→bo-api 경유만 허용(엔진 직접호출 금지).
@@ -479,7 +486,7 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 #### 비즈니스 규칙
 
 - **BR-001**: 필터 `상태 / 리전 / 배포 유형` 3축 + `서비스명` 텍스트 검색.
-- **BR-002**: 본 화면은 **플랫폼 운영자 전용**. 서비스 관리자는 자기 서비스 1건만(상세로 직행).
+- **BR-002**: 플랫폼 운영자는 전체 서비스 목록을 조회한다. non-platform tenant-bound FDS role은 자기 바인딩 서비스 1건만 반환하며 전역 `findAll()` 결과를 보지 않는다(화면은 상세로 직행 가능).
 - **BR-003**: 행 클릭 → 서비스 상세(SFDS-TNT-002, **5탭: ① 기본 정보 / ② 배포·온보딩 / ③ 마스킹·보안 / ④ Policy Pack / ⑤ 알림·소스**). `[+ 새 서비스]` 는 `SFDS_TENANT:ADMIN` 만 노출(진입 시 별도 생성 화면 SFDS-TNT-003으로 이동, 상세 5탭과 분리).
 - **BR-004**: 조회 결과 1만 건 초과 시 팝업 노출 — 기간/조건 좁히기 안내 후 재조회 요청.
 
@@ -489,7 +496,7 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 |------|------|
 | **기능 ID** | SFDS-TNT-002 |
 | **권한** | 조회 `SFDS_TENANT:READ` / 설정 변경 `SFDS_TENANT:ADMIN` |
-| **API** | `GET /api/v1/bo/fds/tenants/{id}` · `PUT /api/v1/bo/fds/tenants/{id}` · `GET /api/v1/bo/fds/tenants/{id}/onboarding` · `GET /api/v1/admin/fds/source-systems` · `GET/PUT /api/v1/admin/fds/notify-channels` (알림 채널, API §4.8 정본) (**bo-api 소유·집약·인증** — API §11.2) |
+| **API** | `GET /api/v1/bo/fds/tenants/{id}` · `PUT /api/v1/bo/fds/tenants/{id}` · `GET /api/v1/bo/fds/tenants/{id}/onboarding` · `GET /api/v1/admin/fds/source-systems` · typed `GET/PUT /api/v1/bo/fds/tenants/{id}/notify-channels` → engine `/api/v1/admin/fds/notify-channels` (알림 채널, API §4.8 정본) (**bo-api 소유·집약·인증** — API §11.2) |
 
 **한 화면(기능 ID 동일 SFDS-TNT-002)에 공통 탭 바 `[① 기본 정보] [② 배포·온보딩] [③ 마스킹·보안] [④ Policy Pack] [⑤ 알림·소스]`** 를 유지한 채 탭 클릭·이전←/다음→ 버튼으로 연속 전개합니다. 탭별로 슬라이드 PPT 슬라이드 6~10에 1:1 대응합니다.
 
@@ -700,15 +707,16 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 
 **비즈니스 규칙**
 
-- **BR-001**: 알림 채널 변경은 `SFDS_TENANT:ADMIN` 전용(`PUT /api/v1/admin/fds/notify-channels`, API §4.8 — 전체 교체·멱등). 변경 내역은 감사 로그에 기록.
+- **BR-001**: 알림 채널 변경은 `SFDS_TENANT:ADMIN` 전용(typed BFF `PUT /api/v1/bo/fds/tenants/{tenantId}/notify-channels` → engine `/api/v1/admin/fds/notify-channels`, API §4.8 — 전체 교체·멱등). 변경 내역은 감사 로그에 기록.
 - **BR-002**: 소스 시스템 목록은 **조회 전용 요약** — 신규 등록·운영(재처리/일시중지/재개)은 SFDS-CONN-001/002 화면 소관. 지연 임계 초과(⚠) 행 클릭 시 SFDS-CONN-002 커넥터 상세로 딥링크.
 - **BR-003**: 웹훅 알림 엔드포인트 URL 변경은 서명키 정책(SFDS-CONN-003 4-eyes)과 연계.
+- **BR-004**: 알림 채널 GET은 `SFDS_TENANT:READ`, PUT은 platform tenant admin(`SFDS_TENANT:ADMIN`)으로 분리한다. EMAIL/SLACK/WEBHOOK target은 설정 store에는 유지하되 감사 `detail`에는 원문을 복제하지 않고 `sha256:*`만 기록·표시한다. BO 신규 감사에는 raw `webhookHosts` 자체를 남기지 않고, 역사 `webhookHosts[]`는 조회 시 원소별 hash로 바꾼다.
 
 ---
 
 #### 공통 비즈니스 규칙 (전 탭)
 
-- **BR-공통-001**: 모든 설정 변경은 `SFDS_TENANT:ADMIN`(플랫폼 운영자) 전용. 조회는 `SFDS_TENANT:READ`. 변경 항목은 감사 로그(SFDS-AUDIT-001)에 7년 보존.
+- **BR-공통-001**: 모든 설정 변경은 exact `SFDS_TENANT:ADMIN`(플랫폼 관리자) 전용. 조회는 `SFDS_TENANT:READ`. `platformOperator` 속성만으로는 변경할 수 없다. 변경 항목은 감사 로그(SFDS-AUDIT-001)에 7년 보존.
 - **BR-공통-002**: 탭 간 이동은 "이전 ← / 다음 →" 버튼 또는 탭 바 클릭. 탭 바는 5탭 모두 항상 노출(활성 탭 강조). 탭 전환 시 페이지 새로고침 없이 섹션 교체(SPA 방식).
 - **BR-공통-003**: `SFDS-TNT-003(서비스 등록)`은 본 상세 탭과 **별도 화면**(탭 바 미공유). 목록(SFDS-TNT-001)의 `[+ 새 서비스]` 버튼에서만 진입(`§3.3`).
 - **BR-공통-004**: 권한 조회 `SFDS_TENANT:READ` / 변경 `SFDS_TENANT:ADMIN`. API: `GET /api/v1/bo/fds/tenants/{id}` (전체 상세 조회), `PUT /api/v1/bo/fds/tenants/{id}` (기본정보·알림·Policy Pack 변경), `GET /api/v1/bo/fds/tenants/{id}/onboarding` (배포·온보딩 이력), `GET /api/v1/admin/fds/source-systems` (소스 시스템 요약).
@@ -826,6 +834,8 @@ AML/FDS는 고객 PII·규제·내부보안 요건상 **서비스별 전용 배�
 | **기능 ID** | SFDS-CONN-001 |
 | **권한** | `SFDS_CONNECTOR:READ` (목록 조회) / `SFDS_CONNECTOR:OPERATE` (신규/운영 버튼) |
 | **API** | `GET /api/v1/admin/fds/source-systems` · `/api/v1/admin/fds/connectors` + bo-api `GET /api/v1/bo/fds/ingest/health`(REST 실측 요약) |
+
+`GET .../source-systems`의 `capabilities[]`는 현재 선택한 tenant/workspace별 engine capability matrix 실데이터다. 실제 capability가 없는 source/revoke-all은 명시적 `[]`로 표시하며, 필드 null/missing/duplicate를 `[]`로 정상화하거나 다른 scope 값을 병합하지 않는다. 조회 자체는 `SFDS_CONNECTOR:READ` 또는 capability checker의 `SFDS_ACTION:APPROVE`가 필요하고 미보유자는 403이다. configured engine의 빈 2xx·필수 필드 누락은 빈 목록 성공으로 표시하지 않고 `BO-PROXY-FAILED` 오류로 노출한다.
 
 #### 화면 레이아웃
 
@@ -1458,8 +1468,8 @@ sequenceDiagram
 | 컬럼(표시) | 설명 (괄호=내부 코드) |
 |------|------|
 | 그룹 코드 | 그룹 식별자(`groupId`, RiskGroupDto API §5.19 정본) |
-| 종류(표시 분류) | 회원 / 계좌 / 수단 / 단말기 / 가맹점 / 셀러 / IP / 이메일 / 상대방 — **화면 표시 분류 9종**. 저장 멤버 종류(`member_kind`)는 **3종 `SUBJECT/INSTRUMENT/COUNTERPARTY`**(DB §5·API §5.10 정본)로 환원되며, 계좌·수단은 `INSTRUMENT`, 회원·단말기·가맹점·셀러는 `SUBJECT`, IP·이메일·상대방은 `COUNTERPARTY`로 매핑(`§7.3` 주석) |
-| 용도 | 차단 / 허용 / 감시 / 뮬 네트워크 (`DENYLIST/ALLOWLIST/WATCHLIST/MULE_NETWORK`, `risk_group_type` DB §4.14 화면 노출 4종. `RiskGroupType` API §10 enum 6종 중 `BLACKLIST/WHITELIST`는 레거시 호환 enum으로 신규 화면 미노출, 그룹 코드 접두만 사용하고 용도값에서는 제외) |
+| 종류(표시 분류) | 회원 / 계좌 / 수단 / 단말기 / 가맹점 / 셀러 / IP / 이메일 / 상대방 — **화면 표시 분류 9종**. DB 저장 enum은 5종 `SUBJECT/INSTRUMENT/COUNTERPARTY/COUNTRY/VALUE`이며, 일반 운영 화면의 수동 입력은 앞 3종으로 환원한다. 계좌·수단은 `INSTRUMENT`, 회원·단말기·가맹점·셀러는 `SUBJECT`, IP·이메일·상대방은 `COUNTERPARTY`로 매핑한다. `COUNTRY`/`VALUE`는 엔진·시스템 관리 그룹 전용으로 신규 일반 멤버 폼에는 노출하지 않는다(`§7.3` 주석) |
+| 용도 | 차단 / 허용 / 감시 / 뮬 네트워크 (`DENYLIST/ALLOWLIST/WATCHLIST/MULE_NETWORK`, `risk_group_type` DB §4.14 화면 노출 4종. `RiskGroupType` API §10 enum 7종 중 `BLACKLIST/WHITELIST`는 레거시 호환, `RISK_COUNTRY`는 엔진·시스템 위험국가 그룹 전용이므로 신규 일반 화면 용도에는 미노출) |
 | 등록 방식 | 수동 / 자동(룰 hit 시) (`MANUAL/AUTO`) |
 | 활성 멤버 | 현재 활성 멤버 수 |
 | 멤버 식별자 | kind 별 식별자(계좌해시/IP/이메일 등), PII 마스킹 |
@@ -1492,6 +1502,7 @@ sequenceDiagram
 - **BR-003**: **self-service 방지** — 운영자 본인 또는 관련 계정의 그룹/차단 상태 직접 변경 불가(컴플라이언스 정책).
 - **BR-004**: 만료일 비우면 영구. 자동 등록 그룹의 기본 만료는 그룹 정의값(SFDS-GRP-003)을 따름.
 - **BR-005**: 식별자가 PII(계좌·이메일 등)인 경우 CSV 업로드 값도 정규화 단계 정책에 따라 토큰/해시로 저장(원문 미저장).
+- **BR-006**: ADD/REMOVE 결재는 상신 당시 그룹 generation에 결속된다. 그룹을 삭제한 뒤 같은 `groupId`로 재생성해도 과거 멤버 결재는 새 그룹에 실행되지 않고 `EXECUTION_FAILED`로 끝난다.
 
 ### 7.3 SFDS-GRP-003 · 그룹 등록 / 수정 (마스터 생성)
 
@@ -1499,9 +1510,11 @@ sequenceDiagram
 |------|------|
 | **기능 ID** | SFDS-GRP-003 |
 | **권한** | `SFDS_GROUP:ADMIN` |
-| **API** | `POST /api/v1/admin/fds/risk-groups` (생성) · `PUT /api/v1/admin/fds/risk-groups/{groupId}` (수정) |
+| **API** | `POST /api/v1/admin/fds/risk-groups` (즉시 생성) · `PUT /api/v1/admin/fds/risk-groups/{groupId}` (수정/비활성 상신: 202 current projection + `approvalRequestId` UUID + `status=APPROVAL_REQUIRED`) |
 
 차단/허용/감시 **그룹 자체(틀)를 생성·수정**하는 화면입니다. 멤버는 여기서 등록하지 않고, 생성된 그룹에 대해 SFDS-GRP-001/002 에서 등록합니다.
+
+> 생성과 수정은 적용 시점이 다르다. POST는 master를 즉시 생성하고, PUT rename/`active=false`는 `GROUP`/`RISK_MANAGER` 4-eyes 결재만 상신한다. PUT 202 응답은 변경 전/current projection에 approval UUID/status를 붙인 값이며 승인 전 또는 반려 후에도 표시명·그룹 정의는 바뀌지 않는다. maker와 다른 `RISK_MANAGER` checker가 승인·실행한 뒤에만 rename 또는 멤버 0인 그룹 비활성이 적용된다.
 
 #### 화면 레이아웃
 
@@ -1510,6 +1523,7 @@ sequenceDiagram
 │ 그룹 등록 / 수정  [서비스: hanpass-ph]                                        │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ 그룹 코드 *     [MULE_ACCOUNTS______]  영문 대문자·숫자·_ (생성 후 변경 불가)│
+│ 표시명 *         [대포통장 의심 계좌 그룹________________]                  │
 │ 그룹 종류 *     [계좌 ▼] (회원/계좌/수단/단말기/가맹점/셀러/IP/이메일/상대방)│
 │ 용도(=groupType) * (●) 차단  ( ) 허용  ( ) 감시  ( ) 뮬 네트워크          │
 │ 등록 방식       수동 등록           (읽기 전용 — 서버 관리, PUT 영속 제외)│
@@ -1525,22 +1539,26 @@ sequenceDiagram
 | 필드 | 설명 |
 |------|------|
 | `groupId` | 그룹 식별자(immutable). 영문 대문자·숫자·`_`. 생성 후 변경 불가 (API §5.19 RiskGroupDto 정본) |
-| `종류`(화면 표시 분류, 독립 API 필드 아님) | 회원/계좌/수단/단말기/가맹점/셀러/IP/이메일/상대방 — 화면 표시 분류 9종. 저장 멤버 종류 `member_kind`는 **3종**(`SUBJECT/INSTRUMENT/COUNTERPARTY`, DB §5·API §5.10)으로 환원(계좌·수단→`INSTRUMENT`, 회원·단말기·가맹점·셀러→`SUBJECT`, IP·이메일·상대방→`COUNTERPARTY`) |
-| `groupType`(용도) | 차단(DENYLIST) / 허용(ALLOWLIST) / 감시(WATCHLIST) / 뮬 네트워크(MULE_NETWORK) — **독립 `usage` 필드는 없으며, 용도는 `groupType`(`risk_group_type`, DB §4.14 6종) enum에 포함**되어 표현·저장된다(API §5.18·§5.19 정본). `RiskGroupType` API §10 OpenAPI enum 6종 중 **`BLACKLIST/WHITELIST`는 레거시 호환 enum으로 신규 화면 미노출**(그룹 코드 접두로만 사용, 화면 노출 4종) |
+| `displayName` | 표시명. POST 생성 시 필수(nonblank, 최대 160자), PUT rename 시 변경 대상(API §5.17a·§5.18) |
+| `종류`(화면 표시 분류, 독립 API 필드 아님) | 회원/계좌/수단/단말기/가맹점/셀러/IP/이메일/상대방 — 화면 표시 분류 9종. DB 저장 `member_kind`는 5종이며 일반 수동 폼은 `SUBJECT/INSTRUMENT/COUNTERPARTY` 3종으로 환원한다. `COUNTRY`/`VALUE`는 엔진·시스템 관리 그룹 전용으로 신규 일반 폼에는 노출하지 않는다 |
+| `groupType`(용도) | 차단(DENYLIST) / 허용(ALLOWLIST) / 감시(WATCHLIST) / 뮬 네트워크(MULE_NETWORK) — **독립 `usage` 필드는 없으며, 용도는 `groupType`(`risk_group_type`, DB §4.14 7종) enum에 포함**되어 표현·저장된다(API §5.17a·§5.18·§5.19 정본). `BLACKLIST/WHITELIST`는 레거시 호환, `RISK_COUNTRY`는 엔진·시스템 위험국가 그룹 전용이라 신규 일반 화면에는 미노출(화면 노출 4종) |
+| `reason` | **PUT 수정/비활성 상신에서만** 필수(최대 500자). POST create engine body에는 포함하지 않는다. checker 결재함과 approval evidence에 보존하며 성공 master 감사 detail에는 원문을 복제하지 않음 |
 | `source` | 수동(MANUAL) / 자동(AUTO) — **읽기 전용(서버 관리, PUT 영속 제외)**: `fds_risk_groups` 컬럼 부재, 룰 빌더·멤버 정책에서 파생 표시(API §5.18 정본) |
 | `autoEnrollOnHit` | 룰 탐지 시 대상 자동 추가 여부 — **읽기 전용(서버 관리, PUT 영속 제외)**: 룰 빌더(SFDS-RULE-003 `autoEnrollOnHit`)에서 관리·표시만(API §5.18 정본) |
 | `defaultExpiryDays` | 등록 멤버 기본 만료 일수(비우면 영구) — **읽기 전용(서버 관리, PUT 영속 제외)**: 멤버 등록 정책(SFDS-GRP-002 만료)에서 관리·표시만(API §5.18 정본) |
 | `description` | 그룹 용도 설명 — **읽기 전용(서버 관리, PUT 영속 제외)**: `fds_risk_groups` 컬럼 부재(API §5.18 정본) |
 
-> **PUT 영속 대상은 `displayName`·`active`(+`groupType` 에코)뿐**이다(API §5.18 RiskGroupUpsertRequest 정본). 위 4개 필드(`source`/`autoEnrollOnHit`/`defaultExpiryDays`/`description`)는 화면에 **읽기 전용**으로 표시하며 본 화면 PUT으로 영속되지 않는다.
+> **PUT 영속 대상은 `displayName`·`active`(+`groupType` 에코)뿐**이다(API §5.18 RiskGroupMasterUpdateRequest 정본). 위 4개 필드(`source`/`autoEnrollOnHit`/`defaultExpiryDays`/`description`)는 화면에 **읽기 전용**으로 표시하며 본 화면 PUT으로 영속되지 않는다.
 
 #### 비즈니스 규칙
 
-- **BR-001**: `groupId` 는 immutable·unique(서비스 내). 생성 후 변경·중복 차단 → `FDS-VALIDATION-001`(중복 그룹 ID). 비활성은 멤버 0 확인 후 가능.
+- **BR-001**: `groupId` 는 `(tenant,workspace)` 내 immutable·unique다. 동일 scoped ID의 create-only 중복은 `409 FDS-STATE-CONFLICT`이며 기존 master/member/audit를 덮어쓰지 않는다. 비활성은 멤버 0 확인 후 가능.
 - **BR-002**: `groupType`(용도)·종류(화면 분류)는 생성 후 변경 불가(멤버 식별자 체계 상이). 변경 필요 시 새 그룹 생성.
 - **BR-003**: 자동(AUTO) + `autoEnrollOnHit=true` 그룹만 룰 빌더(SFDS-RULE-003)의 "그룹 자동등록" 대상으로 선택 가능.
 - **BR-004**: 그룹은 정의(틀)만 생성하며, 멤버 등록·해제·연장은 SFDS-GRP-001/002 에서 수행.
-- **BR-005**: 그룹 생성·수정·비활성 이력은 감사 로그(SFDS-AUDIT-001)에 7년 보존.
+- **BR-005**: POST는 `groupId`/`groupType`/`displayName` exact 3필드를 필수로 받아 새 generation의 effective master를 즉시 생성한다. PUT 수정/비활성은 202 pending projection을 반환하고 다른 `RISK_MANAGER` checker의 승인·실행 전까지 effective master를 바꾸지 않으며, 반려 시에도 기존 값이 유지된다. `active=false` 적용 시점에도 멤버 0을 다시 검증한다.
+- **BR-006**: 그룹 생성·승인 적용된 수정/비활성 이력은 감사 로그(SFDS-AUDIT-001)에 7년 보존한다. 미승인 상신·반려는 성공 변경 이력으로 기록하지 않는다.
+- **BR-007**: create/recreate마다 새 generation을 발급하고 rename에는 보존한다. master approval은 generation이 포함된 base hash에 결속되므로 삭제 후 같은 ID로 재생성해도 stale rename/deactivate는 새 그룹에 적용되지 않고 `EXECUTION_FAILED`다.
 
 ---
 
@@ -1764,8 +1782,8 @@ sequenceDiagram
 | 항목 | 내용 |
 |------|------|
 | **기능 ID** | SFDS-ACT-001 |
-| **권한** | 조회 `SFDS_VIEWER` / 운영 모니터링 `SFDS_ACTION:OPERATE` (재시도는 BO 권한 아님 — BE relay 소관) |
-| **API** | `GET /api/v1/fds/actions/{actionId}` (상태 조회). **재시도는 outbox relay(BE)가 자동 수행**하며 BO는 상태 조회만 한다(수동 재시도 엔드포인트 없음, relay=BE T-14). 자금/규제 액션은 결재함 승인 후 BE가 자동 relay. |
+| **권한** | 목록·상세 모두 exact `SFDS_ACTION:OPERATE` (재시도는 BO 권한 아님 — BE relay 소관). `platformOperator`/`SFDS_PLATFORM_OPS` 우회 없음 |
+| **API** | typed BO `GET /api/v1/bo/fds/actions`, `GET /api/v1/bo/fds/actions/{actionId}`. 두 action API는 exact `SFDS_ACTION:OPERATE`만 허용한다. 같은 `/fds/actions` 화면의 Capability projection은 별도 `GET /api/v1/admin/fds/source-systems`(`SFDS_CONNECTOR:READ` 또는 `SFDS_ACTION:APPROVE`)이고, approver-only 세션은 action query를 실행하지 않는다. **재시도는 outbox relay(BE)가 자동 수행**하며 BO는 상태 조회만 한다(수동 재시도 엔드포인트 없음, relay=BE T-14). 자금/규제 액션은 결재함 승인 후 BE가 자동 relay. |
 
 #### 화면 레이아웃
 
@@ -1847,6 +1865,7 @@ sequenceDiagram
 - **BR-002**: 룰 동작이 대상 시스템 Capability 에 없으면 자동 조치 불가 → 케이스 생성만 수행(`CAN_OPEN_CASE_ONLY`). 룰 빌더에서 경고.
 - **BR-003**: Capability 미지원 조치 발행 시 액션 실패(`§10.1` BR-004)로 표면화 → 매트릭스 점검.
 - **BR-004**: Capability 변경 이력은 감사 로그 7년 보존.
+- **BR-005**: `capabilities`는 patch가 아니라 전체 desired set이다. 필드가 존재하면 빈 배열 `[]`도 유효한 revoke-all이며, 일반 설정과 혼합할 수 없다. checker EXECUTED 시 해당 tenant/workspace/source의 `fds_capabilities`를 원자 전체 교체하고 `[]`이면 기존 행을 모두 삭제한다.
 
 ---
 
@@ -1953,7 +1972,7 @@ sequenceDiagram
 - **BR-003**: "AML/규제 위임 전환"은 케이스를 `fds-aml-handoff` 큐로 aml-svc에 위임(`amlCaseRef` 발급)하고 origin case를 `ESCALATED`로 전이. 보고서 본 처리는 aml-svc 소관(§13).
 - **BR-004**: 모든 배정·코멘트·전환·종결·재오픈 이력은 감사 로그 7년 보존.
 - **BR-005**: 증적·연결 거래 식별자는 마스킹 적용. 원문 접근은 break-glass + 감사.
-- **BR-006**: **재오픈(REOPEN)** — 종결 상태(`CLOSED_CONFIRMED`/`CLOSED_FALSE_POSITIVE`/`CLOSED_REPORTED`)의 케이스는 [재오픈]으로 조사중(`IN_REVIEW`)에 전이할 수 있다(§1.6.1·설계서 §11.6.1). **재오픈 전용 엔드포인트는 없으며 `PATCH /api/v1/fds/cases/{caseId}` body `{status: IN_REVIEW, reason: <재오픈 사유>}`로 처리한다(API §5.6 `CasePatchRequest`)**. 조건: ① 재오픈 사유 입력 필수(모달), ② 책임자(`SFDS_CASE:APPROVE` 권한) 이상만 가능, ③ 자기가 종결(승인)한 건은 본인이 재오픈 불가(4-eyes, 위반 시 `FDS-APPROVAL-SELF` 409), ④ 감사 로그 기록. 재오픈 횟수 제한 없음, 재오픈 시 SLA 재기산. [재오픈] 버튼은 종결 상태에서만 노출.
+- **BR-006**: **재오픈(REOPEN)** — 종결 상태(`CLOSED_CONFIRMED`/`CLOSED_FALSE_POSITIVE`/`CLOSED_REPORTED`)의 케이스는 [재오픈]으로 조사중(`IN_REVIEW`)에 전이할 수 있다(§1.6.1·설계서 §11.6.1). **재오픈 전용 엔드포인트는 없으며 `PATCH /api/v1/fds/cases/{caseId}` body `{status: IN_REVIEW, reason: <재오픈 사유>}`로 처리한다(API §5.6 `CasePatchRequest`)**. local demo 경로는 실제 `CLOSED_*→IN_REVIEW`일 때만 사유·`SFDS_CASE:APPROVE`·closer≠actor를 강제한다. engine 위임 경로는 BO capability를 engine PATCH와 원자 assertion하는 HMAC 계약이 P0-04로 남아 있으므로 TOCTOU 방지를 위해 target `status=IN_REVIEW` 요청 전부를 보수적으로 `SFDS_CASE:APPROVE`로 사전 게이트한다. 재오픈 횟수 제한 없음, 재오픈 시 SLA 재기산. [재오픈] 버튼은 종결 상태에서만 노출.
 - **BR-007**: **종결 사유 코드 필수** — 종결 상신 시 종결 사유 코드(`close_reason` 8종, 드롭다운)를 필수 선택한다. 자유 텍스트 사유는 상세 메모(선택)로 분리 입력하며 코드와 별도 보조 저장(통계·룰 튜닝은 코드 축으로 집계).
 - **BR-007a (1클릭 종결 — bo-api 위임 자동 상신·closedStatus 파생, 코드=truth 라이브 검증 7fca1a0)**: 화면 "종결"은 사유 코드·메모만 받는 **1클릭 흐름**이지만 엔진 종결 계약(`POST /fds/cases/{caseId}/close`, API §4.4)은 (a) terminal `closedStatus` 가 필수이고 (b) 상태기계상 종결 전 **`PENDING_APPROVAL`(종결상신) 경유가 필수**(§1.6.1 케이스 상태머신, 설계서 §11.6 전이표)다. 이를 화면 1클릭으로 유지하려고 **bo-api 위임 계층이** ① 종결 사유 계열에서 canonical `closedStatus` 를 파생해 동봉한다 — **`FP_*`→`CLOSED_FALSE_POSITIVE`(오탐종결)·`CONFIRMED_*`→`CLOSED_CONFIRMED`(사기확정종결)·`ESCALATED_AML`→`CLOSED_REPORTED`(보고후종결)·`OTHER`→확정 계열 보수 기본값**(DB §4.11) ② 현재 상태가 상신 전(`OPEN`/`ASSIGNED`→`IN_REVIEW`→`PENDING_APPROVAL`, 또는 `IN_REVIEW`/`ESCALATED`→`PENDING_APPROVAL`)이면 그 전이를 **자동 선행**한다(그 외 불법 전이는 엔진 409 그대로 표면화). 종결 자체는 여전히 `CASE_CLOSE` 4-eyes(BR-001·`COMPLIANCE_MANAGER`)라 응답은 종결상신(`SUBMITTED`)이며 다른 승인자 승인 시 실제 종결된다. AML 위임 케이스의 대칭 종결 경로(`EDD_CLOSE` 4-eyes 조사 케이스 일반화)는 기능정의서(AML) §8.1 BR-003 참조.
 - **BR-008**: **AML 위험 등급 배지(참조 표시만)** — ③ 위험 프로파일의 AML 위험 등급(`riskGrade`/`riskScore`·당연고위험)은 **aml-svc 위임 조회**(bo-api 경유) 결과를 **참조 표시**한다. FDS 화면에서 등급을 산정·변경하지 않으며(산정·변경은 aml-svc 소관, §13 책임 경계), 비고객이거나 조회 불가 시 "RA 미산정"으로 표기한다. `amlCaseRef` 있으면 [AML 케이스] 딥링크로 위임 케이스를 연다.
@@ -1970,7 +1989,7 @@ sequenceDiagram
 | 항목 | 내용 |
 |------|------|
 | **기능 ID** | SFDS-APPR-001 |
-| **권한** | 조회 `SFDS_VIEWER` / 승인·반려 `SFDS_*:APPROVE` (결재 라인별 — 룰=`SFDS_RULE:APPROVE`, 매핑=`SFDS_MAPPING:APPROVE`, Capability/액션=`SFDS_ACTION:APPROVE`, 명단=`SFDS_GROUP`(운영) 상위 결재, 자격증명=`SECURITY_ADMIN`, export=`SFDS_REG:APPROVE`(컴플라이언스), 케이스 종결=`SFDS_CASE:APPROVE`) |
+| **권한** | 결재함 진입은 지원 checker capability 중 하나 이상, 실제 목록·상세·승인·반려는 row별 exact capability. 룰=`SFDS_RULE:APPROVE`, field mapping=`SFDS_MAPPING:APPROVE`, source capability/액션=`SFDS_ACTION:APPROVE`, source 일반 설정=`SFDS_CONNECTOR:OPERATE`, 자격증명=`SFDS_CONNECTOR:APPROVE`, 명단=`SFDS_GROUP:ADMIN`, export/Policy Pack=`SFDS_REG:APPROVE`, 케이스 종결=`SFDS_CASE:APPROVE` |
 | **API** | `GET /api/v1/admin/fds/approvals?subjectKind=&status=&maker=` (대기 목록 — 필터 3종 `subjectKind`·`status`·`maker` API v1.7 §4.9 공식 정의) · `GET .../approvals/{approvalRequestId}` (단건, `payload_hash` 포함) · `POST .../approvals/{approvalRequestId}/approve` 🔒 (checker≠maker 강제) · `POST .../approvals/{approvalRequestId}/reject` |
 
 #### 화면 레이아웃
@@ -2015,10 +2034,14 @@ sequenceDiagram
 
 - **BR-001**: 필터 `유형(subject_kind 10종) / 상태(approval_status 8종) / 상신자` + `대상` 검색. 행 ▶ 펼침 시 결재 단건(`payload_hash`·결재 단계·만료 시각·최대 실행 횟수)을 조회.
 - **BR-002**: **self-approval 방지** — 승인자(checker)는 상신자(maker)와 동일 사용자일 수 없다. 위반 시 `FDS-APPROVAL-SELF`(409)로 [승인] 차단. AI agent는 maker(상신)만 가능하며 checker(승인) 불가.
-- **BR-003**: **payload 무결성** — 상신 시 `payload_hash`로 고정되며, 승인 시점에 payload가 변경되었으면 `FDS-APPROVAL-PAYLOAD-CHANGED`로 무효 처리하고 재상신을 요구한다.
+- **BR-003**: **payload 무결성** — 상신 시 `payload_hash`로 고정되며, 승인 시점에 payload가 변경되었으면 `FDS-APPROVAL-PAYLOAD-CHANGED`로 무효 처리하고 재상신을 요구한다. engine 위임 승인도 bo-api가 현재 pending row를 다시 읽어 요청 `payloadHash`와 immutable 저장 해시를 먼저 비교하고, 일치할 때만 downstream approve를 호출한다(엔진의 독립 검증은 그대로 유지).
 - **BR-004**: 결재 라인은 작업 유형별 기본값을 따른다(§16.5 4-eyes 결재 대상 표) — 룰/케이스 종결/export 최종본=컴플라이언스 책임자, 명단/가맹점 정상화=리스크 책임자, 자격증명=보안 관리자, 매핑/케이스 액션=maker-checker, 대규모는 임원 승인. 승인 후 상태는 `승인(APPROVED)` → BE 실행 결과에 따라 `실행(EXECUTED)`/`실행실패(EXECUTION_FAILED)`로 전이한다.
 - **BR-005**: 결재 누락 상태에서 대상 작업(예: 룰 활성화) 시도 시 `FDS-APPROVAL-REQUIRED`(409)로 차단된다. 모든 상신·승인·반려·만료 이력은 감사 로그(SFDS-AUDIT-001)에 7년 보존한다.
 - **BR-006**: 서비스·워크스페이스 데이터스코프가 적용되어, 운영자는 자기 스코프의 결재 요청만 조회·결재할 수 있다.
+- **BR-007**: `subjectKind` checker 매핑은 `ACTION→SFDS_ACTION:APPROVE`, `RULE|RULE_PARAM→SFDS_RULE:APPROVE`, `SECRET→SFDS_CONNECTOR:APPROVE`, `GROUP|MERCHANT_NORMALIZE→SFDS_GROUP:ADMIN`, `EXPORT|POLICY_PACK→SFDS_REG:APPROVE`, `CASE_CLOSE→SFDS_CASE:APPROVE`다. `MAPPING`은 staged payload의 immutable `requiredBoCapability`를 사용한다. 지원하지 않는 subject는 fail-closed한다.
+- **BR-008**: source-system update는 `capabilities` **필드 존재 여부**로 capabilities-only(`SFDS_ACTION:APPROVE`)와 일반 설정-only(`SFDS_CONNECTOR:OPERATE`)를 분리 상신하며 혼합 요청은 400이다. `capabilities: []`도 유효한 revoke-all이고 전체 desired set 교체로 실행한다. field mapping은 `SFDS_MAPPING:APPROVE`다. maker도 같은 operation capability를 가져야 하고 checker는 `payload_hash`로 동결된 marker를 다시 검사한다. marker 누락·미지 legacy `MAPPING` row는 fail-closed한다.
+- **BR-009**: controller의 coarse 결재함 진입은 row 열람 권한이 아니다. service는 전체 source row에서 exact checker capability가 있는 row만 필터한 뒤 페이지를 자른다. 단건·승인·반려도 row를 먼저 읽어 exact 판정하며 실패 시 downstream 결정 호출·local 상태 변경은 0건이다. local fallback 상신의 maker는 인증된 `BackofficeActorResolver` principal이며 `ops.agent` 같은 기본 actor로 대체하지 않는다.
+- **BR-010**: 결재 `subjectKind`는 승인 라우팅용 닫힌 10종이며 FE 필터·라벨도 `RULE_PARAM`을 포함한다. 감사 projection의 `subjectKind`/`targetKind`는 변경된 resource 분류(`RULE`, `SOURCE_SYSTEM`, `CONNECTOR`, `NOTIFY_CHANNEL` 등)로 별도 모델이므로 결재 10종과 동일 enum으로 취급하지 않는다.
 
 ---
 
@@ -2223,7 +2246,7 @@ sequenceDiagram
 |------|------|
 | **기능 ID** | SFDS-AUDIT-001 |
 | **권한** | `SFDS_AUDIT:READ` |
-| **API** | `GET /api/v1/bo/fds/audit?subjectKind=&actor=&from=&to=` (**bo-api 소유·집약·인증**. 감사 조회 운영자 엔드포인트는 bo-api가 소유하며 fds-svc 저수준 감사 데이터(`fds_audit_logs`)를 집약. 폐기 경로 `/api/v1/admin/fds/audit` 대체 — API §11.2) |
+| **API** | 목록 `GET /api/v1/bo/fds/audit?subjectKind=&subjectId=&actor=&traceId=&from=&to=&page=&size=` · 단건 `GET /api/v1/bo/fds/audit/{sourceService}/{auditId}` (`sourceService=BO|FDS`). **bo-api 소유·집약·인증**이며 fds-svc scoped list/detail `GET /api/v1/admin/fds/audit-events[/{auditId}]`를 typed 위임. 폐기 경로 `/api/v1/admin/fds/audit` 대체 — API §11.2 |
 
 #### 화면 레이아웃
 
@@ -2264,6 +2287,11 @@ sequenceDiagram
 - **BR-003**: 감사 로그는 append-only(수정·삭제 불가). 변경 전/후 값(diff) 표시.
 - **BR-004**: 서비스 데이터스코프 적용 — 서비스 관리자는 자기 서비스 로그만, 플랫폼 운영자는 횡단 조회 가능.
 - **BR-005**: 조회 결과 1만 건 초과 시 팝업 노출 — 기간/조건 좁히기 안내 후 재조회.
+- **BR-006**: 모든 source는 `sourceService, auditId, tenantId, workspaceId, event, actorSubject, subjectKind, subjectId, traceId, detail, occurredAt` 통합 projection으로 표시한다. 같은 `traceId`/`subjectId`로 BO edge와 FDS engine의 계보를 함께 검색하며 `occurredAt DESC, sourceService ASC, auditId ASC`로 안정 정렬한다. BO `auditId`는 숫자로 비교하고 FDS ID는 문자열로 비교한다.
+- **BR-007**: 감사 row는 append-only다. tenant operator의 list/detail/trace/subject 조회는 항상 `(tenant_id, workspace_id)` 조건을 먼저 적용하며, ID만으로 타 scope row를 찾지 않는다. scope 복원이 불가능한 역사 BO row는 `platform/default`에 격리한다.
+- **BR-008**: source별 exact filtered `totalElements`를 합산하고 요청 페이지 끝까지 각 source page를 수집한 뒤 stable merge한다. `page×size+size` merge window는 최대 **10,000행**이며 초과 요청은 기간/필터 축소를 요구한다. 화면은 서버 `totalElements`로 페이지 이동하며 첫 50행 재검색으로 단건을 찾지 않는다. 행 클릭은 `(sourceService,auditId)` composite direct detail을 호출한다.
+- **BR-009**: FDS typed local projection은 `FDS_%`/`PROXY_FDS_%`/`NOTIFY_CHANNEL_CHANGE`만 포함한다. AML typed projection도 explicit AML allowlist/prefix만 포함하며 IAM/ROLE/SECURITY/unknown BO event를 보수집합으로 흡수하지 않는다. 미분류·횡단 행은 `BO_SUPER_ADMIN` 전용 generic `/api/v1/bo/audit[/{id}]`에서만 조회한다.
+- **BR-010**: notify-channel detail의 nested `target`은 `sha256:*`, connector 자유입력 `reason`은 `[REDACTED]`로 표시한다. 신규 BO 감사 write에는 raw `webhookHosts`를 저장하지 않고, 역사 `webhookHosts[]`는 read 시 원소별 `sha256:*`로 치환한다. 신규 write와 역사 read 모두 적용하며 민감 event의 malformed JSON은 원문 대신 redacted sentinel로 fail-closed한다. FDS/BO admin 감사의 `traceId`는 최대 128자이고 명시적 causal trace를 우선하며 없으면 MDC trace를 사용한다(AML canonical ingest의 64자 계약과 별도).
 
 ---
 
@@ -2280,12 +2308,12 @@ sequenceDiagram
 | 운영 › 조사·모니터링 | SFDS-DASH-001 | 플랫폼 운영 대시보드 | `GET /api/v1/bo/fds/dashboard` (bo-api 소유) | bo-api | T-20 |
 | 운영 › 조사·모니터링 | SFDS-DASH-002 | 서비스별 대시보드 | `GET /api/v1/bo/fds/tenants/{id}/dashboard` (bo-api 소유) | bo-api | T-20 |
 | 운영 › 조사·모니터링 | SFDS-DEC-001/002 | 결정 목록/상세 | `GET /api/v1/fds/decisions`, `/{decisionId}` | fds-svc | T-12 |
-| 운영 › 조사·모니터링 | SFDS-DEC-003 | Subject 타임라인 | `GET /api/v1/evidence/fds/cases/{caseId}/timeline` (§8.3 정본, API §4.5) | fds-svc | T-12·T-16 |
+| 운영 › 조사·모니터링 | SFDS-DEC-003 | Subject 타임라인 | bo-api typed BFF `GET /api/v1/evidence/fds/cases/{caseId}/timeline`(`SFDS_DECISION:READ`) → fds-svc API §4.5 | bo-api→fds-svc | T-12·T-16 |
 | 운영 › 조사·모니터링 | SFDS-EVT-001 | 이벤트 조회 | `GET /api/v1/fds/events/{eventId}` | fds-svc | T-05 |
 | 운영 › 조사·모니터링 | **SFDS-STAT-001** | **룰 효과성 통계(§6.7, v4.0 벤치마크 보강)** | **(제안)** `GET /api/v1/bo/fds/stats/rules` · `GET /api/v1/bo/fds/stats/false-positives` — **집계 소유 bo-api, 후속 API 정합 필요** | **bo-api** | T-11·T-16 |
 | 운영 › 케이스·처리 | SFDS-CASE-001/002 | 케이스 목록/상세 | `GET /api/v1/fds/cases`, `/{id}`, `/events`, `PATCH`, `/assign`, `/close` 🔒, `/feedback` | fds-svc | T-16 |
 | 운영 › 케이스·처리 | SFDS-CASE 액션 | 케이스 기반 조치 상신 | `POST /api/v1/fds/cases/{id}/actions` 🔒(자금/규제) | fds-svc | T-13·T-16·T-18 |
-| 운영 › 케이스·처리 | SFDS-ACT-001 | 액션 아웃박스 | `GET /api/v1/fds/actions/{actionId}` (relay=BE T-14) | fds-svc | T-14 |
+| 운영 › 케이스·처리 | SFDS-ACT-001 | 액션 아웃박스 | typed BFF `GET /api/v1/bo/fds/actions`, `GET /api/v1/bo/fds/actions/{actionId}`(목록·상세 모두 exact `SFDS_ACTION:OPERATE`; relay=BE T-14) | bo-api→fds-svc | T-14 |
 | 운영 › 케이스·처리 | SFDS-ACT-002 | Capability 매트릭스 | `GET /api/v1/admin/fds/source-systems`, `PUT .../{ss}` 🔒 | fds-svc | T-14 |
 | 운영 › 거버넌스·보고 | SFDS-APPR-001 | 결재함(maker-checker) | `GET /api/v1/admin/fds/approvals`, `/{id}/approve`, `/reject` | fds-svc | T-15 |
 | 운영 › 거버넌스·보고 | SFDS-REG-001/002 | 규제 보고 후보 큐/추적 | `GET /api/v1/fds/cases?caseType=REGULATORY_REPORT,…` → 본 처리 **aml-svc** | fds-svc | T-17 |
@@ -2294,11 +2322,11 @@ sequenceDiagram
 | 설정 › 연동·데이터 | SFDS-TNT-002 (탭②) | 서비스 상세 — 배포·온보딩 | `GET /api/v1/bo/fds/tenants/{id}/onboarding` (bo-api 소유) | bo-api | T-03·P8 |
 | 설정 › 연동·데이터 | SFDS-TNT-002 (탭③) | 서비스 상세 — 마스킹·보안 | `GET /api/v1/bo/fds/tenants/{id}` (bo-api 소유) · Capability 조회(SFDS-ACT-002 연동) | bo-api | T-03 |
 | 설정 › 연동·데이터 | SFDS-TNT-002 (탭④) | 서비스 상세 — Policy Pack | `GET/PUT /api/v1/bo/fds/tenants/{id}` (bo-api 소유) | bo-api | T-03 |
-| 설정 › 연동·데이터 | SFDS-TNT-002 (탭⑤) | 서비스 상세 — 알림·소스 | `GET /api/v1/bo/fds/tenants/{id}` (bo-api 소유) · `GET /api/v1/admin/fds/source-systems` · `GET/PUT /api/v1/admin/fds/notify-channels` (API §4.8 정본, §3.2 본문과 일치) | fds-svc(알림·소스 정본, bo-api 집약 경유) | T-03·T-20 |
+| 설정 › 연동·데이터 | SFDS-TNT-002 (탭⑤) | 서비스 상세 — 알림·소스 | `GET /api/v1/bo/fds/tenants/{id}` · typed BFF `GET/PUT /api/v1/bo/fds/tenants/{id}/notify-channels`(GET=`SFDS_TENANT:READ`, PUT=`SFDS_TENANT:ADMIN`) → engine `/admin/fds/notify-channels` | bo-api→fds-svc | T-03·T-20 |
 | 설정 › 연동·데이터 | SFDS-TNT-003 | 서비스 등록(별도 생성 화면, 상세 5탭과 분리) | `POST /api/v1/bo/fds/tenants` (bo-api 소유) | bo-api | T-03·P8 |
 | 설정 › 연동·데이터 | SFDS-CONN-001/002 | 소스시스템·커넥터 목록·운영 | `GET /api/v1/admin/fds/source-systems`, `/connectors`, `POST .../connectors/{connectorId}/replay` (API §4.8 정본) | fds-svc | T-03·T-20·T-21 |
 | 설정 › 연동·데이터 | SFDS-CONN-003 | 커넥터 등록·자격증명 | `POST /api/v1/admin/fds/source-systems`, `POST /api/v1/admin/fds/credentials` 🔒, `/rotate` 🔒 | fds-svc | T-03·T-04 |
-| 설정 › 연동·데이터 | **SFDS-CONN-004** | **수신 API 카탈로그·인입 라이브 모니터링(§4.4, v5.0)** | **(제안)** `GET /api/v1/bo/fds/ingest/catalog` · `GET /api/v1/bo/fds/ingest/health` — **집계 소유 bo-api, 후속 API 정합 필요** | **bo-api** | T-03·T-20 |
+| 설정 › 연동·데이터 | **SFDS-CONN-004** | **수신 API 카탈로그·인입 라이브 모니터링(§4.4, v5.0)** | `GET /api/v1/bo/fds/ingest/catalog` · `GET /api/v1/bo/fds/ingest/health` · aggregate `GET /api/v1/bo/fds/health`, 모두 `SFDS_CONNECTOR:READ` | **bo-api** | T-03·T-20 |
 | 설정 › 연동·데이터 | SFDS-MAP-001 | 소스/스키마 레지스트리 | `GET /api/v1/admin/fds/source-systems` | fds-svc | T-04 |
 | 설정 › 연동·데이터 | SFDS-MAP-002 | 필드 매핑/PII 정책 | `PUT /api/v1/admin/fds/source-systems/{ss}/mappings` 🔒 | fds-svc | T-04 |
 | 설정 › 탐지 정책 | SFDS-RULE-001 | 룰 목록 | `GET /api/v1/admin/fds/rule-sets`, `/rules` | fds-svc | T-09·T-11 |
@@ -2315,9 +2343,11 @@ sequenceDiagram
 
 ### 16.2 백오피스 Role ↔ 화면 권한 매트릭스
 
+bo-web nav의 exact capability는 코드 `lib/nav.ts`와 동일하게 고정한다: 플랫폼 대시=`SFDS_PLATFORM:READ`, 서비스 관리=`SFDS_TENANT:READ`, 커넥터=`SFDS_CONNECTOR:READ`, 매핑=`SFDS_MAPPING:READ`, 룰=`SFDS_RULE:READ`, 그룹=`SFDS_GROUP:READ`, 결정·이벤트=`SFDS_DECISION:READ`, 액션=`SFDS_ACTION:OPERATE`, 케이스·규제 후보=`SFDS_CASE:READ`, 결재함=지원 checker capability 8종 중 하나, 증적=`SFDS_EVIDENCE:EXPORT`, 감사=`SFDS_AUDIT:READ`. `requiredScopes`가 있으면 legacy role metadata가 아니라 이 exact capability로 노출하며 wildcard `*`만 전역 우회한다.
+
 | Role | 플랫폼 대시 | 서비스 대시 | 서비스 관리 | 커넥터 운영 | 매핑 결재 | 룰 작성 | 룰 결재 | 그룹 운영 | 그룹 생성 | 결정/케이스 | 액션 운영 | Capability 결재 | 규제 결재 | Evidence Export | 감사 |
 |------|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
-| `SFDS_PLATFORM_OPS` | ✓ | ✓ | | | | | | | | ✓ | ✓ | | | ✓ | ✓ |
+| `SFDS_PLATFORM_OPS` | ✓ | ✓ | | | | | | | | ✓ | | | | | ✓ |
 | `SFDS_PLATFORM_ADMIN` | ✓ | ✓ | ✓ | ✓ | ✓ | | ✓ | | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ |
 | `SFDS_VIEWER` | | ✓ | | | | | | | | ✓(R) | | | | | ✓ |
 | `SFDS_AUTHOR` | | ✓ | | | | ✓ | | | | ✓ | | | ✓ | | ✓ |
@@ -2326,13 +2356,14 @@ sequenceDiagram
 | `SFDS_ANALYST` | | ✓ | | | | | | | | ✓(조사) | | | | ✓ | ✓ |
 | `SFDS_ADMIN` | | ✓ | | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-> **플랫폼 운영자**(`SFDS_PLATFORM_*`)만 전체 서비스 횡단 조회·서비스 관리. 나머지 Role 은 자신의 서비스 스코프 안에서만 작동. 서비스 등록/설정·격리·리전은 `SFDS_PLATFORM_ADMIN` 전용. 커넥터 secret·필드매핑·Capability·규제 보고·케이스 종결은 모두 4-eyes(작성자≠승인자).
+> **플랫폼 운영자**(`SFDS_PLATFORM_*`)만 명시 target의 전체 서비스 횡단 데이터 스코프를 사용할 수 있다. `platformOperator` 속성 자체는 메뉴·IAM·PII·STR·업무 동작 인가가 아니며, 실제 조회/조작은 각 route의 exact capability가 필요하다. 나머지 Role 은 자신의 서비스 스코프 안에서만 작동. 서비스 등록/설정·격리·리전은 `SFDS_PLATFORM_ADMIN` 전용. 커넥터 secret·필드매핑·Capability·규제 보고·케이스 종결은 모두 4-eyes(작성자≠승인자).
+> `BO_SUPER_ADMIN`/wildcard `*`만 capability 우회다. `SFDS_PLATFORM_OPS`는 횡단 read만 가능하고 **action·evidence·approval capability가 없다**. `SFDS_PLATFORM_ADMIN`은 tenant admin/write를 포함한다. system role의 capability matrix와 custom `bo_role_scopes`는 중앙 `FdsAuthorizationPolicy`가 함께 판정하며 controller별 raw role allowlist는 사용하지 않는다.
 >
 > **SFDS-STAT-001 룰 효과성 통계(§6.7, v4.0)**: read-only 집계 화면으로 `SFDS_RULE:READ` 보유 Role(룰 작성·룰 결재 열 ✓ Role 및 `SFDS_VIEWER`)에 조회 허용 — 변경 동작이 없어 별도 매트릭스 열을 두지 않는다(튜닝 적용은 룰 작성/결재 권한 경유).
 >
 > **SFDS-CONN-004 수신 API 카탈로그·인입 라이브 모니터링(§4.4, v5.0)**: read-only 집계 화면으로 `SFDS_CONNECTOR:READ` 보유 Role(커넥터 운영 열 ✓ Role 및 `SFDS_VIEWER`)에 조회 허용 — 운영 조치는 SFDS-CONN-002(`SFDS_CONNECTOR:OPERATE`) 경유.
 >
-> **SFDS-EXP-001 Evidence Export(§14)**: 추출·다운로드는 `SFDS_*:EXPORT` 스코프 보유 Role(위 Evidence Export 열 ✓ — `SFDS_PLATFORM_OPS`·`SFDS_PLATFORM_ADMIN`·`SFDS_APPROVER`·`SFDS_OPS`·`SFDS_ANALYST`·`SFDS_ADMIN`). `SFDS_VIEWER`·`SFDS_AUTHOR` 제외(읽기/작성 전용). **최종본(제출용)은 4-eyes `SFDS_REG:APPROVE`**(`SFDS_APPROVER`·`SFDS_ADMIN`, 컴플라이언스 책임자). 교차 서비스 감사 열람(`AML_AUDITOR`·`AML_COMPLIANCE`)·플랫폼 슈퍼관리자(`BO_SUPER_ADMIN`)는 bo-api 인가에 포함(§14 scope 기반 — Role 매핑은 구현 정합 확정값).
+> **SFDS-EXP-001 Evidence Export(§14)**: 추출·다운로드는 `SFDS_EVIDENCE:EXPORT` 보유 Role(위 Evidence Export 열 ✓ — `SFDS_PLATFORM_ADMIN`·`SFDS_APPROVER`·`SFDS_OPS`·`SFDS_ANALYST`·`SFDS_ADMIN`). **횡단 read-only `SFDS_PLATFORM_OPS`와 `SFDS_VIEWER`·`SFDS_AUTHOR`는 제외**한다. 최종본(제출용)은 4-eyes `SFDS_REG:APPROVE`(`SFDS_APPROVER`·`SFDS_ADMIN`, 컴플라이언스 책임자). 플랫폼 슈퍼관리자(`BO_SUPER_ADMIN`)는 wildcard 인가에 포함한다.
 
 ### 16.3 백오피스 주요 에러 코드
 
@@ -2340,19 +2371,19 @@ sequenceDiagram
 |------|------|-----------|
 | `FDS-VALIDATION-001`(중복 ID) | 400 | 서비스 ID 중복 — 다른 ID 입력 안내 |
 | `FDS-NOT-FOUND` | 404 | 목록 새로고침 안내 |
-| `FDS-STATE-CONFLICT` | 409 | 동시 수정 — 최신 버전 재조회 |
+| `FDS-STATE-CONFLICT` | 409 | 상태/create-only key 충돌 — 최신 버전 재조회. 위험그룹 동일 scoped ID면 다른 ID 입력 안내 |
 | `FDS-APPROVAL-REQUIRED` | 409 | 결재 미완 — 활성화 차단 |
 | `FDS-VALIDATION-001`(중복 룰 식별자) | 400 | 룰 번호 중복(서비스 내) — 다른 번호 |
 | `FDS-APPROVAL-SELF` | 409 | 작성자=승인자 — 다른 승인자 필요 |
 | `FDS-VALIDATION-002` | 400 | 빌더 — 미존재/도메인 불일치 측정 항목 표시 |
 | `FDS-PII-REJECTED` | 422 | 매핑 — 원문 저장 금지 항목 토큰화/폐기 안내 |
 | `FDS-IDEMPOTENT-CONFLICT`(중복 멤버) | 409 | 중복 멤버 — CSV 결과 리포트 |
-| `FDS-VALIDATION-001`(중복 그룹 ID) | 400 | 그룹 ID 중복 — 다른 ID 입력 안내 |
 | `FDS-SCHEMA-UNKNOWN` | 422 | 커넥터 검증 실패 — 샘플 이벤트 점검 |
 | `FDS-STATE-CONFLICT` | 409 | 대상 시스템 미지원 조치 — 케이스만 처리 |
 | `FDS-RATE-LIMIT`(샘플 과다) | 429 | 기간/샘플 축소 안내 |
+| `BO-TENANT-FORBIDDEN` | 403 | 로그인 scope와 요청 path/query/body 서비스·워크스페이스가 다름 — 올바른 scope 선택 |
 
-> **HTTP 상태코드 정본**: 본 표는 API 명세 §6을 정본으로 한다(중복 검증=400, 결재 누락=409, maker=checker=409, raw PII=422, rate limit=429). 그룹 멤버 중복은 멱등 충돌(`FDS-IDEMPOTENT-CONFLICT`, 409)로 분류해 상태 전이 위반(`FDS-STATE-CONFLICT`)과 의미를 구분한다.
+> **HTTP 상태코드 정본**: 본 표는 API 명세 §6을 정본으로 한다(요청 필드 검증=400, create-only 상태키 충돌=409, 결재 누락=409, maker=checker=409, raw PII=422, rate limit=429). 위험그룹 동일 `(tenant,workspace,groupId)` 생성은 `FDS-STATE-CONFLICT`(409)이며, 그룹 멤버 중복은 별도 멱등 충돌(`FDS-IDEMPOTENT-CONFLICT`, 409)이다.
 
 ### 16.4 오픈 결정사항 (설계서 §19 / 태스크 §7 → 백오피스 영향)
 
@@ -2372,19 +2403,21 @@ sequenceDiagram
 
 ### 16.5 4-eyes 결재 대상 (API §8, 설계서 §11.4/§11.5)
 
-결재함(SFDS-APPR-001)에서 일괄 관리. `fds_approval_requests.subject_kind` **10종**(`ACTION/RULE/MAPPING/SECRET/GROUP/EXPORT/MERCHANT_NORMALIZE/CASE_CLOSE/POLICY_PACK/RULE_PARAM`, `CASE_CLOSE`=case 종결 4-eyes(대상=`fds_cases.case_id`), `POLICY_PACK`=규제 팩 토글 변경 4-eyes(대상=`fds_tenants.tenant_id`, 설계서 §16.2), `RULE_PARAM`=룰 변수(임계) 변경 4-eyes(대상=`fds_rules.rule_id`, §6.2 BR-005 — 승인 시 `fds_rule_param_overrides` 원자 적용·엔진 평가 즉시 반영), DB §5.23·API §5.12 정본) · `approval_line` **6종**(`SELF_APPROVAL_DISABLED/MAKER_CHECKER/COMPLIANCE_MANAGER/RISK_MANAGER/SECURITY_ADMIN/EXECUTIVE_APPROVAL`, DB §4.12) · `approval_status` 8종(`DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED`). payload는 `payload_hash`로 고정되며 승인 후 변경 시 무효(`FDS-APPROVAL-PAYLOAD-CHANGED`). 상신자(maker)≠승인자(checker), AI agent는 maker만 가능.
+결재함(SFDS-APPR-001)에서 일괄 관리. `fds_approval_requests.subject_kind` **10종**(`ACTION/RULE/MAPPING/SECRET/GROUP/EXPORT/MERCHANT_NORMALIZE/CASE_CLOSE/POLICY_PACK/RULE_PARAM`, `CASE_CLOSE`=case 종결 4-eyes(대상=`fds_cases.case_id`), `POLICY_PACK`=규제 팩 토글 변경 4-eyes(대상=`fds_tenants.tenant_id`, 설계서 §16.2), `RULE_PARAM`=룰 변수(임계) 변경 4-eyes(대상=`fds_rules.rule_id`, §6.2 BR-005 — 승인 시 `fds_rule_param_overrides` 원자 적용·엔진 평가 즉시 반영), DB §5.23·API §5.12 정본) · `approval_line` **6종**(`SELF_APPROVAL_DISABLED/MAKER_CHECKER/COMPLIANCE_MANAGER/RISK_MANAGER/SECURITY_ADMIN/EXECUTIVE_APPROVAL`, DB §4.12) · `approval_status` 8종(`DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED`). payload는 `payload_hash`로 고정되며 승인 후 변경 시 무효(`FDS-APPROVAL-PAYLOAD-CHANGED`). 위험그룹 master/member와 merchant normalize는 상신 당시 group generation에도 결속되어 delete/recreate 후 stale approval을 새 그룹에 실행하지 않는다. generation 증명이 없는 FDS legacy `GROUP`/`MERCHANT_NORMALIZE` pending은 `V17__risk_group_generation.sql`에서 `CANCELLED`되고 자동 재결속되지 않는다. bo-api `V19__cancel_legacy_group_approvals.sql`은 모든 기존 local `GROUP` payload를 exact `{action:'LEGACY_GENERATION_UNBOUND',migration:'V19',legacyPayload,legacyPayloadHash}`로 보존하고 `payload_hash`는 유지한다. 비종결 `DRAFT`/`SUBMITTED`/`APPROVED`/`APPROVED_PENDING_ENGINE`만 `CANCELLED`; terminal exact marker는 역사 조회만 가능하고 승인·반려·apply는 금지되며 marker/hash drift는 fail-closed한다. 상신자(maker)≠승인자(checker), AI agent는 maker만 가능.
 
 | 작업(화면) | `subject_kind` | 기본 `approval_line` |
 |---|---|---|
 | 케이스 기반 자금/규제 action (SFDS-CASE) | `ACTION` | `MAKER_CHECKER` / 대규모 `EXECUTIVE_APPROVAL` |
 | 내부감사·규제 case 종결 (SFDS-CASE-002) | `CASE_CLOSE` (대상=`case_id`) | `COMPLIANCE_MANAGER` |
 | 룰 활성화·롤백 (SFDS-RULE-005) | `RULE` | `COMPLIANCE_MANAGER` |
-| 필드 매핑/PII 변경 (SFDS-MAP-002) | `MAPPING` | `MAKER_CHECKER` |
-| Capability 매트릭스 변경 (SFDS-ACT-002, `PUT /admin/fds/source-systems/{id}`) | `MAPPING` | `MAKER_CHECKER` |
-| 명단 멤버 추가/제거 (SFDS-GRP-002) | `GROUP` | `RISK_MANAGER` |
+| 필드 매핑/PII 변경 (SFDS-MAP-002) | `MAPPING` (`requiredBoCapability=SFDS_MAPPING:APPROVE`) | `MAKER_CHECKER` |
+| Capability 매트릭스 변경 (SFDS-ACT-002, capabilities-only) | `MAPPING` (`requiredBoCapability=SFDS_ACTION:APPROVE`) | `MAKER_CHECKER` |
+| 소스 시스템 일반 설정 변경 (capabilities와 혼합 금지) | `MAPPING` (`requiredBoCapability=SFDS_CONNECTOR:OPERATE`) | `MAKER_CHECKER` |
+| 위험그룹 master 수정/비활성 (SFDS-GRP-003, POST 생성은 즉시 처리; current generation base hash 결속) | `GROUP` | `RISK_MANAGER` |
+| 명단 멤버 추가/제거 (SFDS-GRP-002, current generation hash 결속) | `GROUP` | `RISK_MANAGER` |
 | 자격증명 생성·회전 (SFDS-CONN-003) | `SECRET` | `SECURITY_ADMIN` |
 | evidence export 최종본 (SFDS-EXP-001) | `EXPORT` | `COMPLIANCE_MANAGER` |
-| high-risk merchant 정상화 | `MERCHANT_NORMALIZE` | `RISK_MANAGER` / `EXECUTIVE_APPROVAL` |
+| high-risk merchant 정상화 (groupId 오름차순 generation snapshot 결속) | `MERCHANT_NORMALIZE` | `RISK_MANAGER` / `EXECUTIVE_APPROVAL` |
 | 규제 팩 토글 변경 (SFDS-TNT-002 ④, `PUT /api/v1/bo/fds/tenants/{tenantId}` compliance_policy) | `POLICY_PACK` (대상=`tenant_id`) | `COMPLIANCE_MANAGER` |
 
 ### 16.6 비동기 큐 (integration §2)
