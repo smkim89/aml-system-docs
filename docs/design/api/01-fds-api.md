@@ -462,6 +462,8 @@ FundingDto(△, 중립 WALLET_TOPUP §6.4 `funding` 블록): `fundingInstrumentT
 | amountBase / baseCurrency | decimal(24,8) / string (nullable) | USD 환산 비교 축(통화 혼재 비교) |
 | channelType | string (nullable) | 연결 event 채널(§3.5.1 5종) |
 | sendCountry / receiveCountry | string (nullable) | corridor(remit 계열, DB §5.5) |
+| evaluationPhase | enum(`INLINE`/`ASYNC`) | `evaluation_phase`(P0-07). 동기 REST 평가=`INLINE`, 사후 큐 소비 평가=`ASYNC`. 자연 멱등키 구성요소(DB §5.10) |
+| eventOccurredAt | datetime (nullable) | `event_occurred_at`(P0-07). 평가 시 사용한 velocity asOf(재현성). V19 이전 결정은 null |
 | expiresAt | datetime | `expires_at` |
 | createdAt | datetime | `created_at` |
 

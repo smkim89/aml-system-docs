@@ -499,11 +499,17 @@ stateDiagram-v2
 | rule_set_version | VARCHAR(80) | Y | | 평가 시점 rule set 버전 |
 | feature_snapshot | JSONB | Y | | 판단 입력 feature(증적) |
 | input_event_hash | VARCHAR(128) | Y | | 원천 이벤트 hash 증적 |
+| evaluation_phase | VARCHAR(16) | N | `DEFAULT 'INLINE'`, CHECK IN('INLINE','ASYNC') | **평가 단계(P0-07)**. 동기 REST 평가=`INLINE`, 사후 큐 소비 평가=`ASYNC`. 룰 수준 `evaluation_mode`(어느 rule 이 각 단계에 참여하는가)와 별개로, 결정이 어느 단계에서 났는지 기록. 자연 멱등키 구성요소 |
+| event_occurred_at | TIMESTAMPTZ | Y | | **재현성 asOf(P0-07)**. 평가 시 사용한 event-time(velocity window 상한). 재평가가 동일 reason/score 를 재현하도록 고정. V19 이전 기존 row 는 정확 복원 불가로 nullable |
 | expires_at | TIMESTAMPTZ | Y | | 실시간 decision 만료 |
 | data_scope | VARCHAR(128) | Y | | |
 | created_at | TIMESTAMPTZ | N | now() | 불변(append-only) |
 
 > **채널/금액/corridor 파생(현재 구현)**: 결정 목록·필터의 `channelType`/`currency`/`amount(min~max)`/corridor(`sendCountry`/`receiveCountry`) 축은 `fds_decisions`에 비정규화 저장되지 않고, **`fds_canonical_events`와 복합키 `(tenant_id, workspace_id, event_id)` LEFT JOIN으로 파생**한다(저장소 `DecisionJpaRepository`, 이벤트 부재 시 결정 행 보존). 향후 조회 성능·이벤트 보존정책 파기 대비를 위해 비정규화 컬럼화 가능(후속). 본 표는 현재 컬럼 집합 정본이다.
+
+> **자연 멱등키(P0-07·V19)**: `UNIQUE (tenant_id, workspace_id, event_id, evaluation_phase, COALESCE(rule_set_version, ''))` expression 인덱스(`ux_fds_decisions_event_phase`). 동일 event·단계·룰셋버전 재평가(특히 SQS redelivery·재시도)가 중복 결정을 만들지 못하게 하는 효과적 1회(effectively-once) 백스톱. 서비스의 멱등 게이트(`EvaluateDecisionService.evaluateByEventId` 가 평가 전 자연키 조회→기존 결정 replay)와 `saveIfAbsent`(경쟁 시 UNIQUE 위반 캐치 후 승자 read-back)가 이 인덱스에 결속한다. `rule_set_version` 은 (tenant, workspace) 단위 활성 룰셋 버전으로 event 에 독립적이라 평가 전 확정 가능. NULL 룰셋버전(매칭 룰 없음)은 `COALESCE(…, '')` 로 자연키에 포함. V19 는 이 UNIQUE 생성 전 기존 중복 그룹에서 `created_at DESC` 최신 1건만 남기고 종속 참조(reasons·external_decisions FK, cases.origin_decision_id 링크)를 정리한 뒤 stale 결정을 삭제한다.
+
+> **velocity event-time 정합(P0-07)**: velocity/distinct 집계 쿼리(`velocityCount`/`velocitySum`/`subjectDistinct*`/`instrumentDistinctCountry`/`merchant*`)는 `occurred_at > :from AND occurred_at <= :asOf` 반개구간으로 통일(evidence window 와 동일). `FeatureComputeAdapter` 가 평가 이벤트의 `occurredAt` 을 `asOf` 상한으로 전달해, 과거 이벤트 재평가가 이후 발생 거래에 오염되지 않는다(결정론). 정상 실시간 평가는 `asOf≈now` 라 미래 이벤트가 없어 기존 값과 동일하다.
 
 ### 5.11 fds_decision_reasons
 decision API의 reason code 정규화(§12.8 reasonCodes).
@@ -995,7 +1001,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 
 ## 8. Flyway 마이그레이션 순서
 
-스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V17, 누락 없음)이다.
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V19, 누락 없음)이다.
 
 | 버전 | 파일 | 내용(실제) | 비고 |
 |---|---|---|---|
@@ -1016,6 +1022,8 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | V15 | `V15__quarantine_demo_seed_configuration.sql` | P0-02 운영 seed 격리. V1~V14 checksum은 그대로 두고 알려진 **복합 demo fingerprint**(`tenant_demo` + Demo/데모 표시명 또는 exact demo infra ref)가 유지된 경우에만 tenant `OFFBOARDED`, source/mapping/rule/variable 비활성, deployed rule version `ROLLED_BACK`, 해당 demo tenant의 enabled credential disable+ciphertext 폐기, exact 미종결 demo approval `CANCELLED`로 forward 보정한다. ID 단독으로는 customer row를 변경하지 않고 모든 lineage/version row를 보존한다 | additive quarantine |
 | V16 | `V16__widen_trace_ids_to_128.sql` | 공통 BO/admin 감사 correlation 상한과 맞춰 `fds_audit_logs.trace_id`만 `VARCHAR(64)→VARCHAR(128)`로 확장. 명시적 causal trace 우선·request MDC fallback을 수용하며 canonical event payload/식별자 계약은 무변경 | additive audit correlation |
 | V17 | `V17__risk_group_generation.sql` | `fds_risk_groups.generation_id UUID`를 nullable add → 기존 행별 `gen_random_uuid()` backfill → `DEFAULT gen_random_uuid()` → NOT NULL 순으로 전환한다. generation 증명이 없는 legacy approval은 새 incarnation에 재결속할 수 없으므로 `subject_kind IN ('GROUP','MERCHANT_NORMALIZE') AND status IN ('DRAFT','SUBMITTED','APPROVED')`를 `CANCELLED`로 이관한다. master/member/merchant-normalize staged hash는 이후 generation-bound 계약을 사용한다 | additive ABA hardening |
+| V18 | `V18__rls_tenant_isolation.sql` | P0-13 RLS 테넌트 격리. `tenant_id` 보유 전 `fds` 테이블에 `ENABLE`+`FORCE ROW LEVEL SECURITY` 후 runtime(`aegis_app_runtime`)·owner 정책 2종 부여(§2.2). `information_schema` 로 `workspace_id` 보유 테이블만 `AND workspace_id` predicate 분기. NOLOGIN role/grant 는 `IF NOT EXISTS` 멱등 | additive RLS |
+| V19 | `V19__decision_phase_idempotency.sql` | **P0-07 phase별 semantic idempotency·event-time 정합**. `fds_decisions` 에 `evaluation_phase varchar(16) NOT NULL DEFAULT 'INLINE'`(CHECK IN('INLINE','ASYNC')) + `event_occurred_at timestamptz`(nullable) 추가. 자연 멱등키 `UNIQUE (tenant_id, workspace_id, event_id, evaluation_phase, COALESCE(rule_set_version,''))`(`ux_fds_decisions_event_phase`) 생성 — 생성 전 기존 중복 그룹에서 `created_at DESC` 최신 1건만 남기고 종속 참조(decision_reasons·external_decisions FK 삭제, cases.origin_decision_id 링크 NULL화) 정리 후 stale 결정 DELETE. `fds_decisions` 는 V18 RLS 대상이라 컬럼 추가만으로 정책 재적용 불요 | additive idempotency/event-time |
 
 > **서비스 간 companion migration**: bo-api `V19__cancel_legacy_group_approvals.sql`은 위 V17의 local fallback 대응이다. 모든 기존 local `GROUP` payload를 원 JSONB와 원 `payload_hash`를 담은 exact 4필드 tombstone으로 보존하고, 비종결 4상태만 `CANCELLED`로 바꾼다. 이는 fds-svc V17 파일 목록에 포함되지 않는 bo-api migration이다.
 
