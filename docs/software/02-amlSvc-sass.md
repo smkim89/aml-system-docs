@@ -674,6 +674,18 @@ WLF scoring parameter가 바뀔 때만 WLF config version과 definition hash 기
 | `AUTO_DISCOUNTED` | 정책상 자동 낮춤 |
 | `ESCALATED` | 상위 승인 필요 |
 
+### 10.5 Source readiness 상태기계·fail-closed 게이트·durable rescreen (P0-06)
+
+WLF 스크리닝은 "실제 매칭할 명단이 준비돼 있는가"를 명단 생명주기(`WatchlistSourceStatus` ACTIVE/DISABLED)와 **직교하는 readiness 상태기계**로 표현하고, 준비 미충족을 미탐(`NO_MATCH`)이 아니라 fail-closed(`SCREENING_UNAVAILABLE`)로 차단한다. 코드 truth: `domain/enums/WatchlistReadinessStatus`·`domain/watchlist/{WatchlistSource,MandatoryWatchlistSource,ScreeningReadinessReason}`·`application/usecase/WlfScreeningService`·`adapter/out/persistence/WatchlistReadinessGateAdapter`·`application/usecase/rescreen/*`.
+
+**① readiness 상태기계(`WatchlistReadinessStatus` 6종, DB §3.6 `readiness_status`)**: `MISSING`(적용본 없음)→`IMPORTING`(fetch 시작)→{`READY`(apply 성공)|`FAILED`(실패)}; `READY`는 48h 경과 시 `STALE` 파생; `STALE`/`FAILED`→`IMPORTING`(재sync); any→`OVERRIDDEN`(긴급 override — 사유·승인자·만료·영향 건수 `WATCHLIST_READINESS` 감사, 만료 시 자동 원상). 전이는 도메인 메서드(`markImporting/markReady/markFailed/markStale/override/clearOverride`)만이라 불법 점프 불가. **effectiveReadiness(파생 시맨틱)**: 게이트는 저장 컬럼을 맹신하지 않고 적용본+신선도 사실로 파생한다 — `OVERRIDDEN` 유효(만료 전)면 `OVERRIDDEN`·만료면 파생 회귀, `FAILED`/`IMPORTING`은 stored 존중(in-flight), 그 외(`MISSING`/`READY`/`STALE`)는 `active_version`+`lastImportedAt` fresh(≤48h)→`READY`·applied+stale→`STALE`·applied 없음→`MISSING`. `isScreeningReady`=effective ∈ {`READY`, 유효 `OVERRIDDEN`}. 이로써 stored stale READY·만료 override 를 불신하고, 직접 seed 된 적용본+fresh 소스도 사용가능 판정한다.
+
+**② fail-closed readiness 게이트(`WatchlistReadinessGateAdapter`, DB §3.6a `aml_mandatory_watchlist_sources`)**: screen 전, tenant(+jurisdiction=`defaultRegion`)의 **필수 source 정책**을 해소해 각 활성 필수 entry 가 `PROD`=screening-ready(READY/유효 OVERRIDDEN) 또는 `NOT_APPLICABLE`=유효(승인·미만료) waiver 여야 통과한다(하나라도 미충족=fail-closed). **필수 정책이 없는 tenant** 는 fallback=screening-ready source ≥1건이면 통과·0건이면 fail-closed(구 freshness gate 의 vacuous-truth[빈 목록 allMatch=true] fail-open 제거 — 명단이 없는데 `NO_MATCH` 로 미탐되던 결함 차단). 미충족 시 `WlfScreeningService` 가 `ScreeningUnavailableException`→**503 `AML.SCREENING_UNAVAILABLE`**(사유코드 `ScreeningReadinessReason` 7종 — `NO_MANDATORY_POLICY`/`NO_READY_SOURCE`/`MISSING_SOURCE`/`NOT_READY`/`STALE`/`FAILED`/`NOT_APPLICABLE_UNAPPROVED`, 비-PII). 필수 정책 seed 는 REST-only(`POST /api/v1/admin/aml/mandatory-sources`)·Flyway 데모 시드 금지(테이블만 V51).
+
+**③ durable rescreen 파이프라인(`application/usecase/rescreen/*`, DB §3.6b·§3.6c)**: source apply(신규 active_version) 후 갱신 명단으로 기존 screening 된 활성 subject 를 재검색한다(§3.1b P0-08 fan-out durable 패턴 재사용·rescreen 전용 분리). `RescreenBatchService` 가 afterCommit 에 job enqueue(자연키 `(tenant, source_code, to_version)` 멱등)→`RescreenTargetResolver` 가 영향 subject(가정 A3 conservative — 해당 source_type 이제껏 screening 한 활성 subject 전원 keyset 페이지, recall 우선 over-screen)를 target enqueue→`RescreenWorker` 가 원자 claim(`FOR UPDATE SKIP LOCKED RETURNING`→IN_PROGRESS lease)·exp backoff·`DEAD_LETTERED`·`RescreenSubjectScreener` 로 vault 복호 후 `WlfScreeningService.screen` 멱등 재실행(NAME 소실=`NOT_APPLICABLE`)→`RescreenOutcomeService` 가 직전 WLF 상태와 outcome diff(상승 NO_MATCH→POSSIBLE/TRUE=RA 재산정+TRUE_MATCH FDS feedback 재발행·하강 delist=로그만·전량 멱등)→`RescreenReconciliationService` 가 미완료·실패·SLA 초과를 주기 집계(silent 종료 금지). worker/reconciliation 은 cross-tenant claim 이라 elevated DB context(RLS §19.2c)를 최외곽 경계로 열되 각 store op 은 자기 tenant 를 실어 나른다.
+
+**④ capability/NOT_APPLICABLE — phase-2 경계(A1·A2)**: 실 PEP/RCA provider 연동(인증·paging·diff·SLA·fallback)은 phase-2 — phase-1 은 `MockWatchlistFeedAdapter` mock 유지, 필수 PEP/RCA 는 승인된 `NOT_APPLICABLE` waiver 로만 게이트 통과한다. 세분 jurisdiction 차등(국가별 mandatory)은 phase-2(A2 — 현재 tenant `defaultRegion` 단위, wildcard `'*'` 정책은 항상 적용).
+
 ---
 
 ## 11. Customer Risk Assessment 모델
@@ -1555,7 +1567,61 @@ CREATE TABLE aml_watchlist_sources (
   status VARCHAR(32) NOT NULL,
   active_version VARCHAR(80),
   last_imported_at TIMESTAMPTZ,                          -- freshness 모니터링(§20.2, DB §3.6)
+  readiness_status VARCHAR(16) NOT NULL DEFAULT 'MISSING',  -- source readiness 상태기계(P0-06, V50): MISSING/IMPORTING/READY/STALE/FAILED/OVERRIDDEN. status(ACTIVE/DISABLED)와 직교. effectiveReadiness 파생 게이트(§10.5, DB §3.6)
+  readiness_override_expires_at TIMESTAMPTZ,             -- 긴급 override 만료(P0-06, V50): OVERRIDDEN 에서만 non-null·만료 시 자동 원상. 사유·승인자는 WATCHLIST_READINESS 감사(§10.5, DB §3.6)
   PRIMARY KEY (tenant_id, source_code)
+);
+
+-- 필수 watchlist source 정책(P0-06, V51) — fail-closed readiness 게이트 기준. 데이터 seed 없음(REST-only 적재). §10.5·DB §3.6a
+CREATE TABLE aml_mandatory_watchlist_sources (
+  tenant_id VARCHAR(64) NOT NULL,
+  jurisdiction VARCHAR(8) NOT NULL DEFAULT '*',          -- tenant defaultRegion 단위(세분=phase-2 A2)·'*' 와일드카드 센티넬(항상 적용)
+  source_type VARCHAR(64) NOT NULL,                      -- §5.4 watchlist_source_type(7종 CHECK)
+  source_code VARCHAR(80) NOT NULL DEFAULT '*',          -- 특정 source 고정 or '*'=source_type 아무 등록 source
+  capability VARCHAR(16) NOT NULL DEFAULT 'PROD',        -- PROD(반드시 READY)/NOT_APPLICABLE(범위 밖·유효 waiver 로만 통과·phase-2 A1)
+  not_applicable_reason TEXT,
+  not_applicable_approved_by VARCHAR(128),
+  not_applicable_expires_at TIMESTAMPTZ,                 -- waiver 만료(미도래여야 유효)
+  required_from TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deprecated_at TIMESTAMPTZ,                             -- nullable=활성(isActive)
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, jurisdiction, source_type, source_code),
+  FOREIGN KEY (tenant_id) REFERENCES aml_tenants (tenant_id)
+);
+
+-- WLF 명단 갱신 후 durable rescreen 배치(P0-06, V52) — P0-08 fanout durable 패턴 재사용·전용 분리. §10.5·§3.1c·DB §3.6b·§3.6c
+CREATE TABLE aml_wlf_rescreen_jobs (
+  tenant_id VARCHAR(64) NOT NULL,
+  job_id UUID NOT NULL,
+  source_code VARCHAR(80) NOT NULL,
+  from_version VARCHAR(80),
+  to_version VARCHAR(80) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING',         -- PENDING/IN_PROGRESS/COMPLETED/RETRYING/DEAD_LETTERED
+  sla_due_at TIMESTAMPTZ,
+  target_count INTEGER NOT NULL DEFAULT 0,
+  completed_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, job_id),
+  UNIQUE (tenant_id, source_code, to_version)            -- 자연키 멱등(같은 버전 재적용 시 신규 job 0)
+);
+
+CREATE TABLE aml_wlf_rescreen_targets (
+  tenant_id VARCHAR(64) NOT NULL,
+  job_id UUID NOT NULL,
+  subject_ref VARCHAR(256) NOT NULL,
+  subject_kind VARCHAR(24) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING',         -- PENDING/IN_PROGRESS/SUCCEEDED/RETRYING/DEAD_LETTERED/NOT_APPLICABLE(NAME 소실)
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ,
+  last_error VARCHAR(256),                               -- 비-PII 코드만(§19.2)
+  screening_id UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, job_id, subject_ref),
+  FOREIGN KEY (tenant_id, job_id) REFERENCES aml_wlf_rescreen_jobs (tenant_id, job_id) ON DELETE CASCADE
 );
 
 CREATE TABLE aml_watchlist_entries (
@@ -2055,6 +2121,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-14 | **P0-06 WLF 필수 source readiness·fail-closed 게이트·durable rescreen.** §10.5 신설 — ① readiness 상태기계(`WatchlistReadinessStatus` 6종 MISSING/IMPORTING/READY/STALE/FAILED/OVERRIDDEN·생명주기 status 와 직교·effectiveReadiness 파생: OVERRIDDEN 유효/만료·FAILED/IMPORTING stored·그 외 적용본+신선도 파생·stored stale READY·만료 override 불신), ② fail-closed 게이트(필수 source 정책 기반 — PROD screening-ready 또는 승인 NOT_APPLICABLE, 정책 없음 tenant fallback ready≥1, 구 freshness gate vacuous-truth fail-open 제거, 미충족=503 SCREENING_UNAVAILABLE + 사유코드 7종), ③ durable rescreen 파이프라인(source apply 후 §3.1b P0-08 fanout 패턴 재사용·전용 분리 — batch enqueue afterCommit 자연키 멱등·conservative target 산출 A3·worker SKIP LOCKED claim/exp backoff/DEAD_LETTERED·NAME 소실 NOT_APPLICABLE·outcome diff→RA 재산정/TRUE_MATCH FDS feedback/하강 로그·reconciliation SLA 집계), ④ capability NOT_APPLICABLE·세분 jurisdiction phase-2(A1·A2 mock 유지)를 명문화. §17.3 DDL 스냅샷에 `aml_watchlist_sources` readiness 2컬럼 + 신규 테이블 3종(`aml_mandatory_watchlist_sources`·`aml_wlf_rescreen_jobs`·`aml_wlf_rescreen_targets`) 반영. 필수 정책 seed=REST-only(Flyway 데모 시드 금지). | system-architect. 코드 truth=aml-svc `domain/enums/{WatchlistReadinessStatus,WatchlistSourceCapability}`·`domain/watchlist/{WatchlistSource(effectiveReadiness),MandatoryWatchlistSource,ScreeningReadinessReason}`·`domain/rescreen/*`·`application/usecase/WlfScreeningService`·`application/usecase/rescreen/{RescreenBatchService,RescreenWorker,RescreenOutcomeService,RescreenReconciliationService,RescreenTargetResolver,RescreenSubjectScreener}`·`adapter/out/persistence/WatchlistReadinessGateAdapter`·`adapter/in/rest/MandatorySourceAdminController`·Flyway `V50~V52`; DB §3.6/§3.6a~§3.6c/§7·API §2.2/§2.7·연동 §3.1c 동기화; 기존 enum 불변·신규 3테이블/2컬럼 |
 | 2026-07-14 | **P0-05 WLF 후보 생성 recall 보강(phase-1).** §10.2b 신설 — WLF 후보 단계를 exact-only(primary_name_hash·normalized_tokens 교집합)에서 4전략 UNION recall(S1 exact∪S2 토큰교집합∪S3 pg_trgm word_similarity∪S4 double-metaphone 교집합)로 확장함을 명문화(후보=recall 우선·정밀도는 후단 FuzzyMatchEngine). `candidateCap`(200)/`trgmFloor`(0.30)/`phoneticEnabled`(true)/후보 쿼리 스코프 `statement_timeout`(2s) fail-closed(capHit=log.warn+증거·silent truncation 금지, timeout=미탐 방지 가시 실패), `score_breakdown.candidateStrategy` 재현 스냅샷, 라틴 한정(cross-script=phase-2 후속), extension `public` 사전설치 runbook 전제를 반영. §10.3a scoring 서술에 candidateStrategy 스냅샷 참조 부기. §17.1 DDL 스냅샷 `aml_watchlist_entries`에 `normalized_name TEXT`·`phonetic_codes JSONB NOT NULL '[]'` 2컬럼 반영. | system-architect. 코드 truth=aml-svc `application/usecase/WlfScreeningService`·`adapter/out/persistence/WatchlistEntryJpaAdapter`(4전략 UNION)·`application/port/out/WatchlistEntryStorePort`·Flyway `V49`; DB §3.7/§7·API §3.2 동기화; 기존 enum 불변(scoreBreakdown 내부 확장) |
 | 2026-07-14 | **P0-08 거래 fan-out durable completeness.** §15.9 신설 — accepted canonical 거래의 side-effect(PII vault·sender/receiver WLF·TM·CTR·STR·ongoing RA)를 fan-out job/step 상태로 durable 추적함을 명문화. 완료 조건(`FULLY_EVALUATED`/`RETRYING`/`DEAD_LETTERED`/`NOT_APPLICABLE`)·동기 성공 경로 타이밍 보존·best-effort 삼킴 제거(WLF stale/unavailable·REQUIRES_NEW 실패를 `RETRYING`으로 armed)·durable worker `SKIP LOCKED` claim·지수 backoff 30s~30m·`MAX_ATTEMPTS=5`·자연키 멱등 재시도·replay 시 미완 step 만 재개를 반영하고, §15.8 아웃박스(외부 발행 durability)와 별개 방어선(인입 side-effect 평가 완전성)임을 명시했다. | system-architect. 코드 truth=aml-svc `application/usecase/{NeutralTransactionEventService,TmEvaluationService,fanout/{FanoutRetryService,FanoutStepExecutor}}`·`adapter/in/scheduled/AmlFanoutRetryScheduler`·`domain/fanout/*`·Flyway `V48`; DB §7·연동 §3.1b 동기화; API/기존 enum 불변 |
 | 2026-07-14 | **P0-09 case:read 자동 reveal 제거·reveal 정본 분리·error detail PII redaction.** §19.2에 (1) `aml:case:read` 읽기 경로(알림 조회·근거거래·목록·Subject360 fund-view)가 SANCTION/PEP 당사자·counterparty 원문을 자동 reveal 하지 않고 마스킹/토큰 verbatim 반환함(구 auto-reveal 제거)을 명문화하고, (2) 원문 산출을 감사되는 reveal 정본 경로 `POST /internal/v1/aml/pii/reveal`(`aml:pii:reveal`+`RAW_DATA_ACCESS`·fail-closed) 전용으로 확정, `SanctionPepIdentityResolver`/`CounterpartyNameResolver` 를 reveal 강화 시 재사용 후보 collaborator(dormant)로 분류, (3) `GlobalExceptionHandler` free-text detail redaction(이메일·6자리 이상 숫자런→`[redacted]`)을 부기했다. | system-architect. 코드 truth=aml-svc `AlertController`(case:read verbatim)·`EvidenceTimelineService`(fund-graph 토큰 라벨)·`AlertRelatedTransactionsService`(counterpartyName null)·`PiiRevealInternalController`(reveal 정본)·`GlobalExceptionHandler.redactPii`; API §2.6·§1.6·§3.4a/§3.4d 동기화; DDL/enum 불변 |
