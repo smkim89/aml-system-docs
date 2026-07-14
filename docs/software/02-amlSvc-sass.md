@@ -617,6 +617,21 @@ UBO는 단순 JSON 배열이 아니라 별도 관계 graph로 관리한다.
 
 해외송금(`CROSS_BORDER_REMIT`)은 sender(회원, `TargetType=CUSTOMER`)와 receiver(수취인, `TargetType=COUNTERPARTY`)를 **각각 screening**하고, `ScreenCommand.transactionRef`(송금 거래번호)로 한 쌍을 묶어 WLF 화면이 거래당 sender+receiver로 그룹핑한다(`ScreenSubjectUseCase`). 중립 거래 인입의 자동 WLF와 시뮬레이터의 명시적 `/api/v1/aml/screen` 재확인은 sender=`eventId`, receiver=`eventId:receiver` 멱등키를 공유해 역할별 물리 결과를 1행으로 유지한다. 검토 큐는 기존 재스크리닝 이력을 삭제하지 않고 거래번호+역할별 최신 결과만 현재 행으로 투영한다. 데모 진양성용 sender/receiver 엔트리와 screening 결과는 명시적 demo REST setup/ingest가 생성하며 Flyway business seed를 사용하지 않는다. raw PII는 입력·저장하지 않으며 매칭 입력은 토큰/hash다(§19.2).
 
+### 10.2b 후보 생성 파이프라인 — recall union (P0-05 phase-1)
+
+scoring(§10.3) 이전에 명단에서 **후보 엔트리 집합**을 만든다. 초기 구현은 exact-only 였다 — `primary_name_hash` 동치 OR `normalized_tokens` JSONB 교집합. 이 방식은 오타/변형 토큰 1건만으로 대상을 fuzzy 매처가 보기도 전에 후보에서 탈락시켜 미탐(false-negative)을 만든다. 후보 단계는 **recall 우선**(정밀도는 후단 `FuzzyMatchEngine` 이 책임)이므로 다음 4전략 UNION 으로 확장한다.
+
+| 전략 | 근거 | 인덱스(DB §7·V49) |
+|---|---|---|
+| S1 exact | `primary_name_hash` 동치 | `ix_wle_name` |
+| S2 token intersection | `normalized_tokens` 교집합 | `gin_wle_tokens` |
+| S3 trigram | `normalized_name %> :query`(pg_trgm `word_similarity`, `pg_trgm.word_similarity_threshold`=`trgmFloor`) 부분·오타 토큰 회수 | `gin_wle_normalized_name_trgm`(GIN bitmap scan) |
+| S4 phonetic | `phonetic_codes`(라틴 토큰 double-metaphone) 집합 교집합 — Smith/Smythe·Catherine/Katharine 발음 유사 회수 | `gin_wle_phonetic_codes`(jsonb_path_ops) |
+
+후보 조회는 tunable 파라미터로 fail-closed 한계를 강제한다: `candidateCap`(기본 200) 도달 시 **silent truncation 금지** — `log.warn` + `score_breakdown.candidateStrategy.candidateCapHit` 증거 기록. `trgmFloor`(기본 0.30)·`phoneticEnabled`(기본 true)·후보 쿼리 스코프 한정 `statement_timeout`(기본 2s, 조회 후 원복)은 timeout **fail-closed**(미탐 방지 — 조용한 recall 저하보다 가시적 실패)로 동작한다. 결과 `score_breakdown.candidateStrategy` 스냅샷(§10.3 · API §3.2)에 `candidateStrategyVersion`(`wlf-cand-v1`)·`matcherVersion`(=definitionHash)·`trgmFloor`·`candidateCap`·`phoneticEnabled`·`candidateCapHit`·`candidateCount`·`strategyCounts`(전략별 후보수)를 영속해 recall 을 재현·튜닝한다.
+
+phase-1 은 **라틴 정규화 + trigram + phonetic** 한정이며 cross-script(키릴/아랍/한글 원문) transliteration 은 phase-2 후속(A1)이다. `pg_trgm`·`fuzzystrmatch` extension 은 **운영 배포 runbook 이 `public` 스키마에 사전설치**하는 것을 전제한다(Flyway `IF NOT EXISTS`·`WITH SCHEMA public`; 미설치=마이그레이션 가시적 실패, 조용한 recall 저하 아님). `phonetic_codes` 는 backfill 불가라 기존 행은 다음 재수집(delete-then-insert) 전까지 `'[]'`(S4 미기여·S1~S3 정상·recall 무회귀).
+
 ### 10.3 Scoring
 
 WLF score는 설명 가능해야 한다.
@@ -642,7 +657,7 @@ ACTIVE policy pack은 WLF profile 2종을 닫힌 스키마로 보유한다. 각 
 
 초기 profile은 종전 전역 `MatchRuleSet`과 동형(이름 0.55, DOB 0.10, 국가 0.10, 문서 0.15, 주소 0.05, 관계 0.05, negative 0.20)이다. `tenant_demo`의 receiver 계약은 이름+국가만 있는 정확 일치가 `0.65`이므로 SANCTIONS/PEP `reviewThreshold=0.65`, `highConfidenceThreshold=0.92`로 bootstrap한다. 다른 tenant에서 typed 키가 아직 없으면 기존 전역 `wlf.possible-threshold`/`wlf.true-threshold`와 코드 기본값(`0.66`/`0.92`)으로 안전하게 복원한다.
 
-screening은 요청 시작에 ACTIVE WLF 전체 정의를 1회 immutable snapshot으로 pin하고 후보 엔트리마다 `list_type` profile로 점수를 계산한 뒤 최고 confidence band(동률이면 점수, 다시 동률이면 entryId 안정 순서)의 profile 임계로 `NO_MATCH`/`POSSIBLE_MATCH`를 결정한다. **후보가 0건이면 reviewThreshold가 0이어도 평가할 match가 없으므로 status와 `confidenceBand`를 모두 `NO_MATCH`로 고정**하고, 후보가 존재할 때만 score와 profile 임계를 비교한다. 승인 commit이 평가 중간에 발생해도 한 결과 안에 ruleVersion을 섞지 않는다. `highConfidenceThreshold` 이상도 자동 `TRUE_MATCH`가 아니라 `HIGH` evidence/band가 붙은 `POSSIBLE_MATCH`다. 진성 확정은 §10.4의 분석가 4-eyes 상태머신을 계속 따른다. 결과 JSONB `score_breakdown.appliedPolicy`에는 profile·config/rule version·두 임계·definitionHash·band를 snapshot해 과거 검토를 현재 설정으로 재계산하지 않는다. 외부 응답의 `scoreBreakdown`은 기존 숫자 factor map을 유지하고 정책 snapshot은 top-level `appliedPolicy`로 분리한다.
+screening은 요청 시작에 ACTIVE WLF 전체 정의를 1회 immutable snapshot으로 pin하고 후보 엔트리마다 `list_type` profile로 점수를 계산한 뒤 최고 confidence band(동률이면 점수, 다시 동률이면 entryId 안정 순서)의 profile 임계로 `NO_MATCH`/`POSSIBLE_MATCH`를 결정한다. **후보가 0건이면 reviewThreshold가 0이어도 평가할 match가 없으므로 status와 `confidenceBand`를 모두 `NO_MATCH`로 고정**하고, 후보가 존재할 때만 score와 profile 임계를 비교한다. 승인 commit이 평가 중간에 발생해도 한 결과 안에 ruleVersion을 섞지 않는다. `highConfidenceThreshold` 이상도 자동 `TRUE_MATCH`가 아니라 `HIGH` evidence/band가 붙은 `POSSIBLE_MATCH`다. 진성 확정은 §10.4의 분석가 4-eyes 상태머신을 계속 따른다. 결과 JSONB `score_breakdown.appliedPolicy`에는 profile·config/rule version·두 임계·definitionHash·band를 snapshot해 과거 검토를 현재 설정으로 재계산하지 않는다. 외부 응답의 `scoreBreakdown`은 기존 숫자 factor map을 유지하고 정책 snapshot은 top-level `appliedPolicy`로 분리한다. 후보 recall 진단은 별도 `score_breakdown.candidateStrategy`(§10.2b·API §3.2)로 영속한다 — `candidateStrategyVersion`(`wlf-cand-v1`)·`matcherVersion`·`trgmFloor`·`candidateCap`·`phoneticEnabled`·`candidateCapHit`·`candidateCount`·`strategyCounts`.
 
 WLF scoring parameter가 바뀔 때만 WLF config version과 definition hash 기반 ruleVersion이 증가한다. CTR 등 WLF와 무관한 policy-pack 변경은 ruleVersion을 바꾸지 않으므로 FP whitelist를 불필요하게 무효화하지 않는다. 반대로 WLF definition이 바뀌면 whitelist의 version exact-match가 끊겨 재검토된다.
 
@@ -1551,6 +1566,8 @@ CREATE TABLE aml_watchlist_entries (
   subject_kind VARCHAR(32) NOT NULL DEFAULT 'PERSON',    -- §5.24 subject_kind(PERSON/ENTITY/VESSEL/CRYPTO_ADDRESS, §10.2, DB §3.7)
   primary_name_hash VARCHAR(256),
   normalized_tokens JSONB NOT NULL,
+  normalized_name TEXT,                                  -- WLF 후보 recall(P0-05 phase-1, V49): 정규화 토큰 space-join. S3 pg_trgm word_similarity 대상. GIN gin_wle_normalized_name_trgm(§10.2b, DB §3.7)
+  phonetic_codes JSONB NOT NULL DEFAULT '[]',            -- WLF 후보 recall(P0-05 phase-1, V49): 라틴 토큰 double-metaphone 배열. S4 집합 교집합. GIN gin_wle_phonetic_codes jsonb_path_ops(§10.2b, DB §3.7)
   attributes JSONB NOT NULL,
   version VARCHAR(80) NOT NULL,
   status VARCHAR(32) NOT NULL,
@@ -2038,6 +2055,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-14 | **P0-05 WLF 후보 생성 recall 보강(phase-1).** §10.2b 신설 — WLF 후보 단계를 exact-only(primary_name_hash·normalized_tokens 교집합)에서 4전략 UNION recall(S1 exact∪S2 토큰교집합∪S3 pg_trgm word_similarity∪S4 double-metaphone 교집합)로 확장함을 명문화(후보=recall 우선·정밀도는 후단 FuzzyMatchEngine). `candidateCap`(200)/`trgmFloor`(0.30)/`phoneticEnabled`(true)/후보 쿼리 스코프 `statement_timeout`(2s) fail-closed(capHit=log.warn+증거·silent truncation 금지, timeout=미탐 방지 가시 실패), `score_breakdown.candidateStrategy` 재현 스냅샷, 라틴 한정(cross-script=phase-2 후속), extension `public` 사전설치 runbook 전제를 반영. §10.3a scoring 서술에 candidateStrategy 스냅샷 참조 부기. §17.1 DDL 스냅샷 `aml_watchlist_entries`에 `normalized_name TEXT`·`phonetic_codes JSONB NOT NULL '[]'` 2컬럼 반영. | system-architect. 코드 truth=aml-svc `application/usecase/WlfScreeningService`·`adapter/out/persistence/WatchlistEntryJpaAdapter`(4전략 UNION)·`application/port/out/WatchlistEntryStorePort`·Flyway `V49`; DB §3.7/§7·API §3.2 동기화; 기존 enum 불변(scoreBreakdown 내부 확장) |
 | 2026-07-14 | **P0-08 거래 fan-out durable completeness.** §15.9 신설 — accepted canonical 거래의 side-effect(PII vault·sender/receiver WLF·TM·CTR·STR·ongoing RA)를 fan-out job/step 상태로 durable 추적함을 명문화. 완료 조건(`FULLY_EVALUATED`/`RETRYING`/`DEAD_LETTERED`/`NOT_APPLICABLE`)·동기 성공 경로 타이밍 보존·best-effort 삼킴 제거(WLF stale/unavailable·REQUIRES_NEW 실패를 `RETRYING`으로 armed)·durable worker `SKIP LOCKED` claim·지수 backoff 30s~30m·`MAX_ATTEMPTS=5`·자연키 멱등 재시도·replay 시 미완 step 만 재개를 반영하고, §15.8 아웃박스(외부 발행 durability)와 별개 방어선(인입 side-effect 평가 완전성)임을 명시했다. | system-architect. 코드 truth=aml-svc `application/usecase/{NeutralTransactionEventService,TmEvaluationService,fanout/{FanoutRetryService,FanoutStepExecutor}}`·`adapter/in/scheduled/AmlFanoutRetryScheduler`·`domain/fanout/*`·Flyway `V48`; DB §7·연동 §3.1b 동기화; API/기존 enum 불변 |
 | 2026-07-14 | **P0-09 case:read 자동 reveal 제거·reveal 정본 분리·error detail PII redaction.** §19.2에 (1) `aml:case:read` 읽기 경로(알림 조회·근거거래·목록·Subject360 fund-view)가 SANCTION/PEP 당사자·counterparty 원문을 자동 reveal 하지 않고 마스킹/토큰 verbatim 반환함(구 auto-reveal 제거)을 명문화하고, (2) 원문 산출을 감사되는 reveal 정본 경로 `POST /internal/v1/aml/pii/reveal`(`aml:pii:reveal`+`RAW_DATA_ACCESS`·fail-closed) 전용으로 확정, `SanctionPepIdentityResolver`/`CounterpartyNameResolver` 를 reveal 강화 시 재사용 후보 collaborator(dormant)로 분류, (3) `GlobalExceptionHandler` free-text detail redaction(이메일·6자리 이상 숫자런→`[redacted]`)을 부기했다. | system-architect. 코드 truth=aml-svc `AlertController`(case:read verbatim)·`EvidenceTimelineService`(fund-graph 토큰 라벨)·`AlertRelatedTransactionsService`(counterpartyName null)·`PiiRevealInternalController`(reveal 정본)·`GlobalExceptionHandler.redactPii`; API §2.6·§1.6·§3.4a/§3.4d 동기화; DDL/enum 불변 |
 | 2026-07-13 | **P0-13 SHARED 배포 DB 저장 격리(RLS) 방어선.** §19.2c 신설 — `SHARED` 배포 행 격리를 PostgreSQL RLS(격리 키 `tenant_id` 단일 차원·workspace canonical `default`, 새 login 없이 `SET ROLE aegis_app_runtime` + `set_config('app.tenant_id'/'app.elevated', …)` 로 세션 강등, FORCE RLS + 정책 2종 runtime/owner, GUC 미설정=fail-closed 0 row, 스케줄러 6종·provisioner `ElevatedDbContext` escape=코드 실수 방어, `dataScope`=RLS 키 아님·권한 필터 유지, Flyway=owner DataSource)로 명문화하고 DB §1.2·runbook 참조를 부기했다. | system-architect. 코드 truth=`common-security` `RlsSessionDataSource`/`ElevatedDbContext`·AML V47·`RlsDataSourceConfiguration`; runbook `docs/ops/db-rls-isolation.md`; API/DDL 컬럼·enum 불변 |
