@@ -901,9 +901,11 @@ DRAFT
 | `SECRET` | credential 생성·secret/webhook 회전 | `SECURITY_ADMIN` |
 | `EXPORT` | 검사 대응 evidence export 최종본 생성 | `COMPLIANCE_MANAGER` |
 | `MERCHANT_NORMALIZE` | high-risk merchant 정상화(`POST /api/v1/admin/fds/merchants/{merchantRef}/normalize`). 대상 group별 generation snapshot에 결속 | `RISK_MANAGER`(기본) / `EXECUTIVE_APPROVAL`(대규모 예외) |
-| `CASE_CLOSE` | 내부감사·규제 case 종결(`subjectRef=case_id`) | `COMPLIANCE_MANAGER` |
+| `CASE_CLOSE` | 내부감사·규제 case 종결(`subjectRef=case_id`). 케이스당 활성(SUBMITTED) 최대 1개(중복 상신=`FDS-APPROVAL-DUPLICATE` 409), 반려 시 케이스는 직전 상태로 복구(§11.6.1) | `COMPLIANCE_MANAGER` |
 | `POLICY_PACK` | 규제 팩(`compliance_policy`) 토글 변경 — named pack on/off·확장 활성화(`PUT /api/v1/bo/fds/tenants/{tenantId}` compliance_policy, `subjectRef=tenant_id`, §16.2) | `COMPLIANCE_MANAGER` |
 | `RULE_PARAM` | rule 변수(임계값) 변경(`subjectRef=rule_id`) | `COMPLIANCE_MANAGER` |
+
+**CASE_CLOSE 중복 방지·반려 케이스 복구(P0-10·V20)**: 케이스 종결 상신은 같은 케이스에 대해 활성(SUBMITTED) `CASE_CLOSE` 승인을 **하나만** 허용한다. 이미 `PENDING_APPROVAL`(종결상신 계류)인 케이스를 다시 종결하면 승인을 쌓지 않고 `FDS-APPROVAL-DUPLICATE`(409)로 거부하며 — 애플리케이션 가드(`findActiveBySubject`)가 1차, DB 부분 유니크 인덱스 `uk_fds_approval_pending_case_close (tenant_id, workspace_id, subject_ref) WHERE status='SUBMITTED' AND subject_kind='CASE_CLOSE'`(DB §5.23)가 동시 요청 경쟁의 최종 방어선이다. 종결 승인이 checker에 의해 **반려**되면 케이스는 `PENDING_APPROVAL`에 고착되지 않고 상신 직전 상태(`fds_cases.previous_status`에 보존, DB §5.13)로 복구되어 재조사·재상신할 수 있다(직전 `ESCALATED`→`ESCALATED`, 그 외→`IN_REVIEW`, §11.6.1 전이도). 타임라인은 maker의 close 상신을 `APPROVAL` 이벤트로, checker의 반려를 `STATUS_CHANGE` 이벤트(`rejected=true`·`rejectReason`·`approvalRequestId`·`checker=actor`)로 append 한다.
 
 BO 결재함은 coarse 진입 뒤 row별 exact checker capability를 다시 검사한다. 목록은 인가된 subject만 남긴 뒤 페이지를 자르고 상세·승인·반려는 row를 먼저 읽어 판정한다. `ACTION→SFDS_ACTION:APPROVE`, `RULE|RULE_PARAM→SFDS_RULE:APPROVE`, `SECRET→SFDS_CONNECTOR:APPROVE`, `GROUP|MERCHANT_NORMALIZE→SFDS_GROUP:ADMIN`, `EXPORT|POLICY_PACK→SFDS_REG:APPROVE`, `CASE_CLOSE→SFDS_CASE:APPROVE`, `MAPPING→requiredBoCapability`다. unknown subject 또는 marker 누락/미지 legacy MAPPING은 downstream/local mutation 전에 fail-closed한다. delegated approve는 bo-api가 현재 pending row의 immutable hash를 요청 `payloadHash`와 먼저 비교하고 일치할 때만 engine approve를 호출하며, engine의 독립 검증도 유지한다. local fallback 상신 maker는 인증된 `BackofficeActorResolver` principal이고 `ops.agent` 같은 기본 actor는 없다.
 
@@ -954,6 +956,8 @@ configured bo-api→fds-svc 위험그룹 위임은 HTTP 2xx만으로 성공 처�
 
 case 종결(`CLOSED_*`)은 4-eyes 게이트(`subjectKind=CASE_CLOSE`, §11.5)를 거친 뒤 `PENDING_APPROVAL`에서 전이된다. `ESCALATED`는 AML 위임(`OPEN_AML_CASE`) 경로로, 실제 규제 케이스는 aml-svc가 보유하고 `fds_cases.aml_case_id` cross-ref만 채운다(§6.1, DB §5.13).
 
+**종결 상신 반려 시 직전 상태 복구(P0-10·V20)**: 종결 상신으로 `PENDING_APPROVAL`에 진입할 때 직전 상태(`IN_REVIEW`/`ESCALATED`)를 `fds_cases.previous_status`(DB §5.13)에 보존하고, 종결 승인이 **반려**되면 케이스가 `PENDING_APPROVAL`에 고착되지 않고 그 직전 상태로 복구되어 재조사·재상신이 가능하다 — 직전이 `ESCALATED`였으면 `ESCALATED`로, 그 외에는 `IN_REVIEW`로 복원한다(위 전이도 반려 2갈래). 동일 케이스에 활성(SUBMITTED) `CASE_CLOSE` 승인은 **최대 1개**이며, 계류 중 재상신은 `FDS-APPROVAL-DUPLICATE`(409)로 거부한다(§11.5).
+
 ```mermaid
 stateDiagram-v2
     [*] --> OPEN
@@ -966,7 +970,8 @@ stateDiagram-v2
     PENDING_APPROVAL --> CLOSED_CONFIRMED
     PENDING_APPROVAL --> CLOSED_FALSE_POSITIVE
     PENDING_APPROVAL --> CLOSED_REPORTED
-    PENDING_APPROVAL --> IN_REVIEW: 반려(재조사)
+    PENDING_APPROVAL --> IN_REVIEW: 반려(직전 IN_REVIEW 복원)
+    PENDING_APPROVAL --> ESCALATED: 반려(직전 ESCALATED 복원)
     CLOSED_CONFIRMED --> IN_REVIEW: 재오픈(REOPEN)
     CLOSED_FALSE_POSITIVE --> IN_REVIEW: 재오픈(REOPEN)
     CLOSED_REPORTED --> IN_REVIEW: 재오픈(REOPEN)

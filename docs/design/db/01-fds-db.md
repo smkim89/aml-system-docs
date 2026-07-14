@@ -554,6 +554,7 @@ decision API의 reason code 정규화(§12.8 reasonCodes).
 | priority | VARCHAR(32) | Y | enum 4.11 | |
 | assigned_to | VARCHAR(128) | Y | | 운영자 token |
 | close_reason | VARCHAR(64) | Y | enum 4.11 | 종결 사유 코드(8종, `CLOSED_*` 전이 시 필수). 상세 메모(자유 텍스트)는 `fds_case_events` `CLOSED` payload로 보조 저장 |
+| previous_status | VARCHAR(32) | Y | | **CASE_CLOSE 4-eyes 게이트 진입 직전 상태 보존(P0-10·V20)**. 종결 상신 시 `PENDING_APPROVAL` 로 전이하기 직전의 상태(`IN_REVIEW`/`ESCALATED`, enum 4.11)를 기록해 두고, 종결 승인 요청이 **반려**되면 이 값으로 복구한다(케이스가 `PENDING_APPROVAL` 에 고착되지 않고 재조사·재상신 가능). close 계류 중이 아닌 케이스는 NULL(기존 row 포함) |
 | aml_case_id | VARCHAR(96) | Y | | aml-svc cross-ref(FK 아님). API `CaseDto.amlCaseRef` 매핑·integration §9.1과 동일 타입. AML 위임 케이스만 채움 |
 | data_scope | VARCHAR(128) | Y | | |
 | created_by / updated_by | VARCHAR(128) | Y | | |
@@ -958,6 +959,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | fds_rule_versions | uq_rule_ver | UNIQUE `(tenant_id, workspace_id, rule_id, version_no)` | 버전 관리 |
 | fds_risk_group_members | ix_group_member | `(tenant_id, workspace_id, member_ref)` | group match 룰 |
 | fds_approval_requests | ix_appr_status | `(tenant_id, workspace_id, status, expires_at)` | 결재 대기·만료 |
+| fds_approval_requests | uk_fds_approval_pending_case_close | UNIQUE `(tenant_id, workspace_id, subject_ref)` WHERE `status='SUBMITTED' AND subject_kind='CASE_CLOSE'` | 같은 케이스 활성(SUBMITTED) CASE_CLOSE 승인 최대 1개(P0-10·V20). 애플리케이션 중복 가드(`findActiveBySubject`)를 통과하는 동시 요청 경쟁의 최종 방어선 → 위반 시 `FDS-APPROVAL-DUPLICATE`(409) |
 | fds_connector_offsets | ix_conn_status | `(tenant_id, workspace_id, connector_status, lag_seconds DESC)` | connector health |
 | fds_settlements | ix_settle_status | `(tenant_id, workspace_id, status, scheduled_at)` | 정산 보류 큐 |
 | fds_audit_logs | ix_audit_action_time | `(tenant_id, workspace_id, audit_action, created_at DESC)` | 감사 조회 |
@@ -1001,7 +1003,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 
 ## 8. Flyway 마이그레이션 순서
 
-스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V19, 누락 없음)이다.
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V20, 누락 없음)이다.
 
 | 버전 | 파일 | 내용(실제) | 비고 |
 |---|---|---|---|
@@ -1024,6 +1026,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | V17 | `V17__risk_group_generation.sql` | `fds_risk_groups.generation_id UUID`를 nullable add → 기존 행별 `gen_random_uuid()` backfill → `DEFAULT gen_random_uuid()` → NOT NULL 순으로 전환한다. generation 증명이 없는 legacy approval은 새 incarnation에 재결속할 수 없으므로 `subject_kind IN ('GROUP','MERCHANT_NORMALIZE') AND status IN ('DRAFT','SUBMITTED','APPROVED')`를 `CANCELLED`로 이관한다. master/member/merchant-normalize staged hash는 이후 generation-bound 계약을 사용한다 | additive ABA hardening |
 | V18 | `V18__rls_tenant_isolation.sql` | P0-13 RLS 테넌트 격리. `tenant_id` 보유 전 `fds` 테이블에 `ENABLE`+`FORCE ROW LEVEL SECURITY` 후 runtime(`aegis_app_runtime`)·owner 정책 2종 부여(§2.2). `information_schema` 로 `workspace_id` 보유 테이블만 `AND workspace_id` predicate 분기. NOLOGIN role/grant 는 `IF NOT EXISTS` 멱등 | additive RLS |
 | V19 | `V19__decision_phase_idempotency.sql` | **P0-07 phase별 semantic idempotency·event-time 정합**. `fds_decisions` 에 `evaluation_phase varchar(16) NOT NULL DEFAULT 'INLINE'`(CHECK IN('INLINE','ASYNC')) + `event_occurred_at timestamptz`(nullable) 추가. 자연 멱등키 `UNIQUE (tenant_id, workspace_id, event_id, evaluation_phase, COALESCE(rule_set_version,''))`(`ux_fds_decisions_event_phase`) 생성 — 생성 전 기존 중복 그룹에서 `created_at DESC` 최신 1건만 남기고 종속 참조(decision_reasons·external_decisions FK 삭제, cases.origin_decision_id 링크 NULL화) 정리 후 stale 결정 DELETE. `fds_decisions` 는 V18 RLS 대상이라 컬럼 추가만으로 정책 재적용 불요 | additive idempotency/event-time |
+| V20 | `V20__case_close_reject_statemachine.sql` | **P0-10 CASE_CLOSE 반려·중복 승인 상태머신**. (1) `fds_cases.previous_status varchar(32) NULL` 추가 — CASE_CLOSE 4-eyes 게이트 진입 직전 상태(`IN_REVIEW`/`ESCALATED`)를 보존해 종결 상신 반려 시 복구용(케이스가 `PENDING_APPROVAL` 에 고착되지 않고 재조사·재상신 가능). (2) 부분 유니크 인덱스 생성 전 기존 중복 SUBMITTED CASE_CLOSE 방어적 정리 — 각 `(tenant_id, workspace_id, subject_ref)` 그룹에서 `created_at DESC, approval_request_id DESC` 최신 1건만 SUBMITTED 유지, 나머지 `REJECTED` supersede(P0-07 dedup 선정리 패턴과 동형). (3) 부분 유니크 인덱스 `uk_fds_approval_pending_case_close ON fds.fds_approval_requests (tenant_id, workspace_id, subject_ref) WHERE status='SUBMITTED' AND subject_kind='CASE_CLOSE'` — 같은 케이스 활성 CASE_CLOSE 승인 최대 1개(애플리케이션 가드 통과 경쟁의 최종 방어선 → `FDS-APPROVAL-DUPLICATE` 409). `fds_cases`·`fds_approval_requests` 는 V18 RLS 대상이라 컬럼·인덱스 추가만으로 정책 재적용 불요 | additive state machine/dedup |
 
 > **서비스 간 companion migration**: bo-api `V19__cancel_legacy_group_approvals.sql`은 위 V17의 local fallback 대응이다. 모든 기존 local `GROUP` payload를 원 JSONB와 원 `payload_hash`를 담은 exact 4필드 tombstone으로 보존하고, 비종결 4상태만 `CANCELLED`로 바꾼다. 이는 fds-svc V17 파일 목록에 포함되지 않는 bo-api migration이다.
 
