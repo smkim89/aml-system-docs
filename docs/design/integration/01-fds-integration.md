@@ -381,6 +381,7 @@ sequenceDiagram
 - **이중 방어**: (1) API 진입 시 `fds_idempotency_keys`(scope `EVENT`/`DECISION`/`ACTION`, DB §5.33) 조회, (2) 저장 시 `fds_canonical_events`/`fds_actions`의 `UNIQUE (tenant_id, workspace_id, idempotency_key)`.
 - **FIFO `messageDeduplicationId` = `idempotencyKey`**(`SqsEventQueuePublisher`; action relay 는 `SqsActionRelayPublisher` 가 `messageDeduplicationId = action:actionId`). 5분 dedup window 내 중복 SQS 메시지 자동 제거 + DB UNIQUE로 영구 dedup.
 - 재요청 시 신규 처리 없이 저장 결과 재반환(API §3.3, `Idempotency-Replayed: true`). key 동일·payload 상이 → `FDS-IDEMPOTENT-CONFLICT`(409).
+- **decision phase 자연 멱등(P0-07)**: `fds-events` async 소비 경로(`EvaluateDecisionService.evaluateByEventId`)는 `Idempotency-Key` 헤더가 없어도 `fds_decisions` 의 자연키 `(tenant_id, workspace_id, event_id, ASYNC, rule_set_version)`(V19 UNIQUE `ux_fds_decisions_event_phase`)로 semantic 멱등을 강제한다. 평가 **전** 자연키 결정을 조회해 존재하면 기존 결정을 replay(재평가·action 재발행·metering 없음)하고, 없으면 평가 후 `saveIfAbsent`(UNIQUE 위반 시 승자 read-back)로 기록한다. `rule_set_version` 은 (tenant, workspace) 활성 룰셋 버전으로 event 에 독립적이라 평가 전 확정 가능. 따라서 SQS redelivery(visibility timeout 재수신)·consumer 재시도가 **동일 event 당 ASYNC 결정 1건**으로 수렴한다(효과적 1회). 동기 REST 경로는 `INLINE` phase 로 같은 자연키에 별도 1건을 두어(phase 별 분리) 이중 방어한다. action intent 는 outbox `idempotency_key = decision:{decisionId}:{actionType}` 가 결정 replay 로 안정화돼 event+action_type 기준 effectively-once 다(A3).
 
 ### 6.2 재처리·재시도
 
