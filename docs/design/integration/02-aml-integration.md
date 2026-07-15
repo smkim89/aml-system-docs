@@ -88,7 +88,9 @@ flowchart LR
 
 ## 2. 메시징 토폴로지(SQS)
 
-정본은 비동기 메시징을 **SQS**로 고정한다(`aegis-stack.md`). 참조 구현은 `io.awspring.cloud.sqs.annotation.SqsListener` 기반이며, AWS SQS auto-config 는 **`aws` 프로파일에서만 활성**(코드 truth: `application.yml` `spring.autoconfigure.exclude: SqsAutoConfiguration`)이다 — 로컬/CI 는 브로커 없이 구동하고 FDS-decision consumer 는 휴면, 아웃박스 relay 는 `InMemoryOutboxRelayPublisher`로 동작한다.
+정본은 비동기 메시징을 **SQS**로 고정한다(`aegis-stack.md`). 참조 구현은 `io.awspring.cloud.sqs.annotation.SqsListener` 기반이며, AWS SQS auto-config 는 **`aws` 프로파일에서만 활성**이다 — base `application.yml` 은 `spring.autoconfigure.exclude: SqsAutoConfiguration` 로 **항상 제외**(비-aws 는 브로커 불필요)하고, **`application-aws.yml` 이 `spring.autoconfigure.exclude: []` 로 exclusion 을 해제**(+`spring.cloud.aws.region`·`sqs.enabled=true`·큐명 바인딩)해 `SqsTemplate` 이 auto-wire 된다(코드 truth, P0-14 CC1). 로컬/CI 는 브로커 없이 구동하고 FDS-decision consumer 는 휴면, 아웃박스 relay 는 `InMemoryOutboxRelayPublisher`로 동작한다.
+
+**aws transport startup fail-closed(P0-14 CC1, `CapabilityStartupValidator`).** 엔진은 startup 에 **security tier**(PROD=활성 프로파일 `prod`/`production`/`aws`)와 **message transport**(aws SQS vs local/in-process)를 분리 판정해 `[capability] aml capability=… securityTier=… transport=… sqsTemplate=… queues=…` 한 줄을 출력한다. `aws` transport 인데 `SqsTemplate` bean 이 부재(auto-config 미해제)하거나 큐명(`aegis.aml.queue.*`)이 미바인딩이면 **fail-closed**(`IllegalStateException`) — consumer/publisher 가 큐에 붙지 못한 채 인/아웃바운드 메시지를 조용히 유실하는 mis-provisioning 을 startup 에서 차단한다. secret tier 검증은 `ProductionSafetyValidator` 소관이고 본 guard 는 tier 를 보고만 한다.
 
 ### 2.1 큐 카탈로그 (코드 truth)
 
@@ -494,6 +496,7 @@ sequenceDiagram
 - 큐별 전용 DLQ(§2.1). DLQ replay 는 운영자 트리거 → 원본 큐 재투입(멱등키로 중복 무해). replay 이력은 `aml_audit_events`.
 - DLQ depth 는 `aml.ingest.dlq.depth`/`aml.outbox.dlq.depth` metric·alert(§11).
 - 순서 역전 내성: usecase 는 `occurredAt` 기준 last-writer-wins 로 상태 머지(out-of-order 이벤트가 최신 상태 덮어쓰지 않도록 가드).
+- **LocalStack SQS smoke(P0-14 CC1, 코드=truth)**: `aws` 프로파일 outbox relay publish/consume·redelivery(visibility timeout 재수신)·`maxReceiveCount` 초과 DLQ 이동을 LocalStack 호환 SQS API 로 검증한다(`SqsOutboxRelaySqsSmokeIntegrationTest`). 실 AWS prod 계정 container 검증은 phase-2(A1) 후속이다.
 
 ---
 

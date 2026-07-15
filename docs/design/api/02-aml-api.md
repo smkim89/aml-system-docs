@@ -350,6 +350,8 @@ filter가 설정한 local-bootstrap `Boolean.TRUE` marker 외에는 403으로 �
 
 > **bo-api 위임(§10.4).** BO 화면 수동 트리거는 `POST /api/v1/bo/aml/watchlist-sources/{sourceCode}/sync`(scope `aml:admin:watchlist` or `BO_SUPER_ADMIN`, `AmlWatchlistController`) → `AmlEngineClient`로 위 엔진 `.../{code}/sync`에 순수 위임한다(응답 `WatchlistSyncResponse` 미러, 운영자 감사 `WATCHLIST_IMPORT_APPLIED`·trigger MANUAL). 제재명단 수집은 엔진 전용 표면이라 **비위임(stub) 모드는 fail-closed 503 `AML.ENGINE_UNAVAILABLE`**(위조 성공 카운트가 48h freshness 게이트를 잘못 갱신하는 것 방지, 4-eyes 계약 대상 아님).
 
+> **명단 import multipart machine-auth v2 서명 규약(P0-14, 코드=truth).** `.../imports`(§339) 업로드 위임은 `multipart/form-data` 본문을 **일반 client 직렬화가 아니라 결정론적 raw bytes 로 먼저 조립**한다(`AmlEngineClient` → `common-security/MultipartFormBodyBuilder`, RFC 7578·CRLF). boundary 는 서명된 one-time `X-Nonce` 에서 유도(`AegisBoundary<nonce>`)하고, 그 exact bytes 와 짝이 되는 `Content-Type`(boundary 포함) 을 서명 전에 확정한다. bo-api 는 `sha-256(rawBytes)`+`Content-Type`(§scopeContext `content-type` 결합)을 machine-auth v2 로 서명하고 **동일 bytes 를 재직렬화 없이** 전송하며, 엔진 공통 filter(`AmlIngestAuthenticationFilter`)가 raw body 를 다시 SHA-256 검증한다 — 운영 HMAC 통과, **서명 뒤 body·`Content-Type` 변조 시 401 fail-closed**. 계약 정본은 [공통 machine-auth §3.4](00-common-machine-auth.md#34-multipart-본문-계약p0-14-코드truth). 종전 빈-body 거부(`AML.MULTIPART_AUTH_UNAVAILABLE`) fail-closed 스텁은 이 raw-byte 서명 전환으로 제거됐다. explicit local/demo bootstrap 은 동일 bytes 를 서명 없이 전송하고, 그 밖의 credential 미보유는 여전히 fail-closed 다.
+
 #### WLF 엔진 설정 (§10.3, AML-WLF-005)
 
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |

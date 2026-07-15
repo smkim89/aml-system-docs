@@ -69,7 +69,7 @@
   `fds:evidence:export` 누락은 403이며 export 생성·download의 actor는 서명 검증 뒤 승격된
   `X-User-Subject`만 사용한다.
 - nonce TTL 기본 15분은 `2 × timestamp skew`보다 엄격히 길어야 하고, 만료 row는 기본 1분마다 최대 `20 × 5,000`건을 짧은 batch로 정리한다. local/demo simulator credential provisioner와 bootstrap bypass는 명시적 `local|demo` positive profile + opt-in에서만 허용되며 Flyway business seed가 아니다.
-- **적용 경계(2026-07-13)**: P0-04로 `/internal/v1/fds/**` 실제 filter registration과 v2-only 정책, AML profile 최소 scope, bo-api→FDS typed signer를 완료했다. BO credential은 exact `(tenant,workspace)` target에만 해소되며 다른 target/global fallback이 없다. 남은 미완료는 multipart 최종 raw-byte client 전환(P0-14), credential 폐기·자동 유예회전·last-used·rate/network/workload 통제(P1-02)다([공통 정본 §7](00-common-machine-auth.md#7-후속-태스크-경계)).
+- **적용 경계(2026-07-15)**: P0-04로 `/internal/v1/fds/**` 실제 filter registration과 v2-only 정책, AML profile 최소 scope, bo-api→FDS typed signer를 완료했다. BO credential은 exact `(tenant,workspace)` target에만 해소되며 다른 target/global fallback이 없다. P0-14로 multipart 최종 raw-byte client 전환(nonce 유도 boundary·`sha-256(body)`+exact `Content-Type` 서명·재직렬화 없는 전송, [공통 정본 §3.4](00-common-machine-auth.md#34-multipart-본문-계약p0-14-코드truth))과 production capability guard(security tier vs transport 분리·startup fail-closed)를 완료했다. 남은 미완료는 credential 폐기·자동 유예회전·last-used·rate/network/workload 통제(P1-02)다([공통 정본 §7](00-common-machine-auth.md#7-후속-태스크-경계)).
 
 ### 2.2 격리 컨텍스트 (필수 헤더)
 | 헤더 | 매핑 컬럼 | 필수 | 설명 |

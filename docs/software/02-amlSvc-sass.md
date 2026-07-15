@@ -1135,6 +1135,17 @@ hanpass-ph 대량 거래·이벤트는 queue connector(SQS)로 받는다. 코드
 - FDS decision/case escalation event
 - 보고 제출 콜백(FIU 회신)
 
+**SQS 결선·transport 판정(P0-14 CC1, 코드=truth).** AWS SQS auto-config 는 **`aws` 프로파일에서만 활성**이다 — base `application.yml` 은 `spring.autoconfigure.exclude: SqsAutoConfiguration` 로 **항상 제외**(비-aws 는 브로커 불필요)하고, **`application-aws.yml`(신설) 이 `spring.autoconfigure.exclude: []`**(+`spring.cloud.aws.region`·`sqs.enabled=true`·큐명 바인딩)로 exclusion 을 해제해 `SqsTemplate` 이 auto-wire 되고 `SqsOutboxRelayPublisher`(`@Profile("aws")`)·`FdsDecisionConsumer` 가 결선된다(비-aws 아웃박스 relay 는 `InMemoryOutboxRelayPublisher`). 연동 정본은 integration §2. LocalStack 호환 SQS API 로 publish/consume·redelivery·DLQ 를 smoke 검증하며(실 AWS prod 계정 검증은 phase-2 A1), transport 물리 명칭은 integration 명세를 인용한다.
+
+### 15.3a Capability guard·security tier·배포 profile (P0-14 CC1·CC4, 코드=truth)
+
+엔진은 startup 에 **security tier**(PROD=활성 프로파일 `prod`/`production`/`aws` — `ProductionSecretPolicy`)와 **message transport**(aws SQS vs local/in-process)를 **분리 판정**해 capability(`PROD`/`DEMO`/`STUB`/`NOT_APPLICABLE`)·tier·transport 를 `[capability]` 한 줄로 출력한다(`CapabilityStartupValidator`, `SmartInitializingSingleton`). 두 축이 직교하므로 `aws` 는 production tier 이면서 유일한 SQS transport 이고, `prod`/`production` 은 production tier 이되 local transport 다.
+
+- **production tier fail-closed**: bootstrap/mock/default secret 은 production tier startup 에서 거부한다(secret 강도 검증은 `ProductionSafetyValidator`·`ProductionSecretPolicy.requireStrongBase64` 소관 — Base64 32byte 이상 랜덤·구조화 문자열 거부). local/demo provisioner·bootstrap bypass 는 positive `local`/`demo` 프로파일 allowlist 에서만 유효하다(§14 machine-auth).
+- **aws transport fail-closed**: `aws` transport 인데 `SqsTemplate` bean 부재(auto-config 미해제)나 큐명(`aegis.aml.queue.*`) 미바인딩이면 startup 을 `IllegalStateException` 으로 fail-closed 한다 — consumer/publisher 가 큐에 붙지 못한 채 메시지를 조용히 유실하는 mis-provisioning 을 차단한다.
+- **배포 profile 전달(Docker)**: `aml-svc`/`fds-svc` Dockerfile 은 profile 을 표준 `SPRING_PROFILES_ACTIVE` env 로 전달한다 — 종전 exec-form(JSON, no-shell)에 있던 literal `-Dspring.profiles.active=${SPRING_PROFILES_ACTIVE:default}` 는 셸 확장이 되지 않아 compose 주입 profile 이 무시되고 default 로 폴백되던 결함이 있어 제거했다.
+- **demo ingest positive gate(CC4)**: local/demo 전용 ingest 수신 경로(bo-api)는 활성 프로파일이 전부 local/demo/test 일 때만 public 으로 등록되고 aws/prod/production 은 인증을 요구한다(negative denylist 없이 positive gate — controller `@Profile({local,demo,test})` 와 일치). bo-api 위임 capability guard(`BoCapabilityGuard`)는 production tier 에서 engine base-url·위임 credential 미설정을 fail-closed 하며 종전 `EngineDelegationBaseUrlValidator`(engine base-url fail-fast, CC3)를 흡수한다.
+
 ### 15.4 Polling / Snapshot / CDC (미사용)
 
 `ingest_mode` enum(`REST_PUSH`/`QUEUE`/`POLLING`/`CDC`/`SNAPSHOT`/`VENDOR_BRIDGE`)은 닫힌 집합으로 잔존하나, hanpass-ph 운영은 **REST Push + Queue(SQS)** 만 사용한다. polling/snapshot/CDC connector·스케줄러는 hanpass-ph 범위 밖이다(`adapter/in/scheduled`의 실제 스케줄러는 outbox relay·watchlist reconciliation).

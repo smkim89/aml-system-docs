@@ -111,6 +111,15 @@ value는 UTF-8 bytes 기준 RFC3986 percent-encoding을 적용한다. unreserved
 
 Java server/client와 Python signer가 함께 소비하는 단일 벡터는 **`aegis-aml/test-vectors/machine-auth-v2.json`** 이다. 문서 예시를 별도 벡터로 만들지 않는다. 벡터는 최종 headers/request/body, `scopeContext`, content digest, LF 전문 canonical string, expected signature를 함께 고정한다.
 
+### 3.4 multipart 본문 계약(P0-14, 코드=truth)
+
+multipart(`multipart/form-data`) 업로드도 §3.1 content digest 정본을 그대로 따른다 — digest 는 JSON·empty·multipart 를 구분하지 않고 **최종 전송 raw body bytes** 에 SHA-256 을 적용하며, `Content-Type`(boundary 포함)은 §3.2 `scopeContext.content-type` 에 exact 결합한다. multipart 는 boundary·byte layout 이 client 에 따라 달라질 수 있어, 일반 HTTP client 가 헤더를 붙인 **뒤** 본문을 직렬화하면 서명 시점에 전송 bytes 를 알 수 없다. 따라서 v2 서명 client 는 본문을 **먼저 결정론적 raw bytes 로 조립**하고 그 exact bytes 와 짝이 되는 `Content-Type` 을 서명 전에 확정한 뒤, 그 **동일 bytes 를 재직렬화 없이 그대로 전송**한다(코드=truth: `common-security/MultipartFormBodyBuilder`).
+
+- **wire 형식**: RFC 7578, CRLF(`\r\n`) 구분. part 마다 boundary delimiter line → `Content-Disposition: form-data; name="…"`(file part 는 `filename="…"` + `Content-Type: application/octet-stream` 동반) → blank line → raw part bytes → trailing CRLF, 본문 끝은 closing boundary `--boundary--\r\n`.
+- **boundary 유도**: boundary 는 서명된 one-time `X-Nonce` 에서 파생한다(`AegisBoundary<nonce>`) — nonce 가 이미 서명에 결합돼 있어 별도 unsigned 랜덤 원천 없이 요청마다 유일하고 escape-free part 내용과 충돌하지 않는다. 즉 signer 는 nonce 를 **먼저** 발급하고 그 nonce 로 boundary·본문을 조립한 뒤 서명한다.
+- **검증**: 서버 공통 filter(`IngestAuthenticationFilter` + `CachedBodyHttpServletRequest`)가 동일 raw body 를 다시 SHA-256 하고 동일 `Content-Type` header 를 재계산하므로, digest·scopeContext 가 byte 단위로 일치해 운영 HMAC 을 통과한다. **서명 뒤 본문·`Content-Type` 을 변조하면 `sha-256(body)` 또는 scopeContext 가 달라져 §5 `<prefix>-AUTH-002`(401)로 fail-closed** 된다(§4 순서상 nonce 소비 전 거부).
+- explicit local/demo bootstrap 은 동일 결정론적 bytes 를 서명 없이 전송할 수 있고, 그 밖의 non-local/demo 에서 credential 이 없으면 여전히 fail-closed 한다. 종전 빈 body 거부(`AML.MULTIPART_AUTH_UNAVAILABLE`) fail-closed 스텁은 이 raw-byte 서명 전환으로 대체·제거됐다.
+
 ## 4. 검증·replay 의미론
 
 검증 순서는 다음과 같다.
@@ -202,17 +211,20 @@ AML→FDS profile, FDS→AML non-AWS REST fallback, bo-api→FDS typed client는
 BO의 human capability와 engine machine scope는 별도 계층이며 catch-all proxy는 없다. local lifecycle은
 AML/FDS bootstrap bypass를 끈 상태를 정본으로 한다.
 
-다음 항목은 **2026-07-13 현재 미완료**이며 본 문서 존재만으로 적용 완료를 주장하지 않는다.
+P0-14는 multipart client 전환과 production capability guard 를 완료한다. bo-api watchlist import 위임(`AmlEngineClient`)은 §3.4 결정론적 raw bytes 를 nonce 유도 boundary 로 조립해 `sha-256(body)`+exact `Content-Type` 을 v2 서명하고 동일 bytes 를 재직렬화 없이 전송하며, 서버 공통 filter 가 재-SHA-256 으로 검증한다(변조=401, 종전 `AML.MULTIPART_AUTH_UNAVAILABLE` 빈-body fail-closed 제거). capability guard 는 security tier(`prod`/`production`/`aws`)와 transport(aws/local)를 분리 판정해 startup 에 capability(`PROD`/`DEMO`/`STUB`/`NOT_APPLICABLE`)를 출력하고, production tier 의 bootstrap/mock/default secret 과 aws transport 의 미결선(SqsTemplate·큐 미바인딩)을 fail-closed 한다(software §각 엔진). local/demo 전용 ingest 수신 경로는 활성 프로파일이 전부 local/demo/test 일 때만 public 으로 열리고 aws/prod/production 은 인증을 요구한다.
 
-- **P0-14**: multipart client가 최종 raw bytes를 한 번만 만들고 동일 bytes를 digest/sign/send하는 전환과 production capability guard.
+다음 항목은 **2026-07-15 현재 미완료**이며 본 문서 존재만으로 적용 완료를 주장하지 않는다.
+
 - **P1-02**: 전 machine credential 경로 적용, 생성·scope 변경·유예회전·폐기·last-used 영속 이력, credential별 rate/network/workload 조건과 비민감 실패 metric. P0-00의 protocol allowlist·암호화·권장 회전 절차만으로 이 운영 수명주기가 완료된 것은 아니다.
+- **P0-14 phase-2(A1)**: 실 AWS prod 계정 검증은 LocalStack 호환 API smoke 로 대체(실 계정 후속), multipart pre-signed S3 업로드 대안은 phase-2 로 남긴다.
 
-따라서 각 API는 실제 filter registration과 client signer 전환을 별도 완료 증거로 확인해야 한다. 특히 multipart는 본 raw-byte 계약만 확정됐을 뿐 모든 호출자가 v2로 전환된 것이 아니다.
+따라서 각 API는 실제 filter registration과 client signer 전환을 별도 완료 증거로 확인해야 한다.
 
 ## 8. 변경 이력
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-07-15 | P0-14 multipart raw-byte signer·production capability guard 적용. §3.4 신설 — multipart 업로드가 최종 raw bytes 를 nonce 유도 boundary(RFC 7578)로 먼저 조립해 `sha-256(body)`+exact `Content-Type` 을 v2 서명하고 동일 bytes 를 재직렬화 없이 전송, 서버 filter 재-SHA-256 검증(변조=401). §7 P0-14 미완료 항목을 완료로 이관하고 security tier(prod/production/aws) vs transport(aws/local) 분리·capability(PROD/DEMO/STUB/NOT_APPLICABLE) startup 판정·fail-closed·demo ingest positive gate 를 반영했다. | wire 공식 변경 없음(§3.1 digest·§3.2 `content-type` scope 결합 재확인). 코드 truth=`common-security/MultipartFormBodyBuilder`, bo-api `AmlEngineClient`·`BoCapabilityGuard`, aml/fds `CapabilityStartupValidator`. 종전 `AML.MULTIPART_AUTH_UNAVAILABLE` 빈-body fail-closed 제거 |
 | 2026-07-13 | P0-04 내부 service-auth·BO→FDS 적용. 두 internal prefix를 v2-only로 닫고 AML→FDS profile/FDS→AML REST fallback/BO→FDS typed client가 final URI·same bytes를 서명한다. exact target credential, service별 최소 scope, bootstrap-off local lifecycle, 6 logical purpose provisioning을 확정했다. | wire 공식 변경 없음. 신규 scope=`fds:internal:customer-profile:write`, `aml:internal:fds-escalation:write`; multipart는 P0-14 fail-closed 유지 |
 | 2026-07-13 | P0-03 trusted actor·trace 계약. HMAC 성공 뒤 signed subject의 128자·제어문자 경계를 filter가 검증한 뒤에만 `VERIFIED_USER_SUBJECT_ATTRIBUTE`를 생성하고, `TrustedActorResolver`가 signed/bootstrap-marked subject와 legacy body/query assertion 일치를 검증해 AML admin maker/checker/audit actor의 유일한 입력으로 사용한다. 공통 `X-Trace-Id`는 trim·128자·제어문자 금지 후 MDC로 전파하되 AML canonical ingest는 64자/422 계약을 유지한다. | wire/header/canonical bytes 변경 없음. invalid signed subject/공통 trace=generic 401, body assertion 불일치=400, canonical trace 65~128=422, raw `X-User-Subject` 직접 소비 금지 |
 | 2026-07-12 | P0-01 AML neutral ingest 인증 우회 차단. `/aml/v1/**` 실제 filter coverage, 두 AML ingest의 `aml:event:write`, scope/role attribute 부재 시 공통 `Boolean.TRUE` bootstrap marker 외 403, 인증 실패 업무 row 0, valid-signed scope 403의 nonce 보존, neutral `X-Data-Scope` tamper 401 경계를 확정했다. | API/DB 스키마 무변경. AML filter/guard·실 filter-chain 테스트가 코드 truth |

@@ -1455,6 +1455,8 @@ FDS의 ingest·action outbox·webhook·FDS→AML 핸드오프는 SQS 기반 비�
 
 > `ESCALATED`/`OPEN_AML_CASE` 경로의 AML 케이스 cross-ref는 설계·DB 정본이 **`aml_case_id`**다(`amlCaseRef` 등 파생 표기는 본 정본으로 통일한다). 핸드오프 메시지 스키마의 DTO 필드명·SQS 토폴로지 물리 명칭은 integration 명세에서 정본화한다.
 
+> **aws transport auto-config·capability guard·배포 profile(P0-14 CC1·CC4, 코드=truth).** AWS SQS auto-config 는 **`aws` 프로파일에서만 활성**이다 — base `application.yml` 은 `spring.autoconfigure.exclude: SqsAutoConfiguration` 로 항상 제외하고, `application-aws.yml` 이 `spring.autoconfigure.exclude: []`(+`spring.cloud.aws.region`·`sqs.enabled`)로 exclusion 을 해제해 `SqsTemplate`·`fds-events` FIFO consumer/publisher 가 auto-wire 된다. 엔진은 startup 에 **security tier**(PROD=활성 프로파일 `prod`/`production`/`aws`, `ProductionSecretPolicy`)와 **transport**(aws SQS vs local)를 분리 판정해 capability(`PROD`/`DEMO`/`STUB`/`NOT_APPLICABLE`)를 `[capability]` 한 줄로 출력하고(`CapabilityStartupValidator`), `aws` transport 인데 `SqsTemplate` bean 부재나 큐명(`aegis.fds.*`) 미바인딩이면 **fail-closed** — 큐에 붙지 못한 채 메시지를 조용히 유실하는 mis-provisioning 을 차단한다. production tier 는 bootstrap/mock/default secret 을 거부한다(secret 강도=`ProductionSecretPolicy`). 배포 profile 은 Dockerfile 이 표준 `SPRING_PROFILES_ACTIVE` env 로 전달한다 — 종전 exec-form(JSON, no-shell) literal `-Dspring.profiles.active=${SPRING_PROFILES_ACTIVE:default}` 는 셸 확장이 안 돼 profile 이 무시·default 폴백되던 결함이라 제거했다. LocalStack 호환 SQS API 로 publish/consume·redelivery·DLQ 를 smoke 검증하고(실 AWS prod 계정 검증은 phase-2 A1), local/demo 전용 ingest 수신은 활성 프로파일이 전부 local/demo/test 일 때만 public(그 밖은 인증 필요, positive gate).
+
 ### 12.7 Evidence Export API
 
 감독기관·내부감사 대응은 UI 다운로드만으로 부족하다. 고객사의 GRC, 내부 감사 시스템, 문서관리 시스템으로 evidence를 내보낼 수 있어야 한다.
