@@ -1919,6 +1919,9 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 - tenant policy 변경
 - CTR 제외(면제) 처리(§14.3 — 사유 코드·증적·처리자·승인자)
 - STR 관련 화면 열람(§19.2a tipping-off 통제)
+- evidence artifact 무결성 위반 탐지(`EXPORT_TAMPER`)·감사 chain 변조/삭제 탐지(`AUDIT_CHAIN_TAMPER`) — P0-12 자기감사(§19.4a)
+
+**감사 무결성 강제(P0-12 phase-1 CC2).** `aml_audit_events` 는 append-only 이며 **DB append-only trigger**(`BEFORE UPDATE OR DELETE → RAISE EXCEPTION`, role 무관 차단·TRUNCATE 만 허용)로 사후 변경/삭제를 원천 차단한다 — RLS(§19.2c) 감사 write-permissive 예외와 병행한다. 각 append 는 (tenant)별 직전 `row_hash` 를 `prev_hash` 로 링크하고 `row_hash=sha256(prev\|tenant\|audit_id\|event_category\|actor\|subject_ref\|detail(canonical)\|created_at)` 를 결정론 계산해(첫 row=GENESIS 상수, `AuditEventJpaAdapter`·`AuditDetailCanonicalizer` write-hash·chain-read 동일 입력) tamper-evident chain 을 만든다. `AuditHashChainVerificationJob`(스케줄, 기본 15분)이 tenant 별 chain 을 재계산하되 무결성은 `prev_hash` 링크에만 의존한다 — `row_hash` 재계산 불일치=변조(`ROW_HASH_MISMATCH`), 중간 row 삭제=successor 의 `prev_hash` 가 삭제된 predecessor 의 `row_hash` 를 더는 가리키지 못하는 링크 단절(`PREV_HASH_BREAK`)로 탐지하면 로그 + `AUDIT_CHAIN_TAMPER` 감사를 남긴다(silent 금지). `audit_id` 는 단일 전역 시퀀스라 tenant 별 비연속이 정상이므로 **산술 gap 검사는 쓰지 않는다**(오탐 방지). Merkle signed batch·외부 timestamp·append-only DB role 분리는 phase-2 BLOCKED.
 
 **법정 보존기간 (retention_class 매핑, DB §6).**
 
