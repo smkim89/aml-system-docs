@@ -1131,7 +1131,7 @@ path·query·body가 tenant/workspace target을 받는 BO FDS endpoint는 인증
 | 채널 | **hanpass-ph 운영 5채널** — 월렛충전(`CASH_IN`) / 국내송금(`DOMESTIC_REMIT`) / 해외송금(`CROSS_BORDER_REMIT`) / 월렛결제(`WALLET_PAYMENT`) / ATM출금(`WALLET_WITHDRAWAL`). 필터·룰 채널 스코프는 이 5종만 노출(bo-web `CHANNEL_OPTIONS` 정본). 정본 `channel_type` enum 자체는 21종 closed CHECK(DB §4.4)이나 나머지는 Phase 7 미운영(`§9.2` channelType) |
 | 동작 | 허용 / 모니터(기록만) / 검토 필요 / 추가 인증 / 차단 / 자금 보류 / 동결 / 규제 보고 후보 (`ALLOW/MONITOR/REVIEW/CHALLENGE/BLOCK/HOLD/FREEZE/REPORT`, `decision` 8종 DB §4.7) |
 | 평가 | 즉시(실시간) / 사후(비동기) (`INLINE_AND_ASYNC / ASYNC_ONLY`) |
-| 상태 | 작성 / 결재대기 / 운영중 / 비활성 / 보관 (`DRAFT/PENDING_APPROVAL/ACTIVE/DISABLED/ARCHIVED`, `rule_status` DB §4.13) |
+| 상태 | 작성 / 결재대기 / 운영중 / 비활성 / 보관 (`DRAFT/PENDING_APPROVAL/ACTIVE/DISABLED/ARCHIVED`, `rule_status` DB §4.13) — **`보관`(ARCHIVED)은 목록 기본 제외**(상태 필터에서 `보관` 선택 시에만 재조회, PLAN 20260717 U-F5/U-W3) |
 | **효과성 요약 (v4.0 벤치마크 보강)** | 최근 30일 탐지 건수 · 오탐율(%) — **화면 파생값**(결정·케이스 종결 피드백 집계, 별도 저장 없음). 효과성 상세는 `[효과성 ▶ → SFDS-STAT-001]` 드릴다운 |
 
 #### 비즈니스 규칙
@@ -1142,6 +1142,7 @@ path·query·body가 tenant/workspace target을 받는 BO FDS endpoint는 인증
 - **BR-004**: 행 클릭 → 룰 상세(SFDS-RULE-002). `[+ 새 룰]` 은 `SFDS_RULE:AUTHOR` 만 노출.
 - **BR-005**: 조회 결과 1만 건 초과 시 팝업 노출 — 기간/조건 좁히기 안내 후 재조회.
 - **BR-006 (v4.0 벤치마크 보강)**: 목록에 **효과성 요약 컬럼(최근 30일 탐지 건수·오탐율 %)** 을 표시한다 — 화면 파생값(탐지 결정·케이스 종결 `FP_*` 피드백 집계). 오탐율 비정상(과소·과다 추출) 룰은 튜닝 후보 배지 ⚠. 룰 행 `[효과성 ▶]` 클릭 시 **SFDS-STAT-001 룰 효과성 통계**로 드릴다운(룰 번호 컨텍스트) — 실계 운영 시스템의 룰 라이프사이클(정의→임계값→시뮬레이션→배치→효과성 평가) 벤치마크 반영(AML-TM-001 ② BR-006과 동일 패턴).
+- **BR-007 (룰 아카이브, PLAN 20260717 U-F5/U-W3)**: 목록은 `상태` 필터 미지정 시 `보관`(ARCHIVED) 행을 **기본 제외**한다(과거 이력은 상태 필터에서 `보관`을 명시 선택해야만 노출). 룰 전량 대체 배경 — 사용자 지시로 레거시 시드 룰 21건을 신규 룰팩으로 전량 교체하며 아카이브했다(§2 갱신 참조).
 
 ### 6.2 SFDS-RULE-002 · 룰 상세 + 버전 히스토리
 
@@ -1149,7 +1150,7 @@ path·query·body가 tenant/workspace target을 받는 BO FDS endpoint는 인증
 |------|------|
 | **기능 ID** | SFDS-RULE-002 |
 | **권한** | `SFDS_RULE:READ` (변수 편집 상신은 `SFDS_RULE:OPERATE`) |
-| **API** | `GET /api/v1/admin/fds/rules/{ruleId}` · `GET /api/v1/admin/fds/rules/{ruleId}/versions` · **변수 편집**: `GET /api/v1/admin/fds/rules/{ruleId}/params` · `POST /api/v1/admin/fds/rules/{ruleId}:update-params` 🔒(`RULE_PARAM` 4-eyes, 202+approvalRequestId — API §4.6·§5.9b) |
+| **API** | `GET /api/v1/admin/fds/rules/{ruleId}` · `GET /api/v1/admin/fds/rules/{ruleId}/versions` · **변수 편집**: `GET /api/v1/admin/fds/rules/{ruleId}/params` · `POST /api/v1/admin/fds/rules/{ruleId}:update-params` 🔒(`RULE_PARAM` 4-eyes, 202+approvalRequestId — API §4.6·§5.9b) · **아카이브(삭제, terminal, 신규)**: `POST /api/v1/admin/fds/rules/{ruleId}/archive`(`SFDS_RULE:OPERATE`, 즉시 실행 — 4-eyes 아님, PLAN 20260717 U-F5 가정 A8) |
 
 #### 화면 레이아웃
 
@@ -1212,11 +1213,13 @@ ver │ status      │ author        │ approver      │ activatedAt        �
   | 시뮬레이션 | `SFDS_RULE:AUTHOR` | 버전 존재 |
   | 기준값 빠른변경 | `SFDS_RULE:OPERATE` | status = ACTIVE |
   | 비활성화 / 재개 | `SFDS_RULE:OPERATE` | ACTIVE↔DISABLED |
+  | **아카이브(삭제, terminal, 신규 — PLAN 20260717 U-F5/U-W3)** | `SFDS_RULE:OPERATE` | status ∈ {DRAFT, DISABLED} (ACTIVE는 버튼 비활성 + "먼저 중지 후 아카이브" 안내 — 2단계) |
   | 롤백 | `SFDS_RULE:APPROVE` | SUPERSEDED 버전 존재 |
 - **BR-003**: 버전 히스토리는 작성자·승인자·결재 시각·changeNote 를 7년 보존 표시. 작성자=승인자 위반은 시스템상 불가하나 로그에서 검증 가능.
 - **BR-004**: 최근 Hit 탭은 결정 조회(SFDS-DEC-001)로 ruleNo 프리필터된 링크.
 - **BR-005 (변수 편집 4-eyes)**: 임계·변수 편집 상신은 `SFDS_RULE:OPERATE` + `RULE_PARAM` 결재(대상=`rule_id`, §16.5) 필수 — 즉시 반영 아님(202). maker≠checker, 진행 중(`SUBMITTED`) 결재 존재 시 pending 배지 표시 + 재상신 차단. 승인 시 override 셋 원자 적용·반려 시 기존 값 유지, 전 과정 감사 기록.
 - **BR-006 (변수 검증)**: 상신 값은 서버 검증을 통과해야 한다 — unknown key·read-only(`editable=false`) 변수 거부, `[min,max]` 범위(inclusive)·정수전용(`integerOnly`) 위반 400. 룰 단위 편집 가능 변수 **전체 셋 원자 제출**(부분 제출로 인한 리프 간 정합 붕괴 방지).
+- **BR-007 (룰 아카이브, terminal — PLAN 20260717 U-F5/U-W3, 가정 A8)**: `[아카이브]` 버튼은 `상태 ∈ {작성(DRAFT), 비활성(DISABLED)}` 에서만 활성화되고, `운영중(ACTIVE)` 상태는 버튼 비활성 + "먼저 중지 후 아카이브" 안내 문구를 표시한다(2단계 — 비활성화 선행 후 재진입 아카이브). 확인 모달은 "아카이브된 룰은 목록에서 기본 제외되며(상태 필터에서 재조회 가능), 재활성화할 수 없습니다(terminal)"를 고지한다. 즉시 실행(4-eyes 아님, disable 전례 동형 — §11.6.5 는 상태기계만 정의하고 전이 API 자체는 미정의였음, 사용자 승인 완료). 아카이브 성공 시 감사 이벤트 `RULE_ARCHIVE` 기록.
 
 ### 6.3 SFDS-RULE-003 · 룰 빌더 (국적 차원 + 측정항목 조건, canonical DSL 컴파일)
 
@@ -1228,7 +1231,7 @@ ver │ status      │ author        │ approver      │ activatedAt        �
 
 #### 화면 레이아웃 ("쉬운 구성" + DSL(JSON) 읽기 토글)
 
-운영자는 변수명·필드명을 직접 입력하지 않고 **엔진 측정항목 카탈로그(feature catalog `§10.1`)와 닫힌 선택지에서만 조건을 구성**합니다. 폼은 ① 기본 정보(룰 번호·이름·룰셋·평가 방식) ② **고객 국적 차원** — `전 국적(ALL)`(무조건) 또는 특정 국적(ISO 3166-1 alpha-2, hanpass-ph 주요 회원 국적 후보 VN·PH·KR·TH·ID·MM·KH·NP) ③ **채널 범위** — `전 채널`(= `channelScope` NULL, 전채널 통합 평가) 또는 특정 채널 ④ **탐지 조건** — 측정항목 기반 조건 행을 **모두 만족(AND) / 하나라도(OR)** 로 결합 ⑤ 탐지 시 동작(decision)으로 구성됩니다. 각 조건 행은 두 종류입니다 — **측정항목 비교(cmp)**: 측정항목(카탈로그 select) + 연산자(수치형 `=`/`≠`/`>`/`≥`/`<`/`≤`, 문자형 `=`/`≠`/`포함(IN)`) + 값 / **시간창 집계(velocity)**: 집계(건수 `count`·금액합계 `sum`·서로 다른 값 개수 `distinct_count`) + distinct 대상(수취국가·이용 채널·**수취처(상대방)** — `distinct_count` 에서만, PLAN 20260717 R3 로 수취처 추가) + 차원(회원 `subject`·**수취처(상대방) `counterparty`·가맹점 `merchant`** — `count`/`sum` 에서 선택 가능) + 시간창(`10m`/`1h`/`6h`/`24h`) + 연산자 + 임계값. 화면 상태는 `buildRuleJson()` 순수 함수가 **canonical DSL(cmp/velocity + and/or)로 컴파일**하며(단일 정본), `DSL(JSON)` 토글은 컴파일 결과를 **읽기 전용**으로 확인하는 뷰입니다(`§19` D-03).
+운영자는 변수명·필드명을 직접 입력하지 않고 **엔진 측정항목 카탈로그(feature catalog `§10.1`)와 닫힌 선택지에서만 조건을 구성**합니다. 폼은 ① 기본 정보(룰 번호·이름·룰셋·평가 방식) ② **고객 국적 차원** — `전 국적(ALL)`(무조건) 또는 특정 국적(ISO 3166-1 alpha-2, hanpass-ph 주요 회원 국적 후보 VN·PH·KR·TH·ID·MM·KH·NP) ③ **채널 범위** — `전 채널`(= `channelScope` NULL, 전채널 통합 평가) 또는 특정 채널 ④ **탐지 조건** — 측정항목 기반 조건 행을 **모두 만족(AND) / 하나라도(OR)** 로 결합 ⑤ 탐지 시 동작(decision)으로 구성됩니다. 각 조건 행은 세 종류입니다 — **측정항목 비교(cmp)**: 측정항목(카탈로그 select) + 연산자(수치형 `=`/`≠`/`>`/`≥`/`<`/`≤`, 문자형 `=`/`≠`/`포함(IN)`) + 값 / **시간창 집계(velocity)**: 집계(건수 `count`·금액합계 `sum`·서로 다른 값 개수 `distinct_count`) + distinct 대상(수취국가·이용 채널·수취처(상대방)·**단말기(deviceRef)·접속 IP·가맹점/ATM 단말(merchantRef)** — `distinct_count` 에서만, PLAN 20260717-fds-legacy-rule-overhaul U-F1 로 3종 확장) + 차원(회원 `subject`·수취처(상대방) `counterparty`·가맹점 `merchant` 등 6종 — `count`/`sum` 에서 선택 가능) + 시간창(`1m`/`5m`/`10m`/`30m`/`1h`/`6h`/`24h`/`7d`/`30d` 9종, U-F1 로 5종 확장) + 선택적 **채널 범위 한정 토글**(`동일 채널만`, `scope=sameChannel`, A9) + 연산자 + 임계값 / **리스크그룹 소속(in_group, 신규 — PLAN 20260717 U-W2)**: 대상 피처(카탈로그 select) + 리스크그룹(select, `/admin/fds/risk-groups` 등재분) + `그룹에 포함됨/포함되지 않음`(negated) 토글 — 블랙리스트 IP·단말·사기신고계좌·환금성 MCC 그룹 등을 저작. 화면 상태는 `buildRuleJson()` 순수 함수가 **canonical DSL(cmp/velocity/in_group + and/or)로 컴파일**하며(단일 정본), `DSL(JSON)` 토글은 컴파일 결과를 **읽기 전용**으로 확인하는 뷰입니다(`§19` D-03).
 
 > **국적 데이터 원천**: 특정 국적 조건은 거래 요청의 임의 국적 필드가 아니라 AML CDD(`customer.cdd.completed`)에서 FDS `fds_subjects`로 비동기 동기화된 고객 프로필을 평가한다. 거래마다 국적을 반복 전달하지 않으며, CDD 재이행의 최신 non-null 값이 이후 실시간 결정에 반영된다. 프로필 미동기화 시 해당 국적/경과일 feature는 미노출되어 조건은 fail-safe non-match한다.
 
@@ -1266,8 +1269,9 @@ ver │ status      │ author        │ approver      │ activatedAt        �
 | 고객 국적 — 전 국적(ALL) 또는 특정 ISO2 코드 | ALL = 국적 노드 미생성(무조건) / 특정 국적 = 조건 트리 **선두 `{"type":"cmp","feature":"customer.nationality","op":"=","value":"<ISO2>"}`** 노드 추가 |
 | 채널 범위 — 전 채널 또는 특정 채널 | `channelScope` — 전 채널 = **NULL**(전채널 통합 평가, 기본값 치환 금지), 특정 채널 = enum channel_type 코드 |
 | ① 탐지 조건 그룹 — 모두 만족(AND)/하나라도(OR) | 그룹마다 `{"type":"and"\|"or","conditions":[…]}`. 쉬운 구성에서 최대 3단계 그룹(괄호) 중첩, 엔진 `MAX_DEPTH=16` 이내 |
-| 조건 행 — 엔진 측정 기준 + 연산자 + 기준값 | 첫 select가 추상 종류가 아니라 Feature Catalog 실제 항목(국적·금액·10m/1h/6h/24h 건수·금액합계·수취국가/채널/**수취처** distinct 수·**동일 수취처/가맹점 유입·결제 건수·금액합계**·수취 기관 코드·가입/KYC 경과일 등)을 카테고리별로 직접 노출. 저장 DSL=`{"type":"cmp","feature":"<카탈로그 featureKey>","op":"="\|"!="\|">"\|">="\|"<"\|"<="\|"IN","value":…}`. NUMBER/STRING/ENUM/BOOL별 연산자·값 입력 제한 |
-| 시간창 집계 항목 | `FeatureComputeAdapter`가 사전계산한 catalog key(`velocity.count.subject.6h`, `velocity.sum.subject.24h`, `velocity.distinct_count.receiveCountry.subject.24h`, `velocity.distinct_count.channelType.subject.6h`, **`velocity.count.counterparty.24h`(동일 수취처 유입)·`velocity.sum.merchant.24h`(가맹점 결제 합계)·`velocity.distinct_count.counterpartyRef.subject.24h`(주체 distinct 수취처)** 등)를 조건 첫 선택으로 직접 고른다. count/sum 차원은 subject/instrument/counterparty/actor/merchant/device 6종·distinct_count field 화이트리스트는 `{receiveCountry,channelType,counterpartyRef}`(V26, API §5.17). legacy/DSL `velocity` 노드는 호환 유지 |
+| 조건 행 — 엔진 측정 기준 + 연산자 + 기준값 | 첫 select가 추상 종류가 아니라 Feature Catalog 실제 항목(국적·금액·시간창 집계 건수/금액합계·distinct 수·**연령(`customer.ageYears`)·심야 여부(`time.isNight`)·신규 단말(`device.firstSeenForSubject`)·디바이스 로케일(`device.locale`)**(U-F1~U-F3)·동일 수취처/가맹점 유입·결제 건수·금액합계·수취 기관 코드·가입/KYC 경과일 등)을 카테고리별로 직접 노출. 저장 DSL=`{"type":"cmp","feature":"<카탈로그 featureKey>","op":"="\|"!="\|">"\|">="\|"<"\|"<="\|"IN","value":…}`. NUMBER/STRING/ENUM/BOOL별 연산자·값 입력 제한 |
+| 시간창 집계 항목 | `FeatureComputeAdapter`가 사전계산한 catalog key(`velocity.count.subject.6h`, `velocity.sum.subject.24h`, `velocity.distinct_count.receiveCountry.subject.24h`, `velocity.distinct_count.channelType.subject.6h`, `velocity.count.counterparty.24h`(동일 수취처 유입)·`velocity.sum.merchant.24h`(가맹점 결제 합계)·`velocity.distinct_count.counterpartyRef.subject.24h`(주체 distinct 수취처), **`velocity.distinct_count.{deviceRef,ip,merchantRef}.subject.<window>`(단말·IP·ATM단말 distinct 수)·`velocity.count.subject.sameChannel.7d`(동일 채널 한정, U-F1)** 등)를 조건 첫 선택으로 직접 고른다. count/sum 차원은 subject/instrument/counterparty/actor/merchant/device 6종·distinct_count field 화이트리스트는 `{receiveCountry,channelType,counterpartyRef,deviceRef,ip,merchantRef}` 6종(V28, API §5.17). 시간창은 `1m/5m/10m/30m/1h/6h/24h/7d/30d` 9종(U-F1). legacy/DSL `velocity` 노드는 호환 유지 |
+| 리스크그룹 소속 조건(in_group, 신규) | 대상 피처 select + 리스크그룹 select(`/admin/fds/risk-groups` REST 등재분 — 블랙리스트 IP·단말·사기신고계좌·환금성 MCC 그룹 등, A10) + 포함/미포함(negated) 토글. 저장 DSL=`{"type":"in_group","feature":"<카탈로그 featureKey>","group":"<groupId>","negated":true\|false}`(`RuleDslParser.parseInGroup` 1:1, PLAN 20260717 U-W2) |
 | ⑦ 탐지 시 동작 — 허용/기록만/검토/추가인증/승인거부/차단/자금보류/동결/규제보고 | `decisionOutcome` (`§11.1`) → action router `§11.2` 매핑 |
 | `쉬운 구성` → `DSL(JSON)` 토글 | 폼 상태 → canonical 조건 트리 단방향 컴파일(`buildRuleJson()`), DSL 뷰는 **읽기 전용** 미리보기 |
 | 불완전 조건/빈 그룹 | 측정항목 미선택·빈 값·빈 그룹·깊이 초과가 하나라도 있으면 저장·시뮬레이션 차단 |
@@ -1284,8 +1288,8 @@ ver │ status      │ author        │ approver      │ activatedAt        �
 #### 비즈니스 규칙
 
 - **BR-001**: `ruleId`/`ruleSetId` 는 immutable·unique(서비스·워크스페이스 내). ARCHIVED 룰 식별자도 재할당 금지 → `FDS-VALIDATION-001`(중복 룰 식별자). 표시명 변경은 `name`(displayName) 사용.
-- **BR-002**: 업무 용어 선택값은 시스템이 내부 필드(feature catalog `§10.1`)로 변환·검증. 측정항목은 **카탈로그 select 만** 허용(자유 텍스트 필드 입력 제거 — `RuleDslParser` 폐그래머와 정합, 임의 field 주입 불가), distinct 대상(`{수취국가·이용 채널·수취처}`)·차원(count/sum 은 `{회원·수취처·가맹점·수단·직원·단말기}` 6종)·시간창도 닫힌 집합에서만 선택. 변환 불가/미존재 항목 선택 시 `FDS-VALIDATION-002`. 운영자는 필드명을 직접 입력하지 않음.
-- **BR-003**: 시간창 집계는 엔진 사전계산 윈도우 **`10m`/`1h`/`6h`/`24h` 닫힌 집합**의 catalog feature로만 선택한다(자유 기간/field 입력 없음 — feature 프리컴퓨트 키와 1:1).
+- **BR-002**: 업무 용어 선택값은 시스템이 내부 필드(feature catalog `§10.1`)로 변환·검증. 측정항목은 **카탈로그 select 만** 허용(자유 텍스트 필드 입력 제거 — `RuleDslParser` 폐그래머와 정합, 임의 field 주입 불가), distinct 대상(**`{수취국가·이용 채널·수취처·단말기·접속IP·가맹점/ATM단말}` 6종** — PLAN 20260717 U-F1 로 단말·IP·가맹점 3종 확장)·차원(count/sum 은 `{회원·수취처·가맹점·수단·직원·단말기}` 6종)·시간창도 닫힌 집합에서만 선택. 변환 불가/미존재 항목 선택 시 `FDS-VALIDATION-002`. 운영자는 필드명을 직접 입력하지 않음.
+- **BR-003**: 시간창 집계는 엔진 사전계산 윈도우 **`1m`/`5m`/`10m`/`30m`/`1h`/`6h`/`24h`/`7d`/`30d` 닫힌 집합 9종**(PLAN 20260717 U-F1 로 `1m`/`5m`/`30m`/`7d`/`30d` 5종 확장, 기존 `10m`/`1h`/`6h`/`24h` 4종 무회귀)의 catalog feature로만 선택한다(자유 기간/field 입력 없음 — feature 프리컴퓨트 키와 1:1). 시간창 집계에는 선택적 **채널 범위 한정(`동일 채널만`, 엔진 `scope="sameChannel"`)** 토글이 있다 — 켜면 조건 평가 시점 거래와 동일 채널(`channelType`)의 이벤트로만 집계를 좁힌다(가정 A9, 미선택=기존 전채널 집계 무회귀).
 - **BR-004**: ⑦ 동작 = 거래차단/승인거부 + 적용 시작이 24시간 이내이면 즉시 영향 **경고**(저장 가능, 확인 모달).
 - **BR-005**: 평가 방식 = 즉시(실시간) 선택 시 인라인 SLO 검증 — 과거 집계 단계는 사전집계 방식 강제, 인라인 중 대량 조회가 필요한 룰은 거부(`§5.2`). 추가 결재 필요.
 - **BR-006**: 실패 시에도 차단(fail-closed)은 명단/제재류 핵심 차단 룰만 허용 + 결재 필수(`§19` D-01).
@@ -1296,6 +1300,7 @@ ver │ status      │ author        │ approver      │ activatedAt        �
 - **BR-010 (탐지 조건 AND/OR 결합)**: 조건 그룹마다 AND(모두 만족)/OR(하나라도)를 선택하고 조건 또는 하위 그룹을 추가한다. 쉬운 구성은 최대 3단계 중첩하며 엔진 DSL `and/or`로 그대로 컴파일한다. 특정 국적 scope는 사용자 그룹 바깥에서 **항상 AND guard**로 결합해 내부 OR가 국적 제한을 우회하지 못한다. 측정항목 미선택·빈 기준값·빈 그룹·깊이 초과가 하나라도 있으면 저장/시뮬레이션을 차단한다.
 - **BR-012 (인라인 시뮬레이션)**: 빌더 하단 ① 인라인 시뮬레이션은 작성 중(미저장 `ruleJson`) 조건을 기존 `POST /api/v1/admin/fds/rules/simulations`로 **즉시 백테스트**한다. 결과 표시는 **SFDS-RULE-006(룰 시뮬레이션)과 공통 컴포넌트**를 재사용한다(중복 화면 아님). read-only(결재 불필요)이며, 결과 비율은 **거래(이벤트) 기준**·표본 **최대 500건 근사**다.
 - **BR-013 (룰 추천)**: ② 룰 추천은 **수치형 피처 select + 목표 적중률(%) + 방향(이상=GTE/이하=LTE)** 입력으로 `POST /api/v1/admin/fds/rules/recommendations`를 호출해 **목표 적중률 percentile로 단일 피처 임계값을 역산**하고, 추천 임계값을 단일조건 룰로 **엔진 재평가**해 예상 적중률을 검증한다. 추천 임계값·예상 적중률·인접 대안(±1·2%p)을 제시하고, `[빌더에 적용]`으로 `featureKey`·`threshold`(=⑤ 기준값)를 폼에 주입한다. read-only(결재 불필요), 비율은 **거래 기준**·표본 **최대 500건 근사**, 비수치 피처/빈 표본은 graceful(`sampleSize=0`)이다. raw PII·개별 피처값은 미반환(집계·임계값만).
+- **BR-014 (리스크그룹 소속 조건 저작, 신규 — PLAN 20260717-fds-legacy-rule-overhaul U-W2)**: 조건 행 종류에 **리스크그룹 소속(in_group)** 이 추가됐다 — 대상 피처(카탈로그 select) + 리스크그룹(select, `/admin/fds/risk-groups` 에 REST 로 등재된 그룹만 후보, A10) + 포함(member)/미포함(negated) 토글로 저작하며 `buildRuleJson()` 이 `{"type":"in_group","feature":…,"group":…,"negated":…}`(`RuleDslParser.parseInGroup` 1:1)로 컴파일한다. 대상 피처·그룹 라벨이 카탈로그에 미등재면 원문 키를 폴백 표시한다. 블랙리스트 IP·단말·사기신고계좌 그룹, 환금성 MCC 그룹 등을 이 조건으로 저작한다(갭 분석 §2.1 ⑤·A10).
 
 ### 6.4 SFDS-RULE-004 · 기준값(임계치) 빠른 변경 (Hot-reload)
 
