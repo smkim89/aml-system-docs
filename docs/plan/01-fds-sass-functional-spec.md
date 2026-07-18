@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **6.22** | **2026-07-18** | **SM Kim** | **§8.3 SFDS-DEC-003 행동 맥락 통화 표기 드리프트 정정(계약·화면 구성 무변경, PLAN 20260718-fds-verdict-response-currency U7).** 평소 vs 이번 카드·와이어프레임·BR-001의 `USD`/`$` 표기를 `amountBase`의 실제 정본(서버 파생 규제통화 = 기준통화, tenant_demo=PHP, API 01-fds-api.md §11.7.6)에 맞춰 "기준통화"·`PHP` 코드 병기로 정정 — 문서 표기 드리프트 정정만, 비교 로직·baseline 산식·화면 항목·API 계약 불변. | 근거=aegis-aml `services/bo-web/lib/fds-subject-activity.ts`(`formatBaseAmount`/`resolveBaseCurrency`, U4/U5 4cef7fdc~e6ec77ca)·`docs/aml-data.md` §11.7.6. |
 | **6.21** | **2026-07-17** | **SM Kim** | **§6.3 SFDS-RULE-003 룰 빌더 device 측정항목 신규 노출(코드=truth, PLAN 20260717 U2~U4 — 사용자 지시로 F-005 해제, fds V27).** 인입 주체 블록이 `subject`→`originator`(AML Party 동형, 구조적 개편·룰빌더 화면 무접촉)로 교체되고 `device{deviceId,os,version,ip}` 블록이 신설되면서, cmp 측정항목 카탈로그(§10.1)에 `device.os`·`device.version`·`device.ip`(STRING, V27) 3종이 새로 노출된다 — `deviceId`는 기존 `device` velocity 차원(subject/instrument/counterparty/actor/merchant/**device** 6종, §6.20 6.19 이전 반영분) 키로 합류하므로 신규 차원 추가는 아니다. 폼은 카탈로그 select 로 자동 노출(하드코딩 목록 아님, PLAN A10) — 프론트 코드 변경 없음. 인입 계약 상세(originator 정본·422 규칙)는 API 01-fds-api.md §5.1 v4.14 참조. | 근거=fds-svc `domain/rule/DomainFeatureKeys`(DEVICE_OS/VERSION/IP)·`adapter/out/feature/FeatureComputeAdapter`·V27. API §5.1·DB §8 V27. 코드=truth. PPT 재빌드는 후속. |
 | **6.20** | **2026-07-17** | **SM Kim** | **§6.3 SFDS-RULE-003 룰 빌더 집중 룰 차원 확장 — 수취처(counterparty)·가맹점(merchant) velocity + distinct 수취처(코드=truth, PLAN 20260717 R3, fds V25/V26).** ① **velocity 차원 확장** — `count`/`sum` 집계의 차원 select 에 `수취처(상대방) counterparty`·`가맹점 merchant` 추가(기존 회원 subject 외, 엔진 6차원 노출). ② **distinct 대상 확장** — `distinct_count` 대상에 `수취처(counterpartyRef)` 추가(기존 수취국가·이용 채널 + 주체별 수취처 분산 탐지). ③ 신규 catalog 측정항목 `velocity.count\|sum.counterparty.<w>`(동일 수취처 유입)·`velocity.count\|sum.merchant.<w>`(가맹점 결제)·`velocity.distinct_count.counterpartyRef.subject.<w>`·`counterparty.institutionCode`(수취 기관 코드) 노출. 매핑 표·BR-002(distinct/차원 닫힌 집합) 갱신. 폼·컴파일·결재 라이프사이클·인라인 시뮬(BR-012/013)은 불변. 인입 계약(send/receive 통화 4필드·서버 파생 규제통화)은 API §5.1·DB V25 참조. | 근거=bo-web `lib/fds-rule-conditions.ts`(VELOCITY_FIELD·DIMENSION_LABEL_KEY)·`components/common/MetricConditionBuilder.tsx`, fds-svc `domain/rule/RuleDslParser`(DISTINCT_FIELDS `counterpartyRef`)·`adapter/out/feature/FeatureComputeAdapter`·V26. API §5.1/§5.17·DB §8 V25/V26. 코드=truth. PPT 재빌드는 후속. |
 | **6.19** | **2026-07-13** | **SM Kim** | **P0-03 위험그룹 generation·create 계약 정합.** POST 필수 `groupId/groupType/displayName`, reason PUT-only, scoped duplicate `409 FDS-STATE-CONFLICT`를 고정했다. master/member/merchant-normalize 결재를 상신 generation에 결속해 delete/recreate stale approval이 새 그룹을 변경하지 않는다. FDS legacy pending은 취소하고, BO V19는 모든 기존 local GROUP payload를 원 JSONB/hash 보존 4필드 tombstone으로 감싸 비종결 4상태만 취소·terminal exact marker만 역사 read-only로 허용한다. | 근거=FDS API §5.10·§5.17a·§5.18·§5.20, DB V17·BO V19, software §11.5. |
@@ -1690,20 +1691,20 @@ sequenceDiagram
 
 ```
 ② 행동 맥락 — 평소 vs 이번                              subj_8f.. ↗360
-  이 고객 평소 — 주로 해외송금, 평소 거래 중앙값 $1,200 (과거 24건, 대부분 92% 정상 허용)
+  이 고객 평소 — 주로 해외송금, 평소 거래 중앙값 1,200 PHP (과거 24건, 대부분 92% 정상 허용)
   채널 분포 — 해외송금 18 · 월렛충전 4 · 국내송금 2
   ┌ 이번 ─────────────────────────────────────────────┐
-  │ ⚠ 평소 대비 과다   $14,000 = 평소의 11.7배 · 과거 상위 2% │
+  │ ⚠ 평소 대비 과다   14,000 PHP = 평소의 11.7배 · 과거 상위 2% │
   └────────────────────────────────────────────────────┘
-  [최근 24시간 3건] [최근 7일 9건] [평소 중앙값 $1,200] [이번 이상배수 11.7배] [검토·차단 이력 2건]
+  [최근 24시간 3건] [최근 7일 9건] [평소 중앙값 1,200 PHP] [이번 이상배수 11.7배] [검토·차단 이력 2건]
   최근 거래 (시간순 · 참고) — 이상 판정이 아닌 참고 타임라인
 ```
 
 | 영역 | 항목 |
 |------|------|
-| 평소 프로파일 | 주 채널(`primaryChannel`), **평소 거래 중앙값(USD)**(과거 N건 중앙값), 정상 비율(`normalRatio` %), 채널 분포 |
-| 이번 거래 비교 | **이상 배수**(이번 `amountBase` ÷ 평소 중앙값), 과거 상위 P%. 비교 단위는 **`amountBase`(USD 환산)**, baseline 은 **현재 건 제외 과거 중앙값**. 평소 범위 초과 시 ⚠ 강조 |
-| 신호 타일 | 최근 24시간 건수·최근 7일 건수·평소 중앙값(USD)·이번 이상배수·검토·차단 이력 건수 |
+| 평소 프로파일 | 주 채널(`primaryChannel`), **평소 거래 중앙값(기준통화)**(과거 N건 중앙값), 정상 비율(`normalRatio` %), 채널 분포 |
+| 이번 거래 비교 | **이상 배수**(이번 `amountBase` ÷ 평소 중앙값), 과거 상위 P%. 비교 단위는 **`amountBase`(서버 파생 규제통화 환산; tenant_demo=PHP, 20260718 — 구 "USD 환산" 표기 정정)**, baseline 은 **현재 건 제외 과거 중앙값**. 평소 범위 초과 시 ⚠ 강조 |
+| 신호 타일 | 최근 24시간 건수·최근 7일 건수·평소 중앙값(기준통화)·이번 이상배수·검토·차단 이력 건수 |
 | 최근 거래 | 시간순 참고 타임라인(이상 판정 아님). 이번 케이스 거래·평소 범위 벗어난 행 강조 |
 
 > **이력 부족 처리**: 비교 가능한 과거 정상 이력이 부족하면 헤드라인을 "이 고객 평소 — 비교 가능한 과거 정상 이력이 부족합니다."로, 비교 문구를 **"비교 기준 부족(과거 정상 이력 부족)"** 으로 정직하게 표기한다(허위 신호 금지).
@@ -1719,7 +1720,7 @@ sequenceDiagram
 
 #### 비즈니스 규칙
 
-- **BR-001**: 행동 맥락 baseline 은 `amountBase`(USD) 기준 **현재 건 제외 과거 중앙값**이며, 이상 배수·상위 P%·정상 비율을 lib 순수 헬퍼로 계산한다. 이력 부족 시 "비교 기준 부족"으로 표기.
+- **BR-001**: 행동 맥락 baseline 은 `amountBase`(서버 파생 규제통화·기준통화, tenant_demo=PHP) 기준 **현재 건 제외 과거 중앙값**이며, 이상 배수·상위 P%·정상 비율을 lib 순수 헬퍼로 계산한다. 이력 부족 시 "비교 기준 부족"으로 표기.
 - **BR-002**: ③ 케이스 딥링크는 `caseId` 유무로 분기 — **있으면 [케이스](`/fds/cases/{caseId}`) 활성, 없으면 [케이스 미생성] disabled** + "정상 처리되어 조사 케이스가 개설되지 않았습니다" 안내(정상/ALLOW 결정 케이스). [이벤트]는 `?eventId=` 딥링크로 SFDS-EVT-001 단건 프리셋.
 - **BR-003**: Subject 타임라인은 케이스 timeline(`itemType`·`label`·`description`·`occurredAt`)을 머지(시간 desc)하며, 케이스가 없으면 "연결된 타임라인 항목이 없습니다". 조사 목적 조회는 감사 로그에 기록.
 - **BR-004**: 대상 식별자(`subjectRef`)는 토큰/해시 기반이며 SubjectKey 컴포넌트로 마스킹 표시(클릭 시 `/aml/subjects/{token}` 360 딥링크). 원문 회원정보는 서비스 소스 시스템 소관(본 화면은 FDS 판단 이력만).
@@ -1964,7 +1965,7 @@ sequenceDiagram
 |------|------|
 | 개요·증적 | 트리거 룰, 연결 결정·거래·증빙, 위험 신호 요약 |
 | 타임라인 | 대상 이벤트·결정·액션·그룹등록·보고 머지(SFDS-DEC-003 뷰) |
-| ② 행동 맥락 | 대상 평소 vs 이번 비교(SFDS-DEC-003 행동 맥락 패널 재사용 — 평소 중앙값 USD·이상배수·최근 건수·정상비율, 이력 부족 시 "비교 기준 부족") |
+| ② 행동 맥락 | 대상 평소 vs 이번 비교(SFDS-DEC-003 행동 맥락 패널 재사용 — 평소 중앙값(기준통화)·이상배수·최근 건수·정상비율, 이력 부족 시 "비교 기준 부족") |
 | ③ 위험 프로파일 | **AML 위험 등급 배지**(`riskGrade`/`riskScore`, **aml-svc 위임 조회 — 참조 표시만**)·당연고위험 배지(`mandatoryHighRisk` + 사유)·**AML 위임**(`amlCaseRef` 있으면 [AML 케이스](`/aml/cases/{amlCaseRef}`) 딥링크, 없으면 "미위임")·회랑(corridor). RA 미산정(비고객·조회 불가)이면 "RA 미산정" 안내 |
 | ④ 검토 체크리스트 | 가이드형 조사 콘솔 — 자동 신호 점검 항목(`buildChecklist`: 행동 맥락·위험 등급·corridor 등 신호를 ok/warn/info로 점검) + **종합 결론 제안**(`summarizeConclusion`: 정상/의심 톤). 운영자 판단 보조(자동 종결 아님) |
 | 연결 결정·거래 | 결정 상세(SFDS-DEC-002)·이벤트(SFDS-EVT-001) 딥링크 |
