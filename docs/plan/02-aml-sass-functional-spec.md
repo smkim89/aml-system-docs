@@ -5,8 +5,8 @@
 | 항목 | 내용 |
 |------|------|
 | **문서 ID** | FS-AML-SAAS-001 |
-| **버전** | 9.51 |
-| **작성일** | 2026-07-12 |
+| **버전** | 9.52 |
+| **작성일** | 2026-07-19 |
 | **작성자** | Hanpass Global Team |
 | **상태** | 초안 |
 | **정본(아키텍처)** | `.claude/skills/_shared/target-architecture.md` (4서비스 모노레포 · Java 25 헥사고날 · Next.js · 멀티테넌시 · PII 마스킹 · 4-eyes · Policy Pack STR/CTR) |
@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **9.52** | **2026-07-19** | **Hanpass Global Team** | **§3.3 AML-WLF-003 — 처리 이력 화면 거래번호(`transactionRef`) 그룹핑·컬럼·클라이언트 검색 필터 신설(코드=truth, PLAN 20260719-wlf-history-transaction-group, bo-web 전용·백엔드/엔진 API 계약 변경 없음).** ① **데이터 항목 표**에 거래번호(`transactionRef`) 행 추가 — 해외송금 송금인(CUSTOMER)·수취인(COUNTERPARTY) 2건 스크리닝의 그룹 키(API §3.2), 미보유 행은 "-" 표시. ② **BR-007 신설** — 거래번호 보유 이력은 §3.1 검토 필요 화면과 동형의 거래번호 그룹(송금인·수취인 역할 라벨)으로 노출(읽기 전용, BR-004 유지 — 상태 변경 동작 없음·판정자/승인자/처리일시 메타만 표기)하고, 미보유 행은 평면 표 폴백. 검색 필터(거래번호·대상 식별자·스크리닝ID)는 bo-api `GET .../screenings` 가 `q` 파라미터를 수용하지 않는 실측에 따라 **클라이언트 측 부분일치**로 구현. | 근거=bo-web `components/aml/{AmlWlfReview.tsx,AmlWlfTransactionGroups.tsx}`·`lib/aml-screening.ts`(`screeningMatchesQuery`·`groupScreeningsByTransaction` 재사용). API/DB 계약·엔진 룰 변경 없음. 코드=truth. PPT 재빌드는 후속. |
 | **9.51** | **2026-07-18** | **Hanpass Global Team** | **§12-B.3 AML-STAT-001 — 설정형 STR/CTR 룰 측정기준 2키 확장(`device.locale`·`customer.ageYears`, 코드=truth, PLAN 20260717-fds-legacy-rule-overhaul U-A1/U-A2 — FDS 룰 체계 전면 개편 동형, 사용자 지시로 F-005 해제, aml-svc 무-Flyway).** ① **`device` 블록에 `locale` 5번째 필드 추가**(§2.1a·§3.17, 02-aml-api.md 동반) — `NeutralDevice` record 5-컴포넌트(`deviceId,os,version,ip,locale`) 확장, 기존 4-인자 생성자는 하위호환 유지(`locale=null`, 잠금 테스트 `DeviceSignalsIngestParityIntegrationTest` 무수정). 설정형 STR/CTR 룰 조건 피처(`ConfigurableRuleDslPolicy.SCALAR_FEATURES`)에 `device.locale` 이 v9.50 의 4키(`device.deviceId`/`os`/`version`/`ip`)에 additive 로 5번째 등재. ② **`customer.ageYears` 설정형 피처 신설** — `originator.dateOfBirth`(ISO-8601)를 이벤트 시점(occurredAt) 기준 만 나이로 파생해 `SCALAR_FEATURES` 에 등록(FDS `customer.ageYears`, 01-fds-api.md 와 동형 파생 로직·DOB 원문 미영속·부재 시 미노출 fail-safe, 가정 A2). ③ **법정 CTR2·STR8 카탈로그 룰은 불변**(설정형 룰만 두 키를 조건 피처로 소비 가능). bo-web 측정기준 카탈로그(`lib/aml-configurable-rules.ts`) 등재는 기존 하드코딩 한국어 `displayLabel` 관례를 그대로 유지(i18n 미전환 — 가정 A11(b)). 화면·엔드포인트·4-eyes(`REPORT_RULE_PARAM`/`TM_SCENARIO`) 계약 무변경(신규 조건 피처 select 값만 추가). Flyway 없음(flat payload jsonb + 코드 whitelist, FDS 는 V28 신설). | 근거=aml-svc `domain/neutral/NeutralDevice`(locale 5-컴포넌트)·`domain/neutral/NeutralEventValidator`(locale ≤16자·제어문자 422)·`adapter/in/rest/NeutralTransactionEventController`·`application/usecase/NeutralTransactionEventService`(addDeviceSignals·ageYears 파생)·`application/port/in/EvaluateTmUseCase`(ageYears 전달)·`domain/tm/ConfigurableRuleDslPolicy`(SCALAR_FEATURES 2키 추가). bo-web `lib/aml-configurable-rules.ts`. 01-fds-api.md v4.15·01-fds-db.md v4.10·02-aml-api.md(2026-07-18 항목) 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **9.50** | **2026-07-17** | **Hanpass Global Team** | **§12-B.3 AML-STAT-001 — 설정형 STR/CTR 룰 device 측정항목 신규 노출(코드=truth, PLAN 20260717 U6~U7 — 사용자 지시로 F-005 해제, aml-svc 무-Flyway).** 중립 인입(`POST /aml/v1/transaction-events`) Envelope 에 `device{deviceId,os,version,ip}` 블록이 신설되면서, 설정형(custom) STR/CTR 룰 조건 빌더(§12-B.3 BR-003/BR-007, `aml_configurable_report_rules`)가 소비 가능한 조건 피처(`ConfigurableRuleDslPolicy.SCALAR_FEATURES`)에 `device.deviceId`/`device.os`/`device.version`/`device.ip` 4키가 추가됐다 — **법정 CTR2·STR8 카탈로그 룰은 불변**(소비 안 함). flat payload `device` 서브트리 및 재시도 경로(`FanoutRetryService`) 복원은 FDS externalSignals 결선과 동형 패턴. 화면·엔드포인트·4-eyes(`REPORT_RULE_PARAM`/`TM_SCENARIO`) 계약 무변경(신규 조건 피처 select 값만 추가, 프론트 코드 변경 없음, PLAN A10). FDS 대칭은 01-fds-sass-functional-spec.md §6.20/6.21 참조. | 근거=aml-svc `adapter/in/rest/NeutralTransactionEventController`(DeviceDto)·`domain/neutral/{NeutralTransactionEvent,NeutralDevice}`·`application/usecase/NeutralTransactionEventService`(addDeviceSignals)·`domain/tm/ConfigurableRuleDslPolicy`(SCALAR_FEATURES)·`application/usecase/fanout/FanoutRetryService`. API 02-aml-api.md §2.1a/§3.17 v(신규) 동기화. DB 스키마 무변경. 코드=truth. PPT 재빌드는 후속. |
 | **9.49** | **2026-07-15** | **Hanpass Global Team** | **§3.1 AML-WLF-001 상세 식별정보를 사유 게이트 없는 자동 열람으로 전환 + 수취인 신원 vault 프로젝션(코드=truth, fix/wlf-detail-auto-reveal — 사용자 결정: "WLF 상세에서 감춰놓지 말고 모두 노출").** ① **상세 패널 `식별정보(reveal 게이트)` 행 → `식별정보(자동 열람)`** — WLF 상세 모달의 회원 본인 식별정보·매칭 후보 원문은 `aml:pii:reveal` 권한 보유 시 **진입 시점 자동 reveal**(고정 사유 `WLF review detail auto-reveal`, 필드별 `RAW_DATA_ACCESS` 감사 동일 기록)로 원문을 바로 표시한다. BR-007 은 **권한·감사 축 유지 / 사유 입력 UX 축만 WLF 상세 한정 제거**(백엔드 reveal 계약·타 화면 게이트 불변). **미보유 필드·조회 실패는 "—" 강등**(구 fail-closed 에러 토스트 — "WLF 엔진 장애" 오탐 메시지로 승격되던 결함 해소; 값 없음 ≠ 장애). scope 미보유는 마스킹 토큰 유지. ② **수취인(COUNTERPARTY) 신원 vault 프로젝션(엔진)** — `POST /api/v1/aml/screen` 이 COUNTERPARTY 대상일 때 요청 신원(이름 토큰 결합·국가·생년)을 **스크리닝 `targetRef` 키로 vault 암호화 upsert** — 수취인 키는 호출자(시뮬레이터) 생성 안정키라 인입 경로 vault 키(hmac 토큰)와 달라 상세 reveal 이 영구 미해소이던 키 드리프트 해소. 기존(프로젝션 이전) 수취인 스크리닝은 신원 원문이 미보존이라 "—" 로 남고, 신규 스크리닝부터 표시. | 근거=bo-web `PiiRevealRow`(`AutoRevealValue`·`auto` prop)·`AmlWlfReview`·`AmlMatchCandidateList`·messages(ko/en `aml.pii.autoReveal*`), aml-svc `WlfScreeningService`(5a COUNTERPARTY vault 프로젝션)·`WlfScreeningServiceTest`. API 계약 불변(reveal·screen DTO 무변경). DB 스키마 불변. PPT 재빌드는 후속. |
@@ -737,6 +738,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | 판정자/승인자 | 상신 작업자(`makerId`) / 승인 작업자(`checkerId`). 자동낮춤·단독판정 시 승인자 `—` 표시 |
 | 일시 | 판정 실행(EXECUTED) 시각 (`executedAt`) |
 | 요약 카드 | 기간 내 확정·오탐·자동낮춤·면제 건수 + 평균 처리 SLA(일) |
+| 거래번호 | 해외송금 거래번호 (`transactionRef`) — 송금인(CUSTOMER)·수취인(COUNTERPARTY) 2건 스크리닝의 그룹 키(API §3.2). 미보유 행 "-" |
 
 #### 비즈니스 규칙
 
@@ -746,6 +748,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-004**: 본 화면은 **읽기 전용**. 상태 변경 동작 없음. 감사 상세 조회는 AML-AUD-001로 딥링크.
 - **BR-005**: 확정 판정 건은 자동 생성된 케이스(AML-CASE-002)로 딥링크 제공.
 - **BR-006**: 모든 처리 이력은 `aml_screening_results` + `aml_approvals`(결재 기록) 기반. append-only 감사(`aml_audit_events`)에 작업자·traceId 기록.
+- **BR-007**: 거래번호(`transactionRef`) 보유 이력은 §3.1 검토 필요 화면 동형의 **거래번호 그룹(송금인·수취인 역할 라벨)** 으로 노출하고, 미보유 행은 평면 표로 폴백한다. 검색 필터는 거래번호·대상 식별자·스크리닝ID **클라이언트 측 부분일치**(bo-api `GET .../screenings` 는 `q` 파라미터를 수용하지 않음 — 코드 실측)로 그룹·평면 행을 함께 좁힌다. 그룹 행도 읽기 전용(BR-004 유지 — 판정자/승인자/처리일시 메타만 표기, 상태 변경 동작 없음).
 
 ---
 
