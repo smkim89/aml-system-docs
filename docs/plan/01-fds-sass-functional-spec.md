@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **6.25** | **2026-07-19** | **SM Kim** | **§6.2 SFDS-RULE-002 룰 상세 활성화 상신 화면 동작 역전파(코드=truth, PLAN 20260719-fds-rule-detail-activation-simulation U6 — 엔진 계약 무변경·bo-web UX 결선 결함 수정).** 룰 상세의 `[활성화 상신]` 버튼 화면 동작만 명문화(계약 정본은 아래 무수정) — ⓐ 노출은 `SFDS_RULE:AUTHOR`, 활성 조건은 `상태 ∈ {작성(DRAFT), 중지(DISABLED)}`(그 외 상태는 버튼 비활성 + 안내 힌트). ⓑ **즉시(실시간) 평가 룰**(`즉시+비동기` 또는 **즉시 평가 전용**, evaluationMode `INLINE_AND_ASYNC`/**`INLINE_ONLY`**)은 시뮬레이션 근거 첨부 전 버튼이 비활성이며 `[시뮬레이션 실행 후 상신]` CTA 로 룰 시뮬레이션(SFDS-RULE-006)으로 이동 → 실행 후 결과 화면의 `[룰 상세로 첨부]` 복귀 딥링크(`?simulationId=`)를 룰 상세가 소비해 상신 요청에 동봉한다(첨부 필수 계약 자체는 `§6.5` BR-001·`§6.3` BR-011 정본, 본 항목은 화면 결선만). ⓒ 상신 성공 안내는 결재 대기(`PENDING_APPROVAL`) 상태를 명시하고 결재함 승인 후 운영중(`ACTIVE`)으로 전환됨을 안내(`§6.5` BR-002/BR-003 참조). ⓓ 활성화 실패 시 상태충돌(`FDS-STATE-CONFLICT`, 409)을 코드 나열이 아닌 컨텍스트 메시지(이미 운영중이거나 결재 대기 중이거나 즉시 평가 룰의 시뮬레이션 근거 누락 등 사유 설명)로 표기(`§6.5` BR-006 409 원인 화면 안내). ⓔ 평가 방식(evaluationMode) 라벨에 **즉시 평가 전용(`INLINE_ONLY`)** 을 병기(기존 즉시(실시간)/사후 2종 표기에 추가, 라벨만 — 폼 선택지·엔진 계약 무변경). 신규 BR 없음(§6.5 BR-001~004·§6.3 BR-011·§6.6 첨부 필수 문구는 무수정 교차참조). API·DB 계약 변경 없음(`01-fds-api.md`·`01-fds-db.md` 무변경 확인). | 근거=bo-web `components/fds/FdsRuleDetail.tsx`(활성화 버튼 상태 게이트·`?simulationId=` 딥링크 소비)·`hooks/useFdsRules.ts`(`useActivateRule`)·`components/fds/FdsRuleSimulation.tsx`(기존 `attachHref` 복귀 딥링크 재사용, 무변경). fds-svc `RuleAdminService.submitActivation`·bo-api `FdsRuleGroupService.activate` 무변경(계약 그대로 위임). 코드=truth. PPT 재빌드는 후속. |
 | **6.24** | **2026-07-19** | **SM Kim** | **§6.3 SFDS-RULE-003 룰 빌더 측정항목 드롭다운 base 그룹핑(코드=truth, PLAN 20260719-fds-rule-builder-window-dedupe U7 — 사용자 지시로 F-008·F-006 잠금 경로 append-only 해제, fds-svc·API·DB 무변경).** 측정항목 select 는 velocity 계열을 **base(집계×차원×distinct 대상×scope)당 1항목**으로 그룹핑 노출한다(기존은 시간창별 별개 행이 그대로 나열돼 동일 측정항목이 윈도우 수만큼 중복 노출됨). base 라벨은 프론트 i18n 정본 `enum.ruleFeatureBase.*`(ko/en 15종) — 미등재 base 는 대표 행 displayLabel 에서 윈도우 문구 제거 후 폴백, 그마저 실패 시 base 키 원문. 그룹 옵션 value = base 내 **최단 등재 윈도우 대표 키**(카탈로그 등재 완전 키). **시간창 가변 셀렉터는 무변경** — `1m/5m/10m/30m/1h/6h/24h/7d/30d/1y` 전 10종 그대로 노출·선택되며, 피처키 말미 윈도우 토큰 재조합으로 **카탈로그 미등재 조합 키도 저작·평가 정상**(BR-003 기존 계약 유지 — 완화·축소 아님). 비-velocity 측정항목은 렌더 무변화. | 근거=bo-web `lib/fds-rule-conditions.ts`(`groupCatalogFeatures`·`baseFeatureLabel`·`stripWindowPhrase`, 기존 `splitVelocityWindow`/`withVelocityWindow`/`VELOCITY_WINDOWS` 무수정 재사용)·`components/common/MetricConditionBuilder.tsx`(측정항목 select 그룹핑·`catalogKeyFor` 개정, 윈도우 select 무수정). 엔진(`RuleDslParser`·`FeatureComputeAdapter`)·API·DB 무변경. 코드=truth. PPT 재빌드는 후속. |
 | **6.23** | **2026-07-19** | **SM Kim** | **§6.3 SFDS-RULE-003 룰 빌더 시간창 1년(1y) 확장 + 기준값 예시 힌트(코드=truth, PLAN 20260719-fds-rule-window-1y-value-hints U1·U6·U7·U9 — 사용자 지시로 F-006 잠금 경로 additive 해제).** ① **시간창 10종화** — velocity 계열 측정항목의 시간창 닫힌 집합이 `1m/5m/10m/30m/1h/6h/24h/7d/30d` 9종에서 `1y`(1년=365일 고정, 윤년 미보정) 를 더해 **10종**으로 확장. 화면은 velocity 측정항목 선택 시에만 조건부 노출되는 **가변 드롭다운**(피처키 말미 윈도우 토큰 재조합)으로 제공하며, 비-velocity 측정항목·기존 파생 피처(예 `merchant.refundRatio.24h`)는 렌더 무변화. ② **기준값 예시 힌트** — 조건 행 기준값 입력란에 측정항목별 실제 입력 가능 값의 예시를 placeholder 로 표시(건수/금액합계/국적/채널 등, ko/en i18n 두 로케일 동시 — 표시 문자열은 bo-web 카탈로그 정본, DB 스키마 변경 없음). ③ BR-003 시간창 닫힌 집합 9→10종 갱신, 시간창 집계 항목 표에 `velocity.*.1y` 대표 키 병기. 신규 카탈로그 대표 키 6종은 DB V29(01-fds-db.md). | 근거=bo-web `lib/fds-rule-conditions.ts`(VELOCITY_WINDOWS·splitVelocityWindow·valueExampleKey)·`components/common/MetricConditionBuilder.tsx`(윈도우 셀렉터·placeholder), fds-svc `domain/rule/RuleDslParser`(ALLOWED_WINDOWS)·`domain/rule/RuleEvidenceWindowResolver`(parseWindow 'y')·`adapter/out/persistence/CanonicalEventJpaRepository`·`adapter/out/feature/FeatureComputeAdapter`·V29. API §5.8 v4.18·DB §5.20/§8 V29. 코드=truth. PPT 재빌드는 후속. |
 | **6.22** | **2026-07-18** | **SM Kim** | **§8.3 SFDS-DEC-003 행동 맥락 통화 표기 드리프트 정정(계약·화면 구성 무변경, PLAN 20260718-fds-verdict-response-currency U7).** 평소 vs 이번 카드·와이어프레임·BR-001의 `USD`/`$` 표기를 `amountBase`의 실제 정본(서버 파생 규제통화 = 기준통화, tenant_demo=PHP, API 01-fds-api.md §11.7.6)에 맞춰 "기준통화"·`PHP` 코드 병기로 정정 — 문서 표기 드리프트 정정만, 비교 로직·baseline 산식·화면 항목·API 계약 불변. | 근거=aegis-aml `services/bo-web/lib/fds-subject-activity.ts`(`formatBaseAmount`/`resolveBaseCurrency`, U4/U5 4cef7fdc~e6ec77ca)·`docs/aml-data.md` §11.7.6. |
@@ -1152,8 +1153,8 @@ path·query·body가 tenant/workspace target을 받는 BO FDS endpoint는 인증
 | 항목 | 내용 |
 |------|------|
 | **기능 ID** | SFDS-RULE-002 |
-| **권한** | `SFDS_RULE:READ` (변수 편집 상신은 `SFDS_RULE:OPERATE`) |
-| **API** | `GET /api/v1/admin/fds/rules/{ruleId}` · `GET /api/v1/admin/fds/rules/{ruleId}/versions` · **변수 편집**: `GET /api/v1/admin/fds/rules/{ruleId}/params` · `POST /api/v1/admin/fds/rules/{ruleId}:update-params` 🔒(`RULE_PARAM` 4-eyes, 202+approvalRequestId — API §4.6·§5.9b) · **아카이브(삭제, terminal, 신규)**: `POST /api/v1/admin/fds/rules/{ruleId}/archive`(`SFDS_RULE:OPERATE`, 즉시 실행 — 4-eyes 아님, PLAN 20260717 U-F5 가정 A8) |
+| **권한** | `SFDS_RULE:READ` (변수 편집 상신은 `SFDS_RULE:OPERATE`, **활성화 상신은 `SFDS_RULE:AUTHOR`**) |
+| **API** | `GET /api/v1/admin/fds/rules/{ruleId}` · `GET /api/v1/admin/fds/rules/{ruleId}/versions` · **변수 편집**: `GET /api/v1/admin/fds/rules/{ruleId}/params` · `POST /api/v1/admin/fds/rules/{ruleId}:update-params` 🔒(`RULE_PARAM` 4-eyes, 202+approvalRequestId — API §4.6·§5.9b) · **아카이브(삭제, terminal, 신규)**: `POST /api/v1/admin/fds/rules/{ruleId}/archive`(`SFDS_RULE:OPERATE`, 즉시 실행 — 4-eyes 아님, PLAN 20260717 U-F5 가정 A8) · **활성화 상신**: `POST /api/v1/admin/fds/rules/{ruleId}/activate` 🔒(4-eyes — 계약 정본은 `§6.5` SFDS-RULE-005, 본 화면은 딥링크·상태 게이트만) |
 
 #### 화면 레이아웃
 
@@ -1178,6 +1179,16 @@ path·query·body가 tenant/workspace target을 받는 BO FDS endpoint는 인증
 ```
 
 > **표시 원칙**: 운영자 화면에는 내부 변수·필드명(`groupBy`, `target`, `beneficiaryInstrumentRef`, `<<THRESHOLD_*>>` 등)을 노출하지 않고, "대상 / 조건 / 측정 / 기간 / 기준값 / 동작" 의 업무 용어와 자연어 문장으로만 표시한다. 원본 DSL(JSON)은 `현재버전 조건` 탭의 고급 보기 또는 룰 빌더의 DSL 토글에서만 확인한다.
+
+#### 활성화 상신 (4-eyes, 계약 정본은 `§6.5`·`§6.3` BR-011 — 본 절은 화면 동작만, PLAN 20260719-fds-rule-detail-activation-simulation U6)
+
+`[활성화 상신]` 버튼은 상단 상태 배지 옆에 노출되며, 룰의 평가 방식(evaluationMode)·상태에 따라 다음과 같이 동작한다. 활성화 상신·4-eyes 결재·즉시 평가 룰의 시뮬레이션 첨부 필수 계약 자체는 `§6.5` SFDS-RULE-005 BR-001~BR-004와 `§6.3` SFDS-RULE-003 BR-011에 이미 정의돼 있으며, 본 절은 이를 재정의하지 않고 **룰 상세 화면에서의 노출·게이트·딥링크 소비 동작만** 기술한다.
+
+- **노출·활성 조건**: `[활성화 상신]` 버튼은 `SFDS_RULE:AUTHOR` 권한 보유자에게 노출되며, 룰 상태가 `작성(DRAFT)` 또는 `중지(DISABLED)`일 때만 활성화된다. `운영중(ACTIVE)`·`결재대기(PENDING_APPROVAL)`·`아카이브(ARCHIVED)` 상태에서는 버튼이 비활성되고 "작성/중지 상태에서만 활성화 상신이 가능합니다" 힌트를 표시한다.
+- **즉시 평가 룰의 시뮬레이션 근거 게이트**: 평가 방식이 즉시(실시간)인 룰(`INLINE_AND_ASYNC` 즉시+비동기, **`INLINE_ONLY`** 즉시 평가 전용)은 시뮬레이션 결과 첨부 전에는 버튼이 비활성이며, 대신 "즉시 평가 룰은 시뮬레이션 결과를 첨부해야 상신할 수 있습니다" 안내와 `[시뮬레이션 실행 후 상신]` CTA를 표시한다. CTA는 룰 시뮬레이션(`§6.6` SFDS-RULE-006, `/fds/rules/simulations?ruleId={ruleId}`)으로 이동하며, 그 화면의 기존 `[룰 상세로 첨부]` 복귀 딥링크(`?simulationId={simulationId}`)로 룰 상세에 돌아오면 룰 상세가 이 쿼리 파라미터를 소비해 첨부된 시뮬레이션 요약(추정 적중률 등, `GET .../rules/simulations/{simulationId}`로 존재 확인)을 표시하고 버튼을 활성화한다. 사후(비동기, `ASYNC_ONLY`) 평가 룰은 시뮬레이션 첨부 없이 즉시 상신 가능(기존과 동일).
+- **상신 성공 안내**: 상신 즉시 룰은 활성화되지 않고 결재 대기(`PENDING_APPROVAL`) 상태로 전환됨을 안내하며, 결재함(`§12.1` SFDS-APPR-001)에서 다른 승인자가 승인해야 운영중(`ACTIVE`)으로 전환됨을 명시한다(`§6.5` BR-002·BR-003).
+- **409 컨텍스트 메시지**: 활성화 상신이 상태 충돌(`FDS-STATE-CONFLICT`, 409)로 거부되면 코드값을 그대로 노출하지 않고, "현재 상태에서는 활성화 상신이 불가합니다 — 이미 운영중이거나 결재 대기 상태이거나, 즉시 평가 룰은 시뮬레이션 근거가 필요합니다"와 같이 사유를 설명하는 컨텍스트 메시지(ko/en)로 표기한다.
+- **평가 방식 라벨**: 상단 요약의 평가 방식 라벨은 기존 즉시(실시간)/사후 2종에 **즉시 평가 전용(`INLINE_ONLY`)**을 추가 병기한다(라벨 표기만 — 폼 선택지·엔진 계약 무변경).
 
 #### 임계·변수 편집 (4-eyes `RULE_PARAM`)
 
@@ -1217,6 +1228,7 @@ ver │ status      │ author        │ approver      │ activatedAt        �
   | 기준값 빠른변경 | `SFDS_RULE:OPERATE` | status = ACTIVE |
   | 비활성화 / 재개 | `SFDS_RULE:OPERATE` | ACTIVE↔DISABLED |
   | **아카이브(삭제, terminal, 신규 — PLAN 20260717 U-F5/U-W3)** | `SFDS_RULE:OPERATE` | status ∈ {DRAFT, DISABLED} (ACTIVE는 버튼 비활성 + "먼저 중지 후 아카이브" 안내 — 2단계) |
+  | **활성화 상신(신규 — PLAN 20260719-fds-rule-detail-activation-simulation U6)** | `SFDS_RULE:AUTHOR` | status ∈ {DRAFT, DISABLED} **AND** (평가 방식이 사후(`ASYNC_ONLY`) **OR** 시뮬레이션 결과 첨부 완료) — 계약은 `§6.5` BR-001·`§6.3` BR-011 |
   | 롤백 | `SFDS_RULE:APPROVE` | SUPERSEDED 버전 존재 |
 - **BR-003**: 버전 히스토리는 작성자·승인자·결재 시각·changeNote 를 7년 보존 표시. 작성자=승인자 위반은 시스템상 불가하나 로그에서 검증 가능.
 - **BR-004**: 최근 Hit 탭은 결정 조회(SFDS-DEC-001)로 ruleNo 프리필터된 링크.
