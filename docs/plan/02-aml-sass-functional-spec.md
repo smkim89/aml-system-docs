@@ -5,8 +5,8 @@
 | 항목 | 내용 |
 |------|------|
 | **문서 ID** | FS-AML-SAAS-001 |
-| **버전** | 9.48 |
-| **작성일** | 2026-07-12 |
+| **버전** | 9.52 |
+| **작성일** | 2026-07-20 |
 | **작성자** | Hanpass Global Team |
 | **상태** | 초안 |
 | **정본(아키텍처)** | `.claude/skills/_shared/target-architecture.md` (4서비스 모노레포 · Java 25 헥사고날 · Next.js · 멀티테넌시 · PII 마스킹 · 4-eyes · Policy Pack STR/CTR) |
@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **9.52** | **2026-07-20** | **Hanpass Global Team** | **§1.0 IA — STR·CTR 룰 효과성 통계(AML-STAT-001)를 탐지·심사 정책 그룹으로 이동(사용자 지시, 코드=truth, feature/aml-detection-policy-stats-ra-menus).** ① **§1.0 IA 표 갱신** — 종전 운영/조사·모니터링 소속이던 `STR·탐지 효과성 통계`·`CTR·탐지 효과성 통계`(둘 다 AML-STAT-001)를 설정/탐지·심사 정책 그룹으로 이동(RA 모델 관리(AML-RA-002, "RA 스코어 조절")는 이미 해당 그룹 소속 — §1.0 표기를 실 배치와 재정합). 화면 ID·라우팅(`/aml/stats`·`/aml/stats/ctr`·`/aml/ra-models`)·API·권한 스코프·tipping-off 게이트 무변경(bo-web NAV 소속만 이동). ② **`docs/superpowers/specs/2026-06-18-menu-ia-operation-setting-design.md` §5 수용기준 갱신** — "통계는 운영에 위치" 원칙에 STR/CTR 룰 효과성 통계 예외(탐지·심사 정책 배치, 사용자 지시 근거)를 명문화. | 근거=aegis-aml bo-web `lib/nav.ts`(`aml-ops-monitor`에서 `stats`·`ctrStats` 제거, `aml-config-policy`로 재배치)·`lib/nav.test.ts`(섹션 소속 잠금 테스트). PLAN `docs/ai/plans/20260720-aml-detection-policy-stats-ra-menus.md`. API/DB 계약 무변경. 코드=truth. PPT 재빌드는 후속. |
 | **9.51** | **2026-07-20** | **Hanpass Global Team** | **§12-A.10 AML-MBR-001 회원관리·§12-B.7 AML-CDD-002 고객 CDD 프로필 원장 — CDD 1차 RA 인입 데이터 전면 가시화(코드=truth, feature/aml-cdd-visibility).** ① **공통 신원 요약 카드 신설** — RA-003·CDD-002·회원관리 3화면이 각자 구현하던 identity 블록(표시명·유형·국적/설립국·KYC 상태·등록일·온보딩일 + PERSON 분기 신원확인·문서 hash·생년·성별 + ENTITY 분기 설립국·대표자)을 공통 컴포넌트(bo-web `IdentitySummaryCard`)로 통합해 3화면에 동일 표기·동일 마스킹·동일 reveal 배선으로 노출한다(회원관리는 원장요약 아래·CDD 스냅샷 위 배치, 문서 미정의 지점 — 배치는 가정). ② **성별·생년 마스킹+reveal 신규 노출** — `person.genderMasked`(vault 존재 시 고정 토큰, `MaskedCell field="GENDER"` reveal)·`person.birthYearMasked`(CDD 인입 dob 로부터 파생한 출생연도, `YYYY-**-**`, 월·일·원문 미노출)를 3화면에 표시(구 구현 미배선 갭 해소, 원문 read model 비영속). ③ **거주국(원장) 노출** — top-level `country`(PERSON 분기에서 종전 드롭되던 필드) 를 CDD 스냅샷 `residenceCountry`(신고 거주국)와 라벨 구분해 병기. ④ **CddSnapshotPanel 노출 전환** — `declaredIncomeBand`(신고소득 구간, 20260709 미노출 결정을 20260720 사용자 승인으로 전환)·`kycVerifiedAt`(§4.3 실사 완료 시점, verbatim 표기) 행을 4개 소비 화면(케이스상세·RA상세·회원원장·고객프로필)에 additive 노출. 안전한 masked DOB projection 미보유 회원은 여전히 `-` 정직 렌더(합성 금지, 신규 인입 회원부터 값 확인). RA 스코어 산식·엔진 룰 무변경(read model 필드 파리티 확장). | 근거=aegis-aml bo-web `components/aml/{IdentitySummaryCard,CddSnapshotPanel,AmlRiskDetail,AmlCustomerProfile,AmlMemberLedger}`·`lib/aml-cdd.ts`·messages `aml-customer.json`(ko/en), bo-api `aml/profile/{dto/CustomerProfileDtos,service/AmlCustomerProfileService}`, aml-svc `application/usecase/{IdentityProjectionService,EvidenceTimelineService}`. API §3.9·엔진 RA 케이스 RA-C08(`docs/qa/engine-rule-cases.md`) 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **9.50** | **2026-07-20** | **Hanpass Global Team** | **§3.1 AML-WLF-001 BR-013 신설(워치리스트 원문 재sync 후 유지, 코드=truth, fix/wlf-hit-rawdata-approval-context — 로컬 스택 고아 스크리닝 84건 실측 근본원인 교정).** sanctions 일일 재sync(OFAC/UN) 가 entry_id 를 매 버전 재생성(delete-then-insert)하며 명단 탈락 subject 도 물리 삭제하던 구 동작을 폐기 — `(tenant, source_code, external_ref)` 기준 **entry_id 안정 승계** + 명단 탈락 subject `DELISTED` 보존(삭제 없음) + reveal vault upsert-only(삭제 없음) 로 교정, 과거 스크리닝의 `matchedEntries` id 가 재sync 이후에도 항상 해소되어 국적 일치(COUNTRY_MATCH) 히트를 포함한 워치리스트 원문 섹션이 PEP 히트와 동형으로 노출됨을 명문화(BR-013). 매칭 룰·reveal 게이트(BR-007)는 무변경 — 식별자 수명주기 계약만 다룬다. | 근거=aml-svc `SanctionsIngestTransaction`(entry-id carry-over·DELISTED reconcile·vault upsert-only). DB §2.2/§3.7/§3.21·integration §7.4 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **9.49** | **2026-07-15** | **Hanpass Global Team** | **§3.1 AML-WLF-001 상세 식별정보를 사유 게이트 없는 자동 열람으로 전환 + 수취인 신원 vault 프로젝션(코드=truth, fix/wlf-detail-auto-reveal — 사용자 결정: "WLF 상세에서 감춰놓지 말고 모두 노출").** ① **상세 패널 `식별정보(reveal 게이트)` 행 → `식별정보(자동 열람)`** — WLF 상세 모달의 회원 본인 식별정보·매칭 후보 원문은 `aml:pii:reveal` 권한 보유 시 **진입 시점 자동 reveal**(고정 사유 `WLF review detail auto-reveal`, 필드별 `RAW_DATA_ACCESS` 감사 동일 기록)로 원문을 바로 표시한다. BR-007 은 **권한·감사 축 유지 / 사유 입력 UX 축만 WLF 상세 한정 제거**(백엔드 reveal 계약·타 화면 게이트 불변). **미보유 필드·조회 실패는 "—" 강등**(구 fail-closed 에러 토스트 — "WLF 엔진 장애" 오탐 메시지로 승격되던 결함 해소; 값 없음 ≠ 장애). scope 미보유는 마스킹 토큰 유지. ② **수취인(COUNTERPARTY) 신원 vault 프로젝션(엔진)** — `POST /api/v1/aml/screen` 이 COUNTERPARTY 대상일 때 요청 신원(이름 토큰 결합·국가·생년)을 **스크리닝 `targetRef` 키로 vault 암호화 upsert** — 수취인 키는 호출자(시뮬레이터) 생성 안정키라 인입 경로 vault 키(hmac 토큰)와 달라 상세 reveal 이 영구 미해소이던 키 드리프트 해소. 기존(프로젝션 이전) 수취인 스크리닝은 신원 원문이 미보존이라 "—" 로 남고, 신규 스크리닝부터 표시. | 근거=bo-web `PiiRevealRow`(`AutoRevealValue`·`auto` prop)·`AmlWlfReview`·`AmlMatchCandidateList`·messages(ko/en `aml.pii.autoReveal*`), aml-svc `WlfScreeningService`(5a COUNTERPARTY vault 프로젝션)·`WlfScreeningServiceTest`. API 계약 불변(reveal·screen DTO 무변경). DB 스키마 불변. PPT 재빌드는 후속. |
@@ -122,12 +123,12 @@
 
 | 영역 | 기능그룹 | 메뉴(화면 ID) |
 |---|---|---|
-| **운영** | 조사·모니터링 | AML 종합 대시보드(AML-DASH-001) · WLF 검토(AML-WLF-001~003) · WLF 시뮬레이션(AML-WLF-004) · 거래 경보(TM)(AML-TM-001) · STR·탐지 효과성 통계(AML-STAT-001) · CTR·탐지 효과성 통계(AML-STAT-001) |
+| **운영** | 조사·모니터링 | AML 종합 대시보드(AML-DASH-001) · WLF 검토(AML-WLF-001~003) · WLF 시뮬레이션(AML-WLF-004) · 거래 경보(TM)(AML-TM-001) |
 | **운영** | 고객위험·심사 | RA 분포·고객위험(AML-RA-001/003) · 대상 360 조회(AML-SUBJ-001) · 고객 프로필(AML-CDD-002) · 고위험 등록부(AML-HRR-001) |
 | **운영** | 케이스·처리 | 케이스 관리(AML-CASE-001/002) |
 | **운영** | 거버넌스·보고 | 규제 보고 STR/CTR(AML-REP-001/002) · 기관 RBA 보고(AML-IRA-001) · 결재 대기함(AML-APR-001) |
 | **설정** | 연동·데이터 | 서비스 관리(AML-TNT-001/002/003) · Ingest 카탈로그(AML-ING-001) · 명단 소스·임포트(AML-WL-001/002) · 내부 명단·오탐 면제(AML-WL-003) · 소스 시스템 관리(AML-AUD-001 ③ 파생) |
-| **설정** | 탐지·심사 정책 | TM 시나리오 관리(AML-TM-002) · RA 모델 관리(AML-RA-002) · **WLF 엔진 조절(AML-WLF-005)** · CDD 체크리스트 정책(AML-CDD-001) · 국가위험 관리(AML-CTRY-001) |
+| **설정** | 탐지·심사 정책 | TM 시나리오 관리(AML-TM-002) · RA 모델 관리(AML-RA-002) · **STR·룰 효과성 통계(AML-STAT-001)** · **CTR·룰 효과성 통계(AML-STAT-001)** · **WLF 엔진 조절(AML-WLF-005)** · CDD 체크리스트 정책(AML-CDD-001) · 국가위험 관리(AML-CTRY-001) |
 | **설정** | 감사·증적·내부통제 | 내부통제 교육(AML-EDU-001) · 감사 로그·증적 Export(AML-AUD-001) |
 
 **혼재 메뉴 분리(운영 ↔ 설정):**
@@ -141,6 +142,7 @@
 > 상세·드릴다운 화면(예: AML-CDD-002, AML-RA-003)은 NAV 직접 항목이자 목록 행 드릴다운으로도 진입한다. 본문 §2~§12 섹션 번호는 유지되며, 메뉴 순서·소속 영역 정본은 본 표(§1.0)·인벤토리·짝 PPT(NAV)다.
 > **v9.4 메뉴 leaf 신규(코드 정합 — bo-web `lib/nav.ts`)**: `대상 360 조회`(AML-SUBJ-001, `/aml/subjects`, scope `aml:case:read`)는 customerRef·transactionRef·walletRef 검색 entry로, 입력 후 대상 360°/고객 CDD(AML-CDD-002)/RA 상세(AML-RA-003)로 이동하는 신규 화면이다(드릴다운 진입점인 대상 360° 통합 뷰와 구분되는 검색 entry). `WLF 시뮬레이션`(AML-WLF-004, `/aml/wlf/simulation`, scope WLF 검토와 동일)·`내부 명단·오탐 면제`(AML-WL-003, `/aml/watchlist/internal`)·`TM 시나리오 관리`(AML-TM-002, `/aml/tm/scenarios`)·`소스 시스템 관리`(AML-AUD-001 ③ 소스탭 진입점, `/aml/audit?tab=source-systems`)는 기존 화면을 메뉴 leaf로 노출한 것으로 화면 ID·콘텐츠는 불변이다.
 > **v9.44 WLF 운영/설정 분리**: `/aml/wlf`는 결과 검토·판정만 담당하고, `/aml/wlf-engine`(AML-WLF-005)은 SANCTIONS/PEP 프로필 설정·버전·시뮬레이션만 담당한다. AML-WLF-005는 원본 PPT에 없는 **Markdown-only 신규 NAV leaf**다.
+> **v9.52 STR·CTR 룰 효과성 통계·RA 스코어 조절 → 탐지·심사 정책 이동(사용자 지시)**: AML-STAT-001(STR·CTR 룰 효과성 통계)은 종전 운영/조사·모니터링에 있었으나, 사용자 지시에 따라 설정/탐지·심사 정책으로 이동한다(운영은 검토·조사·케이스·보고 실행 화면, 설정은 정책·모델·튜닝 화면이라는 §1.0 원칙과, STR/CTR 룰 효과성 통계가 결국 시나리오·임계룰 정책 튜닝 근거 지표라는 점을 정합 근거로 삼음). RA 모델 관리(AML-RA-002, "RA 스코어 조절")는 이미 탐지·심사 정책 소속으로, 본 이동은 §1.0 표기를 실 배치와 재정합한 것이다. 화면 ID·API·권한 스코프 무변경(NAV 소속만 이동). 근거=aegis-aml bo-web `lib/nav.ts`(`AML_ITEMS.stats`·`AML_ITEMS.ctrStats`·`AML_ITEMS.raModels`를 `aml-config-policy`로 재배치).
 
 ---
 
