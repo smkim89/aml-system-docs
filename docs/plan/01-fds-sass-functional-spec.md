@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **6.20** | **2026-07-20** | **SM Kim** | **SFDS-GRP-002 멤버 add/remove/extend 4-eyes 폐지·즉시 반영 역전파(코드=truth, fix/fds-risk-group-member-immediate-apply — 사용자 확정 방향).** §7.2 API 셀에서 🔒 제거·"즉시 반영(200, `GroupMemberMutationResponse`)" 명시, 동작에 결재 없이 즉시 mutation·`GROUP_UPDATE` 감사 서술 추가. BR-001을 중복=409 → **upsert(만료/식별자 종류 갱신) 무충돌**로 정정, BR-003(self-service 방지)을 폐지 표기, BR-006을 레거시 in-flight 결재 실행 한정으로 조정. §16.1 매핑표 SFDS-GRP-002 행 🔒 제거, §16.5 4-eyes 표 명단 멤버 add/remove 행을 폐지 취소선 표기로 갱신. 그룹 master(rename/비활성, SFDS-GRP-003)·merchant 정상화 4-eyes는 무변경. | 근거=FDS API §4.7/§5.10/§8(v4.14), fds-svc `RiskGroupAdminService`(addMember/removeMember)·`RiskGroupAdminController`·`GroupMemberMutationResponse`. `docs/qa/engine-rule-cases.md` FDS-C33 참조. |
 | **6.19** | **2026-07-13** | **SM Kim** | **P0-03 위험그룹 generation·create 계약 정합.** POST 필수 `groupId/groupType/displayName`, reason PUT-only, scoped duplicate `409 FDS-STATE-CONFLICT`를 고정했다. master/member/merchant-normalize 결재를 상신 generation에 결속해 delete/recreate stale approval이 새 그룹을 변경하지 않는다. FDS legacy pending은 취소하고, BO V19는 모든 기존 local GROUP payload를 원 JSONB/hash 보존 4필드 tombstone으로 감싸 비종결 4상태만 취소·terminal exact marker만 역사 read-only로 허용한다. | 근거=FDS API §5.10·§5.17a·§5.18·§5.20, DB V17·BO V19, software §11.5. |
 | **6.18** | **2026-07-13** | **SM Kim** | **P0-03 위험그룹 master 4-eyes 화면·결재 정합.** §7.3에서 POST 생성은 즉시 반영, PUT rename/비활성은 current projection+approval UUID/`APPROVAL_REQUIRED` 202 상신으로 분리했다. 승인 전·반려 시 master는 불변이고 다른 `RISK_MANAGER` checker가 rename 또는 멤버 0인 비활성을 적용한다. §16.5에 master update/deactivation=`GROUP`/`RISK_MANAGER` 행을 추가했다. | 근거=FDS API §4.7·§5.18/§5.19·§8, fds-svc `RiskGroupAdminService`·`ApprovalService`. |
 | **6.17** | **2026-07-13** | **SM Kim** | **P0-03 BO FDS RBAC·request target·exact 결재·감사 격리 정합(코드=truth).** `platformOperator`는 data-scope 전용이고 wildcard `*`만 인가 우회다. BO 사람 권한의 exact `SFDS_*` capability를 system/custom role·nav/action에 동일 적용하며 `SFDS_PLATFORM_OPS`는 approval/action/evidence 없는 횡단 read-only다. delegated `IN_REVIEW` 보수 checker, capability `[]` revoke-all·전체교체, 인증 maker·delegated hash 선비교, compliance-policy staged fallback을 확정했다. BO+FDS 감사는 audit trace 128, exact total, 10,000행 merge window, BO numeric tie ASC, typed detail과 history redaction을 사용한다. | 근거=aegis-aml P0-03 common-security/bo-api/fds-svc/aml-svc 구현·bo-api V18·FDS V16. API §4.9a·§11.2, IAM §1·§3·§5 동기화. |
@@ -1487,22 +1488,23 @@ sequenceDiagram
 |------|------|
 | **기능 ID** | SFDS-GRP-002 |
 | **권한** | `SFDS_GROUP:OPERATE` |
-| **API** | `POST /api/v1/admin/fds/risk-groups/{groupId}/members` 🔒 · `DELETE /api/v1/admin/fds/risk-groups/{groupId}/members/{memberRef}` 🔒 |
+| **API** | `POST /api/v1/admin/fds/risk-groups/{groupId}/members`(즉시 반영, 200 `GroupMemberMutationResponse`) · `DELETE /api/v1/admin/fds/risk-groups/{groupId}/members/{memberRef}`(즉시 반영, 200 `GroupMemberMutationResponse`) |
 
 #### 동작
 
 - **단건/일괄 추가**: 식별자 종류 + 식별자 + 사유 + 만료일. CSV 업로드로 대량 등록(검증 후 미리보기 → 확정).
 - **해제**: 사유 필수. 해제 이력 보존(7년).
 - **연장**: 만료일 갱신(사유 권장).
+- **추가·해제·연장은 결재 없이 즉시 반영**(20260720, 사용자 확정 방향) — 요청 즉시 `fds_risk_group_members`에 mutation되고 `GROUP_UPDATE` 감사(actor=요청자)가 남는다. `SFDS_GROUP:OPERATE` 권한·`fds:admin:group` scope 인가는 무변경.
 
 #### 비즈니스 규칙
 
-- **BR-001**: 동일 멤버 중복 등록 → `FDS-IDEMPOTENT-CONFLICT`(중복 멤버) (409). CSV 일괄 시 중복/형식오류 행은 스킵하고 결과 리포트 표시.
+- **BR-001**: 동일 멤버 재등록은 409 충돌이 아니라 **만료일/식별자 종류 갱신(upsert, 연장 기능이 이 경로에 의존)**으로 처리된다(코드 truth — API §5.10). CSV 일괄 시 형식오류 행은 스킵하고 결과 리포트 표시.
 - **BR-002**: 해제는 즉시 효과(인라인 차단 캐시 무효화). 허용 명단 누락으로 정상 거래가 차단된 회원은 허용 명단 즉시 추가로 구제.
-- **BR-003**: **self-service 방지** — 운영자 본인 또는 관련 계정의 그룹/차단 상태 직접 변경 불가(컴플라이언스 정책).
+- **BR-003**: (폐지 20260720) — 결재 생략에 따라 self-service 방지(maker≠checker) 가드는 이 경로에 적용되지 않는다. 추적은 `GROUP_UPDATE` 감사(actor)로 대체한다(사용자 확정 방향).
 - **BR-004**: 만료일 비우면 영구. 자동 등록 그룹의 기본 만료는 그룹 정의값(SFDS-GRP-003)을 따름.
 - **BR-005**: 식별자가 PII(계좌·이메일 등)인 경우 CSV 업로드 값도 정규화 단계 정책에 따라 토큰/해시로 저장(원문 미저장).
-- **BR-006**: ADD/REMOVE 결재는 상신 당시 그룹 generation에 결속된다. 그룹을 삭제한 뒤 같은 `groupId`로 재생성해도 과거 멤버 결재는 새 그룹에 실행되지 않고 `EXECUTION_FAILED`로 끝난다.
+- **BR-006**: **레거시 실행 경로 한정** — ADD/REMOVE generation 결속·`EXECUTION_FAILED` 가드는 배포 시점에 잔존한 레거시 in-flight 멤버 결재의 승인 실행에서만 발동한다(20260720 이후 신규 add/remove는 즉시 반영이라 결재 자체가 생성되지 않는다).
 
 ### 7.3 SFDS-GRP-003 · 그룹 등록 / 수정 (마스터 생성)
 
@@ -2336,7 +2338,7 @@ sequenceDiagram
 | 설정 › 탐지 정책 | SFDS-RULE-005 | 활성화·롤백·비활성 | `POST /api/v1/admin/fds/rules/{id}/activate` 🔒, `/rollback` 🔒, `/disable` | fds-svc | T-11 |
 | 설정 › 탐지 정책 | SFDS-RULE-006 | 룰 시뮬레이션(백테스트, 과거 데이터) | `POST /api/v1/admin/fds/rules/simulations`, `GET /api/v1/admin/fds/rules/simulations/{simulationId}` | fds-svc | T-11 |
 | 설정 › 탐지 정책 | SFDS-GRP-001 | 그룹 목록/멤버 | `GET /api/v1/admin/fds/risk-groups`, `/{id}/members` | fds-svc | T-10 |
-| 설정 › 탐지 정책 | SFDS-GRP-002 | 멤버 추가/해제 | `POST` 🔒 / `DELETE` 🔒 `/api/v1/admin/fds/risk-groups/{id}/members` | fds-svc | T-10 |
+| 설정 › 탐지 정책 | SFDS-GRP-002 | 멤버 추가/해제 (즉시 반영, 20260720) | `POST` / `DELETE` `/api/v1/admin/fds/risk-groups/{id}/members` | fds-svc | T-10 |
 | 설정 › 탐지 정책 | SFDS-GRP-003 | 그룹 등록/수정 | `POST/PUT /api/v1/admin/fds/risk-groups` | fds-svc | T-10 |
 | 설정 › 감사·증적 | SFDS-AUDIT-001 | 감사 로그 | `GET /api/v1/bo/fds/audit` (bo-api 소유) | bo-api | T-16·T-19 |
 | 설정 › 감사·증적 | SFDS-EXP-001 | evidence export | `POST /api/v1/evidence/fds/exports` 🔒(최종본), `/download` | fds-svc | T-19 |
@@ -2414,7 +2416,7 @@ bo-web nav의 exact capability는 코드 `lib/nav.ts`와 동일하게 고정한�
 | Capability 매트릭스 변경 (SFDS-ACT-002, capabilities-only) | `MAPPING` (`requiredBoCapability=SFDS_ACTION:APPROVE`) | `MAKER_CHECKER` |
 | 소스 시스템 일반 설정 변경 (capabilities와 혼합 금지) | `MAPPING` (`requiredBoCapability=SFDS_CONNECTOR:OPERATE`) | `MAKER_CHECKER` |
 | 위험그룹 master 수정/비활성 (SFDS-GRP-003, POST 생성은 즉시 처리; current generation base hash 결속) | `GROUP` | `RISK_MANAGER` |
-| 명단 멤버 추가/제거 (SFDS-GRP-002, current generation hash 결속) | `GROUP` | `RISK_MANAGER` |
+| ~~명단 멤버 추가/제거 (SFDS-GRP-002)~~ | `GROUP` | `RISK_MANAGER` — **(폐지 20260720 — 결재 없이 즉시 반영. generation hash 결속은 레거시 in-flight 결재 실행에만 잔존)** |
 | 자격증명 생성·회전 (SFDS-CONN-003) | `SECRET` | `SECURITY_ADMIN` |
 | evidence export 최종본 (SFDS-EXP-001) | `EXPORT` | `COMPLIANCE_MANAGER` |
 | high-risk merchant 정상화 (groupId 오름차순 generation snapshot 결속) | `MERCHANT_NORMALIZE` | `RISK_MANAGER` / `EXECUTIVE_APPROVAL` |
