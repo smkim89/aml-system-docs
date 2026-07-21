@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **9.54** | **2026-07-21** | **Hanpass Global Team** | **§9 규제 보고 — KoFIU→AMLC(GoTRACS) 실 브라우저 자동화 제출 전환 + AMLC 계정 설정 화면 신설(코드=truth, feature/aml-reports-amlc-migration).** ① **§9.1 BR-011 개정** — AMLC 포털 lodgement 이 `mode=mock`(데모 결정적 접수번호)·`mode=browser`(prod 기본, aml-svc `PlaywrightAmlcSubmissionAdapter` 가 테넌트별 저장 계정으로 브라우저 자동화를 통해 AMLC 포털에 **직접** 로그인·업로드)로 분기함을 명시 — 구 "ProviderSvc 위임" 전제 서술 폐기(§1.4-C). ② **§9.2 AML-REP-004 신설** — 신규 화면 `/aml/reports/amlc-account`(테넌트별 AMLC 포털 로그인 계정 관리, `aml:case:read`/`update`, **4-eyes 미적용** — RI 헤더 편집과 동급 즉시반영). 조회는 시크릿 완전 미노출(`configured`/`username`/`enabled`/`updatedAt`/`updatedBy`만), 비밀번호 입력란은 항상 입력전용. | 근거=aegis-aml aml-svc `adapter/in/rest/AmlcCredentialAdminController`·`application/usecase/AmlcCredentialAdminService`·`adapter/out/submission/PlaywrightAmlcSubmissionAdapter`, bo-api `aml/amlc/*`, bo-web `components/aml/AmlAmlcAccountSettings`·`app/(authorized)/aml/reports/amlc-account`. API §2.7·DB §3.12/§3.12b/§7 V57·V58·integration §3.4/§9.4 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **9.53** | **2026-07-20** | **Hanpass Global Team** | **§1.0 IA 표 — 설정/탐지·심사 정책 그룹 메뉴 나열 순서를 코드 정본(`lib/nav.ts` `aml-config-policy.items`)과 재정합(QA FAIL 수정, F1, 코드=truth).** v9.52 에서 그룹 소속 이동(운영/조사·모니터링 → 설정/탐지·심사 정책)은 반영했으나 그룹 내부 나열 순서가 `lib/nav.ts` 배열 순서([`cdd`, `countryRisk`, `wlfEngine`, `stats`, `ctrStats`, `raModels`])와 불일치하던 결함을 교정 — `CDD 체크리스트 정책(AML-CDD-001) · 국가위험 관리(AML-CTRY-001) · WLF 엔진 조절(AML-WLF-005) · STR·룰 효과성 통계(AML-STAT-001) · CTR·룰 효과성 통계(AML-STAT-001) · RA 모델 관리(AML-RA-002)` 순으로 재배열(`TM 시나리오 관리(AML-TM-002)`는 nav.ts 미대응 기존 표기라 선두 유지, 신규 창작 아님). 화면 ID·API·권한 스코프·라우팅 무변경(표기 순서만). | 근거=aegis-aml bo-web `lib/nav.ts`(`AML_ITEMS`: `AML_ITEMS.cdd`·`AML_ITEMS.countryRisk`·`AML_ITEMS.wlfEngine`·`AML_ITEMS.stats`·`AML_ITEMS.ctrStats`·`AML_ITEMS.raModels`가 `aml-config-policy.items` 배열 순서). FIX PLAN `docs/ai/plans/fix-20260720-detection-policy-ia-backprop-prettier-engine-gate.md` F1. 코드=truth. PPT 재빌드는 후속. |
 | **9.52** | **2026-07-20** | **Hanpass Global Team** | **§1.0 IA — STR·CTR 룰 효과성 통계(AML-STAT-001)를 탐지·심사 정책 그룹으로 이동(사용자 지시, 코드=truth, feature/aml-detection-policy-stats-ra-menus).** ① **§1.0 IA 표 갱신** — 종전 운영/조사·모니터링 소속이던 `STR·탐지 효과성 통계`·`CTR·탐지 효과성 통계`(둘 다 AML-STAT-001)를 설정/탐지·심사 정책 그룹으로 이동(RA 모델 관리(AML-RA-002, "RA 스코어 조절")는 이미 해당 그룹 소속 — §1.0 표기를 실 배치와 재정합). 화면 ID·라우팅(`/aml/stats`·`/aml/stats/ctr`·`/aml/ra-models`)·API·권한 스코프·tipping-off 게이트 무변경(bo-web NAV 소속만 이동). ② **`docs/superpowers/specs/2026-06-18-menu-ia-operation-setting-design.md` §5 수용기준 갱신** — "통계는 운영에 위치" 원칙에 STR/CTR 룰 효과성 통계 예외(탐지·심사 정책 배치, 사용자 지시 근거)를 명문화. | 근거=aegis-aml bo-web `lib/nav.ts`(`aml-ops-monitor`에서 `stats`·`ctrStats` 제거, `aml-config-policy`로 재배치)·`lib/nav.test.ts`(섹션 소속 잠금 테스트). PLAN `docs/ai/plans/20260720-aml-detection-policy-stats-ra-menus.md`. API/DB 계약 무변경. 코드=truth. PPT 재빌드는 후속. |
 | **9.51** | **2026-07-20** | **Hanpass Global Team** | **§12-A.10 AML-MBR-001 회원관리·§12-B.7 AML-CDD-002 고객 CDD 프로필 원장 — CDD 1차 RA 인입 데이터 전면 가시화(코드=truth, feature/aml-cdd-visibility).** ① **공통 신원 요약 카드 신설** — RA-003·CDD-002·회원관리 3화면이 각자 구현하던 identity 블록(표시명·유형·국적/설립국·KYC 상태·등록일·온보딩일 + PERSON 분기 신원확인·문서 hash·생년·성별 + ENTITY 분기 설립국·대표자)을 공통 컴포넌트(bo-web `IdentitySummaryCard`)로 통합해 3화면에 동일 표기·동일 마스킹·동일 reveal 배선으로 노출한다(회원관리는 원장요약 아래·CDD 스냅샷 위 배치, 문서 미정의 지점 — 배치는 가정). ② **성별·생년 마스킹+reveal 신규 노출** — `person.genderMasked`(vault 존재 시 고정 토큰, `MaskedCell field="GENDER"` reveal)·`person.birthYearMasked`(CDD 인입 dob 로부터 파생한 출생연도, `YYYY-**-**`, 월·일·원문 미노출)를 3화면에 표시(구 구현 미배선 갭 해소, 원문 read model 비영속). ③ **거주국(원장) 노출** — top-level `country`(PERSON 분기에서 종전 드롭되던 필드) 를 CDD 스냅샷 `residenceCountry`(신고 거주국)와 라벨 구분해 병기. ④ **CddSnapshotPanel 노출 전환** — `declaredIncomeBand`(신고소득 구간, 20260709 미노출 결정을 20260720 사용자 승인으로 전환)·`kycVerifiedAt`(§4.3 실사 완료 시점, verbatim 표기) 행을 4개 소비 화면(케이스상세·RA상세·회원원장·고객프로필)에 additive 노출. 안전한 masked DOB projection 미보유 회원은 여전히 `-` 정직 렌더(합성 금지, 신규 인입 회원부터 값 확인). RA 스코어 산식·엔진 룰 무변경(read model 필드 파리티 확장). | 근거=aegis-aml bo-web `components/aml/{IdentitySummaryCard,CddSnapshotPanel,AmlRiskDetail,AmlCustomerProfile,AmlMemberLedger}`·`lib/aml-cdd.ts`·messages `aml-customer.json`(ko/en), bo-api `aml/profile/{dto/CustomerProfileDtos,service/AmlCustomerProfileService}`, aml-svc `application/usecase/{IdentityProjectionService,EvidenceTimelineService}`. API §3.9·엔진 RA 케이스 RA-C08(`docs/qa/engine-rule-cases.md`) 동기화. 코드=truth. PPT 재빌드는 후속. |
@@ -1294,7 +1295,36 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-008**: **정보누설금지(tipping-off, 특정금융정보법 §4의2)** — 본 화면(STR 후보·보고)은 **준법감시 전담 role(COMPLIANCE scope)만 조회**하며, 화면 상단에 상시 경고 배너를 표시하고 열람을 감사 기록합니다. STR 진행 사실은 일반 상담/운영 화면에 노출 금지(설계서 §19.2a).
 - **BR-009 (CTR/STR 룰 카탈로그·자동 후보 생성, CTR/STR 모니터링 통합 — 코드=truth)**: STR/CTR 후보는 코드 소유 **보고 룰 카탈로그(`AmlReportRuleCatalog` 10종)**가 거래 평가로 자동 생성한다 — **CTR 2종**(`CTR_SINGLE` 단건 임계·`CTR_DAILY` 동일 영업일 합산 보완재) + **STR 8종**(`STR_PEP`·`STR_SANCTION`(유일 차단)·`STR_KYC_INCOME_MISMATCH`·`STR_STRUCTURED`·`STR_NO_PURPOSE`·`STR_THIRD_PARTY`·`STR_VELOCITY_CASH`·`STR_MANUAL`(컴플라이언스 수동 전용·기본 DRAFT)). 룰 활성화(DRAFT→ACTIVE)·CTR 통화 임계 변경은 관리 콘솔 4-eyes(`REPORT_RULE`/`CTR_THRESHOLD`, API §2.7 CTR/STR 룰·임계 관리), CTR 임계는 **hot-reload 우회 불가**(결재 EXECUTED 시 반영). 룰 개요는 STAT-001(§12-B.3)에서 룰군별 조회. **데이터 정직화(코드=truth v9.27, BR-DEMO-HONESTY)**: 데모 규제 보고 후보(CTR/STR DRAFT)는 **라이브 인입 산출물만** 존재한다 — hash 시드 보고(페이지당 8건 등)는 폐기되어 **미지의 보고 id 는 not-found**이며, 인입 전이면 목록이 비어 있다(정직 문구). 룰 카탈로그·CTR 임계 테이블·영업일 캘린더 등 참조/설정 정본만 시드로 유지한다.
 - **BR-010 (멱등 보고 DRAFT·사유코드 UPSERT, 코드=truth)**: CTR 후보는 **(테넌트,주체,영업일)당 CTR DRAFT 정확히 1건**(부분 UNIQUE `ux_aml_ctr_draft`), 동일 영업일 후속 현금거래는 새 DRAFT 대신 합산액(`report_amount`)에 1회 누적. STR 후보는 **(테넌트,트리거)당 STR DRAFT 정확히 1건**(부분 UNIQUE `ux_aml_str_draft`), 동일 트리거에서 여러 STR 룰 발화 시 제2 DRAFT 를 만들지 않고 각 사유코드(`StrReasonCode`: PEP/SANCTION/KYC_MISMATCH/STRUCTURED/NO_PURPOSE/THIRD_PARTY/UNUSUAL_PATTERN/MANUAL)를 `str_reason_codes` 집합에 fold(UPSERT). 보고 의무 우선순위 표기 = **TEMP_FREEZE > STR > CTR**(BR-403, API §11.1).
-- **BR-011 (보고 기한 = PH_AMLC 5영업일·PII sha256, 코드=truth)**: hanpass-ph 정본(`PH_AMLC` policy pack)에서 **CTR 기한 = 거래일 +5영업일 17:00 PHT**, **STR 기한 = 의심확정 +5영업일**(필리핀 영업일 캘린더 `BankingCalendar`, DB §3.22b, 공휴일·주말 제외). CTR 발동 시 서버가 freeze 된 PHP환산 합계·기한(`due_at`)을 고정(재계산 금지, BR-501). KR default pack(CTR+30일·STR+3영업일, BR-006)은 policy pack 옵션으로 보존(상호 배타). eAMLA(AMLC) 제출은 **raw PII 미전송** — 토큰화된 보고 참조 `amlc_submission_ref = AMLC-{sha256(tenant|reportId|reportType)[..12]}`(BR-601)만 전달하며 위임 이벤트를 감사(연동 §3.4). 본문 PII 는 hash/token 유지(원문 미저장).
+- **BR-011 (보고 기한 = PH_AMLC 5영업일·PII sha256, 코드=truth, feature/aml-reports-amlc-migration 로 §1.4-C 갱신)**: hanpass-ph 정본(`PH_AMLC` policy pack)에서 **CTR 기한 = 거래일 +5영업일 17:00 PHT**, **STR 기한 = 의심확정 +5영업일**(필리핀 영업일 캘린더 `BankingCalendar`, DB §3.22b, 공휴일·주말 제외). CTR 발동 시 서버가 freeze 된 PHP환산 합계·기한(`due_at`)을 고정(재계산 금지, BR-501). KR default pack(CTR+30일·STR+3영업일, BR-006)은 policy pack 옵션으로 보존(상호 배타). AMLC 포털 lodgement 은 **raw PII 미전송** — 토큰화된 보고 참조·PDF 아티팩트만 전달한다. `mode=mock`(비-prod/데모)은 결정적 `amlc_submission_ref = AMLC-{sha256(tenant|reportId|reportType)[..12]}`(BR-601)를 산출하고, **`mode=browser`(prod 기본, §9.2)는 aml-svc 가 테넌트별 저장 계정으로 브라우저 자동화를 통해 AMLC 포털에 직접 로그인·업로드해 실 접수번호를 받는다** — 구 "위임 이벤트를 감사(연동 §3.4)" 서술(ProviderSvc 위임 전제)은 폐기, 실제로는 aml-svc 가 직접 lodge 한다. 본문 PII 는 hash/token 유지(원문 미저장).
+
+### 9.2 AML-REP-004 · AMLC 계정 설정 (테넌트별 포털 로그인 계정, feature/aml-reports-amlc-migration)
+
+| 항목 | 내용 |
+|------|------|
+| **기능 ID** | AML-REP-004 |
+| **태스크** | feature/aml-reports-amlc-migration §1.4-A·B |
+| **권한** | 조회 `aml:case:read` / 저장 `aml:case:update`(4-eyes 미적용 — 결정 C, RI 헤더 편집과 동급 즉시반영) |
+| **API** | BO `GET/PUT /api/v1/bo/aml/amlc-credential`(엔진 위임 프록시, API §2.7) |
+| **진입** | 별도 NAV 없음 — 규제 보고(AML-REP-001, `/aml/reports`) 화면의 진입 링크에서 `/aml/reports/amlc-account`로 이동(로그인 운영자의 앰비언트 서비스 대상 — 플랫폼 운영자의 타서비스 횡단 관리 화면 `/aml/tenants/{tenantId}`가 아님, §1.6-B) |
+
+#### 화면 구성
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ AMLC 계정 설정                                                            │
+│ [설정됨 ●] 계정: amlc-user-***  마지막 저장: 2026-07-21 (updatedBy)       │
+├──────────────────────────────────────────────────────────────────────────┤
+│ 아이디  [_______________]                                                 │
+│ 비밀번호[_______________] (입력전용 — 저장된 값은 절대 표시하지 않음)     │
+│                                                       [저장]              │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 비즈니스 규칙
+
+- **BR-001**: 계정(username+password)은 **서비스(테넌트)당 1쌍**만 관리한다(회사 전체 단일 계정 아님, §1.4-A). 저장은 upsert이며 4-eyes 결재 없이 즉시 반영된다.
+- **BR-002**: 조회 응답은 **시크릿을 어떤 형태로도 노출하지 않는다**(마스킹조차 아님 — 필드 자체 부재) — 화면은 `configured`/`username`/`enabled`/`updatedAt`/`updatedBy`만 표시하고, 비밀번호 입력란은 항상 빈 값(입력전용, placeholder만)으로 렌더링한다.
+- **BR-003**: 저장된 계정은 STR/CTR 보고 제출(§9.1 BR-011) 시 `PlaywrightAmlcSubmissionAdapter`(브라우저 자동화)가 AMLC 포털 로그인에 사용한다. 계정 미설정(`configured=false`) 상태에서 제출을 시도하면 로그인 실패로 lodge 가 거부된다(제출 자체의 4-eyes·재시도 흐름은 §9.1 BR-005 불변).
 
 ---
 
