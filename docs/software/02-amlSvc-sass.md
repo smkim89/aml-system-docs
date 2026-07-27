@@ -640,7 +640,7 @@ WLF score는 설명 가능해야 한다.
 
 | Component | 예시 |
 |---|---|
-| Name similarity | exact, token set, edit distance, transliteration |
+| Name similarity | exact, compact(구분자 무관), token alignment(퍼지 Jaccard), token containment(토큰 결손), token set, edit distance, phonetic(double-metaphone) — 7종 `max` 블렌드(매처 `wlf-name-v3`) |
 | Date match | birth date/year/month partial |
 | Country match | nationality, residence, incorporation country |
 | Document match | hashed document reference |
