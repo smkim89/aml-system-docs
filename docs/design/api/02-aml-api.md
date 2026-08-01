@@ -308,7 +308,7 @@ filter가 설정한 local-bootstrap `Boolean.TRUE` marker 외에는 403으로 �
 | POST | `/api/v1/bo/aml/alerts/{alertId}:dismiss` | `aml:case:update` | — | **알림 오탐 종결 위임**(`DETECTED`/`TRIAGED`→`DISMISSED`). body `AlertDismissRequest{reason 필수(@NotBlank), actor?}` — **`reason` 공백 시 400**(bo-api 계층에서 사유 필수 강제, G1)으로 오탐율(§12-B.3) 실 분모·감사 근거 확보. 위임 시 optional `{reason, actor}` 를 엔진 `:dismiss` 로 전달. 응답 `AlertActionResponse`. 감사 `AML_ALERT_DISMISSED`(사유 동반) | `aml_alerts` |
 | POST | `/api/v1/bo/aml/alerts/{alertId}:escalate` | `aml:case:update` | — | **알림 상위 승인 위임**(`TRIAGED`→`ESCALATED`, 케이스 개설). body optional `AlertHandOffRequest{caseType?, actor?}`. 응답 `201 AlertActionResponse`(`caseId`/`caseStatus` 포함). aml-svc `:escalate` 위임(stub 은 케이스 미조작·라이브 알림 전이만). 감사 `AML_ALERT_ESCALATED` | `aml_alerts`,`aml_cases` |
 | POST | `/api/v1/bo/aml/alerts/{alertId}:recommend-str` | `aml:case:update` | — | **알림 STR 권고 위임**(`TRIAGED`→`STR_RECOMMENDED`, STR 케이스 개설 + 엔진 아웃박스 적재). body optional `AlertHandOffRequest{caseType?, actor?}`. 응답 `201 AlertActionResponse`(`caseId`/`caseStatus`). aml-svc `:recommend-str` 위임. 감사 `AML_ALERT_STR_RECOMMENDED` | `aml_alerts`,`aml_cases` |
-| GET | `/api/v1/bo/aml/tm-scenarios/{scenarioCode}` | `aml:admin:policy` | — | **TM 시나리오 정의 read model**(AML-TM-002). bo-api BFF가 엔진 active `parameters`/`dsl` 또는 non-prod stub template을 `ScenarioDefinition{family, severity, fields[]}`로 디코드해 반환한다(DTO §3.4c). HIGH_RISK_CORRIDOR는 방향·고위험 국가·회랑 윈도우·건수/금액 임계 필드를 노출하고, SIGNAL 계열은 시그널 토글 필드를 노출한다. NUMBER/AMOUNT 임계 필드는 위험등급별 차등 임계(`CriterionField.thresholdsByGrade`, §3.4c)를 동반 노출한다. raw PII 없음, 설정 조회 전용. | 정책 store(read model) |
+| GET | `/api/v1/bo/aml/tm-scenarios/{scenarioCode}` | `aml:admin:policy` | — | **TM 시나리오 정의 read model**(AML-TM-002, **V61 이후 자유형 코드 — generic decode**). `scenarioCode` 는 형식만 검증(`^[A-Z][A-Z0-9_]{2,64}$`, 레거시 닫힌 enum 파싱 폐기). bo-api BFF가 엔진 active `parameters`/`dsl`을 **per-code 템플릿 없이(`ScenarioTemplates` 삭제)** `ScenarioDefinition{family, severity, fields[]}`로 generic 디코드해 반환한다(DTO §3.4c) — `family` 는 dsl 트리에 `velocity` 노드 존재 여부로 `THRESHOLD`/`SIGNAL` 파생, `fields[]` 는 `parameters` 값 타입(Number/Boolean/List/String)으로 파생(per-code switch 없음). NUMBER/AMOUNT 임계 필드는 위험등급별 차등 임계(`CriterionField.thresholdsByGrade`, §3.4c)를 동반 노출한다. **정의 부재(engine/stub 공통) = 404**(레거시 정의 10종 제거로 신선 배포·미저작 코드는 항상 404가 정상). raw PII 없음, 설정 조회 전용. | 정책 store(read model) |
 
 > bo-api 소유 집계(read-only 파생, raw PII 미노출). STR 건수 등 tipping-off 민감 항목은 준법감시 전담 scope 한정 투영(설계서 §19.2a). 엔진 `GET /aml/customers/{customerRef}/profile`(CDD-002)·`/risk`를 결합하며 별도 영속 테이블 없음.
 
@@ -449,9 +449,9 @@ filter가 설정한 local-bootstrap `Boolean.TRUE` marker 외에는 403으로 �
 #### TM scenario (§12)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
-| GET | `/api/v1/admin/aml/tm-scenarios` | `aml:admin:policy` | — | scenario 목록 | (정책 store) |
+| GET | `/api/v1/admin/aml/tm-scenarios?scenarioCode=`(**V61 — optional, additive·하위호환**) | `aml:admin:policy` | — | `scenarioCode` 지정 시 해당 코드의 버전 목록, **미지정 시 테넌트 전체 정의 list-all**(bo-api 목록 위임원, §2.5a). 레거시 정의 10종 제거 후 신선 배포의 정상 응답은 빈 배열 | (정책 store) |
 | POST | `/api/v1/admin/aml/tm-scenarios/{scenarioCode}/simulate` | `aml:admin:policy` | — | scenario simulation(응답 DTO §3.15 `SimulationResponse`) | — |
-| POST | `/api/v1/admin/aml/tm-scenarios/{scenarioCode}:activate` | `aml:admin:policy` | 🔒4-eyes | scenario 변경 적용 | `aml_approvals` |
+| POST | `/api/v1/admin/aml/tm-scenarios/{scenarioCode}:activate` | `aml:admin:policy` | 🔒4-eyes | scenario 변경 적용. `scenarioCode` 는 자유형(형식 `^[A-Z][A-Z0-9_]{2,64}$`, 예약 코드 `CUSTOM_RULE` draft 단계 거부) | `aml_approvals` |
 
 #### 사용자 정의 STR/CTR TM 룰 (v9.44)
 
@@ -813,7 +813,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `geo` | object | — | 접속/IP 위치 `{ country, latitude, longitude }`. 위도/경도는 보조 참고값이며 필수 아님(record optional 필드) |
 | `riskSignals` | object | — | FDS와 동일한 거래 보조 신호 `{ memberAgeDays, accountChangedWithinHours, deviceChangedWithinHours, manyToOnePattern, oneToManyPattern, electionPeriod, regionalRegistrationSpikeCount, bulkCashAmountBase }`(record optional 필드) |
 
-> **TM feature 신호(요청 바디 외).** `HIGH_RISK_CORRIDOR`·`RAPID_MOVEMENT`·`REFUND_LAUNDERING`·`ROUND_TRIPPING` 등 금액 시나리오는 `transaction.phpEquivalent`(PHP 환산액)와 `transaction.channelType`을 feature로 사용한다. `phpEquivalent`는 거래 정규화 payload(`payload->>'phpEquivalent'`)에서 노출되며(`TmEvaluationService.buildSnapshot`), 부재 시 미노출 fail-safe(발화 안 함). corridor(`{sendCountry, receiveCountry, sendCurrency, receiveCurrency}`)·`amountBase`(USD 정규화, remit `usd_amount/report_amount`)도 payload 파생이며 evaluate 요청 바디에는 포함하지 않는다. **데이터 신호이며 규제(CTR/STR) 임계 교체가 아니다**(§3.4a evidence). |
+> **TM feature 신호(요청 바디 외, 과거 사실 — V61 이후 정의 소멸).** 레거시 시나리오(`HIGH_RISK_CORRIDOR`·`RAPID_MOVEMENT`·`REFUND_LAUNDERING`·`ROUND_TRIPPING` 등)는 `transaction.phpEquivalent`(PHP 환산액)와 `transaction.channelType`을 feature로 사용했으나, 이 정의 10종은 **2026-08-01(V61)로 전량 제거**됐다(거래 인입 경로에서 전혀 발동하지 않는 것이 v9.21 확정 사실, F-025 실측). `phpEquivalent`/corridor/`amountBase` 등 payload 파생 필드 자체는 evaluate 요청 바디 외 여전히 존재하나(CTR/STR 룰 카탈로그·기타 evidence 소비), 레거시 시나리오 feature 소비처는 소멸했다. **데이터 신호이며 규제(CTR/STR) 임계 교체가 아니다**(§3.4a evidence). |
 
 > **송금 수취인 정보(v9.26 — 인입 payload `HanpassPhTransactionPayload`, 연동 §4.2).** 송금 거래의 수취인 STR_PEP·STR_SANCTION 동시 명단 평가(§3.4a `watchlistMatch.matchedParty=RECEIVER`, 기능정의서 §7.1 BR-013)를 위해 인입 payload 에 **`receiverName`**(nullable, 비-PII 운영값 — 매칭 transient·미영속)·**`receiverCountry`**(nullable, ISO 수취 국가=국적, **해외송금만**)가 additive 가산된다. 수취인 정보 규격은 **국내송금=이름만 / 해외송금=이름+국가**(성별·생년월일 미제공). 수취인 참조(`receiverRef`)는 서버가 `sha256(name|country)` 로 파생(payload 의 기존 `receiverRef` 우선). 엔진 evaluate 요청 바디(위 8필드)에는 수취인 이름/국가 원문을 싣지 않으며 COUNTERPARTY 스크리닝 계보로만 평가한다. |
 
@@ -821,24 +821,9 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 
 응답 `TransactionEvaluateResponse`: `{ evaluated: true, alerts: [ { alertId, alertType(enum TM_SCENARIO/SCREENING/RA/FDS_ESCALATION/VENDOR_ALERT — 본 API가 정본, DB §5.18 `alert_type` 1:1), ruleCode(§5.6 — CTR/STR 룰 코드, v9.21), severity(LOW/MEDIUM/HIGH/CRITICAL), status(§5.7), evidence } ] }`. TM 알림은 발동 CTR/STR 룰마다 하나씩 반환된다(레거시 시나리오 발동 폐기).
 
-#### TM 시나리오 카탈로그 (`TmScenario` enum 10종 — code truth, hanpass-ph 데모 phpEquivalent)
+#### TM 시나리오 카탈로그 — **V61(2026-08-01) 로 레거시 10종 정의 제거, 자유형 저작으로 전환**
 
-`scenarioCode`는 `TmScenario` enum 10종(DB §5.6 `tm_scenario`)이며, 발화 여부는 tenant별 `aml_tm_scenarios`의 ACTIVE 버전(임계·윈도우·DSL)에 따른다. hanpass-ph 데모(`tenant_demo`) ACTIVE 시나리오의 금액 임계는 **phpEquivalent(PHP 환산)** 기준으로 적재된다(Flyway V28, 환산식 = 기존 USD 임계 ×56). 목록·매칭 정합: ACTIVE 시나리오만 발화하며 DRAFT(`REFUND_LAUNDERING`은 데모 ACTIVE, `TRADE_MISPRICING`은 DRAFT 유지)는 발화하지 않는다.
-
-| scenarioCode | 데모 상태 | feature·임계(phpEquivalent) | 비고 |
-|---|---|---|---|
-| `STRUCTURING` | ACTIVE | count 기반 분할(velocity count) — 금액 무관 | 분할 충전/송금 |
-| `RAPID_MOVEMENT` | ACTIVE | velocity count 2h ≥ 3 **AND** phpEquivalent ≥ 56,000 (PHP) | 단기 급증 |
-| `HIGH_RISK_CORRIDOR` | ACTIVE(v3) | phpEquivalent ≥ 280,000 (PHP) **AND** channelType=`CROSS_BORDER_REMIT` | 고위험 corridor |
-| `REFUND_LAUNDERING` | ACTIVE | velocity count 7d ≥ 6 **AND** phpEquivalent ≥ 28,000 (PHP) | 환불·역송 |
-| `ROUND_TRIPPING` | ACTIVE | velocity count 14d ≥ 4 **AND** phpEquivalent ≥ 112,000 (PHP) | 순환 거래 |
-| `MULE_NETWORK` | (시드) | count/네트워크 기반 — 금액 무관 | 머니뮬 네트워크 |
-| `SHELL_MERCHANT` | DRAFT | — | enum 보존(hanpass-ph 데모 미활성) |
-| `TRADE_MISPRICING` | DRAFT | — | enum 보존(hanpass-ph 데모 미활성) |
-| `CRYPTO_OFF_RAMP` | (미활성) | — | enum 보존(hanpass-ph 외부 ingest 미사용) |
-| `INTERNAL_OVERRIDE_ABUSE` | (미활성) | 내부 override 남용 | 운영 통제 |
-
-> count/네트워크/채널 cmp 노드는 금액과 무관하므로 PHP 환산 대상이 아니다(V28는 ACTIVE amount leaf만 phpEquivalent로 전환). `phpEquivalent`가 적재되지 않은 거래는 금액 노드가 미발화(fail-safe)된다.
+`scenarioCode`는 더 이상 닫힌 enum이 아니다(과거 `TmScenario` enum 10종·hanpass-ph 데모 phpEquivalent ACTIVE 6종 카탈로그는 **삭제됨** — v9.21 확정 사실대로 거래 인입 경로에서 전혀 발동하지 않았기 때문, F-025 실측). 형식은 `^[A-Z][A-Z0-9_]{2,64}$`(DB §5.6) 이며 예약 코드 `CUSTOM_RULE`은 거부된다. 신선 배포 후 `aml_tm_scenarios` 정의 목록은 **0행이 정상**이고, REST 저작(`draft`/`simulate`/`:activate`, §2.7)으로 자유형 코드를 등록할 수 있으나 **신규 저작 시나리오도 거래 인입 경로에서 자동 발동하지 않는다**(신규 발동 정본은 CTR/STR 룰 카탈로그뿐 — §3.4a evidence·v9.21). 옛 10종 코드값 표·phpEquivalent 임계표는 과거 시드 이력이며 본 절에서 제거한다.
 
 ### 3.4a AlertDto → `GET /api/v1/aml/alerts/{alertId}` (DB `aml_alerts` §3.10 10컬럼+감사, `AlertController.AlertDto`)
 
@@ -932,7 +917,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 
 ### 3.4c TM 시나리오 정의 — velocity DSL 노드 문법 · ScenarioDefinition/CriterionField (TM-002)
 
-> **TM 시나리오 정의 계약(코드=truth).** 엔진은 `aml_tm_scenarios.dsl`(JSONB)을 `TmCondition` 트리로 컴파일하고(`aml-svc TmScenarioDslParser`/`TmCondition`), bo-api BFF(`GET /api/v1/bo/aml/tm-scenarios/{scenarioCode}`, §2.5a)는 active `parameters`/`dsl`(또는 non-prod stub 템플릿)을 `ScenarioDefinition{family, severity, fields[]}`로 디코드한다(`bo-api ScenarioDslCodec`/`ScenarioTemplates`). raw PII 없음(설정값만).
+> **TM 시나리오 정의 계약(코드=truth, **V61 이후 자유형 generic decode**).** 엔진은 `aml_tm_scenarios.dsl`(JSONB)을 `TmCondition` 트리로 컴파일하고(`aml-svc TmScenarioDslParser`/`TmCondition`), bo-api BFF(`GET /api/v1/bo/aml/tm-scenarios/{scenarioCode}`, §2.5a)는 active `parameters`/`dsl`을 `ScenarioDefinition{family, severity, fields[]}`로 **generic 디코드**한다(`bo-api ScenarioDslCodec` — per-code 템플릿 `ScenarioTemplates` 는 2026-08-01 삭제됨, 목록이 비는 것이 정상이라 카탈로그 기본값 개념 자체가 소멸). raw PII 없음(설정값만).
 
 **velocity DSL 노드 문법(closed grammar, `aml_tm_scenarios.dsl`)** — 노드 type은 `and`/`or`/`not`/`cmp`/`velocity`/`always` 6종만 허용(미지 type·미지 연산자·깊이>16·자식>64는 parse 거부). `velocity` 노드는 윈도우·차원 집계(`velocity.<count|sum>.<dimension>.<window>` feature)에 대한 임계 비교다:
 
@@ -949,6 +934,8 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 - **평가 규칙**: 평가 시 거래 주체 고객의 위험등급으로 effective threshold를 선택한다(`Velocity.effectiveThreshold`). 고위험일수록 강화(보통 낮은 임계)되어 더 일찍 발동한다. 고객 미조회/등급 미상(`customer.riskGrade` 스냅샷 부재)이면 base `value`를 적용한다. 평가는 순수·결정적(스냅샷+트리 동일 ⇒ 결과 동일).
 
 **`ScenarioDefinition`**(bo-api `GET /bo/aml/tm-scenarios/{scenarioCode}` 응답): `{ scenarioCode, displayName, version, status, severity(§5.19), family(ScenarioFamily — THRESHOLD/SIGNAL 계열), fields[] }`. `fields[]` 원소 `CriterionField`(아래 표).
+
+> **`scenarioCode`/`displayName` 계약(V61 이후, 코드=truth).** `scenarioCode` 는 자유형 String(형식 `^[A-Z][A-Z0-9_]{2,64}$`, 예약 코드 `CUSTOM_RULE` 거부 — DB §5.6). **`displayName` 필드는 유지되며 값은 항상 코드 원문**(레거시 10종 한글 라벨 카탈로그 폐기 — 자유형 코드는 카탈로그 라벨을 가질 수 없다). `family` 는 active `dsl` 트리에 `velocity` 노드가 있으면 `THRESHOLD`, 없으면 `SIGNAL`(`ScenarioDslCodec.familyOf`, per-code 템플릿 제거). `fields[]` 는 `parameters` 맵을 **generic 파생**한다(per-code switch 없음) — 값 타입이 `Boolean`→`TOGGLE`, `Number`→`NUMBER`, `List`→`COUNTRY_MULTI`, 그 외→`SELECT`, `key`=`label`(생성 라벨 없음), `severity`/등급 오버라이드 인픽스 키는 제외.
 
 `CriterionField`(가이드 폼 필드 — FE↔BE 1:1 계약 키 `key` = `ScenarioDslCodec` 평탄 parameters 키):
 
@@ -2521,6 +2508,7 @@ eAMLA 제출은 **raw PII 미전송** — 토큰화된 보고 참조만 전달�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-08-01 | **레거시 TM 시나리오 정의 10종 제거 + 자유형 코드 전환 API 역전파(코드=truth, refactor/remove-legacy-tm-scenarios).** v9.21 확정 사실(TM 알림 발동 정본=CTR/STR 룰 카탈로그, F-025 실측)에 따라 정의 10종을 제거한 코드 변경(DB §7 V61)을 API 계약에 정합화. (1) **§2.5a `GET /bo/aml/tm-scenarios/{scenarioCode}`** — generic decode(per-code 템플릿 `ScenarioTemplates` 삭제)·정의 부재=404 로 서술 갱신. (2) **§2.7 `GET /admin/aml/tm-scenarios`** — `scenarioCode` 파라미터 **optional 화(additive)**, 미지정 시 테넌트 전체 list-all(신설 `TmScenarioStorePort.findAll`, `findAllActive`는 원래 죽은 메서드라 제거). `:activate` 행에 자유형 코드 형식·예약어(`CUSTOM_RULE`) 거부 명시. (3) **§3.4c `ScenarioDefinition`/`CriterionField`** — `scenarioCode` 자유형·`displayName`=코드 원문(레거시 라벨 카탈로그 폐기, 필드 자체는 계약 유지)·`family`=dsl `velocity` 노드 존재 파생·`fields[]`=`parameters` 값 타입(Boolean/Number/List/그 외) generic 파생 명시. (4) **§3.4a TM feature 신호·TM 시나리오 카탈로그(구 816·824~840행)** — 레거시 10종 표·phpEquivalent 임계표를 "V61 로 제거된 과거 사실"로 교체, 신규 자유형 저작도 자동 발동하지 않음을 재확인. **`ck_aml_alerts_scenario_code`(§3.10)·CTR/STR 룰 카탈로그·`AlertDto` 계약은 무변경.** | 코드 truth=aml-svc `adapter/in/rest/TmScenarioAdminController`·`application/port/out/TmScenarioStorePort`(findAll 신설)·`application/usecase/TmScenarioService`, bo-api `aml/tm/service/AmlTmService`(listScenarios·getDefinition)·`aml/tm/scenario/ScenarioDslCodec`(generic decode/compile/familyOf). DB §3.10a/§5.6/§7 V61 동기화. |
 | 2026-07-18 | **단일 호출 응답 판정 동봉(코드=truth, PLAN 20260718-sync-verdict-in-response U4/U6/U9 — 사용자 지시로 F-003 해제).** ① **§2.1/§3.1 CDD 응답 additive 확장** — `POST /api/v1/aml/events` 의 `IngestEventResponse` 에 `mandatoryHighRisk`(boolean\|null)·`mandatoryHighRiskReasons`(string[]\|null)·`wlfHit`(boolean\|null) 3필드 추가(1차 RA 요약, ACCEPTED=방금 산출 스코어·REPLAYED=`scoreId` 조회 동일 스코어에서 파생, HELD/미산정 시 null). 기존 11필드 이름·순서·타입 불변. ② **§2.1a 중립 인입 evaluation 확장·REPLAYED 재구성** — `NeutralIngestResponse.evaluation` 에 `firedAlerts[]`(alertId/ruleCode/severity)·`ctrApplicable`(현금성 게이트, CTR 보고서 확정 자체는 범위 밖)·`strCandidate`(`AmlReportRuleCatalog` 정본 판별) 3필드 additive. **REPLAYED 규칙 반전** — 직전 "REPLAYED/DUPLICATE 는 evaluation=null" 을 "REPLAYED 는 저장 알럿/스크리닝에서 read-only 재구성한 동일 요약 동봉(재평가·side-effect 0), DUPLICATE/REJECTED 는 기존대로 null" 로 재개정. ③ **§3.2 WLF 동기 계약 확인(무변경)** — `POST /api/v1/aml/screen` 이미 동기 단일 응답임을 확인·명문화(WLF-C07, 계약 접촉 없음). 거절 없음 원칙 전 구간 불변 — 판정 동봉은 표시이지 인입 거부가 아니다. 엔드포인트 경로·상태코드·기존 필드 재작성 없음(additive 필드만). | 코드 truth=aml-svc `application/port/in/IngestAmlEventUseCase`(`RiskSummary`)·`application/usecase/AmlEventIngestService`·`adapter/in/rest/AmlEventController`(`IngestEventResponse`), `application/port/in/IngestNeutralTransactionEventUseCase`(`EvaluationSummary.FiredAlert`)·`application/usecase/NeutralTransactionEventService`(REPLAYED 재구성)·`adapter/in/rest/NeutralTransactionEventController`(`EvaluationSummaryDto`/`FiredAlertDto`). 01-fds-api.md v4.17 동반. |
 | 2026-07-18 | **AML 설정형 룰 피처 2키 확장·device.locale 결선(코드=truth, PLAN 20260717-fds-legacy-rule-overhaul U-A1/U-A2·U-X1 — FDS 룰 체계 전면 개편 동형, 사용자 지시로 F-005 해제).** (1) **`device` 블록에 `locale` 5번째 필드 추가**(§2.1a·§3.17) — `NeutralDevice` record 5-컴포넌트(`deviceId,os,version,ip,locale`) 확장, 기존 4-인자 생성자는 하위호환 유지(`locale=null`, 잠금 테스트 `DeviceSignalsIngestParityIntegrationTest` 무수정). 설정형 룰 피처 `device.locale` 신규 노출(SCALAR_FEATURES 5키). (2) **`customer.ageYears` 설정형 피처 신설** — `originator.dateOfBirth`→이벤트 시점 만 나이 파생(가정 A2, FDS 동형), DOB 원문 미영속·부재 시 미노출(fail-safe). (3) 두 키 모두 `ConfigurableRuleDslPolicy.SCALAR_FEATURES` additive 등록 — **법정 CTR2·STR8 카탈로그 룰은 불변**(설정형 룰만 조건 피처로 소비 가능). bo-web 카탈로그 등재는 하드코딩 한국어 `displayLabel` 방식(`lib/aml-configurable-rules.ts`, i18n 미전환 — PLAN 가정 A11(b)). Flyway 없음(flat payload jsonb + 코드 whitelist). | 코드 truth=aml-svc `domain/neutral/NeutralDevice`(locale 5-컴포넌트)·`domain/neutral/NeutralEventValidator`(locale ≤16자·제어문자 검증)·`adapter/in/rest/NeutralTransactionEventController`·`application/usecase/NeutralTransactionEventService`(addDeviceSignals·ageYears 파생)·`application/port/in/EvaluateTmUseCase`(ageYears 전달)·`domain/tm/ConfigurableRuleDslPolicy`(SCALAR_FEATURES 2키 추가). bo-web `lib/aml-configurable-rules.ts`. 01-fds-api.md v4.15·01-fds-db.md 동반 |
 | 2026-07-17 | **AML 중립 인입 device 공통 블록 확장(코드=truth, PLAN 20260717 U6~U7 — 사용자 지시로 F-005 해제).** (1) **§2.1a Envelope 스키마 표에 `device` 행 신설** — `device{deviceId,os,version,ip}`(전부 optional·string ≤64자·제어문자 금지, 422), flat payload `device` 서브트리(비-null 만) + 설정형 CTR/STR 룰 피처 `device.deviceId`/`device.os`/`device.version`/`device.ip`(`ConfigurableRuleDslPolicy.SCALAR_FEATURES`, 법정 CTR2·STR8 카탈로그 룰 불변) 노출. FDS 인입(01-fds-api.md §5.1 device 공통 블록)과 동형. (2) **§3.17 Device 블록 스키마 표 신설** — 필드 4종 상세, `addDeviceSignals`(externalSignals 결선과 동형 패턴)·재시도 경로(`FanoutRetryService`) 복원 동반. 엔드포인트·scope·기존 응답 계약 무변경(신규 필드 additive). 스키마 무변경(flat payload jsonb+코드 whitelist, Flyway 없음). | 코드 truth=aml-svc `adapter/in/rest/NeutralTransactionEventController`(DeviceDto)·`domain/neutral/{NeutralTransactionEvent,NeutralEventValidator,NeutralDevice}`·`application/usecase/NeutralTransactionEventService`(addDeviceSignals)·`application/port/in/EvaluateTmUseCase`(Device 블록)·`domain/tm/ConfigurableRuleDslPolicy`(SCALAR_FEATURES 4키)·`application/usecase/fanout/FanoutRetryService`(device 서브트리 복원). 01-fds-api.md v4.14·01-fds-db.md v4.9 동반 |
