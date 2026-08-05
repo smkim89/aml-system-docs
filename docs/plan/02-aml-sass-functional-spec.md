@@ -1545,8 +1545,8 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | **권한** | 변경·메모 `aml:case:update` / 종결·관계거절 `aml:case:update`🔒 |
 | **API** | `GET .../cdd/cases/{id}` · `PATCH` · `POST .../cdd/cases/{id}/timeline` · `:close`🔒(EDD_CLOSE) · `:reject-relationship`🔒(RELATIONSHIP_REJECT) · BO `POST /api/v1/bo/aml/reports/str-drafts` body `{caseId}` · `GET /api/v1/bo/aml/reports?reportType=STR&amlCaseRef={caseId}` |
 
-- **구성**: 탭 `타임라인`/`CDD/EDD 체크`/`관계·UBO`/`증빙`. ① 개요(타입·대상·상태·우선·담당·발단), ② SLA/종결(기한·경과·EDD 트리거), ③ 처리 타임라인(생성·배정·메모·증빙, append-only·수정 불가), ④ 조치 액션.
-- **BR-001**: 메모·증빙·상태/담당/우선 변경은 결재 불필요(timeline append). 종결 = 4-eyes(`EDD_CLOSE`). 종결 상신 성공 즉시 `PENDING_APPROVAL`, checker 승인 시 terminal 전이, reject 시 직전 조사상태 복원. maker는 인증 principal이 정본이며 body maker 위조·self-approval을 차단한다. 관계거절·온보딩 보류 = 4-eyes(`RELATIONSHIP_REJECT`).
+- **구성**: 탭 `타임라인`/`CDD/EDD 체크`/`관계·UBO`/`증빙`. ① 개요(타입·대상·상태·우선·담당·발단), ② SLA/종결(기한·경과·EDD 트리거), ③ 처리 타임라인(생성·배정·메모·증빙 + **4-eyes 처분 증적** — 종결 상신/승인/반려·관계거절 상신/승인, append-only·수정 불가), ④ 조치 액션.
+- **BR-001**: 메모·증빙·상태/담당/우선 변경은 결재 불필요(timeline append). 종결 = 4-eyes(`EDD_CLOSE`). 종결 상신 성공 즉시 `PENDING_APPROVAL`, checker 승인 시 terminal 전이, reject 시 직전 조사상태 복원. **상신·승인·반려 각 시점에 케이스 타임라인에 append-only 처분 증적을 남긴다**(`CLOSE_SUBMITTED`/`CLOSE_APPROVED`/`CLOSE_REJECTED`, actor=maker/checker·note=사유 원문 — 종결 배너가 안내하는 '처분 결과와 사유는 개요·타임라인에서 확인' 계약의 실체. 관계거절도 동형 `RELATIONSHIP_REJECT_SUBMITTED`/`RELATIONSHIP_REJECT_APPROVED`). maker는 인증 principal이 정본이며 body maker 위조·self-approval을 차단한다. 관계거절·온보딩 보류 = 4-eyes(`RELATIONSHIP_REJECT`).
 - **BR-002**: STR 필요 시 `[STR 보고서 작성]`이 case-linked STR DRAFT를 엔진에서 멱등 생성/연결하고 해당 report 상세로 이동한다. `(tenant,originAlertId)`당 case 하나, `(tenant,reportType,caseId)`당 STR/CTR 하나. `REPORTED` 종결은 `STR_REVIEW→STR`, `CTR_REVIEW→CTR`의 연결 보고가 `SUBMITTED`/`ACKNOWLEDGED`일 때만 상신·checker 실행 가능하다. 모든 timeline·전이·결재 traceId 1:1 추적. 전이 위반 `AML.INVALID_STATE_TRANSITION`.
 - **BR-003 (v7.0 보강)**: ① 타임라인 탭 개요(대상 식별자)에 `[고객 프로필 ▶ → AML-CDD-002]` 아웃바운드 트리거 — 대상 고객의 CDD 프로필 원장(read-only) 드릴다운(§12-B.7).
 

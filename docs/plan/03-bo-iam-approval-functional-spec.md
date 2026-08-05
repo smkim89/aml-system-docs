@@ -103,6 +103,8 @@
 `MAKER_CHECKER · AML_OFFICER · COMPLIANCE_MANAGER · RISK_MANAGER · REPORTING_OFFICER · SECURITY_ADMIN · EXECUTIVE_APPROVAL`(+ 표시 비활성 의미 `SELF_APPROVAL_DISABLED`는 라인이 아니라 **불변 정책 플래그**로 분리). 각 라인 ↔ 승인 권한 역할(scope) 매핑 테이블로 정의.
 
 > 구현 완료(V22 `bo_approval_lines` 7종): 코드(`ApprovalLine` enum)와 정합 — 이격 없음. `required_scope` 컬럼이 라인→승인 권한 scope 매핑(예 COMPLIANCE_MANAGER→`aml:admin:approval`).
+>
+> **표시 라벨 정본(i18n)**: `bo_approval_lines.label` 은 한국어 단일 값이므로 **BO 화면 표시 라벨의 정본이 아니다** — 결재함(FDS·AML 공용 `ApprovalLineBadge`)은 `line_code` 를 프론트 메시지 카탈로그(`amlCust.enum.approvalLine.<CODE>`, ko/en)로 매핑해 표기하고, 카탈로그 미등록 코드에 한해 서버 `label` → 코드 순으로 폴백한다. 서버 `label` 은 운영자 정의 화면(BO-APRL-001)의 관리 값으로 유지한다.
 
 ### 4.2 결재선 정의 (subject_type별 라우팅 — 부록 C 구현)
 - 현행: 모든 결재가 `MAKER_CHECKER` 하드코딩 → **subject_type별 라인 라우팅**을 데이터로 정의(부록 C 정본 구현):

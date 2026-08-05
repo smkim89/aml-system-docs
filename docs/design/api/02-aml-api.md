@@ -966,7 +966,7 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `originAlertId` | string(uuid) | — | **발단 alert**(알림→케이스 전환, DB `origin_alert_id`). GET 상세(`CaseDetail`)가 실값 응답 — 위임(엔진) 경로 유실 결함(run3 D5·D8) 해소 |
 | `originScreeningId` | string | — | **발단 screening/RA 스코어 id**(RA→EDD 착수, DB §3.11 `origin_screening_id` **VARCHAR(96)·V15**, FK 아님·문자열 참조 토큰). GET 상세가 실값 응답 — 이 필드 부재로 `null` 하드코딩되던 케이스 상세 '발단' 유실(run3 D8) 해소 |
 | `originFdsCaseRef` | string | — | FDS 위임 발단 cross-ref(DB `origin_fds_case_ref`, `source_origin=FDS` 시 채움. fds-svc 역추적용, nullable) |
-| `timeline` | array<object> | — | 처리 이력(evidence) |
+| `timeline` | array<object> | — | 처리 이력(evidence). append-only, 항목 = `{kind, note, evidenceRefs[], actor, occurredAt}`. `kind` 는 조사 증적(`CREATED`/`NOTE`/`MEMO`/`EVIDENCE`/`STATUS_CHANGE`/`INVESTIGATION_NOTE`)과 **4-eyes 처분 증적**(`CLOSE_SUBMITTED`/`CLOSE_APPROVED`/`CLOSE_REJECTED`/`RELATIONSHIP_REJECT_SUBMITTED`/`RELATIONSHIP_REJECT_APPROVED`)을 함께 담는다 — 처분 증적은 엔진(`CddEddService`·`CaseManagementService`)이 상신·승인·반려 시점에 기록하며 `actor` 는 maker/checker, `note` 는 운영자가 입력한 사유 원문(없으면 생략)이다. 표시 라벨은 BO 프론트가 `kind` 코드를 메시지 카탈로그로 매핑한다(서버는 표시 문구를 생성하지 않는다) |
 | `dueAt` / `closedAt` | string(date-time) | — | SLA·종결 |
 
 `CreateCaseRequest`(수동 케이스 생성, `POST .../cdd/cases`): `{ caseType, targetRef?, priority?, assignedTo?, dueAt?, originAlertId?, originScreeningId?, eddTrigger? }` — `originAlertId`(알림→케이스 전환)·`originScreeningId`(RA→EDD 착수)·`eddTrigger` 는 발단 계보로 **생성→재조회에서 실값 영속**(run3 D5·D8, 전부 optional).
