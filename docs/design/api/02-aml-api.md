@@ -869,6 +869,8 @@ CDD/RA 온보딩 파이프라인 집계 read model. 출처 `aml_customers`(`kyc_
 | `aggregationSummary` | object\|null | **목록(브라우즈) 응답 한정 triage 프리뷰 집계.** TM 알림 **목록**(`GET /api/v1/bo/aml/alerts`, §2.5a → bo-api `AlertSummary`) 응답에서만 채워지는 가산 필드. `evidence`(트리거·집계 패턴)에서 목록 시점 파생(N+1 없음·행별 evidence 조립 회피)하며, **raw PII 미포함(집계 수치·라벨만)**. 단건 상세(`AlertDto`)는 `evidence` 전문을 제공하므로 본 요약은 생략 가능(null). 원소 `AggregationSummary`(아래 표) |
 | `subjectIdentity` | object\|null | **명단 룰(STR_PEP·STR_SANCTION) 단건 상세 한정 가산 필드(v9.24, bo-api read-time projection — 엔진 API 무변경).** 원거래 대상 회원의 식별정보 비교 메타 — WLF 매치 상세와 **공용 `SubjectIdentity` 타입**(§3.2, `{ targetRef, fields[] }`, `fields ⊆ [NAME, NATIONALITY, GENDER, DOB]`). **raw PII 미포함** — reveal 가능 필드 키만. 원문은 `POST /api/v1/bo/aml/pii/reveal`(`aml:pii:reveal`+사유+`RAW_DATA_ACCESS` 감사, §2.6) 재사용으로만 노출(신규 엔드포인트 없음). 비-명단 룰·구 알림·identity 부재 시 `null` |
 
+> **KYC 소득 band proxy 계보(2026-08-07, `STR_KYC_INCOME_MISMATCH` 전용).** 이 룰의 발동 알림은 기존 built-in `trigger.condition` 스냅샷과 함께 `trigger.incomeProxy = { band, amount, source, basis, currency, period, approximate }`를 싣는다. 정본 값은 `source="KYC_DECLARED_INCOME_BAND"`·`basis="UPPER_BOUND"`·`currency="PHP"`·`period="MONTHLY"`·`approximate=true`이며, `amount`는 발동 판정에 실제 사용한 band 유한 상한이다. 평가 진입에서 1회 resolve 한 동일 값을 judge·효과 임계·evidence가 공유하며 evidence 조립 시 고객 원장을 재조회하지 않는다. 정확한 신고소득이 아닌 근사치임을 감사에서 복원하는 additive 필드이며, 구 알림·비해당 룰은 키 부재가 정상이다.
+>
 > raw PII 미노출. `targetRef`/`transactionRef`는 업무 식별자로 노출하고, 이름·계좌·지갑 등 원문 PII 는 reveal/hash 정책을 따른다. 감사 컬럼(`created_by`/`updated_by`/`trace_id`/`data_scope`)은 응답에서 생략.
 
 `AggregationSummary`(`aggregationSummary` 객체 — TM 알림 목록 triage 프리뷰 집계). **전 필드 nullable(집계 파생·best-effort).** **설정형(configurable) 룰 알림 폴백 파생(코드=truth, verify-V2 N-2)**: 설정형 룰은 윈도우 집계가 없는 단건 술어 룰이라 evidence 에 `aggregation`·`relatedTransactions[]` 가 없고 STR 지표를 `trigger.strReasonCode` 에, 평가 피처를 `features` 에 싣는다. bo-api 는 `strIndicator ← trigger.strIndicator ?? trigger.strReasonCode`, `dominantChannel ← features["transaction.channelType"]`, `currency ← features["transaction.currency"]` 로 폴백 파생한다. **집계 수치는 만들지 않는다** — `windowLabel`·`measure`·`threshold`·`thresholdMet`·`relatedCount`·`relatedAmount` 는 null 유지(임계 없는 룰의 거래금액을 `measure` 로 실으면 null 임계와 짝지어 오해를 만든다). `evidence`의 트리거(`strIndicator`)·집계 패턴(`measure`/`window`/`threshold`/`count`/`amount`/`currency`)·`relatedTransactions[]` 에서 목록 시점 파생하며, raw PII는 일절 포함하지 않는다(집계 수치·라벨만):
@@ -2529,14 +2531,14 @@ CTR/STR 모니터링 통합(feature/aml-ctr-str-monitoring, 2026-07-01)이 aml-s
 | `CTR_DAILY` | CTR | CTR | ASYNC_ONLY | — | CTR_REPORT | ACTIVE | 동일 영업일 현금거래 합산이 CTR 임계 이상(다건 보완재) |
 | `STR_PEP` | STR | STR | ASYNC_ONLY | PEP | STR_FLAG | ACTIVE | PEP 관련 거래 — STR 검토 플래그 |
 | `STR_SANCTION` | STR | STR | INLINE_AND_ASYNC | SANCTION | RESTRICT,STR_FLAG | ACTIVE | 제재 매칭 — **유일 차단(RESTRICT)** |
-| `STR_KYC_INCOME_MISMATCH` | STR | STR | ASYNC_ONLY | KYC_MISMATCH | STR_FLAG,EDD_TRIGGER | **DRAFT** | 숫자 신고소득 신호 공급 경로 부재(`declaredIncome` 항상 null)로 자동 평가 도달 불가 — 공급 경로 구현 시 재활성 검토 |
+| `STR_KYC_INCOME_MISMATCH` | STR | STR | ASYNC_ONLY | KYC_MISMATCH | STR_FLAG,EDD_TRIGGER | **ACTIVE** | `declaredIncomeBand` 유한 상한을 PHP 월 소득 proxy로 공급; 상한 없는 band·부재·미상은 fail-safe skip |
 | `STR_STRUCTURED` | STR | STR | ASYNC_ONLY | STRUCTURED | STR_FLAG | ACTIVE | CTR 임계 90~99% 3영업일 연속(스머핑) |
 | `STR_NO_PURPOSE` | STR | STR | ASYNC_ONLY | NO_PURPOSE | STR_FLAG | ACTIVE | 목적부재+행동이상 다중(메타룰) |
 | `STR_THIRD_PARTY` | STR | STR | ASYNC_ONLY | THIRD_PARTY | STR_FLAG | ACTIVE | 송금 명의≠회원 명의 |
 | `STR_VELOCITY_CASH` | STR | STR | ASYNC_ONLY | UNUSUAL_PATTERN | STR_FLAG | ACTIVE | 단기간 현금거래 빈도 이상(기본 건수 5) |
 | `STR_MANUAL` | STR | STR | ASYNC_ONLY | MANUAL | STR_FLAG | **DRAFT** | 컴플라이언스 수동 STR(임계 미충족도) — 파이프라인 활성화 거부(§2.7) |
 
-구체 CTR 통화 임계값은 카탈로그가 아니라 per-tenant `aml_ctr_thresholds`(§3.22a, `CtrThresholdPort`). `STR_KYC_INCOME_MISMATCH`와 `STR_MANUAL`은 DRAFT이며 자동 평가·활성화 파이프라인에서 제외된다. 전자는 production 숫자 신고소득 공급 경로가 구현되면 재활성화를 검토하고, 후자는 컴플라이언스 수동 전용이다. `AmlReportRuleCatalog.activeRules()`는 8종.
+구체 CTR 통화 임계값은 카탈로그가 아니라 per-tenant `aml_ctr_thresholds`(§3.22a, `CtrThresholdPort`). `STR_KYC_INCOME_MISMATCH`는 고객 원장 `kycProfile.declaredIncomeBand`의 유한 상한을 `declaredIncome`으로 공급하는 production 경로 구현 후 ACTIVE로 복귀했다. 공유 정책의 변환은 `UNDER_1M_PHP=1,000,000`·`PHP_1M_TO_5M=5,000,000`·`PHP_5M_TO_10M=10,000,000` PHP/MONTHLY며, `OVER_10M_PHP`는 유한 상한이 없어 평가를 skip한다. 부재·미상도 null → false를 유지하고 임의 기본값을 넣지 않는다. 상한은 소득을 크게 잡아 임계를 높이는 보수적(오탐 적음) proxy이며, 거래 `amountPhpEq` 단건과 직접 비교해 별도 통화·기간 변환을 하지 않는다. `STR_MANUAL`만 DRAFT·수동 전용으로 자동 평가·활성화 파이프라인에서 제외된다. `AmlReportRuleCatalog.activeRules()`는 9종.
 
 `STR_VELOCITY_CASH`의 rolling cash window는 평가 거래를 정확히 1회 포함한다. 중립 canonical 저장의 바깥 transaction과 STR `REQUIRES_NEW` 평가가 분리되어 현재 행이 아직 보이지 않으면 `EvaluateStrCommand`의 triggerRef/channelType/동결 PHP 금액으로 현재 cash 행을 합성한다. 이미 조회된 동일 triggerRef가 있으면 합성하지 않아 전용 STR·재평가 경로의 이중 집계를 막는다. 따라서 effective `count_threshold=N`은 N번째 현금성 거래에서 즉시 발동한다.
 
