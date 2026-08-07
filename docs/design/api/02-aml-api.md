@@ -1061,7 +1061,7 @@ BUILT_IN `conditions[]`는 aml-svc 평가 카탈로그의 조건 키·연산자�
 | `detail` | string\|null | 결재 상신 내용 요약. `CTR_THRESHOLD`는 `<currency> CTR 임계 변경 상신`, `REPORT_RULE_PARAM`은 `<ruleCode> CTR/STR 룰 파라미터 변경 상신` 형태로 파생한다. **`HIGH_RISK_REGISTRY`는 staged payload 에서 적용 결과 스냅샷 `v<version> · PRODUCT=n · VASP=n · HIGH_NET_WORTH=n · PEP_INDIVIDUALS=n · RA_HIGH_RISK_CUSTOMERS=n` 을 파생하며, 이 값만 `ApprovalSummary`(목록)에도 실린다** — 승인 히스토리(기능정의서 §12-B.6 ③)가 대상 `UPDATE|<version>` 만으로는 무엇이 바뀐 결재인지 식별하지 못하던 결함(감사 추적성) 해소. 파생 소스가 없는 subjectType·구 엔진 행은 `null`(화면 폴백 `-`). 문자열은 코드+숫자만이라 로케일 중립이다 |
 | `changes` | array\|null | 결재 상세 변경 전→후 표. 원소 `{ label, before, after }`. `CTR_THRESHOLD`는 `tenant\|currency\|toAmount\|reason\|fromAmount`, `REPORT_RULE_PARAM`은 `tenant\|ruleCode\|afterPairs\|beforePairs` staged payload에서 AS-IS/TO-BE를 파생한다. |
 | `submittedAt` | string(date-time)\|null | **상신일시**(DB §3.16 `created_at` 매핑, 신규 컬럼 없음·가정 G5). 결재함 정렬(desc) 기준. `null`=live 파생 subject(run3 D13) |
-| `expiresAt` / `executedAt` | string(date-time) | 만료·실행(결재≠실행 분리). `expiresAt`=결재함 만료 임박 뱃지 원천(`null`=무기한, run3 D13) |
+| `expiresAt` / `executedAt` | string(date-time) | 만료·실행(결재≠실행 분리). `expiresAt`=결재함 만료 임박 뱃지 원천(`null`=무기한, run3 D13). **`executedAt` 은 상세(`ApprovalDetail`)와 목록 요약(`ApprovalSummary`) 양쪽에 노출**한다(2026-08-05) — 승인 히스토리 화면(PRD §12-B.6 BR-004)의 '결재 시점' 컬럼이 상세 재조회 없이 목록만으로 4-eyes 증적(상신→결재)을 완결한다. 미실행 건은 `null` |
 
 > **참조 리스트 변경 결재의 변경 요약 한계(코드=truth).** `HIGH_RISK_REGISTRY` 결재 행은 **변경 전 상태를 담지 않는다**(staged payload 는 적용 결과 참조 세트 전량). 따라서 추가/제거된 개별 `subjectRef` diff 는 결재 행만으로 산출할 수 없어 `detail` 은 **결과 스냅샷**을 싣고, 화면은 그 사실을 각주로 밝힌다. 리스트가 0건이 된 경우도 보이도록 전 `listType` 을 항상 포함한다(조용한 누락 금지). 저장 형식·`payloadHash` 무변경이라 기존 결재 행에도 소급 적용된다.
 
