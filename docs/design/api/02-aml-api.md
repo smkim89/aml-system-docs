@@ -2516,14 +2516,14 @@ CTR/STR 모니터링 통합(feature/aml-ctr-str-monitoring, 2026-07-01)이 aml-s
 | `CTR_DAILY` | CTR | CTR | ASYNC_ONLY | — | CTR_REPORT | ACTIVE | 동일 영업일 현금거래 합산이 CTR 임계 이상(다건 보완재) |
 | `STR_PEP` | STR | STR | ASYNC_ONLY | PEP | STR_FLAG | ACTIVE | PEP 관련 거래 — STR 검토 플래그 |
 | `STR_SANCTION` | STR | STR | INLINE_AND_ASYNC | SANCTION | RESTRICT,STR_FLAG | ACTIVE | 제재 매칭 — **유일 차단(RESTRICT)** |
-| `STR_KYC_INCOME_MISMATCH` | STR | STR | ASYNC_ONLY | KYC_MISMATCH | STR_FLAG,EDD_TRIGGER | ACTIVE | 거래금액이 신고소득 대비 과다(기본 배수 5) |
+| `STR_KYC_INCOME_MISMATCH` | STR | STR | ASYNC_ONLY | KYC_MISMATCH | STR_FLAG,EDD_TRIGGER | **DRAFT** | 숫자 신고소득 신호 공급 경로 부재(`declaredIncome` 항상 null)로 자동 평가 도달 불가 — 공급 경로 구현 시 재활성 검토 |
 | `STR_STRUCTURED` | STR | STR | ASYNC_ONLY | STRUCTURED | STR_FLAG | ACTIVE | CTR 임계 90~99% 3영업일 연속(스머핑) |
 | `STR_NO_PURPOSE` | STR | STR | ASYNC_ONLY | NO_PURPOSE | STR_FLAG | ACTIVE | 목적부재+행동이상 다중(메타룰) |
 | `STR_THIRD_PARTY` | STR | STR | ASYNC_ONLY | THIRD_PARTY | STR_FLAG | ACTIVE | 송금 명의≠회원 명의 |
 | `STR_VELOCITY_CASH` | STR | STR | ASYNC_ONLY | UNUSUAL_PATTERN | STR_FLAG | ACTIVE | 단기간 현금거래 빈도 이상(기본 건수 5) |
 | `STR_MANUAL` | STR | STR | ASYNC_ONLY | MANUAL | STR_FLAG | **DRAFT** | 컴플라이언스 수동 STR(임계 미충족도) — 파이프라인 활성화 거부(§2.7) |
 
-구체 CTR 통화 임계값은 카탈로그가 아니라 per-tenant `aml_ctr_thresholds`(§3.22a, `CtrThresholdPort`). `STR_MANUAL`만 DRAFT(off by default) — `AmlReportRuleCatalog.activeRules()`는 9종.
+구체 CTR 통화 임계값은 카탈로그가 아니라 per-tenant `aml_ctr_thresholds`(§3.22a, `CtrThresholdPort`). `STR_KYC_INCOME_MISMATCH`와 `STR_MANUAL`은 DRAFT이며 자동 평가·활성화 파이프라인에서 제외된다. 전자는 production 숫자 신고소득 공급 경로가 구현되면 재활성화를 검토하고, 후자는 컴플라이언스 수동 전용이다. `AmlReportRuleCatalog.activeRules()`는 8종.
 
 `STR_VELOCITY_CASH`의 rolling cash window는 평가 거래를 정확히 1회 포함한다. 중립 canonical 저장의 바깥 transaction과 STR `REQUIRES_NEW` 평가가 분리되어 현재 행이 아직 보이지 않으면 `EvaluateStrCommand`의 triggerRef/channelType/동결 PHP 금액으로 현재 cash 행을 합성한다. 이미 조회된 동일 triggerRef가 있으면 합성하지 않아 전용 STR·재평가 경로의 이중 집계를 막는다. 따라서 effective `count_threshold=N`은 N번째 현금성 거래에서 즉시 발동한다.
 
