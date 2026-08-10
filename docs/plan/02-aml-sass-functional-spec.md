@@ -5,7 +5,7 @@
 | 항목 | 내용 |
 |------|------|
 | **문서 ID** | FS-AML-SAAS-001 |
-| **버전** | 9.79 |
+| **버전** | 9.80 |
 | **작성일** | 2026-08-10 |
 | **작성자** | Hanpass Global Team |
 | **상태** | 초안 |
@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **9.80** | **2026-08-10** | **Hanpass Global Team** | **§12.3 AML-WHK-001 콜백 자격증명 설정 화면 신설 + §1.0 IA·§1.2 인벤토리·부록 A/B 동기화(코드=truth, aegis-aml main `48e8e697`).** ① **§12.3 신설** — 신규 화면 `/aml/webhook-credential`(아웃바운드 콜백 목적지 + HMAC 서명 시크릿 등록/교체, **설정 › 연동·데이터** NAV leaf, Markdown-only). 종전에는 이 자격증명을 **machine credential 로만** 바꿀 수 있어 운영자 표면 자체가 없었다(엔진 REST 는 2026-08-10 v9.79 시점 이미 신설 — API §2.7a). 화면 계약: 조회 **`aml:case:read` 또는 `aml:admin:policy`** / 저장 **`aml:admin:policy`**, **4-eyes 미적용 즉시반영**(AMLC 계정 설정 §9.2 결정 C 동급), **시크릿 전면 비노출**(마스킹조차 아님 — 조회 응답에 필드 자체가 없고 편집 Modal 입력 전용·기존 값 미리채움 금지), `webhookUrl=null` 은 **"오버라이드 전용"** 정확 표기(자리표시자로 덮는 거짓 표시 금지·미등록 상태와 구분), 쓰기 scope 미보유 세션은 **편집 진입점 0 + 읽기 전용 안내**, 등록 현황 패널은 AMLC 계정 설정과 **공통 컴포넌트 공유**(화면별 복제 금지)·ko/en 동시 등재. **읽기 scope 를 엔진과 1:1 로 좁히지 않은 근거** — `aml:admin:policy` 보유 유일 역할 `AML_POLICY_ADMIN` 이 `aml:case:read` 를 갖지 않아 좁히면 **유일한 쓰기 권한자가 덮어쓸 대상을 보지 못하는 모순**이 생기고, 이 화면이 주는 것은 시크릿 없는 마스킹 뷰라 이미 쓸 수 있는 역할에게 읽기를 여는 것은 노출 증가가 아니다. ② **§1.0 IA 표** 설정 › 연동·데이터에 `콜백 자격증명(AML-WHK-001)` 추가 + NAV leaf 註 신설(`lib/nav.ts` `aml-config-connect`, 메뉴 카탈로그 행 = bo-api Flyway **V23**, additive·멱등). ③ **§1.2 인벤토리** 총 31→**32화면**(PPT 슬라이드 수는 불변 — AML-WLF-005 와 같은 Markdown-only 신설, PPT 재빌드 후속) + 화면 표 행 추가. ④ **부록 A/B** 행 추가(부록 B 는 조회 대체 가능 표기 `○` 를 도입해 두 scope 중 하나로 열리는 조회를 표현). ⑤ **무변경** — 엔진 계약·권한·감사·마스킹·SSRF 처리 시점, 4-eyes 결재 대상(부록 C, 신규 subjectType 0), 타 화면 정의 전부 무변경. | 근거=aegis-aml bo-api `aml/webhook/{controller/WebhookCredentialController,service/WebhookCredentialService,dto/WebhookCredentialDtos}`·`db/migration/V23__webhook_credential_menu.sql`, bo-web `components/aml/AmlWebhookCredentialSettings`·`components/common/CredentialStatusPanel`·`hooks/useAmlWebhookCredential`·`lib/{aml-webhook-credential,nav}.ts`·`app/(authorized)/aml/webhook-credential`·`messages/bundles/{ko,en}/aml-monitoring.json`, aml-svc `adapter/out/persistence/WebhookCredentialAdminJpaAdapter#save`(미등록 테넌트 400). API §2.7a(bo-api 위임 표면·미등록 테넌트 400 정정)·§6, DB §7 bo-api 註 동기화. 코드=truth. PPT 재빌드는 후속. |
 | **9.79** | **2026-08-10** | **Hanpass Global Team** | **§12-B.3 AML-STAT-001 BR-008·BR-009 개정 — ① 설정형 룰 미활성 DRAFT 폐기(`:discard`)로 중복 버전 정리 경로 성립 + ② 룰 상세 보강 API 마운트 게이트(코드=truth, aegis-aml main `76681955`).** ① **BR-008 — 중복 버전 정리(폐기)**: 같은 날 v9.78 이 연 승계 저작 경로에서 제안 버전이 이미 점유된 경우를 닫는다. 설정형 룰 PK 가 `tenantId + ruleCode + version` 이라 점유 버전으로는 저장이 거부되므로, 빌더는 점유자 상태로 갈라 처리한다 — **미활성 `DRAFT` 점유는 그 사실을 명시하고 명시적 폐기 액션으로만 정리**(**자동·무단 폐기 0** — 남의 저작물일 수 있어 확인이 선행), **`ACTIVE`/`SUPERSEDED` 점유는 폐기를 제안하지 않고 위쪽 첫 빈 버전을 제안**(정책 계보 보존), 버전 표기가 `v<숫자>` 규칙 밖이면 **추측하지 않고 사용자 입력**을 받는다. 신규 계약은 폐기 1건뿐이다 — **엔진 `POST .../configurable-report-rules/{ruleCode}:discard`**(body `{version, actorId}`, 200 `{ruleCode, version, status(DISCARDED\|ALREADY_ABSENT), alreadyAbsent}`)와 **bo-api `POST /api/v1/bo/aml/report-rules/configurable/{ruleCode}:discard`**(fail-closed 위임, 엔진 미가용 503). **권한은 저작과 동일한 `aml:admin:policy` 이고 4-eyes 를 요구하지 않는다** — DRAFT 저작 자체가 단독 권한이며 그 버전은 한 번도 효력을 가진 적이 없다(평가 미참여·발동 0·알럿 0). `:activate`·`:retire` 의 🔒`TM_SCENARIO` 4-eyes 는 **무변경**이고, `ACTIVE`·`SUPERSEDED`·알럿 결속 버전은 409 로 거부한다. **4-eyes 우회 차단** — 같은 버전의 활성화 상신이 PENDING 이면 폐기 409(폐기 후 재저작 시 대기 결재가 미상신 DRAFT 를 발효시키는 구멍 차단). **멱등** — 이미 없는 버전 재폐기는 200 `ALREADY_ABSENT`·신규 부작용 0. 폐기는 감사 이벤트(`CUSTOM_RULE_DRAFT_DISCARDED`)를 남긴다. 비-admin 세션에는 폐기 액션 미노출. ② **BR-009 — 룰 상세 보강 API 마운트 게이트**: 룰 상세(`/aml/stats/report-rules/{ruleCode}`)가 편집 불가 세션에서도 `GET /api/v1/bo/aml/report-rules/{ruleCode}`(`aml:admin:policy`)를 호출해 확정 403 을 만들던 것을 **편집 가능 세션에서만 마운트**하도록 시나리오 효과성 상세(v9.77 F-042 ④)와 동형화했다. 보강 소비처 4종(`pendingApprovalId`·`pendingParamApprovalId`·`conditions[]` 폴백·오버라이드 배지) 모두 **표시 등가** — 편집 불가 세션은 종전에도 403 이라 값이 부재했다(**계약·권한 무변경, 기능 영향 0 · 콘솔/감사 노이즈 제거**). ③ **불변** — 설정형 룰 in-place 수정 금지(감사 계보 — 반드시 새 버전), 법정 카탈로그 룰의 파라미터 편집(🔒`REPORT_RULE_PARAM`, BR-007)·`name_match_threshold` read-only·STR tipping-off 게이트 우선순위·`ruleMetaUnavailable` 강등 처리 **무변경**. DDL 변경 0. | 근거=aegis-aml aml-svc `adapter/in/rest/ConfigurableReportRuleAdminController#discard`·`application/usecase/ConfigurableReportRuleService#discardDraft`, bo-api `aml/reports/controller/AmlReportRuleController#discardConfigurableRule`·`aml/reports/service/AmlConfigurableReportRuleService#discard`, bo-web `lib/aml-configurable-rules.ts`(`planAmlConfigurableRuleVersion`)·`components/aml/AmlConfigurableRuleBuilder`·`components/aml/AmlReportRuleDetail`·`hooks/useAmlStats.ts`. 테스트 `ConfigurableReportRuleDiscard{Controller,Service}Test`·`AmlConfigurableReportRuleServiceTest`·`AmlConfigurableRuleBuilder.versionConflict.test.tsx`·`AmlReportRuleDetail.enrichmentGate.test.tsx`. API §2.4 `:discard` 동기화(DB 무변경). |
 | **9.78** | **2026-08-10** | **Hanpass Global Team** | **§12-B.3 AML-STAT-001 BR-009·BR-008 개정 — 설정형(`source=CUSTOM`) 룰 임계 수정을 "새 버전 저작" 경로로 성립(같은 날 v9.77 이 "본 범위 밖"으로 남겨둔 갭을 **신규 REST 계약 없이** 닫음, 코드=truth, aegis-aml main `8fc131dd`).** ① **종전 "범위 밖" 조항 개정** — v9.77 ③ 이 "설정형(`AML_SIM_*`·`source=CUSTOM`)은 편집 영역 미노출 + 안내(설정형 DSL 임계 편집은 본 범위 밖·신규 REST 계약 금지)"로 확정했던 조항을, **설정형 룰이 파라미터 편집 폼(🔒`REPORT_RULE_PARAM`) 대상이 아니라는 구분은 그대로 둔 채** 별도 경로로 임계 수정을 성립시키는 것으로 개정한다 — 설정형 룰은 이미 `tenantId + ruleCode + version` 버전 자산이고 목록 응답이 `parameters`·`dsl` 을 그대로 실으므로, **임계 수정 = 기존 버전 프리필 → 새 버전 DRAFT 저작 → 시뮬레이션 → 🔒`TM_SCENARIO` 4-eyes 활성화**(활성화 시 이전 ACTIVE 버전 `SUPERSEDED`)다. ② **신규 계약 0** — 신규 엔드포인트·신규 DTO 필드가 없고 기존 BR-008 경로(`GET/POST /api/v1/bo/aml/report-rules/configurable`·`.../configurable/{ruleCode}/simulate`·`.../configurable/{ruleCode}:activate`)를 그대로 재사용한다(**엔진(aml-svc)·bo-api diff 0** — bo-web 표시·저작 계층 한정). ③ **진입 게이트** — 시나리오 효과성 상세의 설정형 룰에서 `aml:admin:policy` 보유 **그리고** 룰군(STR/CTR) 확정 시에만 새 버전 저작 진입점을 노출하고, STR tipping-off 차단·`ruleMetaUnavailable`(v9.76)·고아 `scenarioCode`·비admin 은 **종전 안내 유지**(v9.77 게이트 우선순위 그대로 — 룰군을 추정해 진입점을 만들지 않는다). ④ **원본 승계 저작(BR-008 반영)** — 빌더가 원본 버전의 `displayName`·`description`·`reasonCode`·`severity`·`parameters`·`dsl` 을 승계하고 **룰 코드는 고정**, 버전은 다음 값을 제안한다. 원본 조회 실패는 빈 빌더로 강등하되 **그 사실을 표시**한다(조용한 빈 폼 금지). ⑤ **표현 불가 DSL 은 실패 처리** — 빌더 표현 범위는 `and`/`or` 루트 + `cmp`/`velocity` 리프이며, 엔진 전용 `not`/`always`·FDS 전용 `in_group`·카탈로그 밖 피처/연산자·깊이 초과는 **추측 합성 없이 실패**로 처리해 DRAFT 저장을 차단한다(라이브 실증: `device.os` 피처 룰). ⑥ **불변** — in-place 수정 금지(감사 계보 보존 — 반드시 새 버전), 법정 카탈로그 룰 경로(v9.77 임계·변수 편집)·`name_match_threshold` read-only·집계 산식·`conditions[]` 동일 생산자·`family` 서버 정본 **무변경**. ⑦ **i18n** — 설정형 룰 빌더의 측정기준 표시 라벨 38종·그룹 라벨 9종을 ko/en 카탈로그로 이관(**DSL 피처 키는 계약이라 무번역**). | 근거=aegis-aml bo-web `lib/aml-configurable-rules.ts`(DSL→빌더 역변환·왕복 불변식)·`components/aml/AmlConfigurableRuleBuilder`(프리필)·`components/aml/AmlScenarioStatsDetail`(`CONFIGURABLE_AUTHORABLE` 모드)·`app/(authorized)/aml/stats/configurable-rules/new`·messages ko/en. 엔진 `ConfigurableReportRuleService`(DRAFT→`TM_SCENARIO` 상신→`approveActivate` 시 이전 ACTIVE `supersede()`) 무변경. API 02-aml-api.md **무수정**(계약 변경 0 — §2.4·§2.7 configurable 계약이 이미 정본, 거짓이 된 서술 없음). DB·software 무수정(스키마·구조 변경 0). 코드=truth. PPT 재빌드는 후속. |
 | **9.77** | **2026-08-10** | **Hanpass Global Team** | **§12-B.3 AML-STAT-001 BR-009 개정 — 시나리오 효과성 상세에 임계·변수 편집 영역 이식(사용자 지시로 종전 "미이식" 결정 해제, 코드=truth, aegis-aml feature/aml-scenario-param-edit).** ① **종전 결정 해제** — v9.73(2026-08-06) ③ 이 확정했던 "임계·변수 편집 폼 미이식(편집 정본은 룰 상세 단일)" 조항을 **2026-08-10 사용자 지시**("STR 룰들 상세 화면에서 발동조건의 임계값들을 수정할 수 있어야 한다")로 해제하고, `/aml/stats/scenarios/{scenarioCode}` 의 발동 조건 섹션 아래에 임계·변수 편집 영역을 표시한다(aegis-aml 완료 요건 F-036 의 해당 조항 해제). ② **정본은 계속 1개** — 화면은 2곳(룰 상세·시나리오 효과성 상세)이나 편집 UI 는 룰 상세(BR-007)와 **동일 공통 편집 컴포넌트를 공유**하고(화면별 복제 저작 금지) API 도 기존 계약을 재사용한다 — **신규 엔드포인트·신규 DTO 필드 없음**(`GET /api/v1/bo/aml/report-rules/{ruleCode}` 의 `params[]`·`pendingParamApprovalId` + `POST .../report-rules/{ruleCode}:update-params` 202). ③ **범위 = 법정 카탈로그 룰(`source=BUILT_IN`)만** — 설정형(`AML_SIM_*`·`source=CUSTOM`)은 편집 영역 미노출·안내만(설정형 DSL 임계 편집은 범위 밖·신규 REST 계약 금지), `STR_PEP`·`STR_SANCTION` 의 `name_match_threshold` 는 WLF 결속 read-only 로 표시만 유지(엔진 거부 — BR-007 동일). ④ **권한·결재 무변경** — 편집 영역 노출은 `aml:admin:policy` 한정(미보유는 룰 상세와 동일한 읽기 전용 안내), 조건 표시는 종전대로 `aml:case:read`(BR-003), 상신은 🔒`REPORT_RULE_PARAM` 4-eyes 룰 단위 원자 셋. ⑤ **게이트 무변경** — STR tipping-off 이중 게이트(서버 `strRestricted` + 화면 전담 재확인)와 `ruleMetaUnavailable`(v9.76)·고아 `scenarioCode` 강등에서는 편집 영역도 함께 미노출하되 효과성 KPI 는 계속 표시한다. **엔드포인트·스코프·4-eyes·집계 산식·`conditions[]` 동일 생산자·`family` 서버 정본 무변경.** | 근거=aegis-aml bo-web `components/aml/AmlScenarioStatsDetail`·룰 상세와 공유하는 공통 편집 컴포넌트(`components/common/RuleParamEditForm` 계열 — FDS §6.2 SFDS-RULE-002 와도 공유)·`hooks/useAmlStats`, bo-api `aml/reports/**`(`:update-params` 위임 경로) 무변경. API 02-aml-api.md **무수정**(계약 변경 0 — §2.7·§3.6 서술이 편집 화면 위치를 제약하지 않음). 코드=truth. PPT 재빌드는 후속. |
@@ -154,7 +155,7 @@
 | **운영** | 고객위험·심사 | RA 분포·고객위험(AML-RA-001/003) · 대상 360 조회(AML-SUBJ-001) · 고객 프로필(AML-CDD-002) · 고위험 등록부(AML-HRR-001) |
 | **운영** | 케이스·처리 | 케이스 관리(AML-CASE-001/002) |
 | **운영** | 거버넌스·보고 | 규제 보고 STR/CTR(AML-REP-001/002) · 결재 대기함(AML-APR-001) |
-| **설정** | 연동·데이터 | 서비스 관리(AML-TNT-001/002/003) · Ingest 카탈로그(AML-ING-001) · 명단 소스·임포트(AML-WL-001/002) · 내부 명단·오탐 면제(AML-WL-003) · 소스 시스템 관리(AML-AUD-001 ③ 파생) |
+| **설정** | 연동·데이터 | 서비스 관리(AML-TNT-001/002/003) · Ingest 카탈로그(AML-ING-001) · 명단 소스·임포트(AML-WL-001/002) · 내부 명단·오탐 면제(AML-WL-003) · **콜백 자격증명(AML-WHK-001)** · 소스 시스템 관리(AML-AUD-001 ③ 파생) |
 | **설정** | 탐지·심사 정책 | TM 시나리오 관리(AML-TM-002) · CDD 체크리스트 정책(AML-CDD-001) · 국가위험 관리(AML-CTRY-001) · **WLF 엔진 조절(AML-WLF-005)** · **STR·룰 효과성 통계(AML-STAT-001)** · **CTR·룰 효과성 통계(AML-STAT-001)** · RA 모델 관리(AML-RA-002) |
 | **설정** | 감사·증적 | 감사 로그·증적 Export(AML-AUD-001) |
 
@@ -170,6 +171,7 @@
 > **v9.4 메뉴 leaf 신규(코드 정합 — bo-web `lib/nav.ts`)**: `대상 360 조회`(AML-SUBJ-001, `/aml/subjects`, scope `aml:case:read`)는 customerRef·transactionRef·walletRef 검색 entry로, 입력 후 대상 360°/고객 CDD(AML-CDD-002)/RA 상세(AML-RA-003)로 이동하는 신규 화면이다(드릴다운 진입점인 대상 360° 통합 뷰와 구분되는 검색 entry). `WLF 시뮬레이션`(AML-WLF-004, `/aml/wlf/simulation`, scope WLF 검토와 동일)·`내부 명단·오탐 면제`(AML-WL-003, `/aml/watchlist/internal`)·`TM 시나리오 관리`(AML-TM-002, `/aml/tm/scenarios`)·`소스 시스템 관리`(AML-AUD-001 ③ 소스탭 진입점, `/aml/audit?tab=source-systems`)는 기존 화면을 메뉴 leaf로 노출한 것으로 화면 ID·콘텐츠는 불변이다.
 > **v9.44 WLF 운영/설정 분리**: `/aml/wlf`는 결과 검토·판정만 담당하고, `/aml/wlf-engine`(AML-WLF-005)은 SANCTIONS/PEP 프로필 설정·버전·시뮬레이션만 담당한다. AML-WLF-005는 원본 PPT에 없는 **Markdown-only 신규 NAV leaf**다.
 > **v9.55 STR·CTR 룰 효과성 통계·RA 스코어 조절 → 탐지·심사 정책 이동(사용자 지시)**: AML-STAT-001(STR·CTR 룰 효과성 통계)은 종전 운영/조사·모니터링에 있었으나, 사용자 지시에 따라 설정/탐지·심사 정책으로 이동한다(운영은 검토·조사·케이스·보고 실행 화면, 설정은 정책·모델·튜닝 화면이라는 §1.0 원칙과, STR/CTR 룰 효과성 통계가 결국 시나리오·임계룰 정책 튜닝 근거 지표라는 점을 정합 근거로 삼음). RA 모델 관리(AML-RA-002, "RA 스코어 조절")는 이미 탐지·심사 정책 소속으로, 본 이동은 §1.0 표기를 실 배치와 재정합한 것이다. 화면 ID·API·권한 스코프 무변경(NAV 소속만 이동). 근거=aegis-aml bo-web `lib/nav.ts`(`AML_ITEMS.stats`·`AML_ITEMS.ctrStats`·`AML_ITEMS.raModels`를 `aml-config-policy`로 재배치).
+> **v9.80 콜백 자격증명(AML-WHK-001) NAV leaf 신규(코드=truth, aegis-aml main `48e8e697`)**: 아웃바운드 콜백 목적지·서명 시크릿 설정 화면 `/aml/webhook-credential`을 **설정 › 연동·데이터**에 신규 배치한다(`lib/nav.ts` `aml-config` → `aml-config-connect` 섹션, `서비스 관리`·`Ingest 카탈로그`·`명단 소스` 다음 4번째 항목 — 배열 순서 정본은 코드). 종전에는 이 자격증명을 machine credential 로만 바꿀 수 있어 **운영자 화면 자체가 없었다**. 메뉴 가시 scope 는 `aml:case:read` **또는** `aml:admin:policy`(둘 중 하나 보유 시 노출)이며 동적 메뉴 카탈로그 행은 bo-api Flyway **V23 `V23__webhook_credential_menu.sql`**(`BO_SUPER_ADMIN`·`AML_POLICY_ADMIN`·`AML_VIEWER`, additive·멱등)이 등재한다. 화면 정의는 §12.3.
 
 ---
 
@@ -192,7 +194,7 @@ AML 엔진 자체의 ingest·screening·RA·TM 평가는 서비스(테넌트) �
 
 ### 1.2 화면 범위 (태스크 BO 화면 인벤토리)
 
-본 PRD의 화면 범위는 태스크 `docs/tasks/aml/00-overview.md` §5 **BO 화면 인벤토리 10종**과 운영 모니터링용 **종합 대시보드 1종**을 기준 골격으로 하며, **v4.0에서 목록→상세→액션→결과 흐름을 끊김 없이 잇기 위해 후속 상세(드릴다운) 6종과 앞단 정책 관리 3종을 추가하여 총 20화면**으로 확장합니다(§12-A). **v5.0에서 서비스 관리 4종(AML-TNT-001~004)을 추가하여 v5.0 기준 총 24화면**이었으나, **v5.2에서 WLF를 3화면으로 재구성(구 WLF-002 판정 상세 드릴다운 폐기 + 상위승인·처리 이력 2화면 신설, 순증 +1)하고 v5.4에서 서비스 관리를 3화면(AML-TNT-001 목록·AML-TNT-002 상세[4탭]·AML-TNT-003 등록)으로 재편하여 총 24화면**이었고, **v6.0에서 실계 AML 운영 시스템 벤치마크(GTone AML RBA Xpress 80화면 분석, §12-B·부록 H) 기반 보강 화면 4종(AML-WLF-004 스크리닝 시뮬레이션·임의 수행, AML-IRA-001 기관 위험평가 지표 보고, AML-STAT-001 STR·룰 효과성 통계, AML-EDU-001 내부통제 교육·자격 관리)을 추가하여 총 28화면**이었으며, **v7.0에서 벤치마크 2차 보강(부록 H 잔여 backlog) 화면 3종(AML-WL-003 내부 요주의 명단·오탐 면제 생명주기, AML-HRR-001 당연고위험 레지스트리, AML-CDD-002 고객 CDD 프로필 원장)을 추가하여 총 31화면**이었고, **v8.0에서 데이터 인입 가시성 보강 화면 1종(AML-ING-001 수신 API 카탈로그·인입 라이브 모니터링, §12.2)을 추가하여 총 32화면**, **v9.44에서 AML-WLF-005 WLF 엔진 조절 1종을 추가하여 총 33화면**이었고, **v9.58에서 AML-IRA-001(기관 위험평가 지표 보고)·AML-EDU-001(내부통제 교육·자격 관리) 2종을 제거하여 총 31화면**이다(사용자 지시, §12-B.2·§12-B.4 §13.x 폐기 표기). AML-WLF-005는 원본 PPT 슬라이드가 없는 Markdown-only 화면이므로 기존 PPT 32화면·70슬라이드는 유지한다. 구 AML-TNT-004(온보딩 상태)는 AML-TNT-002 ② 배포·온보딩 탭으로 통합되었습니다(§13.x 폐기 표기 참조). 후속 상세 화면은 NAV 항목이 아니라 목록 화면의 행/버튼 클릭으로 진입하는 드릴다운입니다. 모든 화면은 `bo-web → bo-api` 경유이며, 운영자 집계 화면은 **bo-api 소유 API(`/api/v1/bo/aml/**`)**, 운영(검토·판정·결재·정책) 화면은 bo-api 가 위임하는 **엔진 Admin API(`/api/v1/admin/aml/*`)** 를 사용합니다(API §9 소유 경계).
+본 PRD의 화면 범위는 태스크 `docs/tasks/aml/00-overview.md` §5 **BO 화면 인벤토리 10종**과 운영 모니터링용 **종합 대시보드 1종**을 기준 골격으로 하며, **v4.0에서 목록→상세→액션→결과 흐름을 끊김 없이 잇기 위해 후속 상세(드릴다운) 6종과 앞단 정책 관리 3종을 추가하여 총 20화면**으로 확장합니다(§12-A). **v5.0에서 서비스 관리 4종(AML-TNT-001~004)을 추가하여 v5.0 기준 총 24화면**이었으나, **v5.2에서 WLF를 3화면으로 재구성(구 WLF-002 판정 상세 드릴다운 폐기 + 상위승인·처리 이력 2화면 신설, 순증 +1)하고 v5.4에서 서비스 관리를 3화면(AML-TNT-001 목록·AML-TNT-002 상세[4탭]·AML-TNT-003 등록)으로 재편하여 총 24화면**이었고, **v6.0에서 실계 AML 운영 시스템 벤치마크(GTone AML RBA Xpress 80화면 분석, §12-B·부록 H) 기반 보강 화면 4종(AML-WLF-004 스크리닝 시뮬레이션·임의 수행, AML-IRA-001 기관 위험평가 지표 보고, AML-STAT-001 STR·룰 효과성 통계, AML-EDU-001 내부통제 교육·자격 관리)을 추가하여 총 28화면**이었으며, **v7.0에서 벤치마크 2차 보강(부록 H 잔여 backlog) 화면 3종(AML-WL-003 내부 요주의 명단·오탐 면제 생명주기, AML-HRR-001 당연고위험 레지스트리, AML-CDD-002 고객 CDD 프로필 원장)을 추가하여 총 31화면**이었고, **v8.0에서 데이터 인입 가시성 보강 화면 1종(AML-ING-001 수신 API 카탈로그·인입 라이브 모니터링, §12.2)을 추가하여 총 32화면**, **v9.44에서 AML-WLF-005 WLF 엔진 조절 1종을 추가하여 총 33화면**이었고, **v9.58에서 AML-IRA-001(기관 위험평가 지표 보고)·AML-EDU-001(내부통제 교육·자격 관리) 2종을 제거하여 총 31화면**이었고, **v9.80에서 아웃바운드 콜백 자격증명 설정 1종(AML-WHK-001 콜백 자격증명 설정, §12.3 — 설정 › 연동·데이터 NAV leaf)을 추가하여 총 32화면**이다(사용자 지시, §12-B.2·§12-B.4 §13.x 폐기 표기). AML-WLF-005는 원본 PPT 슬라이드가 없는 Markdown-only 화면이므로 기존 PPT 32화면·70슬라이드는 유지한다(**v9.80 AML-WHK-001 도 동일하게 Markdown-only 신설**이라 PPT 슬라이드 수는 불변, PPT 재빌드는 후속). 구 AML-TNT-004(온보딩 상태)는 AML-TNT-002 ② 배포·온보딩 탭으로 통합되었습니다(§13.x 폐기 표기 참조). 후속 상세 화면은 NAV 항목이 아니라 목록 화면의 행/버튼 클릭으로 진입하는 드릴다운입니다. 모든 화면은 `bo-web → bo-api` 경유이며, 운영자 집계 화면은 **bo-api 소유 API(`/api/v1/bo/aml/**`)**, 운영(검토·판정·결재·정책) 화면은 bo-api 가 위임하는 **엔진 Admin API(`/api/v1/admin/aml/*`)** 를 사용합니다(API §9 소유 경계).
 
 | # | 화면(기능 ID) | 태스크 | 주요 호출 API |
 |---|---|---|---|
@@ -221,6 +223,7 @@ AML 엔진 자체의 ingest·screening·RA·TM 평가는 서비스(테넌트) �
 | 10 | 결재 대기함 (AML-APR-001) | T-12 | `admin/aml/approvals`, `:approve`, `:reject` |
 | 11 | 감사·증적 Export·소스 관리 (AML-AUD-001) | T-19, T-03 | 운영자 감사 집계=**bo-api** `GET /api/v1/bo/aml/audit`; (엔진) `POST /evidence/aml/exports`, `admin/aml/source-systems` 🔒, `admin/aml/audit-events`(저수준 위임) |
 | — | **수신 API 카탈로그·인입 라이브 모니터링 (AML-ING-001, 데이터 인입 가시성 — §12.2, v8.0)** | T-03·T-20 | **bo-api(제안)** `GET /api/v1/bo/aml/ingest/catalog` · `GET /api/v1/bo/aml/ingest/health` **(집계 소유 bo-api — 후속 API 정합, 부록 E v8.0)** |
+| — | **콜백 자격증명 설정 (AML-WHK-001, 아웃바운드 콜백 목적지·서명 시크릿 — §12.3, v9.80)** | T-03 | **bo-api** `GET/PUT /api/v1/bo/aml/webhook-credential` → 엔진 `GET/PUT /api/v1/admin/aml/webhook-credential` **fail-closed 위임**(API §2.7a, 읽기 `aml:case:read`\|`aml:admin:policy` / 쓰기 `aml:admin:policy`) |
 | — | **STR/CTR·룰 효과성 통계 (AML-STAT-001, 벤치마크 보강 — §12-B.3)** | T-20 | **bo-api** `GET /api/v1/bo/aml/stats/str` · `GET /api/v1/bo/aml/stats/ctr` · `GET /api/v1/bo/aml/stats/scenarios` **(집계 소유 bo-api, API §9 경계)** |
 | — | **내부통제 교육·자격 관리 (AML-EDU-001, 벤치마크 보강 — §12-B.4)** | T-20 | **bo-api** `GET/POST /api/v1/bo/aml/training/courses` · `GET .../training/records` · `GET/POST .../certifications` **(제안 — bo-api 소유, 후속 API 정합, 부록 E v6.0)** |
 
@@ -1504,6 +1507,58 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-002**: ⚠/✕ 행은 색상 강조 + AML-DASH-001 운영 알림과 동일 이벤트 소스(소스 신선도 알림 클릭 → 본 화면 ② 탭 딥링크). 운영 조치(소스 비활성·secret 변경 🔒)는 AML-AUD-001 ③ 소관(본 화면은 모니터링 전용).
 - **BR-003**: ① 카탈로그의 호출량·마지막 호출은 게이트웨이 집계 파생값. API 정의 자체(경로·인증)는 §1.11 ② 확정 표가 정본이며 화면에서 편집 불가. screening 장애 정책(D-14 fail-closed/manual-review) 상태는 소스별 배지로 병기.
 
+### 12.3 AML-WHK-001 · 콜백 자격증명 설정 (아웃바운드 콜백 목적지 + 서명 시크릿, v9.80 신설 · Markdown-only)
+
+> **v9.80 신설(코드=truth, aegis-aml main `48e8e697`).** AML 알림 아웃바운드 콜백(§규제 보고·케이스·스크리닝 상태 변경 webhook)의 **목적지 URL** 과 **HMAC 서명 시크릿**을 운영자가 화면에서 등록·교체하는 설정 화면이다. 종전에는 이 값을 machine credential 로만 바꿀 수 있어(엔진 admin REST 직접 호출) **운영자 표면 자체가 없었다**. 저장 계약·검증·감사의 정본은 엔진(API §2.7a)이며 본 화면은 그 위임 표면이다.
+
+| 항목 | 내용 |
+|------|------|
+| **기능 ID** | AML-WHK-001 |
+| **태스크** | 요건 F-048 후속(BO 운영자 표면) |
+| **진입** | NAV **설정 › 연동·데이터**(`/aml/webhook-credential` — 서비스 관리·Ingest 카탈로그·명단 소스 옆, §1.0). 메뉴 카탈로그 행은 bo-api Flyway **V23**(additive·멱등, `BO_SUPER_ADMIN`·`AML_POLICY_ADMIN`·`AML_VIEWER`) |
+| **권한** | 조회 **`aml:case:read` 또는 `aml:admin:policy`**(+`BO_SUPER_ADMIN`) / 저장 **`aml:admin:policy`**(+`BO_SUPER_ADMIN`) — **4-eyes 미적용**(즉시 반영, AMLC 계정 설정 §9.2 결정 C 와 동급) |
+| **API** | BO `GET/PUT /api/v1/bo/aml/webhook-credential`(엔진 `GET/PUT /api/v1/admin/aml/webhook-credential` **fail-closed 위임**, API §2.7a). 엔진 미가용 시 **503**(로컬 stub 없음) |
+
+#### 화면 구성
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 콜백 자격증명 설정                                          [AML-WHK-001] │
+│ AML 알림 아웃바운드 콜백의 목적지와 HMAC 서명 시크릿                      │
+├─ 등록 현황 ──────────────────────────────────────────────────────────────┤
+│ 등록 상태   [등록됨 ●] / [미등록]                                         │
+│ 콜백 목적지  https://example.com/aml/callback   (미등재 시 "-",           │
+│                                                  URL 없으면 "오버라이드 전용") │
+│ 서명 시크릿  보관 중 (비표시) / 없음      ← 값·마스킹 문자열 모두 미표시   │
+│ 사용 여부   사용 / 미사용                                                 │
+│ 최종 변경   2026-08-10 17:20   변경자  admin                              │
+│                                        [자격증명 등록/교체]  ← 쓰기 권한자만 │
+├─ (Modal) 콜백 자격증명 등록/교체 ────────────────────────────────────────┤
+│ 콜백 목적지(URL) [___________________] 비우면 오버라이드 전용으로 등록     │
+│ 서명 시크릿      [___________________] (입력 전용 · 기존 값 미리채움 없음) │
+│ [x] 사용함                                                    [저장]      │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 데이터 항목 (조회 = 엔진 마스킹 뷰 7필드, 시크릿 필드 자체 부재)
+
+| 컬럼(표시) | 설명 (괄호=내부 코드) |
+|------|------|
+| 등록 상태 | 등록됨/미등록 (`configured`) — 미등록이면 나머지 항목은 "-" |
+| 콜백 목적지 | 아웃바운드 콜백 URL (`webhookUrl`). **`null` = "오버라이드 전용"**(요청별 목적지 오버라이드 이벤트용 등록) |
+| 서명 시크릿 | **존재 여부만** — "보관 중 (비표시)"/"없음" (`secretConfigured` 불리언) |
+| 사용 여부 | 사용/미사용 (`enabled`) |
+| 최종 변경 / 변경자 | `updatedAt` / `updatedBy` |
+
+#### 비즈니스 규칙
+
+- **BR-001 (시크릿 전면 비노출)**: 조회 응답에는 **시크릿 필드 자체가 없다**(평문·암호문·마스킹 힌트 어느 것도 아님 — 존재 여부 불리언 `secretConfigured` 까지만). 화면은 마스킹된 문자열조차 렌더하지 않으며, 시크릿은 **편집 Modal 의 입력 전용 필드**로만 존재하고 **기존 값을 미리 채우지 않는다**(교체할 때마다 새 값을 다시 입력). 저장 형태는 엔진의 AES-GCM 암호문이며 응답·로그·감사 detail 어디에도 남지 않는다(API §2.7a).
+- **BR-002 (목적지 표기 정확성)**: `webhookUrl=null` 은 **"오버라이드 전용"** 으로 표기한다 — 목적지가 있는 것처럼 자리표시자로 덮으면 거짓 표시다. **미등록 상태에서는 이 문구를 쓰지 않는다**(등록 자체가 없는 것과 목적지만 없는 것은 다른 상태다). 목적지를 비우고 저장하면 빈 문자열이 아니라 `null` 로 전송된다.
+- **BR-003 (권한 분리 — 표시=read / 변경=admin)**: 저장은 `aml:admin:policy` 보유자만 가능하며, **쓰기 scope 미보유 세션에는 편집 진입점을 아예 렌더하지 않고 읽기 전용 안내만 표시**한다(서버 게이트와 같은 정확 scope 판정 재사용 — 눌러서 403 을 받게 두지 않는다). **조회는 두 scope 중 하나**(`aml:case:read` 또는 `aml:admin:policy`)로 연다 — `aml:admin:policy` 를 가진 유일한 역할 `AML_POLICY_ADMIN` 이 `aml:case:read` 를 갖지 않아 읽기를 1:1 로 좁히면 **유일한 쓰기 권한자가 덮어쓸 대상을 보지 못하는 모순**이 생기고, 이 화면이 주는 것은 시크릿 없는 마스킹 뷰라 **이미 값을 바꿀 수 있는 역할에게 읽기를 여는 것은 노출 증가가 아니다**(API §2.7a 근거 동일).
+- **BR-004 (저장 계약·거부 처리)**: 저장은 **upsert·즉시 반영·4-eyes 없음**이다. 판정 권위는 전적으로 엔진이며 bo-api 는 자체 검증을 두지 않는다 — 빈·공백 시크릿 **400**, 검증 actor 누락 **400**, scope 미보유 **403**, 미등록 테넌트 **400**(`unknown tenant`)이 원 상태·에러코드 그대로 화면까지 올라온다. **거부되어도 기존 등재분은 훼손되지 않는다**. 화면은 빈 시크릿을 전송 전에 한 번 더 막는다(중복 방어). 값 무변경 재저장은 멱등(행 갱신·감사 없음).
+- **BR-005 (공통화)**: 등록 현황 패널(상태 배지 + 메타 행 + 액션 슬롯)은 AMLC 계정 설정(§9.2 AML-REP-004)과 겹치는 마크업을 **공통 컴포넌트로 추출해 양쪽이 공유**한다(화면별 복제 저작 금지). 사용자 노출 문자열은 ko/en 카탈로그에 **동시** 등재한다.
+- **BR-006 (범위 밖)**: 저장 시점 SSRF 검증은 **하지 않는다**(엔진 결정 — 목적지는 매 전송 직전 `WebhookUrlPolicy` 로 재검증되며, 사설 IP 목적지도 등재는 정상 완료되고 전달 단계에서 실패로 수렴한다. API §8). 콜백 전송·재시도·서명 공식은 본 화면 소관이 아니다.
+
 ---
 
 ## 12-A. 신규 후속·앞단 화면 (v4.0 · 시나리오 흐름 연결)
@@ -2146,6 +2201,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | AML-HRR-001 | 운영 › 고객위험·심사 | 당연고위험 레지스트리(§12-B.6) | (엔진·**확정**) `GET .../high-risk-registry` · `PUT .../high-risk-registry/reference-lists/{listType}`🔒(subjectType=`HIGH_RISK_REGISTRY`, scope `aml:admin:high-risk-registry`) — **T2 AML-ENG-02 aml-svc 엔진 구축(부록 E v7.0 해소). bo-api 실위임 후속 T13** |
 | AML-CDD-002 | **운영 › 고객위험·심사** | 고객 CDD 프로필 원장(§12-B.7, 드릴다운, 3탭 — ③ PEP 관리 v9.13) — **운영 영역** (CDD-002 운영 ↔ CDD-001 설정 분리) | (엔진·**제안**) `GET /aml/customers/{ref}/profile`(read-only 파생 — 진입: AML-RA-003 ①·AML-CASE-002 ①·AML-WLF-001 `[고객 프로필 ▶]`) + **(확정) `POST /api/v1/admin/aml/customers/{ref}:submit-pep-approval`🔒(PEP 경영진 승인 상신, subjectType=`PEP_APPROVAL`·승인선 `EXECUTIVE_APPROVAL`, 엔진 V24)** — read-only 원장 후속 API 정합(부록 E v7.0) |
 | AML-MBR-001 | **운영 › 고객위험·심사** | 회원관리 — 회원원장·CDD/EDD 히스토리(§12-A.10, 조회 · **v9.40 코드 truth 신설**, 회원번호 검색 entry) | **bo-api** `GET /api/v1/bo/aml/members/{memberRef}/ledger`(원장 요약) · `GET /api/v1/bo/aml/members/{memberRef}/cdd-history?types=&page=&size=`(이력 페이지) → 엔진 `GET /api/v1/admin/aml/members/{memberRef}/{ledger\|cdd-history}` 위임(scope `aml:case:read`, API §2.x·DB §3.22f·§5.36) |
+| AML-WHK-001 | 설정 › 연동·데이터 | 콜백 자격증명 설정 — 아웃바운드 콜백 목적지·HMAC 서명 시크릿 등록/교체(§12.3, **v9.80 신설·Markdown-only**, 4-eyes 미적용 즉시반영) | **bo-api** `GET/PUT /api/v1/bo/aml/webhook-credential`(조회 `aml:case:read`\|`aml:admin:policy` / 저장 `aml:admin:policy`) → 엔진 `GET/PUT /api/v1/admin/aml/webhook-credential` fail-closed 위임(API §2.7a). 조회 응답에 **시크릿 필드 없음**(`secretConfigured` 불리언까지만) |
 | AML-ING-001 | 설정 › 연동·데이터 | 수신 API 카탈로그·인입 라이브 모니터링(§12.2, v8.0) | **bo-api(제안)** `GET /api/v1/bo/aml/ingest/catalog` · `GET /api/v1/bo/aml/ingest/health`(집계 소유 — API §9 경계) — **후속 API 정합 필요(부록 E v8.0)**. 수신 API 자체 정본 = §1.11 ②(API §3.1~§3.4) |
 
 ### 부록 B. 권한 매트릭스 (scope × 화면)
@@ -2178,8 +2234,9 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | AML-HRR-001 (§12-B.6) | ● | | | ● | | | | | |
 | AML-CDD-002 (§12-B.7) | ● | | | | | | | | △ |
 | AML-ING-001 (§12.2, v8.0) | | | | | | | ● | | |
+| AML-WHK-001 (§12.3, v9.80) | ○ | | | ● | | | | | |
 
-> ●=필요, △=원문 열람 시 추가 scope. 모든 권한은 `Tenant-Id`/`dataScope` 스코프 안에서 평가(RLS). 서비스 관리 화면(AML-TNT-001·AML-TNT-002[4탭]·AML-TNT-003)은 SaaS 운영자 전용이며 `aml:admin:policy`(bo-api 소유 엔드포인트 — API §9·§1.1) scope를 사용한다. 구 AML-TNT-004는 v5.4에서 AML-TNT-002 ② 배포·온보딩 탭으로 통합·폐기됨.
+> ●=필요, ○=조회 대체 가능(둘 중 하나 보유 시 조회 가능 — AML-WHK-001 은 `aml:case:read` **또는** `aml:admin:policy` 로 열리고, 저장은 `aml:admin:policy` 전용). △=원문 열람 시 추가 scope. 모든 권한은 `Tenant-Id`/`dataScope` 스코프 안에서 평가(RLS). 서비스 관리 화면(AML-TNT-001·AML-TNT-002[4탭]·AML-TNT-003)은 SaaS 운영자 전용이며 `aml:admin:policy`(bo-api 소유 엔드포인트 — API §9·§1.1) scope를 사용한다. 구 AML-TNT-004는 v5.4에서 AML-TNT-002 ② 배포·온보딩 탭으로 통합·폐기됨.
 >
 > **STR 조회 전담 경계(tipping-off, 특정금융정보법 §4의2 — 설계서 §19.2a)**: AML-REP-001/AML-REP-002 및 STR 관련 케이스(`STR_REVIEW`) 화면의 `aml:case:read`는 **준법감시 전담 role(COMPLIANCE scope 보유 준법감시 조직 계정)에만 부여**한다. 일반 운영·상담 role에는 해당 메뉴·검색·딥링크·STR 플래그를 노출하지 않으며, 모든 열람은 감사(`aml_audit_events`) 기록 대상이다.
 
