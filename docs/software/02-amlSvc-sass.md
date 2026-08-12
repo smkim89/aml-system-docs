@@ -671,11 +671,30 @@ WLF scoring parameter가 바뀔 때만 WLF config version과 definition hash 기
 
 변경 상신은 `expectedActiveRuleVersion`을 필수로 비교하고 policy-pack active row lock 아래 pack당 DRAFT 1건만 허용한다. 현재 적용 projection과 screening은 모두 `status=ACTIVE && active=true`를 동시에 만족하는 정확히 1개 정책팩만 사용하며 inactive ACTIVE 행을 현재값으로 추정하지 않는다. 적용 시점은 호출자가 예약/소급 지정하지 않으며 checker EXECUTED 시각을 서버가 기록한다. checker 신원은 bo-api 인증 principal과 trusted `X-User-Subject`에서만 파생하고 client `checkerId`로 대체할 수 없다. 반려된 후보는 `REJECTED`로 종결되고 다음 policy-pack version과 WLF config/ruleVersion은 각각 전체 보존 이력의 최대 번호 다음으로 할당해 서로 다른 정의가 같은 식별자를 재사용하지 않는다. 설정 화면의 버전 이력은 각 행의 SANCTIONS/PEP 전체 profile을 펼쳐 보여 checker가 DRAFT의 6가중치·negative penalty·두 임계를 hash와 함께 검토할 수 있어야 한다.
 
+#### 10.3b PEP 축 분리 정책 (`PepAxisPolicy`, 정책 축 `wlf-pep-axis-v1`, 2026-08-12 사용자 결정)
+
+제재(SANCTIONS)와 PEP 를 같은 매칭 축에서 판정하지 않는다. 대상은 **`list_type=PEP` 뿐**이고 `SANCTIONS`·`RCA`·`LAW_ENFORCEMENT`·`ADVERSE_MEDIA`·`INTERNAL`·`VASP_RISK` 는 무변경이다 — 제재 매칭은 이 시스템의 **유일한 차단 경로**이므로 어떤 축에서도 완화하지 않는다. dilisense 편입으로 PEP 명단이 100만 건 규모가 되면서 흔한 이름은 전 세계 공직자 명단 안에 동명이인이 있는 것이 정상이 됐고, 이름 유사도만으로 승격하면 제재 매치가 오탐 속에 묻힌다.
+
+| 축(`target_type`) | 규칙 | 사유코드 |
+|---|---|---|
+| `CUSTOMER`(회원가입 CDD → 1차 RA) | 국적 또는 생년(年) 중 **1개 이상 코로보레이터**가 함께 일치할 때만 PEP 매치로 인정. 국적은 정확 일치(`countryScore = 1.0`), 생년월일은 `dobCorroboratorFloor`(기본 0.5 = 생년 일치) 이상. 어느 쪽 값이 없으면 성분이 0 이므로 자동으로 코로보레이터가 아니다 | `PEP_CORROBORATION_REQUIRED` |
+| `COUNTERPARTY`(해외송금 수취인) | 수취인은 구조적으로 이름과 송금 국가밖에 없고 그 국가는 등재 인물의 국적이 아니다 → 이름 일치를 **매치가 아니라 위험 신호**로만 기록. 점수·`matchedEntries` 계보는 보존되고 `status` 만 매치가 되지 않는다 | `PEP_NAME_RISK_SIGNAL` |
+
+**제재 회귀 방지 불변식(순서)**: 축 판정은 **후보 선택 이전**에 후보별로 계산한다(`ScoredCandidate.pepAxis`). 선택 후 강등하면 매치가 될 수 없는 PEP 후보가 실제 제재 후보를 밀어내고 최상위를 차지한 뒤 강등돼 제재 매치가 통째로 사라진다(미탐). 강등 대상 후보는 점수와 무관하게 `effectiveBandRank = 0` 이다.
+
+**설명가능성**: 억제된 결과에만 `scoreBreakdown.pepAxis` 감사 블록(`applied`·`policyVersion`·`axis`·`listType`·`decision`·`suppressedStatus`·`suppressedBand`·`riskScore`·`entryId`·`reviewThreshold`, CUSTOMER 축은 `matchedCorroborators`·`acceptedCorroborators`·`requiredCorroborators` 추가)이 붙고 사유코드가 발급된다. 억제되지 않은 결과에는 블록이 없어 응답이 바이트 동일하다. 정책값은 전부 `aegis.aml.wlf.pep-axis.*` 설정으로 노출되며 기본값이 정책 정본이고, `enabled=false` 하나로 이전 동작에 완전히 복귀한다. **충족 불가능한 설정**(요구 코로보레이터 수 > 인정 코로보레이터 수)은 모든 PEP 를 조용히 미탐으로 만들므로 **부팅 시점에 거부**한다.
+
+**실측(2026-08-12 라이브)**: 데모 회원 `POSSIBLE_MATCH` 6/9(66.7%) → 2/9(22.2%), 제재 회귀 0.
+
+#### 10.3c 점수 정밀도 — 저장 스케일과 비교 스케일의 분리 (`MatchScore.Raw`)
+
+`aml_screening_results.score` 는 `numeric(8,4)` 이고 응답·`scoreBreakdown` 도 같은 4자리 저장 스케일이다. 그러나 **임계 비교·밴드 판정·이름 강한 일치 floor·후보 순위는 반올림 전 원본 정밀도(`MatchScore.raw()`)로만 한다.** 정책팩 임계는 저장 그리드에 갇혀 있지 않아 승인된 프로필이 `0.65004` 같은 값을 가질 수 있고, 반올림은 점수를 올리는 만큼 **내리기도** 하므로(`0.650041 → 0.6500`) 반올림 값으로 밴드를 정하면 실제로는 임계를 넘은 매치가 탈락한다 — AML 에서 그 방향은 **미탐**이다. 반올림은 값객체 경계(`MatchScore` canonical constructor)에서 한 번만 적용해 "스크리닝이 계산한 점수 = PostgreSQL 이 보관하는 점수 = replay 가 읽는 점수"를 하나로 만들고, 반올림 모드는 DB 와 같은 `HALF_UP`(JDBC 가 보내는 십진 표현을 PostgreSQL 이 half-up 으로 맞추므로 Java 기본 `HALF_EVEN` 과 어긋난다)으로 고정한다. 두 스케일이 서로 다른 밴드를 낳을 때만 `scoreBreakdown.scorePrecision{storedScore, comparedScore, band, storageScaleBand, decidedOn:"FULL_PRECISION"}` 진단을 동봉한다(실 판정 경로·admin simulate 양쪽, 밴드가 일치하면 키 자체가 없어 응답 바이트 동일).
+
 ### 10.4 판정 상태
 
 | Status | 설명 |
 |---|---|
-| `NO_MATCH` | 매칭 없음 |
+| `NO_MATCH` | 매칭 없음. **PEP 축 분리(§10.3b)로 억제된 결과도 이 상태로 착지**하며 `confidenceBand=NO_MATCH` + `pepAxis` 근거 블록 + 사유코드를 함께 남긴다(점수·계보는 보존) |
 | `POSSIBLE_MATCH` | 검토 필요 |
 | `TRUE_MATCH` | 확정 매칭 |
 | `FALSE_POSITIVE` | 오탐 확정 |
@@ -692,7 +711,7 @@ WLF 스크리닝은 "실제 매칭할 명단이 준비돼 있는가"를 명단 �
 
 **③ durable rescreen 파이프라인(`application/usecase/rescreen/*`, DB §3.6b·§3.6c)**: source apply(신규 active_version) 후 갱신 명단으로 기존 screening 된 활성 subject 를 재검색한다(§3.1b P0-08 fan-out durable 패턴 재사용·rescreen 전용 분리). `RescreenBatchService` 가 afterCommit 에 job enqueue(자연키 `(tenant, source_code, to_version)` 멱등)→`RescreenTargetResolver` 가 영향 subject(가정 A3 conservative — 해당 source_type 이제껏 screening 한 활성 subject 전원 keyset 페이지, recall 우선 over-screen)를 target enqueue→`RescreenWorker` 가 원자 claim(`FOR UPDATE SKIP LOCKED RETURNING`→IN_PROGRESS lease)·exp backoff·`DEAD_LETTERED`·`RescreenSubjectScreener` 로 vault 복호 후 `WlfScreeningService.screen` 멱등 재실행(NAME 소실=`NOT_APPLICABLE`)→`RescreenOutcomeService` 가 직전 WLF 상태와 outcome diff(상승 NO_MATCH→POSSIBLE/TRUE=RA 재산정+TRUE_MATCH FDS feedback 재발행·하강 delist=로그만·전량 멱등)→`RescreenReconciliationService` 가 미완료·실패·SLA 초과를 주기 집계(silent 종료 금지). worker/reconciliation 은 cross-tenant claim 이라 elevated DB context(RLS §19.2c)를 최외곽 경계로 열되 각 store op 은 자기 tenant 를 실어 나른다.
 
-**④ capability/NOT_APPLICABLE — phase-2 경계(A1·A2)**: 실 PEP/RCA provider 연동(인증·paging·diff·SLA·fallback)은 phase-2 — phase-1 은 `MockWatchlistFeedAdapter` mock 유지, 필수 PEP/RCA 는 승인된 `NOT_APPLICABLE` waiver 로만 게이트 통과한다. 세분 jurisdiction 차등(국가별 mandatory)은 phase-2(A2 — 현재 tenant `defaultRegion` 단위, wildcard `'*'` 정책은 항상 적용).
+**④ capability/NOT_APPLICABLE — phase-2 경계(A1·A2)**: ~~실 PEP/RCA provider 연동(인증·paging·diff·SLA·fallback)은 phase-2 — phase-1 은 `MockWatchlistFeedAdapter` mock 유지~~ **(2026-08-12 부분 해제, 코드=truth)** — 상업 라이선스 소스 `DILISENSE_CONSOLIDATED` 가 **실 PEP 공급자로 연동·임포트된다**: 헤더 인증(`x-api-key`), 전량/delta 2-엔드포인트, per-entry `list_type` 파생(PEP·SANCTIONS·LAW_ENFORCEMENT·RCA), 스트리밍 인제스트(연동 §7.4). `MockWatchlistFeedAdapter` 는 라우터에 등록된 실 소스 코드 **이외**의 폴백으로만 남는다. 필수 PEP/RCA 정책을 이 소스로 충족시킬지(= `NOT_APPLICABLE` waiver 를 회수할지)는 테넌트별 필수 source 정책 운영 결정이며 **본 문서 미확정**이다. 세분 jurisdiction 차등(국가별 mandatory)은 계속 phase-2(A2 — 현재 tenant `defaultRegion` 단위, wildcard `'*'` 정책은 항상 적용).
 
 ---
 
@@ -1524,7 +1543,7 @@ CREATE TABLE aml_source_systems (
 );
 ```
 
-> 규제 보고·webhook·fds-feedback 아웃박스(`aml_outbox`)는 지원 인프라 테이블로 DB 설계서(`02-aml-db.md`)에 정의한다(§13.5.1·§15.8 참조). status enum `PENDING`/`DISPATCHING`/`DISPATCHED`/`FAILED`.
+> 규제 보고·webhook·fds-feedback 아웃박스(`aml_outbox`)는 지원 인프라 테이블로 DB 설계서(`02-aml-db.md`)에 정의한다(§13.5.1·§15.8 참조). status enum **5종** `PENDING`/`DISPATCHING`/`DISPATCHED`/`FAILED`/**`DEAD_LETTERED`**(V65 — 재시도 예산 소진 종료·DLQ, claim 대상 밖). 재시도 상한은 도메인 값객체 `OutboxRetryPolicy`(설정 `aegis.aml.outbox.max-attempts` 기본 5) 하나로 정의해 **릴레이 전이와 claim 술어 양쪽에 같은 빈으로 주입**하고, 클레임 소유권은 `claim_token`(V66) CAS 로 전이 3종(`markDispatched`·`markFailed`·`markDeadLettered`)이 검증한다 — 전이 계약은 `void → boolean` 이며 CAS 0행(다른 소유자가 이미 처리)은 예외도 성공도 아니어서 반환·계수한다. 상세 상태 기계는 연동 명세 §8.1.
 
 > **AML `failure_policy`(`MANUAL_REVIEW`/`FAIL_CLOSED`/`DELAY_ALLOWED`)는 FDS `fds_source_systems.fail_policy`(`FAIL_CLOSED`/`FAIL_OPEN`/`CASE_ONLY`, FDS 설계서 §11.6.10·D-14)와 별도 enum — 혼동 금지.** 컬럼명·값 집합이 서로 다르며 통합하지 않는다(서비스별 장애 의미론 상이). bo-web 표시명 매핑은 bo-api에서 정의한다.
 
@@ -2149,6 +2168,7 @@ STR 보고·검토 사실의 누설은 특정금융정보법 제4조의2에 따�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-08-12 | **PEP 축 분리·점수 정밀도·아웃박스 상태기계·dilisense 실 PEP 연동 역전파(코드=truth, aegis-aml `staging/round15` `e7d53836`·main `7e00b79d`·`beba9987`·`ac3b4faa`).** (1) **§10.3b 신설 — PEP 축 분리 정책(`PepAxisPolicy`, `wlf-pep-axis-v1`)**: `list_type=PEP` 한정(제재 무변경), CUSTOMER 축 코로보레이터(국적·생년) 요구, COUNTERPARTY 축 위험 신호 강등, **후보 선택 이전 판정 = 제재 회귀 방지 불변식**(`effectiveBandRank=0`), `pepAxis` 감사 블록, 설정 축·부팅 시 오설정 거부, 실측 6/9→2/9. (2) **§10.3c 신설 — 저장 스케일(`numeric(8,4)`)과 비교 스케일(`MatchScore.raw()`)의 분리**: 임계·밴드·이름 floor·후보 순위는 반올림 전 값으로만 판정(반올림이 임계를 내려 매치를 떨어뜨리던 미탐), 반올림은 값객체 경계 1회·모드 `HALF_UP`(DB 일치), 불일치 시 `scorePrecision` 진단. (3) **§10.4 `NO_MATCH` 행** — PEP 축 억제 결과의 착지 상태임을 명기. (4) **§15.8 아웃박스 註** — status **5종**(`DEAD_LETTERED`), 재시도 상한 단일 정의(`OutboxRetryPolicy`, 릴레이·claim 술어 양쪽 주입), `claim_token` CAS, 전이 계약 `void→boolean`. (5) **§10.5 ④ phase-2 경계 부분 해제** — `DILISENSE_CONSOLIDATED` 가 실 PEP 공급자로 연동·임포트되며 mock 은 미등록 소스 폴백으로만 남음(필수 source 정책의 waiver 회수 여부는 운영 결정·미확정). | 코드=truth. 근거=aml-svc `domain/screening/match/{PepAxisPolicy,MatchScore}`·`application/usecase/{WlfScreeningService,ScreeningOperationsService}`·`domain/outbox/OutboxRetryPolicy`·`domain/enums/OutboxStatus`·`adapter/out/feed/{WatchlistFeedRouter,DilisenseConsolidatedFeedAdapter}`. DB §3.15·§5.17·§7 V64~V67 · API §3.2 · integration §7.4·§8.1 · 기능정의서 §12-B.8 BR-007 동일 작업 단위 |
 | 2026-08-10 | **§15.7 Webhook(outbound) 행 — "런타임 등록 경로 없음" 근거 정정(코드=truth, aegis-aml main `a0d1e5d9`).** 아웃바운드 콜백 목적지·서명 시크릿(`aml_api_credentials`, `credential_type=WEBHOOK`)의 **런타임 등재·교체 REST 경로가 신설**됐다(admin `GET\|PUT /api/v1/admin/aml/webhook-credential` — 조회 `aml:case:read`/쓰기 `aml:admin:policy`, upsert·즉시 반영·4-eyes 없음, AES-GCM 암호문 저장). 종전 서술의 "런타임 등록 경로 없어"는 사실이 아니게 됐으나 **SSRF 검증 시점 결론(매 전송 직전 재검증만)은 불변** — 등재 시점 검증을 의도적으로 넣지 않았다(엔진 케이스 RA-C12 ⑦ 기대 보존). 포트·어댑터 경계·서명 공식·재시도/멱등·outbox 라우팅은 **무변경**이고 신규 Flyway 0. | 코드 truth=aml-svc `adapter/in/rest/WebhookCredentialAdminController`·`application/usecase/WebhookCredentialAdminService`·`application/port/out/WebhookCredentialAdminPort`·`adapter/out/persistence/WebhookCredentialAdminJpaAdapter`(릴레이 `HttpWebhookRelayAdapter` 무수정). API §2.7a·§8.3, DB §3.15, integration §3.4 동기화. |
 | 2026-08-01 | **레거시 TM 시나리오 정의 10종 제거 + `TmScenario` 닫힌 enum 폐기(코드=truth, refactor/remove-legacy-tm-scenarios, aml V61).** v9.21 확정 사실(TM 알림 발동 정본=CTR/STR 룰 카탈로그, F-025 실측)에 따라 거래 인입 경로에서 전혀 발동하지 않는 정의 10종을 관리 혼동 없이 제거한다. (1) **§6.2 패키지 레이아웃** — `domain/enums/TmScenario` 삭제(`scenarioCode` 자유형 String, 형식 `^[A-Z][A-Z0-9_]{2,64}$`·예약 코드 `CUSTOM_RULE` draft 거부), `application/port/out/TmScenarioStorePort` 시그니처 갱신(`findAllActive` 제거 — 실측상 이미 죽은 메서드, `findAll(tenantId)` list-all 신설, `find`/`findActive`/`findByScenario` 는 String 전환·존치). (2) **§12.1** — 닫힌 enum 10종 카탈로그 서술을 "V61 자유형 전환"으로 개정, 과거 hanpass ACTIVE 6종 시드는 역사적 기록으로 재표기. (3) **§21 Phase 8** — `AdvancedDomainEvaluationService` 시나리오 평가 limb 제거(`AdvancedDomainPack.tmScenario`/`caseType` 필드·`openReviewCase` 동반 제거) — 검토 케이스(TBML_REVIEW 등) 자동 개설 계약 소멸(EventFamily strict 게이트로 이미 휴면). EDD 트리거 시그널 평가는 존치. `CaseType` enum 값 자체는 무변경. | system-architect. 코드 truth=aml-svc `domain/tm/TmScenarioDefinition`·`application/port/out/TmScenarioStorePort`·`application/usecase/{TmScenarioService,AdvancedDomainEvaluationService}`·`domain/commerce/AdvancedDomainPack`·Flyway `V61`; DB §3.10a/§5.6/§7·API §2.5a/§2.7/§3.4a/§3.4c·기능정의서 §7.1 BR-010/§12-A.6/§12-B.3 동기화. 코드=truth. |
 | 2026-07-29 | **WLF 이름 강한 일치 검토 승격(escalation floor) 역전파.** §10.3a L662 결정 문장 개정 — 이름 성분 점수가 `highConfidenceThreshold` 이상이고 negative 신호가 0인 강한 이름 일치는 코로보레이터 유무와 무관하게 band를 `REVIEW`로 승격(사유 코드 `NAME_HIGH_CONFIDENCE`)하며 status는 band 파생을 유지함을 명문화, `AUTO_DISCOUNTED` 오탐 화이트리스트가 승격보다 우선함을 명기. 후보 0건 시 status·confidenceBand `NO_MATCH` 고정 문장은 불변. 후보 승자 선정 규칙에 승격 적격 후보(review band 미만·NO_MATCH band 초과 중간 순위, 동률 시 점수→entryId 안정 순서 불변)를 병기하고, `scoreBreakdown` 서술 문장을 감사 스냅샷 중첩 블록(`candidateStrategy`·`nameMatcher`·`nameEscalation`) 병기로 보정. | system-architect. 코드 truth=aml-svc WLF 스코어링 엔진(`domain`·`application/usecase/WlfScreeningService`). API §3.2·기능정의서 §12-B.8 BR-004 동일 작업 단위 개정. 엔진 케이스 카탈로그 WLF-C18 신규 검증 |
