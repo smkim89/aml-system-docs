@@ -605,6 +605,10 @@ RuleActionRequest(`POST /admin/fds/rules/{ruleId}/activate`, `POST /admin/fds/ru
 
 시뮬레이션은 활성 rule variable과 group-backed variable을 현재값으로 해석한 뒤 canonical event 표본을 재평가한다. 따라서 `valueRef`/`groupRef` 기반 룰의 예상 hit rate는 운영 변수·위험그룹 변경값을 반영한다.
 
+**피처 계산 범위(성능, 2026-08-15)**: 표본 재평가는 **후보 룰이 실제로 읽는 피처만** 계산한다. 종전에는 표본마다 전 피처를 계산해 이벤트당 6개 차원 velocity(6쿼리)·sameChannel 윈도우별 조회(10쿼리)·distinct velocity·마스터 조회가 반복됐고, 500 표본에서 DB 행 292,965건·37.0초가 소요돼 라이브 검증(verifier 30초)을 넘겼다(실측). 후보 룰의 조건 트리에서 참조 피처 키를 수집(`RuleFeatureKeys`)해 비싼 velocity 블록을 선택 계산하면 **1.5~2.9초**로 줄고, `estimatedHitRate`·`resultSummary` 는 **동일 값**이다(계산량만 감소·판정 불변, 실측 hitCount 41·hitRate 0.082 일치).
+
+키를 확정할 수 없는 룰(예 `valueRef` 사용)은 **전체 계산으로 폴백**한다 — 필요한 피처가 빠지면 룰이 조용히 미발동해 hit rate가 거짓으로 낮아지므로, 축소는 최적화일 뿐 계약이 아니다. 라이브 인입(탐지) 경로의 피처 계산 범위는 무변경이다.
+
 ### 5.9a RuleRecommendationRequest / Response (POST /admin/fds/rules/recommendations)
 
 룰 빌더의 **목표 적중률 → 단일 피처 임계값 역산** 추천. **read-only**(`fds_*` 영속·결재 없음). 모집단(분포·적중률)은 **거래(canonical event) 기준**이며, 윈도우 내 표본 **최대 500건 근사**다. 비수치 피처/빈 표본은 graceful(`sampleSize=0`). 응답은 **집계·임계값만** 반환(raw PII·개별 피처값 미반환).
