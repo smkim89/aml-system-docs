@@ -602,9 +602,9 @@ PK: `(tenant_id, case_id)`. V43 partial UNIQUE `ux_aml_cases_origin_alert(tenant
 | `closure_reason_code` | VARCHAR(64) | Y | NULL | | 종결(비제출) 사유 코드 — `REJECTED`/`CANCELLED` 전이 시 영속(설계서 §14.1a). `ctr_exemption_code`(CTR 면제 사유)와 **별개 의미·공존**. STR 미보고 사유 분포(API §2.7 `unreported-reasons`, PRD §12-B.3 ①)의 집계 원천. legacy 미영속 행은 통계에서 `UNSPECIFIED` 버킷(소급 seed 없음). 코드값(raw PII 아님). (T4 AML-ENG-04, V16 — **확정**) |
 | `evidence_hash` | VARCHAR(128) | Y | NULL | | 제출 manifest hash(§19.4) |
 | `subject_ref` | VARCHAR(256) | Y | NULL | | **CTR 멱등/집계 키** — 보고 주체(회원 UUID 등). `banking_day_key`와 함께 (테넌트,주체,영업일)당 CTR DRAFT 1건을 식별(V4). CTR/STR 통합, `CtrEvaluationService`. |
-| `banking_day_key` | DATE | Y | NULL | | **CTR 영업일 키** — 거래 instant 의 PHT(Asia/Manila) 캘린더 일자(정산/집계 축, `BankingCalendar.bankingDayKey`). 동일 영업일 현금거래를 하나의 CTR DRAFT 로 합산(V4). |
+| `banking_day_key` | DATE | Y | NULL | | **CTR 영업일 키** — 거래 instant 를 **테넌트 관할 시간대**(`aml_tenants.timezone`, V53)로 해석한 캘린더 일자(정산/집계 축, `BankingCalendar.bankingDayKey`). 동일 영업일 현금거래를 하나의 CTR DRAFT 로 합산(V4). 미바인딩·해석 불가 시 기존 기본값 `Asia/Manila` 폴백(2026-08-16 관할화). |
 | `report_amount` | NUMERIC(20,2) | Y | NULL | | **CTR 합산 금액** — freeze 된 서버 파생 PHP환산 합계(엔진 재계산 금지, BR-501). 동일 영업일 후속 현금거래 시 누적(CTR_DAILY 보완재, `accumulateCtr`)(V4). |
-| `due_at` | TIMESTAMPTZ | Y | NULL | | **CTR 법정 기한** — 거래 영업일 +5영업일 17:00 PHT(PH_AMLC policy pack, `BankingCalendar.dueAt`, CTR_DUE_BUSINESS_DAYS=5)(V4). |
+| `due_at` | TIMESTAMPTZ | Y | NULL | | **CTR 법정 기한** — 거래 영업일 +5영업일, **테넌트 관할 마감시각**(`aml_tenants.report_cutoff_time`, V69)을 그 관할 시간대(`timezone`)로 해석(`BankingCalendar.dueAt`, CTR_DUE_BUSINESS_DAYS=5)(V4). 마감시각 미설정은 기본 17:00 폴백이라 PH 는 종전과 동일한 +5영업일 17:00 PHT(2026-08-16 관할화). |
 | `trigger_ref` | VARCHAR(256) | Y | NULL | | **STR 멱등 키** — 의심 트리거 참조. (테넌트,트리거)당 STR DRAFT 1건을 식별(V5). CTR/STR 통합, `StrEvaluationService`. |
 | `str_reason_codes` | JSONB | Y | NULL | | **STR 사유코드 집합** — 발화된 의심 사유코드(`StrReasonCode`, §14 STR 8종)를 이 행에 누적 fold(제2 DRAFT 금지, UPSERT). 동일 트리거 후속 룰의 사유를 병합(V5). |
 | `amlc_submission_ref` | VARCHAR(128) | Y | NULL | | **AMLC 포털 실 lodgement 접수번호**(feature/aml-reports-amlc-migration, V58) — `PlaywrightAmlcSubmissionAdapter`(`AmlcSubmissionPort` 실 구현체)가 브라우저 자동화로 AMLC 포털에 직접 lodge 후 반환한 확인번호. `submitted_ref`(제출 manifest 해시)와 값이 다르며, `aml_report_submission_jobs.amlc_submission_ref`(§3.12a, 제출 job 회차의 동일 값 provenance 에코)와도 별개 컬럼. `RegulatoryReportService`(usecase) 는 이 값이 non-null 이면 어댑터를 재호출하지 않아 이중 lodge 를 방지한다(멱등). |
@@ -804,7 +804,7 @@ PK: `(tenant_id, currency)`. baseline 시드(멱등): `tenant_demo` PHP **500,00
 
 ### 3.22b `aml_ph_banking_calendar` — 필리핀 영업일 캘린더 (Flyway V3·V6, CTR/STR 통합)
 
-CTR/STR 보고 기한 산정을 위한 **필리핀 영업일/공휴일 override** store다. 주말(토/일)은 코드(`BankingCalendar.isWeekend`)에서 판정하고, 이 테이블에는 **공휴일 행(is_business_day=false)**과 근무 토요일 등 override 행만 둔다. `BankingCalendar.plusBusinessDays`가 이 캘린더를 소비해 `due_at`(거래 영업일 +5영업일 17:00 PHT)을 계산한다.
+CTR/STR 보고 기한 산정을 위한 **테넌트 관할 영업일/공휴일 override** store다(테이블명 `aml_ph_banking_calendar` 는 PH 전용이던 시절의 레거시 명칭이며, 행은 `tenant_id` 로 관할별로 분리된다 — 통화 프로파일 팩이 그 관할 공휴일을 적재한다). 주말(토/일)은 코드(`BankingCalendar.isWeekend`)에서 판정하고, 이 테이블에는 **공휴일 행(is_business_day=false)**과 근무 토요일 등 override 행만 둔다. `BankingCalendar.plusBusinessDays`가 이 캘린더를 소비해 `due_at`(거래 영업일 +5영업일, 관할 마감시각)을 계산한다(2026-08-16 관할화).
 
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
 |---|---|---|---|---|---|

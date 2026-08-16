@@ -1178,7 +1178,7 @@ BUILT_IN `conditions[]`는 aml-svc 평가 카탈로그의 조건 키·연산자�
 | `riskGrade` | enum | §5.2 최신 RA 등급 |
 | `nameHash` | string | 이름 HMAC(DB `name_hash`, 마스킹) |
 | `docHash` | string | 신분증번호 HMAC(DB `doc_hash`, 마스킹) |
-| `kycEvidence` | object | KYC checklist current-state(DB `kyc_evidence` JSONB, 원문 아님) — `{ occupation, sourceOfFunds, declaredIncomeBand, kycLevel, residenceCountry, kycVerifiedAt }`. `declaredIncomeBand` 출력은 canonical 입력 4종에 더해 내부 projection sentinel `UNKNOWN`이 가능하다(입력 enum 확장 아님). `kycVerifiedAt`은 §4.3 실사 완료 시점으로 ISO-8601 문자열을 verbatim 반영(파싱·재포맷 없음, 비-PII) |
+| `kycEvidence` | object | KYC checklist current-state(DB `kyc_evidence` JSONB, 원문 아님) — `{ occupation, sourceOfFunds, declaredIncomeOperator, declaredIncomeAmount, declaredIncomeCurrency, declaredIncomePeriod, declaredIncomeBand, kycLevel, residenceCountry, kycVerifiedAt }`(숫자 신고 4키는 2026-08-16 추가, 신고한 경우에만 존재). `declaredIncomeBand` 출력은 canonical 입력 4종에 더해 내부 projection sentinel `UNKNOWN`이 가능하다(입력 enum 확장 아님). 단 **숫자로 신고한 회원에게는 `UNKNOWN` 을 부여하지 않는다** — 소득을 어떤 형태로도 신고하지 않았을 때만 미상이다(2026-08-16). `kycVerifiedAt`은 §4.3 실사 완료 시점으로 ISO-8601 문자열을 verbatim 반영(파싱·재포맷 없음, 비-PII) |
 | `nextReviewDueAt` | string(date-time) | 주기적 재확인 예정(DB `next_review_due_at`) |
 | `nationality` | string\|null | CDD에서 보존한 PII-safe ISO 국적 코드 |
 | `country` | string\|null | 고객 원장의 ISO 국가 코드 |
