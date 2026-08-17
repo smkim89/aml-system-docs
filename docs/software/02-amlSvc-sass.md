@@ -230,6 +230,8 @@ watchlist source, country risk, WLF rule, RA model, TM scenario는 모두 versio
 
 **tenant 관할·통화 바인딩(P0-16, `policy_pack_code` 와 직교).** hanpass-ph 실배포(tenant_demo)는 **PH 관할·PHP 통화**다(`aml_tenants.jurisdiction='PH'`·`base_currency='PHP'`·`reporting_currency='PHP'`·`timezone='Asia/Manila'`, DB §3.1 V53). 여기서 **`policy_pack_code` 는 여전히 `KR_DEFAULT`(코드값)이나 실제 관할은 `PH`** 로, 하나의 배포에서 코드값 명칭(`KR_DEFAULT`)과 규제 관할(`PH`)이 **공존**한다 — 코드값은 레거시 pack 식별자일 뿐 관할 정본이 아니다(구 "hanpass-ph=`KR_DEFAULT` 단일 baseline·상시 phpEquivalent" 서술 정정). 중립 인입(`NeutralTransactionEventService`)은 통화·발신국을 **tenant 행 바인딩**에서 해소한다: `TenantPolicyResolver.resolve(tenant, asOf)`→`TenantPolicyBinding`(jurisdiction·baseCurrency·reportingCurrency·timezone·policyPackCode·policyPackVersion·effectiveFrom)이 구 service-global PH/PHP `@Value` 기본을 대체하는 **단일 정본**이며, corridor 발신국=`jurisdiction`(예 `PH-PH`·`KR-KR`), 금액 payload 는 **통화중립 `baseEquivalent`+`baseCurrency` 를 항상 기록**하되 `phpEquivalent` 는 **`base_currency='PHP'` 일 때만 생성**한다(PH-native). 미바인딩/충돌(핀 Policy Pack revision 미존재·비-effective 포함)은 `TenantPolicyUnboundException`→**422 `AML.TENANT_POLICY_UNBOUND`** 로 인입 fail-closed(오귀속에 의한 오보고·미탐 차단). 활성 tenant 미바인딩은 prod startup(`ProductionSafetyValidator`)에서도 검증한다. **CC2 phase-2 경계(완전 FX conversion·A1)**: cross-currency rate/source/asOf/rounding/hash 는 phase-2 — phase-1 은 native 통화만이라 CTR/금액 TM 임계가 `base_currency`-native(PHP)로 해석된다. 따라서 **KRW 테넌트(2테넌트 테스트용)의 CTR/금액 TM 룰은 미발동**하며, PHP-native 임계가 KRW 금액에 잘못 적용돼 **가짜 PH CTR 이 누출되는 일이 없음**을 phase-1 이 보장한다. evidence 는 핀 Policy Pack revision 을 `policyPack{code·version·effectiveFrom·jurisdiction·baseCurrency·reportingCurrency}` fragment 로 고정해 제출·screening·RA·TM 이 동일 revision 을 지시한다(DB §3.1 §19.2 인접·integration §3.1d). KR 등 타 관할·통화 tenant 는 REST 바인딩(`PATCH /api/v1/admin/aml/tenants/{id}/policy-binding`, API §2.7)으로 등록하고 bo-api tenant shadow 관할·통화 동기는 후속이다.
 
+활성 binding의 `timezone`은 규제 일경계용 **필수 유효 IANA ZoneId**다. PATCH null·blank·invalid timezone은 write 전에 `400 AML.VALIDATION_ERROR`로 거절하고, nullable migration으로 남은 legacy missing/invalid timezone은 `TenantPolicyUnboundException`→`422 AML.TENANT_POLICY_UNBOUND`로 인입을 거절한다(Manila 기본값 금지). `report_cutoff_time`은 nullable legacy compatibility를 유지하며 timezone의 대체값이 아니다.
+
 ---
 
 ## 6. 엔진 아키텍처
@@ -1643,7 +1645,7 @@ CREATE TABLE aml_tenants (
   policy_pack_version VARCHAR(32),    -- P0-16 V53 활성 Policy Pack revision 핀(evidence 고정·미존재/비-effective→422)
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
--- P0-16 마이그레이션(V53): jurisdiction/base_currency/reporting_currency/timezone/policy_pack_version nullable additive 추가.
+-- P0-16 마이그레이션(V53): jurisdiction/base_currency/reporting_currency/timezone/policy_pack_version nullable additive 추가. 활성 binding의 timezone은 유효 IANA ZoneId 필수이며 legacy null/invalid는 422 fail-closed.
 -- tenant_demo backfill=PH/PHP/PHP/Asia/Manila + policy_pack_version=활성 revision 서브쿼리 핀(활성 pack 부재 시 NULL→fail-closed).
 -- TenantPolicyResolver→TenantPolicyBinding 이 corridor·통화·임계 해석·evidence 고정의 단일 정본(구 service-global PH/PHP @Value 대체).
 -- 마이그레이션: 구 isolation_mode(SHARED/SCHEMA/DB) 컬럼은 deployment_model로 교체 후 폐기한다.
