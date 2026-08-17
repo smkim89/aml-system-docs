@@ -249,6 +249,7 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 ### 4.5 Evidence API (외부) — `fds:evidence:export`
 | 메서드 | 경로 | 설명 | scope | 4-eyes |
 |---|---|---|---|---|
+| GET | `/api/v1/evidence/fds/customer-profiles/{memberRef}` | FDS에 저장된 AML CDD 비-PII 프로필 read-back. 응답은 `{subjectRef,nationality,country,registeredAt,kycCompletedAt,kycLevel,dataScope}` exact allowlist이며 행 부재는 404. 신고소득·성명·DOB·신분키·raw payload는 미노출 | `fds:case:read` | — |
 | GET | `/api/v1/evidence/fds/cases/{caseId}/timeline` | case 증적 timeline | `fds:evidence:export` | — |
 | GET | `/api/v1/evidence/fds/reports/decisions` | 기간별 decision 리포트(`from`,`to`) | `fds:evidence:export` | — |
 | GET | `/api/v1/evidence/fds/reports/rule-hits` | 기간별 룰 hit 리포트(`from`,`to`, `totalDecisions`, `hitsByRuleId{firedCount,blockedOrHeldCount,caseCount,falsePositiveCount}`) | `fds:evidence:export` | — |
@@ -256,9 +257,9 @@ hanpass-ph 금액 임계 룰은 거래 금액의 **PHP 환산값** feature `tran
 | GET | `/api/v1/evidence/fds/exports/{exportId}` | export 상태·manifest hash | `fds:evidence:export` | — |
 | GET | `/api/v1/evidence/fds/exports/{exportId}/download` | 생성 파일 다운로드(감사 기록). **P0-12 불변**: 저장된 `artifact_bytes` 를 그대로 serve(재렌더 금지)하고 `object_checksum==SHA-256(stored bytes)` 재계산·비교 + `manifest_hash` 존재를 검증, 불일치=at-rest 변조로 차단(409 `FDS-APPROVAL-PAYLOAD-CHANGED`)+`EXPORT_TAMPER` 감사 | `fds:evidence:export` | — |
 
-> 이 표의 6개 endpoint는 모두 FDS servlet machine-auth filter 적용 대상이며, 기존 FDS route의
+> 이 표의 7개 endpoint는 모두 FDS servlet machine-auth filter 적용 대상이며, 기존 FDS route의
 > credential/service v1/v2 이중 전환을 유지한다. API key/HMAC 인증 실패는 controller 전 401,
-> credential에 `fds:evidence:export`가 없으면 403이다. export POST/download 감사 actor는 signed
+> customer-profile read는 `fds:case:read`, 나머지 evidence/export 경로는 credential에 `fds:evidence:export`가 없으면 403이다. export POST/download 감사 actor는 signed
 > `X-User-Subject`의 verified request attribute에서만 파생한다.
 
 > **불변 evidence 다운로드 무결성(P0-12, 코드=truth — `EvidenceExportService.download`).** download 는 READY 시 고정된 `artifact_bytes`(DB §5.31)를 재렌더 없이 그대로 serve 하고, serve 전 (1) `object_checksum == SHA-256(stored bytes)` byte-level 재계산·비교 (2) `manifest_hash` 존재를 검증한다. 원천 업무 row(`query_params` 등)가 바뀌어도 다운로드 bytes·hash 는 불변이다. **주의**: FDS 는 manifest_hash 를 stored bytes 에서 재유도하지 않는다 — manifest_hash 는 **논리 콘텐츠(canonical logical content + `export_format` enum) 위 SHA-256**(POI/OpenPDF 바이너리 메타 비결정성 배제, §16.4 정본)이고 stored bytes 의 무결성 앵커는 byte-level `object_checksum` 이다(두 앵커는 별개). 불일치 = at-rest 변조 → `ExportTamperException` 으로 차단(§3.4 **409 `FDS-APPROVAL-PAYLOAD-CHANGED`** 기존 코드 재사용, 신규 에러코드 없음)+`EXPORT_TAMPER` 감사(tamper alert). **V21 이전(pre-V21) row 는 stored bytes 가 없어 1회 결정적 render 폴백**(하위호환). FDS export 는 현재 메타데이터 렌더 수준이며 실 decision/case/timeline row 포함은 **phase-2 BLOCKED**.
@@ -1426,6 +1427,37 @@ components:
           allOf: [ { $ref: '#/components/schemas/DecisionResponse' } ]
           nullable: true
 paths:
+  /evidence/fds/customer-profiles/{memberRef}:
+    get:
+      summary: Persisted non-PII AML CDD profile evidence
+      security: [ { ApiKeyHmac: [] }, { OAuth2: ['fds:case:read'] } ]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/WorkspaceId'
+        - name: memberRef
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: exact masked persisted profile projection
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [subjectRef, nationality, country, registeredAt, kycCompletedAt, kycLevel, dataScope]
+                properties:
+                  subjectRef: { type: string }
+                  nationality: { type: string, nullable: true }
+                  country: { type: string, nullable: true }
+                  registeredAt: { type: string, format: date-time, nullable: true }
+                  kycCompletedAt: { type: string, format: date-time, nullable: true }
+                  kycLevel: { type: string, nullable: true }
+                  dataScope: { type: string, nullable: true }
+        '401': { description: unsigned or invalid canonical machine signature }
+        '403': { description: valid signature without fds:case:read }
+        '404': { description: profile absent in the exact tenant/workspace scope }
   /internal/v1/fds/customer-profiles/{memberRef}:
     servers: [ { url: https://api.fds.example } ]
     put:
@@ -1953,6 +1985,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-08-17 | v4.21 | **FDS 고객 프로필 마스킹 evidence read-back 추가.** `GET /api/v1/evidence/fds/customer-profiles/{memberRef}`를 `fds:case:read`·canonical machine-auth·tenant/workspace exact scope로 추가하고, 응답을 persisted 비-PII 7필드 `{subjectRef,nationality,country,registeredAt,kycCompletedAt,kycLevel,dataScope}`로 닫았다. 부재는 404이며 신고소득·성명·DOB·신분키·raw payload는 DTO에 존재하지 않는다. 기존 internal PUT/write 우선순위·FDS-C01~C34·룰/임계는 무변경이다. | 코드 truth=`CustomerProfileEvidenceController`·`CustomerProfileQueryService`·`EvidenceMachineAuthFilterChainTest`; 기존 FDS-C13 profile/key-chain의 read-back 증거 강화 |
 | 2026-07-20 | v4.20 | **위험그룹 멤버 add/remove/extend 4-eyes 폐지·즉시 반영 역전파(코드=truth, fix/fds-risk-group-member-immediate-apply — 사용자 확정 방향).** §4.7 표 member POST/DELETE 행의 4-eyes `필수` 마커 제거·"즉시 반영(200, `GroupMemberMutationResponse`)" 로 갱신, 신규 note로 `GroupMemberMutationResponse{groupId,status="APPLIED",approvalRequestId=null,member}` 응답 계약·`GROUP_UPDATE` 감사·`fds:admin:group`/`SFDS_GROUP:OPERATE` 인가 불변·레거시 in-flight 결재 실행 잔존을 명문화(master rename/비활성·merchant normalize 4-eyes는 무변경). §5.10 canonical ADD/REMOVE payload 주석을 "즉시 적용 `GROUP_UPDATE` afterHash 산출 + 레거시 in-flight 결재 실행 전용"으로 재서술. §8 4-eyes 표 `POST`·`DELETE .../members` 행을 취소선 폐지 표기로 갱신하고 규칙 문단의 ADD/REMOVE generation 결속 서술을 레거시 실행 한정으로 조정. | 코드 truth=fds-svc `application/usecase/RiskGroupAdminService`(addMember/removeMember)·`adapter/in/rest/RiskGroupAdminController`·`adapter/in/rest/dto/GroupMemberMutationResponse`·bo-api `FdsRuleGroupService`/`FdsRuleGroupController`. `docs/qa/engine-rule-cases.md` FDS-C33 참조 |
 | 2026-07-19 | v4.19 | **velocity 윈도우 1y(365일) 확장 역전파(코드=truth, PLAN 20260719-fds-rule-window-1y-value-hints U1·U9 — 사용자 지시로 F-006 잠금 경로 append-only 해제, F-006 윈도우 닫힌 집합 계약 additive 확장).** §5.8 velocity window 화이트리스트 note 에 1y 확장 문단 신설 — `ALLOWED_WINDOWS` 9종→**10종** `{1m,5m,10m,30m,1h,6h,24h,7d,30d,1y}`(`1y`=365일 고정·윤년 미보정, 반개구간 동일, `365d`/`1w`/`2y` 등은 여전히 파싱 거부), velocity count/sum/distinct_count·sameChannel scope 전 경로 동형 지원, evidence 윈도우 해석(`RuleEvidenceWindowResolver`) `y` 단위 인식(1y 룰 SINGLE_TX 강등 방지). 룰 빌더(`/fds/rules/new`) 윈도우 드롭다운 10종·기준값 예시 placeholder(프론트 i18n) 언급. 신규 카탈로그 대표 키 6종은 DB V29(01-fds-db.md). 엔드포인트·기존 9윈도우 계약 재작성 없음(additive). | 코드 truth=fds-svc `domain/rule/RuleDslParser`(ALLOWED_WINDOWS)·`domain/rule/RuleEvidenceWindowResolver`(parseWindow 'y')·`adapter/out/persistence/CanonicalEventJpaRepository`(velocityWindows)·`adapter/out/feature/FeatureComputeAdapter`(WINDOWS)·DB V29. bo-web `lib/fds-rule-conditions.ts`(VELOCITY_WINDOWS)·`components/common/MetricConditionBuilder.tsx`(윈도우 셀렉터). aegis-aml `docs/aml-data.md` §11.7.8(20260719 개정). |
 | 2026-07-18 | v4.18 | **단일 호출 응답 판정 동봉(코드=truth, PLAN 20260718-sync-verdict-in-response U2/U9 — 사용자 지시로 F-005 해제, v4.17 전제 반전).** ① §4.1 `POST /fds/events` 행 재개정 — 직전(v4.17) "`ACCEPTED`=전송 수리(업무 판정 아님), 판정 정본=`/decisions/evaluate`" 서술을 **철회**하고 "저장 직후 ACTIVE inline 룰을 동기 평가해 응답에 `decision`(additive) 동봉, 202=수리+판정 동봉" 으로 재개정. `:batch` 행도 per-item `decision` 동봉으로 동형 개정. `/decisions/evaluate`·`/events/evaluate` 행에 **event-scope 재사용 게이트**(동일 이벤트 inline 결정 존재 시 재사용, 신규 decision 행 생성 금지) 1줄 추가 — 두 엔드포인트 자체 계약(요청/응답 스키마·상태코드)은 불변. ② §5.2 `IngestEventResponse` 표를 실제 6필드(`eventId`/`status`/`idempotencyReplayed`/`code`/`reason`/`decision`)로 정합하고 신규 `DecisionSummary`(`decisionId`/`decision`/`riskScore`/`matchedRules[]`) 스키마 신설 — 멱등 replay 는 저장된 동일 결정 재표현, reject/duplicate/평가 실패(fail-safe)는 `decision=null`. 거절 없음 원칙 명문화. 엔드포인트 경로·기존 5필드·422/409/originator 계약 재작성 없음(additive 필드 1개 추가만). | 코드 truth=fds-svc `adapter/in/rest/dto/IngestEventResponse`(`DecisionSummary`/`MatchedRule`)·`adapter/in/rest/dto/BatchIngestResponse`·`application/usecase/EvaluateDecisionService`(event-scope 재사용 게이트)·`application/usecase/IngestAndEvaluateService`·`adapter/in/rest/IngestController`. aegis-aml `docs/aml-data.md` §11.7.3(20260718 재개정). |
