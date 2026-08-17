@@ -307,6 +307,12 @@ stateDiagram-v2
 모든 테이블은 스키마 `fds` 소속. 격리 컬럼 `tenant_id`, `workspace_id`는 §2 규칙으로 전 테이블 공통 적용(아래 표에서 명시). 감사 컬럼 `created_at`/`updated_at`은 운영 테이블 공통.
 
 ### 5.1 fds_tenants — 서비스 마스터(테넌트=서비스)
+
+> 선택 currency-profile의 FDS repeatable Flyway 팩은 exact profile tenant의 배포 metadata만
+> `ACTIVE`/`MANAGED_DEDICATED`/onboarding `ACTIVE`, profile 관할·규제통화, 전체 `KR_BASE`
+> compliance baseline으로 `ON CONFLICT DO NOTHING` bootstrap한다. 고객·이벤트는 만들지 않고
+> 기존 운영자 tenant row도 덮어쓰지 않는다. BO onboarding API/state-machine의 일반 소유권은
+> 변경하지 않는다.
 > **계층**: 기관(institution) → 서비스(테넌트, `tenant_id`) → 워크스페이스(`workspace_id`). `fds_tenants`의 1행 = 한 서비스(테넌트). 상위 기관 1개가 여러 서비스를 운영한다(**1 기관 : N 서비스**). 기관 식별은 `institution_ref`로 참조한다.
 
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
