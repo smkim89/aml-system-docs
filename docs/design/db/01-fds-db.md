@@ -600,6 +600,15 @@ case의 다중 data-scope(다대다).
 | created_by / updated_by | VARCHAR(128) | Y | | |
 | created_at / updated_at | TIMESTAMPTZ | N | | |
 
+> **통화 프로필 배포 bootstrap**: `config/currency-profiles/<code>.json`에서 생성한
+> `fds-svc` 전용 repeatable Flyway 팩은 선택된 프로필의 exact tenant/default workspace에
+> `default-ruleset` master 1행만 `active_version=NULL`, actor=`system:currency-profile`로
+> `ON CONFLICT DO NOTHING` 삽입한다. 실제 `fds_rules`·`fds_rule_versions`·approval은 만들지
+> 않으며, 룰 초안·simulation·활성화는 기존 Admin REST 및 maker-checker 4-eyes가 소유한다.
+> 현재 per-rule activation은 master `active_version`을 갱신하지 않으므로 이 값은 이번
+> 범위에서 NULL로 남고 향후 owner는 미정의다. 기존 PHP/운영자 rule-set metadata는
+> repeatable 재적용으로 덮어쓰지 않는다.
+
 ### 5.17 fds_rules
 | 컬럼 | 타입 | NULL | 제약 | 설명 |
 |---|---|---|---|---|
