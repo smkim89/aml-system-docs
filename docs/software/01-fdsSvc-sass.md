@@ -96,7 +96,7 @@ hanpass-ph FDS는 hanpass-ph가 운영하는 송금·월렛 거래를 대상으�
 | 모듈 | 구현 컴포넌트(예) | 설명 |
 |---|---|---|
 | Ingest | `IngestEventService`, `adapter/in/rest`(`/events`), `adapter/in/sqs` | hanpass-ph 소스(remit/domestic/walletchg/wallet) 이벤트 수신·멱등·검증 |
-| Feature Compute | `FeatureComputeAdapter`(`FeatureComputePort`) | 거래·채널·subject·velocity feature + `transaction.phpEquivalent`(PHP 환산) materialize |
+| Feature Compute | `FeatureComputeAdapter`(`FeatureComputePort`) | 거래·채널·subject·velocity feature + 서버 파생 `amountBase`/전 통화 `baseEquivalent`/PHP-only `phpEquivalent` materialize |
 | Rule Engine | `RuleEngine`(domain/rule), `RuleAdminService`, `RuleSimulationService` | DSL 기반 룰 평가, threshold, velocity, group match |
 | Decision Engine | `EvaluateDecisionService` | `ALLOW`/`BLOCK`/`REVIEW`/`CHALLENGE` 등(`DecisionOutcome`) 결정 |
 | Action Router | `ActionRelayService`, `ActionEmissionService`, `ActionOutboxPort` | capability 기반 block/hold/cancel/release/case-only action outbox 전달 |
@@ -525,7 +525,7 @@ hanpass-ph 해외송금(`remit-svc`) 인입 예시(`POST /api/v1/fds/events`):
 }
 ```
 
-> `transaction.phpEquivalent`(결제액 PHP 환산)은 캐논 typed 컬럼이 아니라 `canonicalPayload.transaction.phpEquivalent`로 운반돼 `FeatureComputeAdapter`가 룰 feature `transaction.phpEquivalent`로 노출한다(부재/파싱불가 시 미노출, fail-safe). 룰 임계는 PHP 환산값으로 발화한다(§10.2). 캐논 스키마 정본에는 미정의 — 데모 grounding feature(예정).
+> 규제통화 금액은 원천 payload 환산값을 읽지 않고 `RegulatoryAmountPolicy`가 거래 leg에서 서버 파생해 typed `amount_base/base_currency`로 저장한다. `FeatureComputeAdapter`는 이 단일 원천을 `transaction.amountBase`와 통화중립 `transaction.baseEquivalent`로 전 통화에 노출하며, `transaction.phpEquivalent`는 규제통화가 PHP인 경우에만 legacy alias로 같은 값을 노출한다. 파생 실패 시 세 피처 모두 미노출(fail-safe)이다.
 
 ### 8.3 필수 필드
 
@@ -665,7 +665,7 @@ hanpass-ph 해외송금(`remit-svc`) 인입 예시(`POST /api/v1/fds/events`):
 | Group | blacklist, whitelist, watchlist, mule network group |
 | AML | sanction hit, PEP, structuring(위임 후보) |
 
-> `transaction.phpEquivalent`는 `FeatureComputeAdapter`가 `canonicalPayload.transaction.phpEquivalent`에서 독해해 노출하는 hanpass-ph grounding feature이다(부재 시 미노출). `RiskGroup`(watchlist/allowlist) 매칭은 `GroupMembership`로 룰에 노출된다.
+> 규제통화 금액은 canonical payload 환산값을 읽지 않는다. 서버 파생 typed `amount_base`가 `transaction.amountBase`와 전 통화 `transaction.baseEquivalent`의 단일 원천이며, PHP 테넌트에서만 `transaction.phpEquivalent`를 legacy alias로 추가 노출한다. 파생 실패 시 모두 미노출한다. `RiskGroup`(watchlist/allowlist) 매칭은 `GroupMembership`로 룰에 노출된다.
 >
 > no-code 화면은 `측정항목 비교/시간창 집계` 두 추상 종류를 먼저 고르게 하지 않는다. 실제 enabled catalog를 카테고리별 첫 select로 직접 노출하고, subject count/sum 및 receiveCountry/channelType distinct의 10m/1h/6h/24h materialized key를 일반 `cmp` leaf로 컴파일한다. 조건 그룹은 최대 3단계 AND/OR 중첩이며 엔진의 폐쇄 `RuleDslParser`가 그대로 평가한다.
 >
