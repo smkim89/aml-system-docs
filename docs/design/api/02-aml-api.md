@@ -1209,6 +1209,8 @@ BUILT_IN `conditions[]`는 aml-svc 평가 카탈로그의 조건 키·연산자�
 >
 > **bo-api `UNKNOWN` pass-through와 소득 배율.** 엔진 `kycEvidence.declaredIncomeBand=UNKNOWN`은 BO aggregate에도 그대로 전달되고 Java/read model의 `transactionActivity.incomeMultiple`은 `null`이다. 기존 `@JsonInclude(NON_NULL)` producer JSON에서는 이 component key를 생략한다. bo-web consumer는 key 생략과 explicit null을 모두 “배율 산출 불가”로 처리한다. `UNKNOWN`에는 band 상한이 없으므로 월평균 거래액을 나눌 분모를 합성하지 않는다. 화면은 이를 정상/정합 배율로 오인하지 않고 배율을 표시하지 않으며, band 자체는 등록된 ko/en 라벨(`미상`/`Unknown`)로 표시한다.
 
+> **bo-api `transactionActivity.incomeMultiple` numeric-first 계약(2026-08-17, 코드=truth).** BO aggregate는 기존 공개 `kycEvidence` 숫자 4키(`declaredIncomeOperator`/`declaredIncomeAmount`/`declaredIncomeCurrency`/`declaredIncomePeriod`) 중 하나라도 있으면 공유 `DeclaredIncomePolicy`로 숫자 tuple을 해석한다. incomplete·malformed·하한-only 또는 activity currency 불일치는 `incomeMultiple=null`이고 legacy band로 폴백하지 않는다. **네 키가 모두 없을 때만** legacy band 상한을 사용한다. 유한 양수 resolution·양수 `monthlyAvgAmount`·같은 currency일 때만 `monthlyAvgAmount / declaredIncomeMonthly`를 scale 2 HALF_UP으로 계산한다. DTO/JSON key 추가는 없으며, 기존 `incomeMultiple` nullable·`NON_NULL` 생략 계약은 불변이다.
+
 `ActivitySummaryDto`(GET `/evidence/aml/customers/{customerRef}/activity-summary` 응답 — EDD 소득정합성 판단 재료, read-only 수치 집계, raw PII 미노출):
 
 | 필드(엔진 wire) | 타입 | 설명 |
