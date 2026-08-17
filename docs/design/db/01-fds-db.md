@@ -5,7 +5,7 @@
 > 공통 inbound 인증 정본: [`../api/00-common-machine-auth.md`](../api/00-common-machine-auth.md) (wire v2·credential version·nonce replay 의미론).
 > 책임 서비스: **`services/fds-svc`** (Java 25, Spring Boot 3.5.x, 헥사고날, `adapter/out/persistence`). AML 규제 케이스는 `aml-svc`, 결재·감사·IAM 운영은 `bo-api`가 별도 스키마로 보유한다.
 >
-> **대상 시스템 = hanpass-ph**: 한국→필리핀 해외송금(`CROSS_BORDER_REMIT`) + 필리핀 국내송금(`DOMESTIC_REMIT`) + 지갑(월렛충전 `CASH_IN`·월렛결제 `WALLET_PAYMENT`·ATM/지갑출금 `WALLET_WITHDRAWAL`) 5거래유형의 AML/FDS RegOps 백오피스. 운영 테넌트는 단일(`tenant_demo` = hanpass-ph). 본 문서는 그 데이터 모델을 실제 저장소 Flyway(V1~V16)·도메인 enum과 1:1로 확정한다.
+> **대상 시스템 = hanpass-ph + 통화 프로필 배포**: 한국→필리핀 5거래유형을 기본으로 하며 AUD/KRW/JPY 분리 배포 metadata를 지원한다. 본 문서는 실제 저장소 Flyway(V1~V31)·도메인 enum과 1:1로 확정한다.
 
 ## 목차
 1. [범위·원칙](#1-범위원칙)
@@ -307,6 +307,12 @@ stateDiagram-v2
 모든 테이블은 스키마 `fds` 소속. 격리 컬럼 `tenant_id`, `workspace_id`는 §2 규칙으로 전 테이블 공통 적용(아래 표에서 명시). 감사 컬럼 `created_at`/`updated_at`은 운영 테이블 공통.
 
 ### 5.1 fds_tenants — 서비스 마스터(테넌트=서비스)
+
+> 선택 currency-profile의 FDS repeatable Flyway 팩은 exact profile tenant의 배포 metadata만
+> `ACTIVE`/`MANAGED_DEDICATED`/onboarding `ACTIVE`, profile 관할·규제통화, 전체 `KR_BASE`
+> compliance baseline으로 `ON CONFLICT DO NOTHING` bootstrap한다. 고객·이벤트는 만들지 않고
+> 기존 운영자 tenant row도 덮어쓰지 않는다. BO onboarding API/state-machine의 일반 소유권은
+> 변경하지 않는다.
 > **계층**: 기관(institution) → 서비스(테넌트, `tenant_id`) → 워크스페이스(`workspace_id`). `fds_tenants`의 1행 = 한 서비스(테넌트). 상위 기관 1개가 여러 서비스를 운영한다(**1 기관 : N 서비스**). 기관 식별은 `institution_ref`로 참조한다.
 
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
@@ -411,7 +417,7 @@ stateDiagram-v2
 | currency | VARCHAR(12) | Y | | | |
 | send_amount | NUMERIC(24,8) | Y | | | 송금 leg 금액(소스 제공값) — `transaction.sendAmount` 피처(V25, PLAN 20260717 R2) |
 | receive_amount | NUMERIC(24,8) | Y | | | 수취 leg 금액(소스 제공값) — `transaction.receiveAmount` 피처(V25) |
-| amount_base | NUMERIC(24,8) | Y | | | 규제통화(데모 `PHP`) 환산 — **서버 파생**(`RegulatoryAmountPolicy`, `fds.ingest.regulatory-currency` 기준 send/receive leg 중 규제통화 leg 채택, 미파생 시 null fail-safe). velocity SUM·`transaction.amountBase`/`phpEquivalent` 피처 단일 원천(PLAN 20260717 R2). 구 base 통화(USD)에서 규제통화로 전환 |
+| amount_base | NUMERIC(24,8) | Y | | | tenant 규제통화 금액 — **서버 파생**. velocity SUM·`transaction.amountBase`·전 통화 `baseEquivalent` 단일 원천, PHP에서만 `phpEquivalent` alias 추가. 미파생 시 null fail-safe |
 | base_currency | VARCHAR(12) | Y | | | base 통화 코드(서버 파생 = 규제통화, 데모 `PHP`) |
 | send_country | VARCHAR(2) | Y | | | corridor 출발국(ISO-3166-1 alpha-2). cross-border(`remit-svc`/`inbound-svc`)에서 채움 |
 | receive_country | VARCHAR(2) | Y | | | corridor 도착국. cross-border에서 채움 |
@@ -425,7 +431,7 @@ stateDiagram-v2
 
 > raw payload 미저장. `canonical_payload`는 PII 제거 후. 식별자는 모두 token/hash.
 > **corridor / 규제통화 정규화(hanpass-ph 재그라운딩, §5.3a)**: cross-border 정규 이벤트(`remit-svc`/`inbound-svc`, `channel_type=CROSS_BORDER_REMIT`/`INBOUND_REMIT`)는 corridor를 `send_country`/`receive_country`(varchar2)·`send_currency`/`receive_currency`로 명시한다(`canonical_payload.corridor` 표기 병행 허용). 자재화 subject country(§5.6)는 remit/member 국적 매핑으로 도출한다. 본 corridor 필드는 **데이터 레이어 한정 — 규제 임계/기한 불변**.
-> **send/receive leg·규제통화 파생(V25, PLAN 20260717 R2, 코드=truth)**: 클라이언트는 `transaction.sendAmount`/`sendCurrency`·`receiveAmount`/`receiveCurrency` 4필드로 leg 통화·금액을 전송하고(레거시 `amount`/`currency`=send leg 하위호환·양방향 채움), `send_amount`/`receive_amount`·`send_currency`/`receive_currency` 로 저장된다. `amount_base`/`base_currency`는 클라 입력이 아니라 **서버가 규제통화(`fds.ingest.regulatory-currency`, 데모 `PHP`)로 파생**한다 — send leg 통화=규제통화 → `sendAmount`, 아니면 receive leg → `receiveAmount`, 둘 다 아니면 미파생(null·fail-safe, 금액 룰 미발동·인입 202 유지). 파생값이 velocity SUM·`transaction.amountBase`/`phpEquivalent` 피처의 단일 원천이며 구 `canonical_payload.transaction.phpEquivalent` 독해는 제거됐다. 기존 적재 행은 미백필(A9)이라 신선 스택 검증 전제. 규제 임계/기한 불변.
+> **send/receive leg·규제통화 파생(V25/V30/V31, 코드=truth)**: `amount_base/base_currency`는 클라이언트 입력이 아니라 tenant 규제통화와 일치하는 leg에서 서버 파생한다. 파생값이 velocity SUM·`transaction.amountBase`·전 통화 `transaction.baseEquivalent`의 단일 원천이며 PHP일 때만 `transaction.phpEquivalent` legacy alias를 추가한다. 구 canonical payload 환산값 독해는 제거됐다.
 
 ### 5.6 fds_subjects
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
@@ -599,6 +605,15 @@ case의 다중 data-scope(다대다).
 | active_version | VARCHAR(80) | Y | | 배포된 버전 |
 | created_by / updated_by | VARCHAR(128) | Y | | |
 | created_at / updated_at | TIMESTAMPTZ | N | | |
+
+> **통화 프로필 배포 bootstrap**: `config/currency-profiles/<code>.json`에서 생성한
+> `fds-svc` 전용 repeatable Flyway 팩은 선택된 프로필의 exact tenant/default workspace에
+> `default-ruleset` master 1행만 `active_version=NULL`, actor=`system:currency-profile`로
+> `ON CONFLICT DO NOTHING` 삽입한다. 실제 `fds_rules`·`fds_rule_versions`·approval은 만들지
+> 않으며, 룰 초안·simulation·활성화는 기존 Admin REST 및 maker-checker 4-eyes가 소유한다.
+> 현재 per-rule activation은 master `active_version`을 갱신하지 않으므로 이 값은 이번
+> 범위에서 NULL로 남고 향후 owner는 미정의다. 기존 PHP/운영자 rule-set metadata는
+> repeatable 재적용으로 덮어쓰지 않는다.
 
 ### 5.17 fds_rules
 | 컬럼 | 타입 | NULL | 제약 | 설명 |
@@ -1034,7 +1049,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 
 ## 8. Flyway 마이그레이션 순서
 
-스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V29, 누락 없음)이다.
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V31, 누락 없음)이다.
 
 | 버전 | 파일 | 내용(실제) | 비고 |
 |---|---|---|---|
@@ -1068,6 +1083,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | V28 | `V28__rule_overhaul_catalog_and_archive.sql` | **FDS 룰 체계 전면 개편 — canonical 컬럼 신설 + 피처 카탈로그 확장 + 레거시 시드 룰 21건 전량 아카이브(PLAN 20260717-fds-legacy-rule-overhaul U-F2 — 사용자 지시로 F-005 해제·룰 전량 대체).** ① `fds.fds_canonical_events` 에 `device_ip varchar(64)`·`device_locale varchar(16)` `ADD COLUMN`(nullable additive) + 부분 인덱스 `idx_fce_subject_device_ip ON (tenant_id, workspace_id, subject_ref, occurred_at) WHERE device_ip IS NOT NULL`(distinct ip velocity 집계 전용, `(subject_ref, occurred_at)` 축은 기존 `ix_fds_events_subject_time`(V1)이 이미 커버 — 본 인덱스는 device_ip 부분조건만 좁힘). ② `fds.fds_subjects` 에 `age_years int` `ADD COLUMN`(nullable additive, DOB→만 나이 서버 파생 스냅샷·DOB 원문 미영속). ③ `fds_feature_catalog` `_global`/`default` 신규 13행 upsert(`ON CONFLICT … DO UPDATE` 멱등, F-001 "≥ 시드 전량" additive 계약 준수) — 윈도우 확장 대표 velocity 키 5종(`velocity.count.subject.{1m,30m,7d}`·`velocity.sum.subject.{5m,30d}`)·distinct 신규 3필드(`velocity.distinct_count.{deviceRef,ip,merchantRef}.subject.{24h,1h,1h}`)·channel-scoped 대표 키(`velocity.count.subject.sameChannel.7d`)·파생 피처 5종(`customer.ageYears`(NUMBER)·`time.hourOfDay`(NUMBER)·`time.isNight`(BOOL)·`device.firstSeenForSubject`(BOOL)·`device.locale`(STRING)). ④ **§2.1 실측 인벤토리(PLAN 표) 21건 전량**(`00000000-…` 시리즈 7건 + `11111111-…`/`22222222-…` 시리즈 7건 + `33333333-…` C-1213 시리즈 7건) `fds_rules.status='ARCHIVED'` UPDATE(`WHERE status <> 'ARCHIVED' AND rule_id IN (…21개)`, 멱등 — 시드 상태 ACTIVE/DISABLED 무관 일괄, API 상태기계 밖 1회성 데이터 정리라 disable 경유 없이 ACTIVE→ARCHIVED 직행 허용, REST 경로만 `RuleStatus.allowedTransitions()` 준수). V8 이 이미 물리 DELETE 한 PENDING_APPROVAL 데모룰 2건(`11111111-…-0000000000a1`/`…a2`)은 대상 아님(포함해도 0행 매치로 무해). 신규 룰 INSERT 없음(REST-only, `scripts/setup_fds_rulepack.py`). 파괴적 컬럼 drop 없음 | additive(컬럼·카탈로그) + 정리(UPDATE 상태전이) |
 | V29 | `V29__velocity_window_1y_catalog.sql` | **velocity 윈도우 1y(365일) 확장 — 대표 피처 카탈로그 6행 등재(PLAN 20260719-fds-rule-window-1y-value-hints U3 — 사용자 지시로 F-006 잠금 경로 append-only 해제).** 룰 빌더 측정조건 윈도우를 1주(7d)·1달(30d)에 이어 1년(1y)까지 가변 선택 가능하게 확장(`RuleDslParser.ALLOWED_WINDOWS` 10종화·`RuleEvidenceWindowResolver`·`CanonicalEventJpaRepository.velocityWindows`·`FeatureComputeAdapter.WINDOWS` 코드 확장, 스키마 변경 없음). `fds_feature_catalog` `_global`/`default` 신규 6행 upsert(`ON CONFLICT … DO UPDATE` 멱등, V28 ③ 선례 동형 — 전 매트릭스가 아닌 대표 키만) — `velocity.count.subject.1y`(NUMBER, '회원별 1년 거래 건수')·`velocity.sum.subject.1y`(NUMBER, '회원별 1년 거래 합산액(기준통화)')·`velocity.distinct_count.counterpartyRef.subject.1y`(NUMBER, '1년 내 distinct 수취처 수(주체)')·`velocity.count.counterparty.1y`(NUMBER, '수취처별 1년 유입 건수')·`velocity.count.subject.sameChannel.1y`(NUMBER, '동일 채널 1년 건수(주체)')·`velocity.sum.merchant.1y`(NUMBER, '가맹점별 1년 결제 합산액'). velocity 집계 canonical 이벤트 스캔 플로어는 기존 30일에서 1년으로 확장되며, 기존 9윈도우(1m~30d) 각각의 count/sum 은 `FILTER` 절로 윈도우별 명시 필터링되어 무회귀(스캔 플로어 확장의 영향을 받지 않음). 신규 컬럼·DDL 없음(순수 카탈로그 시드) | additive seed(카탈로그) |
 | V30 | `V30__tenant_regulatory_currency.sql` | **다통화(법인별 자국통화) — 테넌트별 규제통화(feature/aml-multicurrency-reporting).** `fds_tenants`(§5.1)에 `regulatory_currency VARCHAR(3)` nullable additive 추가(`ADD COLUMN IF NOT EXISTS`, 멱등). 종전 FDS 규제통화는 서비스 전역 프로퍼티 `fds.ingest.regulatory-currency`(기본 `PHP`) 단일 값이라 **한 인스턴스에 통화가 다른 법인(호주 AUD·일본 JPY·한국 KRW)을 동시에 수용할 수 없었다** — AML 이 이미 테넌트별 바인딩(aml V53 `base_currency`/`reporting_currency`)을 갖고 있으므로 FDS 도 대칭으로 테넌트 행에 규제통화를 둔다. `IngestEventService` 가 `TenantRegistryPort.findById` 로 읽은 테넌트 행의 값을 우선 사용하고, NULL(미설정)이면 종전 전역 프로퍼티로 폴백한다(기존 배포 동작 무변경). **FX 환산은 도입하지 않는다** — `RegulatoryAmountPolicy`(F-005 잠금, 정책 자체·잠긴 테스트 무변경)는 send/receive leg 중 규제통화와 일치하는 leg 금액을 그대로 채택하고, 일치 leg 가 없으면 `amount_base=null` 로 두는 기존 fail-safe(A2)를 유지한다. 신규 인덱스·제약 없음, RLS(§ V18) 재적용 불요(PK 불변·컬럼 추가만). additive·멱등 | additive(nullable 컬럼) |
+| V31 | `V31__base_equivalent_feature_catalog.sql` | `_global/default` enabled NUMBER `transaction.baseEquivalent`를 Transaction 카테고리·라벨 `거래금액(규제 기준통화)`로 upsert. 서버 파생 `amount_base`의 통화중립 rule alias이며 PHP-only `phpEquivalent`와 구분 | additive catalog |
 
 > **서비스 간 companion migration**: bo-api `V19__cancel_legacy_group_approvals.sql`은 위 V17의 local fallback 대응이다. 모든 기존 local `GROUP` payload를 원 JSONB와 원 `payload_hash`를 담은 exact 4필드 tombstone으로 보존하고, 비종결 4상태만 `CANCELLED`로 바꾼다. 이는 fds-svc V17 파일 목록에 포함되지 않는 bo-api migration이다.
 
@@ -1119,6 +1135,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-08-17 | v4.14 | **통화중립 규제금액 feature(V31).** `_global/default` catalog에 `transaction.baseEquivalent` NUMBER를 추가하고, 서버 파생 `amount_base`를 전 통화 `amountBase/baseEquivalent`로 노출하며 `phpEquivalent`는 PHP-only legacy alias로 한정했다. | 코드 truth=`V31__base_equivalent_feature_catalog.sql`·`DomainFeatureKeys`·`FeatureComputeAdapter`. |
 | 2026-08-15 | v4.13 | **다통화(법인별 자국통화) — 테넌트별 규제통화 역전파(V30, 코드=truth, feature/aml-multicurrency-reporting).** (1) **§5.1 `fds_tenants` 컬럼 1행 추가** — `regulatory_currency VARCHAR(3)` nullable additive. (2) **§ 마이그레이션 표 V30 행 추가**(`V30__tenant_regulatory_currency.sql`). 종전 서비스 전역 프로퍼티(`fds.ingest.regulatory-currency`) 단일 값은 1 인스턴스=1 통화 제약이라 호주(AUD)·일본(JPY)·한국(KRW) 법인 동거가 불가능했다. 인입이 테넌트 행의 값을 우선 사용하고 미설정이면 전역 프로퍼티로 폴백해 기존 배포는 무변경. **FX 환산 미도입** — 규제통화와 일치하는 leg 금액을 그대로 채택하는 `RegulatoryAmountPolicy`(F-005 잠금) 계약은 손대지 않았다(통화를 인자로 받으므로 정책·잠긴 테스트 무변경). | 코드 truth=`services/fds-svc/.../db/migration/V30__tenant_regulatory_currency.sql`·`domain/tenant/Tenant`·`adapter/out/persistence/{TenantJpaEntity,TenantRegistryJpaAdapter}`·`application/usecase/IngestEventService`. fds-svc 976건 전건 PASS(잠금 `RegulatoryAmountPolicyTest` 포함). |
 | 2026-07-19 | v4.12 | **velocity 윈도우 1y(365일) 확장 역전파(V29, PLAN 20260719-fds-rule-window-1y-value-hints U3·U9 — 사용자 지시로 F-006 잠금 경로 append-only 해제).** (1) §8 마이그레이션 표에 실파일 1행 추가 — `V29__velocity_window_1y_catalog.sql`(대표 velocity 1y 피처 6행 upsert, 스키마 변경 없음) — + intro "V1~V28"→"V1~V29". (2) §5.20 feature catalog 에 V29 시드 note 신설 — `velocity.count\|sum.subject.1y`·`velocity.distinct_count.counterpartyRef.subject.1y`·`velocity.count.counterparty.1y`·`velocity.count.subject.sameChannel.1y`·`velocity.sum.merchant.1y` 6행, 룰 DSL window 화이트리스트 9종→10종(`1y` 추가) 병기. 기존 9윈도우(1m~30d)는 `CanonicalEventJpaRepository.velocityWindows` FILTER 절로 스캔 플로어(30d→1y) 확장에도 값 무회귀. API §5.8(01-fds-api.md v4.19)·`docs/aml-data.md` §11.7.8(aegis-aml) 1:1. | 코드 truth=`services/fds-svc/src/main/resources/db/migration/V29__velocity_window_1y_catalog.sql`·`domain/rule/{RuleDslParser,RuleEvidenceWindowResolver}`·`adapter/out/persistence/CanonicalEventJpaRepository`·`adapter/out/feature/FeatureComputeAdapter`. |
 | 2026-07-18 | v4.11 | **FDS 룰 체계 전면 개편 역전파(V28, PLAN 20260717-fds-legacy-rule-overhaul U-F2·U-X1 — 사용자 지시로 F-005 해제·룰 전량 대체).** (1) §8 마이그레이션 표에 실파일 1행 추가 — `V28__rule_overhaul_catalog_and_archive.sql`(canonical `device_ip`/`device_locale` 컬럼 + 부분 인덱스 `idx_fce_subject_device_ip`·`fds_subjects.age_years` 컬럼·피처 카탈로그 13행 upsert·시드 룰 21건 `status='ARCHIVED'` UPDATE) — + intro "V1~V27"→"V1~V28". (2) §5.5 `fds_canonical_events` 에 `device_ip`/`device_locale` 행 추가. (3) §5.6 `fds_subjects` 에 `age_years` 행 추가. (4) §5.20 feature catalog 에 V28 시드 note 신설 — 윈도우 확장 대표 velocity 5종·distinct 신규 3필드 대표 키·channel-scoped 대표 키·파생 피처 5종(`customer.ageYears`/`time.hourOfDay`/`time.isNight`/`device.firstSeenForSubject`/`device.locale`), 룰 DSL window 화이트리스트 9종·`scope` 옵션 신설 병기. API §5.1/§5.17(01-fds-api.md v4.16)·02-aml-api.md 1:1. | 코드 truth=`services/fds-svc/src/main/resources/db/migration/V28__rule_overhaul_catalog_and_archive.sql`·`domain/rule/{RuleDslParser,RuleCondition,DomainFeatureKeys}`·`adapter/out/feature/FeatureComputeAdapter`·`adapter/out/persistence/{CanonicalEventJpaEntity,CanonicalEventJpaAdapter,SubjectStateJpaEntity,SubjectStateJpaAdapter}`·`domain/state/FdsSubject`·`adapter/in/rest/RuleAdminController`(archive)·`domain/enums/RuleStatus`. |
