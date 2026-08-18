@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **9.88** | **2026-08-19** | **Hanpass Global Team** | **AML-CUR-001 기준통화 프로파일 일괄 셋업 화면 신설 역전파(코드=truth, PLAN 20260818-currency-profile-bo-setup U13, 확정안 ⓐ — 신규 화면 ID 부여).** ① **§13.4 신설** — AML-TNT-002 ① 기본 정보 탭 `[기준통화 프로파일 ▶]` 드릴다운(NAV leaf 아님), 진입/권한(`aml:admin:policy`+FDS capability 게이트)/API 4종/구성/BR-001~004/후속 요건 후보 ⓐ~ⓕ 명세(폐기 ID `AML-TNT-004` 재사용 금지). ② **§1.2 화면 인벤토리** 32→33 화면 문장 append(Markdown-only, PPT 재빌드 후속). ③ **§1.0 IA 註** — NAV leaf 아님(별도 최상위 메뉴 없음·사이드바 무수정). ④ **AML-TNT-002 ① 기본 정보 탭** 요약 카드에 `[기준통화 프로파일 ▶]` 링크 + BR-005 추가. ⑤ **부록 A** AML-CUR-001 행 추가(API §3.16a 4종 매핑). ⑥ **부록 B** AML-CUR-001 행 + FDS capability 게이트 註 추가. | 코드=truth. 근거=bo-api `aml/currencyprofile/**`. API `02-aml-api.md` §2.7·§3.16a·§4·§5·§9, DB `02-aml-db.md` §7 V24, 레포 `docs/aml-data.md` §11.3b·`docs/aml-fds-workflow-guide.md` 동일 작업 단위. |
 | **9.87** | **2026-08-17** | **Hanpass Global Team** | **CDD 숫자 신고소득 4필드의 BO 공통 화면 가시화(코드=truth, `feature/multi-currency-cdd-engine-integration`).** 공통 `CddSnapshotPanel`이 공개 KYC의 `declaredIncomeOperator`·`declaredIncomeAmount`·`declaredIncomeCurrency`·`declaredIncomePeriod` 중 하나라도 있으면 숫자 경로를 최종 권위로 표시한다. 완전한 신고는 비교연산자·JSON number·ISO 통화·기간을 ko/en 로 렌더하고, 불완전 숫자 tuple은 존재하는 필드만 표시하며 legacy band로 되살리지 않는다. 숫자 authority 4키가 전부 없을 때만 기존 `declaredIncomeBand`/`UNKNOWN` 라벨 경로를 사용한다. 케이스·RA·회원원장·고객프로필 4화면이 같은 컴포넌트를 공유하며 RA 산식·FDS·CTR/STR 판정·API/DB/권한/라우트는 무변경이다. | 근거=aegis-aml `components/aml/CddSnapshotPanel.tsx`·`CddSnapshotPanel.numericIncome.test.tsx`·`lib/aml-cdd.ts`·`messages/bundles/{ko,en}/aml-customer.json`; API §3.9 public numeric KYC wire 재사용. |
 | **9.86** | **2026-08-14** | **Hanpass Global Team** | **CDD 완료 소득구간 미입력의 internal `UNKNOWN` projection·소득조건 미평가·BO 표시 계약 역전파(코드=truth, aegis-aml `fix/cdd-income-unknown-skip`).** ① canonical `declaredIncomeBand`는 optional·입력 enum 기존 4종 유지(`UNKNOWN`은 public 입력 아님). exact `customer.cdd.completed`에서 지원 KYC 차원 하나 이상이 남은 omission/null/blank만 current-state projection `UNKNOWN`으로 저장하며 raw event/hash는 불변, sentinel-only snapshot·과거 backfill은 금지한다. re-CDD는 full replace, exact replay/changed-body 409는 무변경이다. ② `UNKNOWN`은 금액·0·상하한·FX·`incomeProxy`를 합성하지 않아 `STR_KYC_INCOME_MISMATCH` income predicate만 skip하고 PEP·제재·구조화·제3자 등 무관 조건과 1차 RA의 기존 GEOGRAPHY/CUSTOMER/SCREENING 평가는 계속된다. FDS production에는 income field/feature/rule을 신설하지 않는다. ③ 공통 `CddSnapshotPanel`은 projection `UNKNOWN`을 ko `미상`/en `Unknown`으로 표시한다. BO Java/read model은 `incomeMultiple=null`을 유지하고 기존 `NON_NULL` producer JSON은 key를 생략하며, bo-web consumer는 생략/explicit null을 모두 배율 산출 불가로 처리한다. 지원 KYC 차원 0개면 기존 `-`/empty callout을 보존한다. ④ sim-web 미입력은 raw key를 생략하며 finite band와 잠금 rule-hit dataset은 그대로다. 화면·권한·결재·라우트·Flyway·PPT 슬라이드 수 무변경. | 근거=aegis-aml `IdentityProjectionService`·`DeclaredIncomeBandPolicy`·`TransactionReportSideEffectRunner`·`tools/sim-web/cdd.py`·`CddSnapshotPanel` messages/tests. DB §3.3·API CDD ingest/§3.9 동기화. PPT 재빌드는 후속. |
 | **9.85** | **2026-08-13** | **Hanpass Global Team** | **이름 위험 신호 점수 비례 배수 + 점수 관리 메뉴 + PEP 축 확인 불가 3값화 역전파(코드=truth, aegis-aml `feature/pep-name-risk-score-scaling` `206b7558`. 신규 승인 유형 0·신규 권한 0·신규 라우트 0·Flyway 0).** ① **§6.1 AML-RA-002 — 탭 4 → 5(⑤ 이름 위험 가산) + BR-008 신설 + 데이터 항목 ⑨ + 좌측 메뉴 진입점 1개**(`위험 점수 가산 관리` → `?tab=signal-scaling` 딥링크). 사용자 지시 "점수관리하는 메뉴도 필요 … 그 점수대로 엔진에서 작동" 의 이행이며, **신규 화면이 아니라 같은 `parameters` JSONB 를 편집하는 탭**이다(별도 화면은 두 번째 쓰기 경로를 만들어 4-eyes 버전 이력을 쪼갠다). 편집 동선·승인선(`RA_MODEL`)·권한(`aml:admin:policy`) 재사용 — §12-A.8 승인 유형 표 무변경. AML 메뉴 **22 → 23** 은 승인된 IA 변경. ② **§12-B.8 BR-007 「수취인 축 가산」 v3 정정** — 종전 "그 발동 알럿의 **기존 가중**을 통해 가산" 은 이제 거짓이다: 기여 가중에 **이름 하위점수에 비례하는 배수**가 곱해지며 **상한 1.00 이라 어떤 입력에서도 종전보다 높아지지 않는다**(약한 신호만 깎는 오탐 억제). **확정 PEP 근거가 있는 알럿은 배수 1.00**(동행한 약한 수취인 신호로 확정 PEP 고객의 RA 를 깎으면 미탐). 엔진 기본값은 현행 유지이고 비례는 4-eyes 파라미터로만 켠다. ③ **§12-B.8 BR-007 「확인 불가 귀결」 3값화** — 종전 2값(`SUPPRESS`/`MATCH`) 서술을 정정하고 **`RISK_SIGNAL`**(억제하되 계량 가능한 신호로 표식)을 추가. status·차단·검토 큐 계약 무변경, **STR 발동 조건 무변경**, **엔진 하류 소비 경로는 아직 없음(정책 결정 대기)** 을 사실대로 기록. 설명가능성 "회원 축 두 갈래" → **세 갈래** + 위험 신호 귀결 전용 표식 2키, 처리 이력 탭 `PEP 축 정책` 필터에 **위험 신호 귀결 옵션** 추가(기존 "확인 불가로 강등된 건만" 은 두 귀결을 모두 포섭). ④ **§12-B.8 BR-007 — WLF 엔진 조절(AML-WLF-005) 상단 PEP 축 유효 정책 배지 신설**(읽기 전용 — 건별 근거는 후보가 있었던 행에만 붙어 서비스 유효값을 읽을 수 없었다). ⑤ **§12-A.4 AML-RA-003 BR-007 신설** — ① 요인 탭에 **이름 위험 배수 근거 패널**(적용 배수·입력 점수·커브·정의 파라미터·모델 버전·최고 기여 점유 여부, 근거 없으면 미렌더, 정의 편집 딥링크). ⑥ **§1.0 IA 표·§0 화면 목록·§12-A.10 화면 인벤토리**에 위 탭·메뉴 반영(4탭 → 5탭). | 코드=truth. 근거=bo-web `components/aml/AmlRiskModels.tsx`(⑤ 탭·미리보기·`rejectUnknownKeys` 확장)·`components/aml/RaSignalScalingEvidence.tsx`·`components/aml/AmlRiskDetail.tsx`·`components/aml/AmlWlfEngineSettings.tsx`(pepAxis 배지)·`lib/nav.ts`(`raSignalScaling`·`matchHref`)·`lib/aml-risk.ts`·`lib/aml-screening.ts`(사유코드 4종·필터 옵션)·`messages/bundles/{ko,en}/**`, aml-svc `domain/risk/{SignalScaling,AlertSignalMark}`·`domain/screening/match/PepAxisPolicy`, bo-api `aml/ra/dto/RaDtos.SignalScaling`. 검증=`AmlRiskModels.signalScaling.test.tsx`·`AmlRiskDetail.signalScaling.test.tsx`·`aml-risk.signalScaling.test.ts`·`aml-screening.unknownRiskSignal.test.ts`·`nav.signalScaling.test.ts`·`nav.test.ts`(IA 잠금 23 갱신). 설계서 §11.3a·§10.3b · API §2.2·§2.3·§3.2·§3.3 · DB §3.9 동일 작업 단위. |
@@ -174,6 +175,8 @@
 | RA·CDD | RA 분포·고객위험(RA-001/003), 대상 360 조회(SUBJ-001), 고객 프로필(CDD-002) | RA 모델 관리(RA-002), CDD 체크리스트 정책(CDD-001) |
 | WLF/명단 | WLF 검토(WLF-001~003), WLF 시뮬레이션(WLF-004) | **WLF 엔진 조절(WLF-005)**, 명단 소스·임포트(WL-001/002), 내부 명단·오탐 면제(WL-003) |
 
+> **v9.88 註**: AML-CUR-001(기준통화 프로파일 일괄 셋업, §13.4)은 NAV leaf 가 아니다 — AML-TNT-002 ① 기본 정보 탭 `[기준통화 프로파일 ▶]` 드릴다운 전용(별도 최상위 메뉴 없음·사이드바 무수정, 다통화 PLAN 20260818 §7 Q1).
+>
 > 상세·드릴다운 화면(예: AML-CDD-002, AML-RA-003)은 NAV 직접 항목이자 목록 행 드릴다운으로도 진입한다. 본문 §2~§12 섹션 번호는 유지되며, 메뉴 순서·소속 영역 정본은 본 표(§1.0)·인벤토리·짝 PPT(NAV)다.
 > **v9.4 메뉴 leaf 신규(코드 정합 — bo-web `lib/nav.ts`)**: `대상 360 조회`(AML-SUBJ-001, `/aml/subjects`, scope `aml:case:read`)는 customerRef·transactionRef·walletRef 검색 entry로, 입력 후 대상 360°/고객 CDD(AML-CDD-002)/RA 상세(AML-RA-003)로 이동하는 신규 화면이다(드릴다운 진입점인 대상 360° 통합 뷰와 구분되는 검색 entry). `WLF 시뮬레이션`(AML-WLF-004, `/aml/wlf/simulation`, scope WLF 검토와 동일)·`내부 명단·오탐 면제`(AML-WL-003, `/aml/watchlist/internal`)·`TM 시나리오 관리`(AML-TM-002, `/aml/tm/scenarios`)·`소스 시스템 관리`(AML-AUD-001 ③ 소스탭 진입점, `/aml/audit?tab=source-systems`)는 기존 화면을 메뉴 leaf로 노출한 것으로 화면 ID·콘텐츠는 불변이다.
 > **v9.44 WLF 운영/설정 분리**: `/aml/wlf`는 결과 검토·판정만 담당하고, `/aml/wlf-engine`(AML-WLF-005)은 SANCTIONS/PEP 프로필 설정·버전·시뮬레이션만 담당한다. AML-WLF-005는 원본 PPT에 없는 **Markdown-only 신규 NAV leaf**다.
@@ -201,7 +204,7 @@ AML 엔진 자체의 ingest·screening·RA·TM 평가는 서비스(테넌트) �
 
 ### 1.2 화면 범위 (태스크 BO 화면 인벤토리)
 
-본 PRD의 화면 범위는 태스크 `docs/tasks/aml/00-overview.md` §5 **BO 화면 인벤토리 10종**과 운영 모니터링용 **종합 대시보드 1종**을 기준 골격으로 하며, **v4.0에서 목록→상세→액션→결과 흐름을 끊김 없이 잇기 위해 후속 상세(드릴다운) 6종과 앞단 정책 관리 3종을 추가하여 총 20화면**으로 확장합니다(§12-A). **v5.0에서 서비스 관리 4종(AML-TNT-001~004)을 추가하여 v5.0 기준 총 24화면**이었으나, **v5.2에서 WLF를 3화면으로 재구성(구 WLF-002 판정 상세 드릴다운 폐기 + 상위승인·처리 이력 2화면 신설, 순증 +1)하고 v5.4에서 서비스 관리를 3화면(AML-TNT-001 목록·AML-TNT-002 상세[4탭]·AML-TNT-003 등록)으로 재편하여 총 24화면**이었고, **v6.0에서 실계 AML 운영 시스템 벤치마크(GTone AML RBA Xpress 80화면 분석, §12-B·부록 H) 기반 보강 화면 4종(AML-WLF-004 스크리닝 시뮬레이션·임의 수행, AML-IRA-001 기관 위험평가 지표 보고, AML-STAT-001 STR·룰 효과성 통계, AML-EDU-001 내부통제 교육·자격 관리)을 추가하여 총 28화면**이었으며, **v7.0에서 벤치마크 2차 보강(부록 H 잔여 backlog) 화면 3종(AML-WL-003 내부 요주의 명단·오탐 면제 생명주기, AML-HRR-001 당연고위험 레지스트리, AML-CDD-002 고객 CDD 프로필 원장)을 추가하여 총 31화면**이었고, **v8.0에서 데이터 인입 가시성 보강 화면 1종(AML-ING-001 수신 API 카탈로그·인입 라이브 모니터링, §12.2)을 추가하여 총 32화면**, **v9.44에서 AML-WLF-005 WLF 엔진 조절 1종을 추가하여 총 33화면**이었고, **v9.58에서 AML-IRA-001(기관 위험평가 지표 보고)·AML-EDU-001(내부통제 교육·자격 관리) 2종을 제거하여 총 31화면**이었고, **v9.80에서 아웃바운드 콜백 자격증명 설정 1종(AML-WHK-001 콜백 자격증명 설정, §12.3 — 설정 › 연동·데이터 NAV leaf)을 추가하여 총 32화면**이다(사용자 지시, §12-B.2·§12-B.4 §13.x 폐기 표기). AML-WLF-005는 원본 PPT 슬라이드가 없는 Markdown-only 화면이므로 기존 PPT 32화면·70슬라이드는 유지한다(**v9.80 AML-WHK-001 도 동일하게 Markdown-only 신설**이라 PPT 슬라이드 수는 불변, PPT 재빌드는 후속). 구 AML-TNT-004(온보딩 상태)는 AML-TNT-002 ② 배포·온보딩 탭으로 통합되었습니다(§13.x 폐기 표기 참조). 후속 상세 화면은 NAV 항목이 아니라 목록 화면의 행/버튼 클릭으로 진입하는 드릴다운입니다. 모든 화면은 `bo-web → bo-api` 경유이며, 운영자 집계 화면은 **bo-api 소유 API(`/api/v1/bo/aml/**`)**, 운영(검토·판정·결재·정책) 화면은 bo-api 가 위임하는 **엔진 Admin API(`/api/v1/admin/aml/*`)** 를 사용합니다(API §9 소유 경계).
+본 PRD의 화면 범위는 태스크 `docs/tasks/aml/00-overview.md` §5 **BO 화면 인벤토리 10종**과 운영 모니터링용 **종합 대시보드 1종**을 기준 골격으로 하며, **v4.0에서 목록→상세→액션→결과 흐름을 끊김 없이 잇기 위해 후속 상세(드릴다운) 6종과 앞단 정책 관리 3종을 추가하여 총 20화면**으로 확장합니다(§12-A). **v5.0에서 서비스 관리 4종(AML-TNT-001~004)을 추가하여 v5.0 기준 총 24화면**이었으나, **v5.2에서 WLF를 3화면으로 재구성(구 WLF-002 판정 상세 드릴다운 폐기 + 상위승인·처리 이력 2화면 신설, 순증 +1)하고 v5.4에서 서비스 관리를 3화면(AML-TNT-001 목록·AML-TNT-002 상세[4탭]·AML-TNT-003 등록)으로 재편하여 총 24화면**이었고, **v6.0에서 실계 AML 운영 시스템 벤치마크(GTone AML RBA Xpress 80화면 분석, §12-B·부록 H) 기반 보강 화면 4종(AML-WLF-004 스크리닝 시뮬레이션·임의 수행, AML-IRA-001 기관 위험평가 지표 보고, AML-STAT-001 STR·룰 효과성 통계, AML-EDU-001 내부통제 교육·자격 관리)을 추가하여 총 28화면**이었으며, **v7.0에서 벤치마크 2차 보강(부록 H 잔여 backlog) 화면 3종(AML-WL-003 내부 요주의 명단·오탐 면제 생명주기, AML-HRR-001 당연고위험 레지스트리, AML-CDD-002 고객 CDD 프로필 원장)을 추가하여 총 31화면**이었고, **v8.0에서 데이터 인입 가시성 보강 화면 1종(AML-ING-001 수신 API 카탈로그·인입 라이브 모니터링, §12.2)을 추가하여 총 32화면**, **v9.44에서 AML-WLF-005 WLF 엔진 조절 1종을 추가하여 총 33화면**이었고, **v9.58에서 AML-IRA-001(기관 위험평가 지표 보고)·AML-EDU-001(내부통제 교육·자격 관리) 2종을 제거하여 총 31화면**이었고, **v9.80에서 아웃바운드 콜백 자격증명 설정 1종(AML-WHK-001 콜백 자격증명 설정, §12.3 — 설정 › 연동·데이터 NAV leaf)을 추가하여 총 32화면**이다(사용자 지시, §12-B.2·§12-B.4 §13.x 폐기 표기). AML-WLF-005는 원본 PPT 슬라이드가 없는 Markdown-only 화면이므로 기존 PPT 32화면·70슬라이드는 유지한다(**v9.80 AML-WHK-001 도 동일하게 Markdown-only 신설**이라 PPT 슬라이드 수는 불변, PPT 재빌드는 후속). **v9.88에서 기준통화 프로파일 일괄 셋업 1종(AML-CUR-001, §13.4 — AML-TNT-002 ① 기본 정보 탭 드릴다운, NAV leaf 아님)을 추가하여 총 33화면**이다(다통화(법인별 자국통화), PLAN 20260818). AML-CUR-001 도 Markdown-only 신설이라 PPT 슬라이드 수는 불변(PPT 재빌드는 후속). 구 AML-TNT-004(온보딩 상태)는 AML-TNT-002 ② 배포·온보딩 탭으로 통합되었습니다(§13.x 폐기 표기 참조). 후속 상세 화면은 NAV 항목이 아니라 목록 화면의 행/버튼 클릭으로 진입하는 드릴다운입니다. 모든 화면은 `bo-web → bo-api` 경유이며, 운영자 집계 화면은 **bo-api 소유 API(`/api/v1/bo/aml/**`)**, 운영(검토·판정·결재·정책) 화면은 bo-api 가 위임하는 **엔진 Admin API(`/api/v1/admin/aml/*`)** 를 사용합니다(API §9 소유 경계).
 
 | # | 화면(기능 ID) | 태스크 | 주요 호출 API |
 |---|---|---|---|
@@ -2004,6 +2007,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 │  온보딩 상태 활성               [→ 배포·온보딩 탭]                       │
 │  소스        3건 연결            [→ 소스 시스템 탭]                       │
 │  정책팩      한국 기본팩 (KR_DEFAULT)               [→ 정책팩 탭]         │
+│  기준통화    PHP                          [기준통화 프로파일 ▶]           │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  보고기관 정보 (KoFIU 보고 헤더 — v7.0 보강)                    [편집]    │
 │  보고기관 코드  LR0160        보고기관명  hanpass-ph 준법감시실               │
@@ -2031,6 +2035,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-002**: `PUT /api/v1/bo/aml/tenants/{tenantId}` 변경 허용 필드: `displayName / status`. `deploymentModel` 직접 변경 시도 시 `409 AML.TENANT_DEPLOYMENT_MODEL_IMMUTABLE`.
 - **BR-003**: 요약 카드의 각 항목 클릭 또는 [다음: 배포·온보딩 →] 버튼으로 ② 탭 이동.
 - **BR-004 (v7.0 보강)**: **보고기관 정보**(보고기관 코드·보고기관명·보고 책임자·담당자·연락처)는 서비스(테넌트) 단위 설정이며, STR/CTR 보고파일 생성 시 보고 본문 헤더(AML-REP-002 ①)에 자동 결합된다. 변경은 `aml:admin:policy` + 감사 기록(보고 책임자 변경은 결재 라인 표시(부록 G)와 일관해야 함). 데이터 모델·API는 후속 정합(부록 E v7.0).
+- **BR-005 (v9.88 — 다통화 PLAN 20260818)**: 요약 카드 `[기준통화 프로파일 ▶]` 클릭 시 AML-CUR-001(§13.4)로 드릴다운한다. AML-CUR-001 은 NAV leaf 가 아니다.
 
 #### ② 배포·온보딩 탭 (active: 배포·온보딩)
 
@@ -2232,7 +2237,39 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 
 ### 13.x (폐기) AML-TNT-004 · 온보딩 상태 / 프로비저닝 / 이력
 
-> **v5.4에서 폐기 처리됨.** 본 절의 내용(온보딩 상태·프로비저닝·이력·IaC 트리거·설치형 등록 콜백) 전체가 **AML-TNT-002 ② 배포·온보딩 탭으로 통합**되었습니다. 기능 ID `AML-TNT-004`는 더 이상 독립 화면으로 존재하지 않으며, 관련 API(`GET .../onboarding`·`POST .../provision`·`POST .../register`)는 AML-TNT-002의 ② 배포·온보딩 탭 호출로 귀속됩니다. 부록 A·B의 `AML-TNT-004` 행도 AML-TNT-002 ② 탭으로 통합되었습니다.
+> **v5.4에서 폐기 처리됨.** 본 절의 내용(온보딩 상태·프로비저닝·이력·IaC 트리거·설치형 등록 콜백) 전체가 **AML-TNT-002 ② 배포·온보딩 탭으로 통합**되었습니다. 기능 ID `AML-TNT-004`는 더 이상 독립 화면으로 존재하지 않으며, 관련 API(`GET .../onboarding`·`POST .../provision`·`POST .../register`)는 AML-TNT-002의 ② 배포·온보딩 탭 호출로 귀속됩니다. 부록 A·B의 `AML-TNT-004` 행도 AML-TNT-002 ② 탭으로 통합되었습니다. **폐기 ID `AML-TNT-004`는 v9.88(AML-CUR-001)에서도 재사용하지 않습니다.**
+
+### 13.4 AML-CUR-001 · 기준통화 프로파일 일괄 셋업 (AML-TNT-002 드릴다운)
+
+> **v9.88 신설(다통화(법인별 자국통화), PLAN 20260818, U13).** NAV leaf 아님 — §1.0/§1.2 원칙(후속 상세 화면은 목록/상세 화면의 드릴다운)과 동일하게 **AML-TNT-002 ① 기본 정보 탭의 `[기준통화 프로파일 ▶]` 버튼으로만 진입**한다.
+
+| 항목 | 내용 |
+|------|------|
+| **기능 ID** | AML-CUR-001 |
+| **진입** | AML-TNT-002 ① 기본 정보 탭 `[기준통화 프로파일 ▶]` |
+| **권한** | `aml:admin:policy`(화면 접근 게이트). apply 의 FDS 축 저작(규제통화 전환·룰 파라미터 상신)은 이와 별개로 FDS capability(`SFDS_TENANT:ADMIN`·`SFDS_RULE:OPERATE`) 를 추가로 요구 — 미보유 STEP 은 `FAILED(FDS_AUTHORITY_MISSING)` |
+| **API** | bo-api `GET /api/v1/bo/aml/currency-profiles` · `GET .../tenants/{tenantId}/currency-binding` · `GET .../tenants/{tenantId}/currency-profile` · `POST .../tenants/{tenantId}/currency-profile:apply`(API §3.16a) |
+
+**구성**: 프로파일 선택(카탈로그 목록, 관할·통화·CTR 임계·보고 마감시각 미리보기) → 일괄 셋업 실행(`apply`) → STEP 별 결과 표시(`BINDING`/`FDS_REGULATORY_CURRENCY`/`CTR_THRESHOLD`/`REPORT_RULES`/`FDS_RULES`, 순서=`steps[]` 배열 정본). AML 바인딩은 즉시 반영, CTR 임계·FDS 룰 금액·FDS 규제통화는 **결재 대기(SUBMITTED)** 로 표시되며 결재함(AML-APR-001) 승인 후에야 EXECUTED 된다. **PROVISIONAL** complianceReview 프로파일은 배지로 경고 표시한다.
+
+**비즈니스 규칙**
+
+- **BR-001**: 거래성 이력 보유 테넌트에서 기준통화(`baseCurrency`) 를 바꾸는 apply 는 `STEP BINDING` 이 `BLOCKED_HISTORY` 로 종결된다(엔진 422 `AML.TENANT_CURRENCY_HISTORY_LOCKED` — §2.7). 화면은 이 STEP 결과를 안내 카피가 아니라 코드로 렌더한다.
+- **BR-002**: `STEP FDS_REGULATORY_CURRENCY` 가 EXECUTED 되었지만 `STEP BINDING` 이 아직 그 값으로 완결되지 않은 2-pass 전환 중간 창(§아래 참조)에서는 `warnings` 에 `FDS_CURRENCY_APPLIED_BINDING_PENDING` 이 노출되며, 화면은 이 구간 동안 FDS 금액 룰이 무발동함을 배지로 안내한다.
+- **BR-003**: 결재 대기 STEP(`SUBMITTED`/`PENDING`) 은 결재함(AML-APR-001) 딥링크로 이동할 수 있다.
+- **BR-004**: 재-apply 는 멱등(이미 정렬된 STEP 은 `SKIPPED`/`NOT_APPLICABLE`, 신규 상신 0).
+
+> **다통화(법인별 자국통화) 값 정본·2-pass 전환·배포 축 우선순위 계약**: `docs/aml-data.md` §11.3b 참조(레포 내 정본).
+
+**후속 요건 후보(본 작업 스코프 아웃 — §10 엔진 게이트 대상, 별도 사용자 지시 필요)**:
+
+- ⓐ aml-svc 엔진 카탈로그(`domain/report/AmlReportRuleCatalog`)·`BuiltInRuleConditionSummarizer` 알럿 evidence condition 의 PHP 표기 통화중립화 — **`BuiltInRuleConditionSummarizer.java`(main)는 F-037 잠금 경로**: 후속 착수는 사용자가 F-037 을 지목해 지시한 경우에만 가능하다.
+- ⓑ fds-svc `domain/rule/RuleParamCatalog#amountUnit`/`cmpLabel` 의 phpEquivalent unit "PHP"·라벨 "PHP환산 임계금액" 통화중립화(FDS 룰 파라미터 화면 표기 잔존).
+- ⓒ FDS 룰 DSL 자동 교체(교차 통화 replacement) 오케스트레이션.
+- ⓓ FDS 테넌트 규제통화 REST 전환(4-eyes)은 **본 작업 결과로 이미 구현됨**(U17 — 이력 0 테넌트 한정·2-pass·`PACK_PROFILE_DIVERGENCE` 고지 포함, 후속 후보 아님).
+- ⓔ bo-api 비잠금 PHP 합성 잔존(임계 평가 경로 아님·표기/evidence/데모 합성 평면 한정, 본 작업 스코프 아웃): `AmlTmService` CTR aggregation evidence `currency:"PHP"` 고정, `AmlTmService` `firstCurrency` 폴백(윈도우 전 건 통화 null 시 한정 도달), `AmlCustomerProfileService` `BASE_CURRENCY="PHP"` legacy local-stub 폴백, `Subject360Service` 데모 합성 통화 배열.
+- ⓕ bo-web 비잠금 잔존(표기 평면, 본 작업 스코프 아웃): `messages/bundles/{ko,en}/aml-monitoring.json` `report.ctrNotice`(`AmlReportList.tsx` Callout) — **통화·금액 모두 프로파일 정본과 불일치하는 잘못된 임계 안내**라 표기 잔존과 구분되는 후속 요건 후보(안내 문구를 테넌트 CTR 임계·기준통화 동적 조립으로 교체); `lib/fds-subject-activity.ts` `DEFAULT_BASE_CURRENCY="PHP"` 폴백(`SubjectActivityCard.tsx` 소비); i18n 정적 예시/설명 4키(`aml-monitoring.json` STR_001 예시·`common-ui.json` 룰 빌더 예시 2건·`aml-customer.json` footnote).
+- 기존 서술 유지분: CTR 임계 편집·조건표는 여전히 테넌트 기준통화를 따르며(미바인딩 fallback·통화 중립 라벨), 그 동작은 AML-STAT-001 ②·AML-TM-002 관련 절 서술을 참조한다.
 
 ---
 
@@ -2284,6 +2321,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | AML-MBR-001 | **운영 › 고객위험·심사** | 회원관리 — 회원원장·CDD/EDD 히스토리(§12-A.10, 조회 · **v9.40 코드 truth 신설**, 회원번호 검색 entry) | **bo-api** `GET /api/v1/bo/aml/members/{memberRef}/ledger`(원장 요약) · `GET /api/v1/bo/aml/members/{memberRef}/cdd-history?types=&page=&size=`(이력 페이지) → 엔진 `GET /api/v1/admin/aml/members/{memberRef}/{ledger\|cdd-history}` 위임(scope `aml:case:read`, API §2.x·DB §3.22f·§5.36) |
 | AML-WHK-001 | 설정 › 연동·데이터 | 콜백 자격증명 설정 — 아웃바운드 콜백 목적지·HMAC 서명 시크릿 등록/교체(§12.3, **v9.80 신설·Markdown-only**, 4-eyes 미적용 즉시반영) | **bo-api** `GET/PUT /api/v1/bo/aml/webhook-credential`(조회 `aml:case:read`\|`aml:admin:policy` / 저장 `aml:admin:policy`) → 엔진 `GET/PUT /api/v1/admin/aml/webhook-credential` fail-closed 위임(API §2.7a). 조회 응답에 **시크릿 필드 없음**(`secretConfigured` 불리언까지만) |
 | AML-ING-001 | 설정 › 연동·데이터 | 수신 API 카탈로그·인입 라이브 모니터링(§12.2, v8.0) | **bo-api(제안)** `GET /api/v1/bo/aml/ingest/catalog` · `GET /api/v1/bo/aml/ingest/health`(집계 소유 — API §9 경계) — **후속 API 정합 필요(부록 E v8.0)**. 수신 API 자체 정본 = §1.11 ②(API §3.1~§3.4) |
+| AML-CUR-001 | 설정 › 연동·데이터(AML-TNT-002 드릴다운) | 기준통화 프로파일 일괄 셋업(§13.4, **v9.88 신설·Markdown-only, 다통화 PLAN 20260818**) | **bo-api** `GET /api/v1/bo/aml/currency-profiles` · `GET .../tenants/{tenantId}/currency-binding` · `GET .../tenants/{tenantId}/currency-profile` · `POST .../tenants/{tenantId}/currency-profile:apply`(API §3.16a). apply 는 CTR `CTR_THRESHOLD`·FDS `RULE_PARAM`/`TENANT_REGULATORY_CURRENCY` 🔒 4-eyes 상신 파생 |
 
 ### 부록 B. 권한 매트릭스 (scope × 화면)
 
@@ -2293,6 +2331,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | AML-TNT-001 | | | | ● | | | | | |
 | AML-TNT-002 (① 기본 정보 / ② 배포·온보딩 / ③ 소스 시스템 / ④ 정책팩) | | | | ● | | | | | |
 | AML-TNT-003 | | | | ● | | | | | |
+| AML-CUR-001 (기준통화 프로파일 일괄 셋업, v9.88) | | | | ● | | | | | |
 | AML-WLF-001 (① 검토 필요) | ● | ● | ● | | | | | | △ |
 | AML-WLF-002 (② 상위 승인) | ● | | | | ● | | | | |
 | AML-WLF-003 (③ 처리 이력) | ● | | | | | | | | |
@@ -2317,7 +2356,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | AML-ING-001 (§12.2, v8.0) | | | | | | | ● | | |
 | AML-WHK-001 (§12.3, v9.80) | ○ | | | ● | | | | | |
 
-> ●=필요, ○=조회 대체 가능(둘 중 하나 보유 시 조회 가능 — AML-WHK-001 은 `aml:case:read` **또는** `aml:admin:policy` 로 열리고, 저장은 `aml:admin:policy` 전용). △=원문 열람 시 추가 scope. 모든 권한은 `Tenant-Id`/`dataScope` 스코프 안에서 평가(RLS). 서비스 관리 화면(AML-TNT-001·AML-TNT-002[4탭]·AML-TNT-003)은 SaaS 운영자 전용이며 `aml:admin:policy`(bo-api 소유 엔드포인트 — API §9·§1.1) scope를 사용한다. 구 AML-TNT-004는 v5.4에서 AML-TNT-002 ② 배포·온보딩 탭으로 통합·폐기됨.
+> ●=필요, ○=조회 대체 가능(둘 중 하나 보유 시 조회 가능 — AML-WHK-001 은 `aml:case:read` **또는** `aml:admin:policy` 로 열리고, 저장은 `aml:admin:policy` 전용). △=원문 열람 시 추가 scope. 모든 권한은 `Tenant-Id`/`dataScope` 스코프 안에서 평가(RLS). 서비스 관리 화면(AML-TNT-001·AML-TNT-002[4탭]·AML-TNT-003)은 SaaS 운영자 전용이며 `aml:admin:policy`(bo-api 소유 엔드포인트 — API §9·§1.1) scope를 사용한다. 구 AML-TNT-004는 v5.4에서 AML-TNT-002 ② 배포·온보딩 탭으로 통합·폐기됨. **AML-CUR-001**(v9.88)은 화면 접근 게이트 `aml:admin:policy` 외에, apply STEP `FDS_REGULATORY_CURRENCY`/`FDS_RULES` 상신은 FDS 상신 지점 capability(`SFDS_TENANT:ADMIN`·`SFDS_RULE:OPERATE`)를 추가로 요구한다 — 미보유 시 해당 STEP 만 `FAILED(FDS_AUTHORITY_MISSING)`(위 표에 미표기, capability 는 화면 scope 표 축과 별개 — API §3.16a r12 Q35).
 >
 > **STR 조회 전담 경계(tipping-off, 특정금융정보법 §4의2 — 설계서 §19.2a)**: AML-REP-001/AML-REP-002 및 STR 관련 케이스(`STR_REVIEW`) 화면의 `aml:case:read`는 **준법감시 전담 role(COMPLIANCE scope 보유 준법감시 조직 계정)에만 부여**한다. 일반 운영·상담 role에는 해당 메뉴·검색·딥링크·STR 플래그를 노출하지 않으며, 모든 열람은 감사(`aml_audit_events`) 기록 대상이다.
 

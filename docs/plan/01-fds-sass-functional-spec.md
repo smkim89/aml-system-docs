@@ -2047,7 +2047,7 @@ sequenceDiagram
 
 | 컬럼·요소(표시) | 설명 (괄호=내부 코드) |
 |------|------|
-| 결재 종류 | 결재 대상 작업 유형 — 케이스 액션 / 룰 활성화·롤백 / 필드매핑 변경 / 자격증명 회전 / 명단 멤버 / 증적 export 최종본 / high-risk 가맹점 정상화 / 케이스 종결 / **규제 팩 변경**(대상=`tenant_id`) / **룰 변수 변경**(대상=`rule_id`) (`subject_kind` **10종** `ACTION/RULE/MAPPING/SECRET/GROUP/EXPORT/MERCHANT_NORMALIZE/CASE_CLOSE/POLICY_PACK/RULE_PARAM`, DB §5.23·API §5.12) |
+| 결재 종류 | 결재 대상 작업 유형 — 케이스 액션 / 룰 활성화·롤백 / 필드매핑 변경 / 자격증명 회전 / 명단 멤버 / 증적 export 최종본 / high-risk 가맹점 정상화 / 케이스 종결 / **규제 팩 변경**(대상=`tenant_id`) / **룰 변수 변경**(대상=`rule_id`) / **테넌트 규제통화 전환**(대상=`tenant_id`, 다통화 PLAN 20260818 U17) (`subject_kind` **11종**(r13 이격 2 교정) `ACTION/RULE/MAPPING/SECRET/GROUP/EXPORT/MERCHANT_NORMALIZE/CASE_CLOSE/POLICY_PACK/RULE_PARAM/TENANT_REGULATORY_CURRENCY`, DB §5.23·API §5.12) |
 | 대상 | 결재 대상 식별자(`subject_ref`) — 룰 번호·버전, 케이스 번호(`case_id`), 소스시스템 매핑 버전, 자격증명 키, 명단 멤버 건수, export pack 등 |
 | 상신자 | 결재를 올린 maker(`maker_subject`). 승인자(checker)와 동일 인물일 수 없음 |
 | 결재 라인 | 적용 결재 라인 — 자기승인 차단 / maker-checker / 컴플라이언스 책임자 / 리스크 책임자 / 보안 관리자 / 임원 승인 (`approval_line` **6종** `SELF_APPROVAL_DISABLED/MAKER_CHECKER/COMPLIANCE_MANAGER/RISK_MANAGER/SECURITY_ADMIN/EXECUTIVE_APPROVAL`, DB §4.12) |
@@ -2058,7 +2058,7 @@ sequenceDiagram
 
 #### 비즈니스 규칙
 
-- **BR-001**: 필터 `유형(subject_kind 10종) / 상태(approval_status 8종) / 상신자` + `대상` 검색. 행 ▶ 펼침 시 결재 단건(`payload_hash`·결재 단계·만료 시각·최대 실행 횟수)을 조회.
+- **BR-001**: 필터 `유형(subject_kind 11종) / 상태(approval_status 8종) / 상신자` + `대상` 검색. 행 ▶ 펼침 시 결재 단건(`payload_hash`·결재 단계·만료 시각·최대 실행 횟수)을 조회.
 - **BR-002**: **self-approval 방지** — 승인자(checker)는 상신자(maker)와 동일 사용자일 수 없다. 위반 시 `FDS-APPROVAL-SELF`(409)로 [승인] 차단. AI agent는 maker(상신)만 가능하며 checker(승인) 불가.
 - **BR-003**: **payload 무결성** — 상신 시 `payload_hash`로 고정되며, 승인 시점에 payload가 변경되었으면 `FDS-APPROVAL-PAYLOAD-CHANGED`로 무효 처리하고 재상신을 요구한다. engine 위임 승인도 bo-api가 현재 pending row를 다시 읽어 요청 `payloadHash`와 immutable 저장 해시를 먼저 비교하고, 일치할 때만 downstream approve를 호출한다(엔진의 독립 검증은 그대로 유지).
 - **BR-004**: 결재 라인은 작업 유형별 기본값을 따른다(§16.5 4-eyes 결재 대상 표) — 룰/케이스 종결/export 최종본=컴플라이언스 책임자, 명단/가맹점 정상화=리스크 책임자, 자격증명=보안 관리자, 매핑/케이스 액션=maker-checker, 대규모는 임원 승인. 승인 후 상태는 `승인(APPROVED)` → BE 실행 결과에 따라 `실행(EXECUTED)`/`실행실패(EXECUTION_FAILED)`로 전이한다.
@@ -2067,7 +2067,7 @@ sequenceDiagram
 - **BR-007**: `subjectKind` checker 매핑은 `ACTION→SFDS_ACTION:APPROVE`, `RULE|RULE_PARAM→SFDS_RULE:APPROVE`, `SECRET→SFDS_CONNECTOR:APPROVE`, `GROUP|MERCHANT_NORMALIZE→SFDS_GROUP:ADMIN`, `EXPORT|POLICY_PACK→SFDS_REG:APPROVE`, `CASE_CLOSE→SFDS_CASE:APPROVE`다. `MAPPING`은 staged payload의 immutable `requiredBoCapability`를 사용한다. 지원하지 않는 subject는 fail-closed한다.
 - **BR-008**: source-system update는 `capabilities` **필드 존재 여부**로 capabilities-only(`SFDS_ACTION:APPROVE`)와 일반 설정-only(`SFDS_CONNECTOR:OPERATE`)를 분리 상신하며 혼합 요청은 400이다. `capabilities: []`도 유효한 revoke-all이고 전체 desired set 교체로 실행한다. field mapping은 `SFDS_MAPPING:APPROVE`다. maker도 같은 operation capability를 가져야 하고 checker는 `payload_hash`로 동결된 marker를 다시 검사한다. marker 누락·미지 legacy `MAPPING` row는 fail-closed한다.
 - **BR-009**: controller의 coarse 결재함 진입은 row 열람 권한이 아니다. service는 전체 source row에서 exact checker capability가 있는 row만 필터한 뒤 페이지를 자른다. 단건·승인·반려도 row를 먼저 읽어 exact 판정하며 실패 시 downstream 결정 호출·local 상태 변경은 0건이다. local fallback 상신의 maker는 인증된 `BackofficeActorResolver` principal이며 `ops.agent` 같은 기본 actor로 대체하지 않는다.
-- **BR-010**: 결재 `subjectKind`는 승인 라우팅용 닫힌 10종이며 FE 필터·라벨도 `RULE_PARAM`을 포함한다. 감사 projection의 `subjectKind`/`targetKind`는 변경된 resource 분류(`RULE`, `SOURCE_SYSTEM`, `CONNECTOR`, `NOTIFY_CHANNEL` 등)로 별도 모델이므로 결재 10종과 동일 enum으로 취급하지 않는다.
+- **BR-010**: 결재 `subjectKind`는 승인 라우팅용 닫힌 11종이며 FE 필터·라벨도 `RULE_PARAM`·`TENANT_REGULATORY_CURRENCY`를 포함한다. 감사 projection의 `subjectKind`/`targetKind`는 변경된 resource 분류(`RULE`, `SOURCE_SYSTEM`, `CONNECTOR`, `NOTIFY_CHANNEL` 등)로 별도 모델이므로 결재 11종과 동일 enum으로 취급하지 않는다.
 
 ---
 
@@ -2429,7 +2429,7 @@ bo-web nav의 exact capability는 코드 `lib/nav.ts`와 동일하게 고정한�
 
 ### 16.5 4-eyes 결재 대상 (API §8, 설계서 §11.4/§11.5)
 
-결재함(SFDS-APPR-001)에서 일괄 관리. `fds_approval_requests.subject_kind` **10종**(`ACTION/RULE/MAPPING/SECRET/GROUP/EXPORT/MERCHANT_NORMALIZE/CASE_CLOSE/POLICY_PACK/RULE_PARAM`, `CASE_CLOSE`=case 종결 4-eyes(대상=`fds_cases.case_id`), `POLICY_PACK`=규제 팩 토글 변경 4-eyes(대상=`fds_tenants.tenant_id`, 설계서 §16.2), `RULE_PARAM`=룰 변수(임계) 변경 4-eyes(대상=`fds_rules.rule_id`, §6.2 BR-005 — 승인 시 `fds_rule_param_overrides` 원자 적용·엔진 평가 즉시 반영), DB §5.23·API §5.12 정본) · `approval_line` **6종**(`SELF_APPROVAL_DISABLED/MAKER_CHECKER/COMPLIANCE_MANAGER/RISK_MANAGER/SECURITY_ADMIN/EXECUTIVE_APPROVAL`, DB §4.12) · `approval_status` 8종(`DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED`). payload는 `payload_hash`로 고정되며 승인 후 변경 시 무효(`FDS-APPROVAL-PAYLOAD-CHANGED`). 위험그룹 master/member와 merchant normalize는 상신 당시 group generation에도 결속되어 delete/recreate 후 stale approval을 새 그룹에 실행하지 않는다. generation 증명이 없는 FDS legacy `GROUP`/`MERCHANT_NORMALIZE` pending은 `V17__risk_group_generation.sql`에서 `CANCELLED`되고 자동 재결속되지 않는다. bo-api `V19__cancel_legacy_group_approvals.sql`은 모든 기존 local `GROUP` payload를 exact `{action:'LEGACY_GENERATION_UNBOUND',migration:'V19',legacyPayload,legacyPayloadHash}`로 보존하고 `payload_hash`는 유지한다. 비종결 `DRAFT`/`SUBMITTED`/`APPROVED`/`APPROVED_PENDING_ENGINE`만 `CANCELLED`; terminal exact marker는 역사 조회만 가능하고 승인·반려·apply는 금지되며 marker/hash drift는 fail-closed한다. 상신자(maker)≠승인자(checker), AI agent는 maker만 가능.
+결재함(SFDS-APPR-001)에서 일괄 관리. `fds_approval_requests.subject_kind` **11종**(r13 이격 2 교정, `ACTION/RULE/MAPPING/SECRET/GROUP/EXPORT/MERCHANT_NORMALIZE/CASE_CLOSE/POLICY_PACK/RULE_PARAM/TENANT_REGULATORY_CURRENCY`, `CASE_CLOSE`=case 종결 4-eyes(대상=`fds_cases.case_id`), `POLICY_PACK`=규제 팩 토글 변경 4-eyes(대상=`fds_tenants.tenant_id`, 설계서 §16.2), `RULE_PARAM`=룰 변수(임계) 변경 4-eyes(대상=`fds_rules.rule_id`, §6.2 BR-005 — 승인 시 `fds_rule_param_overrides` 원자 적용·엔진 평가 즉시 반영), `TENANT_REGULATORY_CURRENCY`=테넌트 규제통화 전환 4-eyes(대상=`fds_tenants.tenant_id`, 다통화 PLAN 20260818 U17, DB V32), DB §5.23·API §5.12 정본) · `approval_line` **6종**(`SELF_APPROVAL_DISABLED/MAKER_CHECKER/COMPLIANCE_MANAGER/RISK_MANAGER/SECURITY_ADMIN/EXECUTIVE_APPROVAL`, DB §4.12) · `approval_status` 8종(`DRAFT/SUBMITTED/APPROVED/REJECTED/CANCELLED/EXPIRED/EXECUTED/EXECUTION_FAILED`). payload는 `payload_hash`로 고정되며 승인 후 변경 시 무효(`FDS-APPROVAL-PAYLOAD-CHANGED`). 위험그룹 master/member와 merchant normalize는 상신 당시 group generation에도 결속되어 delete/recreate 후 stale approval을 새 그룹에 실행하지 않는다. generation 증명이 없는 FDS legacy `GROUP`/`MERCHANT_NORMALIZE` pending은 `V17__risk_group_generation.sql`에서 `CANCELLED`되고 자동 재결속되지 않는다. bo-api `V19__cancel_legacy_group_approvals.sql`은 모든 기존 local `GROUP` payload를 exact `{action:'LEGACY_GENERATION_UNBOUND',migration:'V19',legacyPayload,legacyPayloadHash}`로 보존하고 `payload_hash`는 유지한다. 비종결 `DRAFT`/`SUBMITTED`/`APPROVED`/`APPROVED_PENDING_ENGINE`만 `CANCELLED`; terminal exact marker는 역사 조회만 가능하고 승인·반려·apply는 금지되며 marker/hash drift는 fail-closed한다. 상신자(maker)≠승인자(checker), AI agent는 maker만 가능.
 
 | 작업(화면) | `subject_kind` | 기본 `approval_line` |
 |---|---|---|
