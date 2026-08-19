@@ -281,8 +281,9 @@ filter가 설정한 local-bootstrap `Boolean.TRUE` marker 외에는 403으로 �
 | POST | `/api/v1/aml/alerts/{alertId}:open-case` | `aml:case:update` | — | 케이스 개설(`TRIAGED`→`CASE_OPENED`). body `{caseType?, actor?}`. 응답 `201 {caseId, caseStatus}`. 불법 전이 시 409 `AML.STATE_CONFLICT` | `aml_alerts`,`aml_cases` |
 | POST | `/api/v1/aml/alerts/{alertId}:escalate` | `aml:case:update` | — | 상위 승인(`TRIAGED`→`ESCALATED`, 케이스 개설). body `{caseType?, actor?}`. 응답 `201 {caseId, caseStatus}`. 불법 전이 시 409 `AML.STATE_CONFLICT` | `aml_alerts`,`aml_cases` |
 | POST | `/api/v1/aml/alerts/{alertId}:recommend-str` | `aml:case:update` | — | STR 권고(`TRIAGED`→`STR_RECOMMENDED`, STR 케이스 개설 + 아웃박스 적재). body `{caseType?, actor?}`. 응답 `201 {caseId, caseStatus}`. 불법 전이 시 409 `AML.STATE_CONFLICT` | `aml_alerts`,`aml_cases` |
+| GET | `/api/v1/aml/transactions?transactionRef=&eventId=&memberRef=&product=&from=&to=&page=&size=` | `aml:case:read` | — | **거래 브라우즈(최근 거래, PLAN 20260819-aml-tm-recent-transactions AML-4)** — `aml_canonical_events` 의 거래성 family 4종(`transaction\|remit\|domestic\|wallet`, `EventFamily.isTransactionBearing()`)만 최신순(`occurred_at DESC, event_id DESC`) 페이지 조회. `customer.*` 등 신원 이벤트는 나오지 않는다. 필터 5종(파라미터 6개)은 전부 optional·정확일치 — `transactionRef`=`payload->>'transactionRef'` / `eventId`=`event_id` 컬럼 / `memberRef`=`payload->>'targetRef'` **단일 키** 매칭(레거시 payload `memberRef` 키는 필터 미대상 — 표시값만 `COALESCE(targetRef, memberRef)` 레거시 폴백) / `product`=`payload->>'product'` / `from`/`to`=`occurredAt` ISO-8601 instant 구간(파싱 실패 400). 페이지 `size` 기본 20·상한 200 클램프. 응답 `{rows,page,size,totalCount}`(행: `eventId,eventType,transactionRef,memberRef,product,amount,currency,channelType,direction,occurredAt,alertCount,firedRuleCodes[]`). **금액 키**: `amount`/`currency` 는 payload `amountBase`+`currency` 소싱(레거시 행 호환·`CanonicalEventWindowAdapter` 동형 소비)이며, 인입의 422 통화 일치 강제로 **값은 canonical `baseEquivalent`/`baseCurrency`(레포 `docs/aml-data.md` §11.3a 평가 정본)와 항상 동일**하다 — 취소(reversal)/환불(refund) 행은 부호 음수 그대로(netting) 반환. **결측 허용**: 파생 필드(transactionRef·product·amount·currency·channelType·direction 등)는 전건 null 허용·행 제외 없음(비숫자/결측 금액은 fail-safe null), null `transactionRef` 행은 알럿 조인 스킵(`alertCount=0`). `alertCount`/`firedRuleCodes`(distinct `scenario_code`, 최대 5건)는 `aml_alerts` `(tenant_id, transaction_ref)` 매칭 중 **`status<>'RETIRED'`만 집계**(F-034 정합, `includeRetired` 파라미터 없음). 집계·enrich 없는 단순 페이지 조회(알럿 큐 `GET /api/v1/aml/alerts`와 동일 평면·동일 scope, 저수준 데이터 read) | `aml_canonical_events`,`aml_alerts` |
 
-> 엔진(aml-svc) public 알림 목록은 `status`(optional, 미지정=전체)·`rule`·`channel`·`corridor` 필터의 큐 조회다. **운영자 화면용 다중 필터 브라우즈 목록(`sourceOrigin`·`severity`·`scenario`·`channel`·`corridor`·`targetRef`·`from`/`to`)은 bo-api `GET /api/v1/bo/aml/alerts`(§2.5a)** 가 위임·집약한다.
+> 엔진(aml-svc) public 알림 목록은 `status`(optional, 미지정=전체)·`rule`·`channel`·`corridor` 필터의 큐 조회다. **운영자 화면용 다중 필터 브라우즈 목록(`sourceOrigin`·`severity`·`scenario`·`channel`·`corridor`·`targetRef`·`from`/`to`)은 bo-api `GET /api/v1/bo/aml/alerts`(§2.5a)** 가 위임·집약한다. **거래(canonical events) 다중 필터 브라우즈는 `GET /api/v1/aml/transactions`(본 표) 를 bo-api `GET /api/v1/bo/aml/transactions`(§2.5a)가 verbatim 위임**한다(집약·enrich 없음) — 이 예외는 aml-svc 에 canonical events 서버 페이징 브라우즈 경로가 이미 없다는 뜻이 아니다: **증적(evidence) 평면 `GET /api/v1/evidence/aml/customers/{customerRef}/fund-view`(§2.5, scope `aml:evidence:export`)가 주체(customerRef) 한정·`FEED_WINDOW` 30일 고정·알럿 조인 없이 기존재**한다. `GET /api/v1/aml/transactions`는 그와 **계약이 분리된 운영 조회 평면 신설**이다 — 엔진이 `aml_canonical_events` 소유자로서 **테넌트 전역·전 기간·알럿 동봉(RETIRED 제외)** 저수준 페이지 조회를 scope `aml:case:read`로 직접 제공한다(§1.1 실측·PLAN 20260819 A13). '기존 브라우즈 경로 전무'라는 서술은 부정확하다.
 
 > **알림 lifecycle 상태기계(코드=truth, `AlertController`·`domain/Alert.java`).** `DETECTED ──:triage──▶ TRIAGED ──{:open-case|:dismiss|:escalate|:recommend-str}──▶ {CASE_OPENED|DISMISSED|ESCALATED|STR_RECOMMENDED}`(6종 종결값, DB §5.7). `:dismiss` 만 `DETECTED`/`TRIAGED` 양쪽에서 허용(1차 분류 없이 즉시 오탐 종결 가능)하고, 나머지 3종(`:open-case`/`:escalate`/`:recommend-str`)은 `TRIAGED` 에서만 허용된다. **`dispositionReason`/`dispositionActor` 불변식: `DISMISSED` 전이에서만 non-null**(그 외 상태는 null). 불법 전이는 `IllegalStateException`→**409 `AML.STATE_CONFLICT`**("Expected status TRIAGED but was DETECTED" 등)로 표면화하며, bo-api `AmlEngineClient.mapError` 가 안전한 기대/실제 상태 토큰만 구조화해 bo-web 이 사용자 라벨을 매핑한다(§2.5a·free-text 미에코). 4-eyes 비대상(scope `aml:case:update` 단일 — 케이스 `:close`(EDD_CLOSE)·FDS CASE_CLOSE만 2인 결재, 가정 G2).
 >
@@ -314,6 +315,7 @@ filter가 설정한 local-bootstrap `Boolean.TRUE` marker 외에는 403으로 �
 | POST | `/api/v1/bo/aml/alerts/{alertId}:dismiss` | `aml:case:update` | — | **알림 오탐 종결 위임**(`DETECTED`/`TRIAGED`→`DISMISSED`). body `AlertDismissRequest{reason 필수(@NotBlank), actor?, note?(@Size≤1000)}` — **`reason` 공백 시 400**(bo-api 계층에서 사유 필수 강제, G1)으로 오탐율(§12-B.3) 실 분모·감사 근거 확보. 위임 시 optional `{reason, actor}` 를 엔진 `:dismiss` 로 전달한다. **`note`(판단 근거 자유 메모, 기능정의서 §7.1 BR-002a)는 엔진에 싣지 않고 bo-api 감사 detail 에 보조 저장**한다 — 엔진 `:dismiss` 계약이 `{reason, actor}` 뿐이고 `aml_alerts.disposition_reason` 은 코드 컬럼(VARCHAR(64))이라 자유 텍스트를 담을 자리가 없다(FDS 기능정의서 §11.2 BR-007 · DB §4.11 "코드와 분리 보조 저장" 동형). 공백만 입력한 메모는 감사 detail 에 키를 만들지 않는다. 응답 `AlertActionResponse` — **`dispositionReason` 서버 에코**(엔진 `AlertDto.dispositionReason` 우선, 엔진이 비우면 요청 `reason` 폴백; stub 경로도 동일 값 반환)로 호출자가 재조회 없이 기록된 사유를 확인한다. 감사 `AML_ALERT_DISMISSED`(사유 + 메모 동반) | `aml_alerts` |
 | POST | `/api/v1/bo/aml/alerts/{alertId}:escalate` | `aml:case:update` | — | **알림 상위 승인 위임**(`TRIAGED`→`ESCALATED`, 케이스 개설). body optional `AlertHandOffRequest{caseType?, actor?}`. 응답 `201 AlertActionResponse`(`caseId`/`caseStatus` 포함). aml-svc `:escalate` 위임(stub 은 케이스 미조작·라이브 알림 전이만). 감사 `AML_ALERT_ESCALATED` | `aml_alerts`,`aml_cases` |
 | POST | `/api/v1/bo/aml/alerts/{alertId}:recommend-str` | `aml:case:update` | — | **알림 STR 권고 위임**(`TRIAGED`→`STR_RECOMMENDED`, STR 케이스 개설 + 엔진 아웃박스 적재). body optional `AlertHandOffRequest{caseType?, actor?}`. 응답 `201 AlertActionResponse`(`caseId`/`caseStatus`). aml-svc `:recommend-str` 위임. 감사 `AML_ALERT_STR_RECOMMENDED` | `aml_alerts`,`aml_cases` |
+| GET | `/api/v1/bo/aml/transactions?transactionRef=&eventId=&memberRef=&product=&from=&to=&page=&size=` | `aml:case:read` | — | **TM 알림 큐와 별도인 최근 거래 목록 위임**(AML-TM-001 ③, PLAN 20260819 BOA-1). aml-svc `GET /api/v1/aml/transactions`(위 §2.4)를 위임(응답 가공·enrich 없음 — plane parity 대상). 단 요청 경계 2건은 bo-api 가 흡수한다(2026-08-19 리뷰 H2·M1): ① **`from`/`to` date-only(`YYYY-MM-DD`) 파싱 계약 흡수** — 알럿 브라우즈 `AmlTmService#parseInstant` 선례와 동형으로 `from`=당일 00:00Z, `to`=**익일 00:00Z 배타** 정규화 후 ISO instant 로 위임(ISO instant 입력은 그대로, 파싱 불가 400 `AML.BAD_REQUEST`), ② 쿼리 값별 `UriUtils.encodeQueryParam` 인코딩(특수문자 파라미터 주입 차단). 위임 미설정 비운영은 `AmlStubFallbackGuard` 통과 후 결정적 stub 고정 3행(`transactionRef` 필터만 인메모리 적용), prod 미설정 위임은 fail-closed 503 `AML.ENGINE_UNAVAILABLE`. 응답 `ApiResponse<{rows,page,size,totalCount}>`(행 필드 동일 — A13). `@PreAuthorize("hasAuthority('aml:case:read') or hasRole('BO_SUPER_ADMIN')")` | — |
 | GET | `/api/v1/bo/aml/tm-scenarios/{scenarioCode}` | `aml:admin:policy` | — | **TM 시나리오 정의 read model**(AML-TM-002, **V61 이후 자유형 코드 — generic decode**). `scenarioCode` 는 형식만 검증(`^[A-Z][A-Z0-9_]{2,64}$`, 레거시 닫힌 enum 파싱 폐기). bo-api BFF가 엔진 active `parameters`/`dsl`을 **per-code 템플릿 없이(`ScenarioTemplates` 삭제)** `ScenarioDefinition{family, severity, fields[]}`로 generic 디코드해 반환한다(DTO §3.4c) — `family` 는 dsl 트리에 `velocity` 노드 존재 여부로 `THRESHOLD`/`SIGNAL` 파생, `fields[]` 는 `parameters` 값 타입(Number/Boolean/List/String)으로 파생(per-code switch 없음). NUMBER/AMOUNT 임계 필드는 위험등급별 차등 임계(`CriterionField.thresholdsByGrade`, §3.4c)를 동반 노출한다. **정의 부재(engine/stub 공통) = 404**(레거시 정의 10종 제거로 신선 배포·미저작 코드는 항상 404가 정상). raw PII 없음, 설정 조회 전용. **이 read model 이 반환하는 active `dsl` 은 §2.7 `:activate` read-back(아래) 의 원문 보존 입력이기도 하다.** | 정책 store(read model) |
 
 > bo-api 소유 집계(read-only 파생, raw PII 미노출). STR 건수 등 tipping-off 민감 항목은 준법감시 전담 scope 한정 투영(설계서 §19.2a). 엔진 `GET /aml/customers/{customerRef}/profile`(CDD-002)·`/risk`를 결합하며 별도 영속 테이블 없음.
@@ -2259,6 +2261,52 @@ paths:
         '409': { description: 멱등 충돌, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: manual-review/fail-closed, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '503': { description: WLF 엔진 장애(fail-closed), content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/v1/aml/transactions:
+    get:
+      summary: 거래 브라우즈(최근 거래) — 거래성(transaction-bearing) canonical events 최신순 페이지 조회(알럿 수·발동 룰 동봉, 회수(RETIRED) 알럿 제외)
+      operationId: browseTransactionEvents
+      security: [ { OAuth2: ['aml:case:read'] } ]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - { name: transactionRef, in: query, required: false, schema: { type: string }, description: payload transactionRef 정확일치 }
+        - { name: eventId, in: query, required: false, schema: { type: string }, description: event_id 정확일치 }
+        - { name: memberRef, in: query, required: false, schema: { type: string }, description: payload targetRef 단일 키 정확일치(레거시 memberRef 키 필터 미대상) }
+        - { name: product, in: query, required: false, schema: { type: string } }
+        - { name: from, in: query, required: false, schema: { type: string, format: date-time }, description: "occurredAt 하한(ISO-8601 instant, 파싱 실패 400)" }
+        - { name: to, in: query, required: false, schema: { type: string, format: date-time }, description: "occurredAt 상한(ISO-8601 instant, 파싱 실패 400)" }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 0, minimum: 0 } }
+        - { name: size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 200 } }
+      responses:
+        '200':
+          description: 페이지 봉투(루트 — §1.2 data 래핑 없음). 파생 행 필드는 전건 nullable(결측 null 반환·행 제외 없음)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows, page, size, totalCount]
+                properties:
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        eventId: { type: string }
+                        eventType: { type: string }
+                        transactionRef: { type: string, nullable: true, description: null 이면 알럿 조인 스킵(alertCount=0) }
+                        memberRef: { type: string, nullable: true, description: "COALESCE(targetRef, memberRef) 레거시 폴백 표시값" }
+                        product: { type: string, nullable: true }
+                        amount: { type: number, nullable: true, description: "payload amountBase 소싱(레거시 행 호환) — 값은 baseEquivalent/baseCurrency 와 항상 동일, 취소(reversal)/환불(refund) 음수 부호 보존" }
+                        currency: { type: string, nullable: true }
+                        channelType: { type: string, nullable: true }
+                        direction: { type: string, nullable: true }
+                        occurredAt: { type: string, format: date-time }
+                        alertCount: { type: integer, format: int64, description: "(tenant_id, transaction_ref) 매칭 중 status<>'RETIRED' 만 집계" }
+                        firedRuleCodes: { type: array, items: { type: string }, description: distinct scenario_code 최대 5건(RETIRED 제외) }
+                  page: { type: integer }
+                  size: { type: integer }
+                  totalCount: { type: integer, format: int64 }
+        '400': { description: from/to ISO-8601 instant 파싱 실패, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '403': { description: scope aml:case:read 부재, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /api/v1/admin/aml/screenings/{screeningId}/decision:
     post:
       summary: WLF 판정 (TRUE_MATCH/FALSE_POSITIVE는 4-eyes)
@@ -2489,6 +2537,24 @@ paths:
   # ── bo-api 소유 서비스 관리·온보딩 엔드포인트 (§9·§3.16) ─────────────────────────────
   # 아래 경로는 bo-api가 소유·집약·인증하는 엔드포인트다. aml-svc 엔진이 아닌 bo-api가 구현하며,
   # aml-svc는 bo-api 온보딩 워크플로우의 위임 호출로 aml_tenants 갱신을 수신한다.
+  /api/v1/bo/aml/transactions:
+    get:
+      summary: BO 최근 거래 목록 위임(AML-TM-001 ③) — aml-svc GET /api/v1/aml/transactions 위임(응답 가공 없음, from/to date-only 흡수·쿼리 인코딩은 bo-api 담당 §2.5a)
+      operationId: listBoAmlTransactions
+      security: [ { OAuth2: ['aml:case:read'] } ]
+      parameters:
+        - { name: transactionRef, in: query, required: false, schema: { type: string } }
+        - { name: eventId, in: query, required: false, schema: { type: string } }
+        - { name: memberRef, in: query, required: false, schema: { type: string } }
+        - { name: product, in: query, required: false, schema: { type: string } }
+        - { name: from, in: query, required: false, schema: { type: string }, description: "ISO instant 또는 date-only(YYYY-MM-DD → 당일 00:00Z 정규화, §2.5a H2)" }
+        - { name: to, in: query, required: false, schema: { type: string }, description: "ISO instant 또는 date-only(YYYY-MM-DD → 익일 00:00Z 배타 정규화, §2.5a H2)" }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 0 } }
+        - { name: size, in: query, required: false, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: ApiResponse 봉투 — data 하위 페이지 객체 ≡ 엔진 GET /api/v1/aml/transactions 200 루트(rows/page/size/totalCount, plane parity 대상). 위임 미설정 비운영은 결정적 stub 고정 3행(transactionRef 필터만 인메모리 적용)
+        '503': { description: prod 위임 미설정 fail-closed(AML.ENGINE_UNAVAILABLE) }
   /api/v1/bo/aml/currency-profiles:
     get:
       summary: 기준통화 프로파일 카탈로그 목록 (bo-api 소유, §3.16a)
@@ -2923,6 +2989,7 @@ AMLC 제출은 **raw PII 미전송** — 토큰화된 보고 참조·PDF 아티�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-08-19 | **TM 최근 거래 브라우즈 API 신설(코드=truth, PLAN 20260819-aml-tm-recent-transactions, 역전파 DOCS-1).** (1) **§2.4 신규 행** — aml-svc `GET /api/v1/aml/transactions`(scope `aml:case:read`·`Tenant-Id`): 거래성 family 4종(`transaction\|remit\|domestic\|wallet`) canonical events 최신순 페이지 조회. 필터 5종(transactionRef/eventId/memberRef/product/from·to) 전부 optional·정확일치(memberRef 는 `payload->>'targetRef'` 단일 키), `size` 기본 20·상한 200, 응답 페이지 봉투 `{rows,page,size,totalCount}`. 금액 키 = `amount`/`currency`(payload `amountBase`+`currency` 소싱, 레거시 행 호환 — 값은 canonical `baseEquivalent`/`baseCurrency` 와 항상 동일·음수 부호 보존). 파생 필드 전건 null 허용·행 제외 없음. `alertCount`/`firedRuleCodes`(distinct·최대 5건)는 회수(`RETIRED`) 알럿 제외 집계(F-034 정합·`includeRetired` 파라미터 없음). (2) **§2.4 후주 재작성** — 기존 증적 평면 `fund-view` 브라우즈(주체 한정·30일 윈도우) 기존재 사실 기준으로 정정('기존 브라우즈 경로 전무' 서술 금지), 본 API 는 계약 분리된 운영 조회 평면 신설·bo-api verbatim 위임. (3) **§2.5a 행 추가** — bo-api `GET /api/v1/bo/aml/transactions`(위임+비운영 stub 폴백+prod fail-closed 503). (4) **§5 OpenAPI paths 등재** — 엔진·bo-api 2행(행 필드 nullable·plane parity 註 포함). (5) **리뷰 H2·M1 반영(같은 날)** — bo-api 프록시가 `from`/`to` date-only 를 흡수(`AmlTmService#parseInstant` 동형: from=당일 00:00Z·to=익일 00:00Z 배타, 실패 400)하고 쿼리 값별 `UriUtils.encodeQueryParam` 인코딩(주입 차단) — 엔진 §2.4 계약(ISO instant, 파싱 실패 400)은 불변. | 코드=truth. 근거=aml-svc `TransactionQueryController`·`TransactionEventBrowseService`·`TransactionEventBrowseAdapter`·`V70__canonical_event_browse_indexes.sql`, bo-api `aml/transactions/{controller,service,dto}`. DB `02-aml-db.md` §7 V70·기능정의서 AML-TM-001 BR-014 동일 작업 단위. |
 | 2026-08-19 | **통화 프로파일 spec 리뷰 중간·낮음 이격 보완(코드=truth, U13 후속 정합).** (1) **§3.16a apply `warnings[]` 코드 열거 확정(M1)** — `string[]` 서술을 방출 전체 집합 9종 표로 확정: `CTR_REPORTING_GAP:{ccy}`·`CONFIGURABLE_AMOUNT_RULE:{family}:{ruleCode}`·`CONFIGURABLE_RULES_UNCHECKED`·`CTR_PENDING_DIVERGENT`·`CALENDAR_UNPROVISIONED`·`FDS_REGULATORY_CURRENCY_MISMATCH`·`FDS_REGULATORY_CURRENCY_UNSET`·`FDS_CURRENCY_APPLIED_BINDING_PENDING`·`PACK_PROFILE_DIVERGENCE`(+ `STATUS_SOURCE_UNAVAILABLE:{소스}` 는 현황 전용 — 집합 분리 註). `FAILED` reasonCode 열거에 `PARAM_KEY_UNRESOLVED` 추가(총 8종 — bo-web `lib/currency-profile.ts` `CurrencyProfileApplyReasonCode` 유니온 1:1). (2) **§3.16a STEP enum 나열 순서를 실제 방출 순서로 정렬(L2)** — `FDS_REGULATORY_CURRENCY`→`BINDING`→`CTR_THRESHOLD`→`REPORT_RULES`→`FDS_RULES`, 미실행 STEP `steps[]` 미포함 명시(§5 schema enum 순서·description 동기). (3) **§3.16a `FdsRuleStatusRow.resolution` 값 집합 열거(L3)** — `MATCHED`/`NOT_FOUND`/`AMBIGUOUS`(bo-web `FdsRuleStatusResolution` 1:1). (4) **§5 OpenAPI paths 등재(M4)** — 엔진 `GET /api/v1/admin/aml/ctr-thresholds`·`GET .../ctr-thresholds/{currency}` 2행 신설(§2.7 표와 동일 계약 — 404=행 부재·합성 폴백 없음). (5) **§3.6a `RuleConditionView` leaf 정의 신설 + `unit` nullable 명기(M5)** — CTR 조건행 `unit` = 서버 해석 테넌트 기준(보고)통화 코드 또는 `null`(미바인딩/해석 불가 — PHP 폴백 금지), 클라이언트 합성 금지·3-상태 렌더 규칙 cross-ref. | 코드=truth. 근거=bo-api `aml/currencyprofile/service/CurrencyProfileApplyService`(WARN_* 상수·add 지점·STEP 방출 순서)·`aml/reports/service/AmlReportRuleParamService#conditionViews`·`aml/reports/dto/ReportRuleDtos.RuleConditionView`, aml-svc `adapter/in/rest/CtrThresholdAdminController`, bo-web `lib/currency-profile.ts`. 기능정의서 §13.4·§12-B.3 동일 작업 단위. |
 | 2026-08-19 | **다통화(법인별 자국통화) 기준통화 프로파일 일괄 셋업 역전파(코드=truth, PLAN 20260818-currency-profile-bo-setup U13).** (1) **§2.7 Tenant Policy Binding** — PATCH 행에 거래성 이력 보유 테넌트의 `baseCurrency` 변경 fail-closed(422 `AML.TENANT_CURRENCY_HISTORY_LOCKED`) 주석 + `reportCutoffTime` cutoff 무접촉 명시(응답 스키마 불변), 신규 **전용 `PUT .../policy-binding/report-cutoff-time`**(항상-쓰기·명시 null 허용) 행 + 신규 **raw `GET .../policy-binding`**(12키 read-back — `policyPackResolved`·`calendarCoverage`·`transactionalHistory` 포함, 4열 미설정 422) 행 추가. 같은 절에 엔진 CTR 임계 read 2종(`GET /api/v1/admin/aml/ctr-thresholds`·`GET .../ctr-thresholds/{currency}`, 행 부재 404·합성 폴백 없음) 신설 — 기준통화 프로파일 apply STEP `CTR_THRESHOLD`/현황 `ctrThresholds[]` 판정 정본. (2) **§3.16a 신설** — bo-api 소유 신규 엔드포인트 4종(`GET /currency-profiles`, `GET .../currency-binding`, `GET .../currency-profile`, `POST .../currency-profile:apply`) DTO 전수(`CurrencyProfileView`·`ApplyRequest`·`ApplyStepResult`·`ApplyResponse`·`CurrencyBindingResponse`·`StatusResponse`), STEP 5종(`BINDING`/`FDS_REGULATORY_CURRENCY`/`CTR_THRESHOLD`/`REPORT_RULES`/`FDS_RULES`)·상태 11종·FDS 저작 가드(`SFDS_TENANT:ADMIN`/`SFDS_RULE:OPERATE` 미보유 시 `FAILED(FDS_AUTHORITY_MISSING)`)·warnings 코드 계약 명세. (3) **§4 오류표** — `AML.TENANT_CURRENCY_HISTORY_LOCKED`(422) 신설. (4) **§5 OpenAPI** — 신규 bo-api 4종 paths + `CurrencyProfileView`/`TenantCurrencyBinding`/`CurrencyProfileApplyRequest`/`CurrencyProfileApplyStepResult`/`CurrencyProfileApplyResponse`/`CurrencyProfileStatusResponse` schema 6종 신설. (5) **§9 표** — AML-CUR-001 화면 행 추가. | 코드=truth. 근거=bo-api `aml/currencyprofile/{controller/CurrencyProfileController,dto/CurrencyProfileDtos,service/CurrencyProfileCatalogService,service/CurrencyProfileApplyService}`, aml-svc `adapter/in/rest/TenantPolicyBindingAdminController`·`CtrThresholdAdminController`. DB §02-aml-db.md §7 V24·integration §01-fds-integration.md·기능정의서 §13.4 동일 작업 단위. |
 | 2026-08-17 | **숫자 신고소득·동결 evidence window·관할 보고기한 fail-safe 정합화.** 숫자 amount 키 presence가 malformed/null일 때 legacy band 폴백을 막고, ANNUAL은 DECIMAL128 월할·원문 period provenance를 보존한다. public `kycEvidence`는 numeric 4키를 additive로 반환한다. TM alert는 `evidenceWindow`를 동결해 binding 변경 뒤에도 동일 관련거래를 재현하며 malformed snapshot은 current binding으로 재해석하지 않는다. `reportDeadlineAt`은 원본 binding이 PH+Asia/Manila일 때만 계산하고 다른 관할은 DRAFT 유지+null+구조화 WARN으로 명문화했다. 기존 STR 지연 bucket은 법정 dueAt이 아닌 legacy `created_at+72 elapsed hours` 운영 기준선임을 분리했다. | 코드=truth. 근거=aegis-aml `DeclaredIncomePolicy`·`IdentityProjectionService`·`EvidenceTimelineService`·`AlertEvidenceWindowResolver`·`ReportDeadlinePolicy`·`StrReportingStats`. DB §3.3/§3.10/§3.12 동기화. |
