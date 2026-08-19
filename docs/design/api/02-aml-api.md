@@ -336,7 +336,9 @@ filter가 설정한 local-bootstrap `Boolean.TRUE` marker 외에는 403으로 �
 #### Tenant Policy Binding (§16, P0-16)
 | 메서드 | 경로 | scope | 4-eyes | 설명 | DB |
 |---|---|---|---|---|---|
-| PATCH | `/api/v1/admin/aml/tenants/{tenantId}/policy-binding` | `aml:admin:policy` | — | **테넌트 관할·통화·Policy Pack revision 바인딩(P0-16, upsert)** — tenant 를 REST 로 `PH·PHP` 또는 `KR·KRW` 등에 바인딩하는 프로비저닝 진입점(데모 비즈니스 seed 아님). 요청 `BindRequest{ jurisdiction(ISO 3166-1 alpha-2, 필수), baseCurrency(ISO 4217, 필수), reportingCurrency?(생략 시 baseCurrency), timezone(유효 IANA region ID, 필수), policyPackVersion(필수) }`. `Tenant-Id` 헤더=경로 `tenantId` 일치 필수(불일치 = cross-tenant write 거부). null·blank·invalid timezone과 fixed-offset ID(`+10:00`, `GMT+10:00`), 잘못된 ISO country/currency는 write 전에 `400 AML.VALIDATION_ERROR`, 이미 저장된 legacy missing/invalid/fixed-offset timezone은 인입에서 `422 AML.TENANT_POLICY_UNBOUND`(Manila 기본값 없음), 미존재 tenant/비-effective Policy Pack revision도 `422 AML.TENANT_POLICY_UNBOUND`다. 멱등 upsert. 응답 `200 { tenantId, jurisdiction, baseCurrency, reportingCurrency, timezone, policyPackCode, policyPackVersion, policyPackEffectiveFrom }`(= `TenantPolicyBinding`). | `aml_tenants`(DB §3.1·V53) |
+| PATCH | `/api/v1/admin/aml/tenants/{tenantId}/policy-binding` | `aml:admin:policy` | — | **테넌트 관할·통화·Policy Pack revision 바인딩(P0-16, upsert)** — tenant 를 REST 로 `PH·PHP` 또는 `KR·KRW` 등에 바인딩하는 프로비저닝 진입점(데모 비즈니스 seed 아님). 요청 `BindRequest{ jurisdiction(ISO 3166-1 alpha-2, 필수), baseCurrency(ISO 4217, 필수), reportingCurrency?(생략 시 baseCurrency), timezone(유효 IANA region ID, 필수), policyPackVersion(필수) }`. `Tenant-Id` 헤더=경로 `tenantId` 일치 필수(불일치 = cross-tenant write 거부). null·blank·invalid timezone과 fixed-offset ID(`+10:00`, `GMT+10:00`), 잘못된 ISO country/currency는 write 전에 `400 AML.VALIDATION_ERROR`, 이미 저장된 legacy missing/invalid/fixed-offset timezone은 인입에서 `422 AML.TENANT_POLICY_UNBOUND`(Manila 기본값 없음), 미존재 tenant/비-effective Policy Pack revision도 `422 AML.TENANT_POLICY_UNBOUND`다. **거래성 이력 보유 테넌트의 기준통화(`baseCurrency`) 변경은 fail-closed — `422 AML.TENANT_CURRENCY_HISTORY_LOCKED`**(다통화, PLAN 20260818 — `baseCurrency` 이외 필드 변경은 이력과 무관하게 허용). 멱등 upsert. `reportCutoffTime` 필드는 본 PATCH 로 갱신하지 않는다(전용 PUT 서브리소스로 분리 — 아래 행). 응답 스키마 불변 `200 { tenantId, jurisdiction, baseCurrency, reportingCurrency, timezone, policyPackCode, policyPackVersion, policyPackEffectiveFrom }`(= `TenantPolicyBinding`). | `aml_tenants`(DB §3.1·V53) |
+| PUT | `/api/v1/admin/aml/tenants/{tenantId}/policy-binding/report-cutoff-time` | `aml:admin:policy` | — | **법정 보고 마감시각 always-write 전용 서브리소스**(다통화, PLAN 20260818 — `PATCH .../policy-binding` 은 cutoff 무접촉). 요청 `CutoffRequest{ reportCutoffTime: "HH:mm" }` — 명시 `null` 은 컬럼 clear(필드가 "부재"로 취급되지 않는다). tenant 행 미존재 시 404. 응답 `200 { tenantId, reportCutoffTime }`. | `aml_tenants.report_cutoff_time` |
+| GET | `/api/v1/admin/aml/tenants/{tenantId}/policy-binding` | `aml:admin:policy` | — | **raw 바인딩 read-back**(다통화, PLAN 20260818 — U1 작업 5(b), `resolve()` 단독 사용 금지). `resolve()` 를 거치지 않고 tenant 행을 그대로 12키 투영한다: `{ tenantId, jurisdiction, baseCurrency, reportingCurrency, timezone, policyPackCode, policyPackVersion, policyPackEffectiveFrom, reportCutoffTime, calendarCoverage("PRESENT"/"MISSING"), policyPackResolved(boolean), transactionalHistory(boolean) }`. jurisdiction/baseCurrency/reportingCurrency/timezone 4열 중 하나라도 미설정이면 `422 AML.TENANT_POLICY_UNBOUND`(=미바인딩). 4열이 모두 있지만 핀 Policy Pack revision 이 비-effective(stale/absent/DRAFT)면 **200 + `policyPackResolved=false`**로 구분한다(바인딩 존재와 pin 유효성을 혼동하지 않음 — r4 이격 2). | `aml_tenants`(DB §3.1·V53) |
 
 > **정책 표면 구획(§0.5 온보딩 경계와 별개).** §0.5 는 **배포 모델·온보딩 신청**(서비스 등록·프로비저닝 상태머신)을 bo-api 소유로 두고 aml-svc 엔진 API 에 미추가함을 정본으로 한다. 본 `PATCH .../tenants/{id}/policy-binding` 은 그 온보딩 표면이 아니라 **엔진 규제 정책 표면**(관할·통화·Policy Pack revision — 엔진 corridor/통화 해석·evidence 고정의 입력)이며, 이미 등록된 tenant 의 정책 바인딩을 설정한다. 온보딩(`/api/v1/bo/aml/tenants`·`/onboarding/*`, bo-api 전용)과 정책 바인딩(엔진 `/api/v1/admin/aml/tenants/{id}/policy-binding`)은 **서로 다른 표면**으로 구획한다(온보딩=서비스 lifecycle, 정책 바인딩=규제 파라미터). bo-api tenant shadow 의 관할·통화 동기는 후속(phase-2 A1 경계).
 
@@ -580,6 +582,13 @@ bo-api 표면: `GET|POST /api/v1/bo/aml/report-rules/configurable`, `POST .../co
 | GET | `/api/v1/bo/aml/ctr-thresholds` | `aml:admin:policy` | — | 통화별 CTR 규제 임계 목록(EXECUTED 반영값 우선·변경 대기 표기). 응답 `CtrThresholdView[]`(§3.22a) | `aml_ctr_thresholds` |
 | GET | `/api/v1/bo/aml/ctr-thresholds/{currency}` | `aml:admin:policy` | — | 통화별 CTR 임계 상세 | `aml_ctr_thresholds` |
 | POST | `/api/v1/bo/aml/ctr-thresholds/{currency}:update` | `aml:admin:policy` | 🔒4-eyes(`CTR_THRESHOLD`, 승인선 `REPORTING_OFFICER`) | CTR 규제 임계 변경(202 + approvalId). 엔진 연결 시 bo-api가 aml-svc admin `POST /api/v1/admin/aml/ctr-thresholds/{currency}:update`로 상신을 위임해 AML 결재함에 노출한다. **규제값 hot-reload 우회 불가** — 결재 EXECUTED 시에만 반영(BR-501) | `aml_ctr_thresholds`,`aml_approvals`(aml-svc V23 / 비운영 stub fallback) |
+
+> **엔진 CTR 임계 read 표면(다통화, PLAN 20260818 — U18 신설).** 위 bo-api `/api/v1/bo/aml/ctr-thresholds` 2종과 별개로, aml-svc 엔진이 **동일 `CtrThresholdAdminController`**(scope `aml:admin:policy`, `Tenant-Id` 헤더 필수) 상에 다음 2종 read-back 을 소유한다 — 기준통화 프로파일 apply 오케스트레이션(§14 U5 `STEP CTR_THRESHOLD`·게이트 ⓒ·현황 `GET .../currency-profile` 응답 `ctrThresholds[]`, CTR-C14 케이스)의 판정 정본이며 위 `POST {currency}:update` 상신 위임과 동일 subjectType(`CTR_THRESHOLD`)·테넌트 범위를 공유한다.
+>
+> | 메서드 | 경로 | scope | 설명 | DB |
+> |---|---|---|---|---|
+> | GET | `/api/v1/admin/aml/ctr-thresholds` | `aml:admin:policy` | 테넌트 전체 통화의 CTR 임계 행 목록(`findByTenantIdOrderByCurrency` 정렬). 응답 `CtrThresholdResponse[]{ currency, amount, updatedAt }` — **EXECUTED 반영값만**(상신 스테이징 미반영). 미설정 통화는 배열에서 생략(합성 폴백 없음 — F-077 'CTR 미개설' 사실 그대로 노출) | `aml_ctr_thresholds` |
+> | GET | `/api/v1/admin/aml/ctr-thresholds/{currency}` | `aml:admin:policy` | 단건 통화 CTR 임계 행. 응답 `CtrThresholdResponse{ currency, amount, updatedAt }`. **행 부재 시 404(합성 `DEFAULT_THRESHOLD` 폴백 금지)** | `aml_ctr_thresholds` |
 
 엔진 위임 계약은 `GET /api/v1/admin/aml/report-rules/{ruleCode}/params` → `{ruleCode,params,pendingApprovalId}`와 `POST /api/v1/admin/aml/report-rules/{ruleCode}:update-params`(header `X-User-Subject`, body `{makerId,reason,params}`) → `202 {ruleCode,staged,approvalId,status:"SUBMITTED",subjectType:"REPORT_RULE_PARAM"}`다. body `makerId`는 인증 주체와 일치해야 한다.
 
@@ -1102,6 +1111,8 @@ snapshot 없는 legacy 알럿만 현재 정책 기반 fallback을 쓴다.
 
 `ReportRuleOverviewRow`: `{ ruleCode, family("CTR"|"STR"), reportType, reasonCode, evaluationMode, actions, status, naturalLanguage, hitCount30d, draftCount, lastFiredAt, tuningRecommended, source("BUILT_IN"|"CUSTOM"), conditions[] }`. BUILT_IN은 카탈로그/라이브 보고 store, CUSTOM은 `aml_configurable_report_rules`와 실제 `aml_alerts.scenario_code` lifecycle 집계가 원천이다. 같은 custom 코드에 여러 버전이 있으면 **실제 평가 중인 ACTIVE를 우선 표시**하고, ACTIVE가 없을 때만 최신 DRAFT를 표시한다. `draftCount`는 **nullable** 이며 BUILT_IN·CUSTOM 이 **같은 기준**을 쓴다 — 엔진 위임 배치(알림 집계 소스 가동)에서는 보고 목록이 발동 룰코드를 싣지 않아 룰별 DRAFT 귀속이 구조적으로 불가능하므로 `null`(화면 '집계 불가'), 비위임(local/CI) 배치에서는 라이브 리포트 store `firedRules` 위 실집계다. **조용한 `0` 은 '발동한 초안 없음' 으로 오독되므로 금지**한다(한쪽만 0 이면 같은 열에서 판정 기준이 갈린다). **`tuningRecommended`는 BUILT_IN·CUSTOM 공통 알림 lifecycle 휴리스틱**(오탐률·케이스 전환율)으로 판정하며, 구 BUILT_IN `draftCount>=5` 기준은 폐기한다. `actions=["TM_ALERT"]`. `conditions[]`는 built-in resolved 파라미터 또는 custom safe DSL leaf를 표시한다.
 
+**`RuleConditionView`**(`conditions[]` 원소 — §2.7 룰 상세 `ReportRuleView.conditions[]` 와 공용 leaf, FDS `RuleConditionView` 와 동형): `{ label, op, value, unit, paramKey }`. **`unit` 은 nullable** — 특히 CTR 조건행(카탈로그 단위 토큰 `{BASE_CCY}` 행, `CTR_SINGLE`·`CTR_DAILY`·`ctr_threshold` 파라미터 결합행)의 `unit` 은 **서버가 해석한 테넌트 기준(보고)통화 코드 또는 `null`**(미바인딩/해석 불가 — **PHP 폴백 금지**, 코드=truth bo-api `AmlReportRuleParamService#conditionViews`·`TenantCurrencyBindingService#reportingCurrencyOrNull`)이다. 클라이언트는 `unit=null` 을 "단위 무표기 + CTR 임계 편집 폼 미노출(미바인딩 안내)" 로 처리하고 기본 통화를 합성하지 않는다(기능정의서 §12-B.3 3-상태 렌더 규칙). `paramKey` non-null 행은 편집 파라미터에 결합된 행(값은 오버라이드 반영 resolved 현재값)이다.
+
 BUILT_IN `conditions[]`는 aml-svc 평가 카탈로그의 조건 키·연산자·값을 그대로 투영한다. 특히 다음 행은 조사역이 화면 문자열대로 재현할 수 있어야 하며, 점수 행이 실제 boolean 게이트를 대신하지 않는다.
 
 | ruleCode | 실제 발동 게이트 | `conditions[]` 표시 계약 |
@@ -1433,6 +1444,78 @@ RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenari
 | `history` | array<object> | 상태 전이 이력 `{ status, transitionedAt, actor, note }` |
 | `nextExpectedStatus` | string | 다음 예상 상태(상태머신 기반 안내용, nullable) |
 
+### 3.16a CurrencyProfile* DTOs — 기준통화 프로파일 카탈로그/현황/apply (bo-api 소유, 다통화 PLAN 20260818, U5/U13)
+
+> bo-api 전용 엔드포인트 4종(§9 표) — `GET /api/v1/bo/aml/currency-profiles`, `GET /api/v1/bo/aml/tenants/{tenantId}/currency-binding`, `GET /api/v1/bo/aml/tenants/{tenantId}/currency-profile`, `POST /api/v1/bo/aml/tenants/{tenantId}/currency-profile:apply`. scope `aml:admin:policy`(화면 접근 게이트). `{tenantId}` 경로는 `"current"` 별칭(ambient `Tenant-Id`)을 허용하며, 명시 tenantId 가 ambient 테넌트와 다르면 `400 AML.BAD_REQUEST`(교차 테넌트 오염 차단). `apply` 의 FDS 축 저작(규제통화 전환·룰 파라미터 상신)은 화면 게이트와 별개로 FDS capability 게이트를 추가로 통과해야 한다(아래 참조).
+
+**`CurrencyProfileView`**(`GET /currency-profiles` 배열 원소, repo `config/currency-profiles/*.json` bundled read-only 카탈로그):
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `code` | string | 프로파일 코드(예: `php`, `krw`) |
+| `baseCurrency` | string | ISO 4217 기준통화 |
+| `jurisdiction` | string | 관할 코드(ISO 3166-1 alpha-2) |
+| `timezone` | string | IANA timezone |
+| `ctrThresholdAmount` | number | CTR 법정 임계(원본 JSON 문자열 scale 보존) |
+| `roundingUnit` | integer | FDS 파생 금액 반올림 단위 |
+| `reportCutoffTime` | string(HH:mm) | 법정 보고 마감시각. 미확정 프로파일은 null |
+| `complianceReview` | enum | `CONFIRMED` / `PROVISIONAL` |
+| `thresholdBasis` | string | 임계 산정 근거 설명 |
+| `amountFeatureKey` | string | FDS 룰 DSL 참조 금액 피처 키 — `baseCurrency=="PHP"` 면 `transaction.phpEquivalent`, 그 외는 `transaction.baseEquivalent` |
+| `derivedFdsAmounts` | map<string,number> | 룰코드 → 파생 금액 임계(ratio × CTR 임계, HALF_EVEN 반올림) |
+
+**`GET /tenants/{tenantId}/currency-binding`** — raw 바인딩 read-back 프록시(aml-svc `GET .../policy-binding` 위임, §2.7). 응답 `{ bound: boolean, binding: TenantCurrencyBinding | null }` — 미바인딩(엔진 422)이면 `bound=false, binding=null`.
+
+**`ApplyRequest`**(`POST .../currency-profile:apply` 요청): `{ profileCode: string, reason?: string }`. `profileCode` blank/미등재/번들 부재 시 `400 AML.BAD_REQUEST`(STEP 미실행·상신 0·감사 미기록).
+
+**`ApplyStepResult`**(steps[] 원소 — 코드만, 안내 '문장' 없음. `engineMessage` 는 developer-only·화면 미표시):
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `step` | enum | `FDS_REGULATORY_CURRENCY` / `BINDING` / `CTR_THRESHOLD` / `REPORT_RULES` / `FDS_RULES` — **나열 순서 = 실제 방출 순서**(코드=truth `CurrencyProfileApplyService#apply`; STEP 순서 = 배열 순서 정본). `FDS_REGULATORY_CURRENCY` 는 규제통화 전환 게이트가 발동한 pass 에만 선두 방출되며, **미실행 STEP 은 `steps[]` 에 포함되지 않는다**(예: 조기 종결 pass 는 `BINDING` 1건만 응답) |
+| `status` | enum | `APPLIED` / `SUBMITTED` / `SKIPPED` / `PENDING` / `NOT_APPLICABLE` / `NOT_FOUND` / `AMBIGUOUS` / `BLOCKED_HISTORY` / `DEFERRED`(reasonCode `CTR_GAP_FAIL_CLOSED`·`FDS_CURRENCY_PENDING`) / `FEATURE_KEY_MISMATCH` / `CURRENCY_MISMATCH` / `FAILED`(reasonCode **8종**: `POLICY_PACK_UNRESOLVED`·`POLICY_PACK_AMBIGUOUS`·`BIND_REJECTED`·`ENGINE_UNAVAILABLE`·`PARAM_KEY_UNRESOLVED`·`FDS_TENANT_ABSENT`·`FDS_AUTHORITY_MISSING`·`ENGINE_REJECTED` — DEFERRED 사유 2종과 합쳐 bo-web `lib/currency-profile.ts` `CurrencyProfileApplyReasonCode` 유니온 10종과 1:1) / `FAILED_RANGE`. 다중키 `FDS_RULES` STEP 은 룰코드별 결과를 `params`(`"GATE-01"→"SUBMITTED"`, `"GATE-01.approvalId"→"…"`)에 접어넣고 `status` 는 worst-case rollup(`FAILED` > `AMBIGUOUS`/`FAILED_RANGE` > `SUBMITTED` > `SKIPPED`/`NOT_FOUND`/`NOT_APPLICABLE`). `PARAM_KEY_UNRESOLVED` 는 `FDS_RULES` 룰키 결과에서 대상 룰의 편집 파라미터 키를 해석하지 못한 경우다 |
+| `reasonCode` | string | nullable |
+| `params` | map<string,string> | nullable |
+| `approvalId` | string | nullable(상신된 경우) |
+| `engineErrorCode` | string | nullable |
+| `engineMessage` | string | nullable, developer-only |
+
+**FDS 저작 가드(r12 — apply 는 화면 게이트와 별개로 FDS capability 를 추가 검사한다)**: `STEP FDS_REGULATORY_CURRENCY` 상신은 `SFDS_TENANT:ADMIN`(+ 플랫폼/수퍼 역할), `STEP FDS_RULES` 상신은 `SFDS_RULE:OPERATE` 를 요구한다. 미보유 시 해당 STEP 만 `FAILED(FDS_AUTHORITY_MISSING)` 로 fail-closed(다른 STEP 은 계속 진행). 읽기(`GET .../currency-profile` 현황)는 이 게이트를 거치지 않고 `aml:admin:policy` 만으로 판정한다.
+
+**`ApplyResponse`**(`POST .../currency-profile:apply` — 항상 `200`, 실패는 STEP 단위): `{ tenantId, profileCode, steps: ApplyStepResult[], warnings: string[] }`.
+
+**apply `warnings[]` 코드 열거(방출 전체 집합 — 코드=truth `CurrencyProfileApplyService` 상수·add 지점, 자유 서술 문자열 없음)**:
+
+| 코드 | 방출 조건 |
+|---|---|
+| `CTR_REPORTING_GAP:{ccy}` | 게이트 pass(최초 바인딩·통화 변경)에서 기존 CTR 임계 행이 프로파일 임계와 불일치 — `STEP BINDING` 은 `DEFERRED(CTR_GAP_FAIL_CLOSED)` 동행 |
+| `CONFIGURABLE_AMOUNT_RULE:{family}:{ruleCode}` | 금액 피처(`*.phpEquivalent`/`*.baseEquivalent`) leaf 를 참조하는 **ACTIVE 설정형(CTR/STR) 룰** 은 apply 가 자동 갱신하지 않음 — 수동 점검 대상을 룰별로 방출(`STEP REPORT_RULES`) |
+| `CONFIGURABLE_RULES_UNCHECKED` | 설정형 룰 목록 조회 실패로 위 금액 피처 점검 자체를 수행하지 못함(`STEP REPORT_RULES` 는 `NOT_APPLICABLE` 유지) |
+| `CTR_PENDING_DIVERGENT` | `CTR_THRESHOLD` 대기 상신(`PENDING`)의 스테이징 금액이 프로파일 임계와 다름 |
+| `CALENDAR_UNPROVISIONED` | 바인딩 반영 후 read-back 의 `calendarCoverage=MISSING`(관할 영업일 캘린더 미적재) |
+| `FDS_REGULATORY_CURRENCY_MISMATCH` | FDS 규제통화가 프로파일 기준통화와 불일치(매 pass 진단 — 게이트 pass 에서만 차단성) |
+| `FDS_REGULATORY_CURRENCY_UNSET` | FDS 규제통화 legacy NULL(비차단) |
+| `FDS_CURRENCY_APPLIED_BINDING_PENDING` | 2-pass 전환 중간 창 — FDS 규제통화는 이미 프로파일 통화로 EXECUTED, AML 바인딩은 미완결(FDS 금액 룰 무발동 구간) |
+| `PACK_PROFILE_DIVERGENCE` | 통화 프로파일 팩 배포 테넌트가 REST 규제통화 전환을 상신 — 라이브 상태가 팩 JSON 정본과 영구 이격(§7 Q17 r11) |
+
+> `StatusResponse.warnings` 의 `STATUS_SOURCE_UNAVAILABLE:{소스}` 는 **현황 조회 전용** 코드로 apply 응답에는 방출되지 않는다(집합 분리).
+
+**`StatusResponse`**(`GET .../currency-profile` — 항상 `200`. 모든 top-level 키가 항상 존재하며, 조회 불가한 소스는 명시적 `null` + `STATUS_SOURCE_UNAVAILABLE:{소스}` warning 으로 투영한다 — 오판정 방지):
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `tenantId` | string | — |
+| `bound` | boolean\|null | `true`/`false`(미바인딩, 엔진 422 read-back)/`null`(판독 불가) 3-상태 |
+| `binding` | `TenantCurrencyBinding`\|null | AML 바인딩(§2.7 raw read-back) |
+| `ctrThresholds` | array | `CtrThresholdStatusRow[]{ currency, amount, updatedAt, activeForReporting }` — `activeForReporting`=현재 reporting currency 행 여부(구 통화 임계 잔존 행은 false) |
+| `ctrPendingApprovalId` | string\|null | CTR_THRESHOLD 상신 대기 approvalId |
+| `fdsRegulatoryCurrency` | string\|null | FDS 엔진 `regulatoryCurrency`(§2.7 compliance GET 위임) |
+| `fdsRegulatoryCurrencyMatchesBinding` | boolean\|null | AML 바인딩 `baseCurrency` 와 일치 여부 |
+| `fdsRegulatoryCurrencyPendingApprovalId` | string\|null | `TENANT_REGULATORY_CURRENCY` 상신 대기 approvalId |
+| `fdsRules` | array | `FdsRuleStatusRow[]{ ruleKey, resolution, ruleId, name, featureKeyMatched, currencyMatched, currentAmount, derivedAmount, drifted, pendingApprovalId, paramReadFailed }` — 6종 고정 `_ratios.json` 키. `resolution` 값 집합 = `MATCHED`/`NOT_FOUND`/`AMBIGUOUS`(bo-web `FdsRuleStatusResolution` 유니온 1:1 — `ruleId`·`name` 등 룰 결합 필드는 `MATCHED` 시만 non-null). `getParams` 조회 실패는 원소 단위 `paramReadFailed=true`(소스 단위 warning 미병기) |
+| `profileAlignment` | array | `ProfileAlignmentRow[]{ profileCode, bindingMatched, ctrMatched, fdsRulesMatched }` — 카탈로그 프로파일별 현재 테넌트 상태 정렬 일치 여부 |
+| `warnings` | array<string> | 코드(+콜론 파라미터) 형식만. `STATUS_SOURCE_UNAVAILABLE:{AML_BINDING\|AML_CTR\|FDS_COMPLIANCE\|FDS_RULES}`(해당 소스 판독 불가 — 이 경우 `FDS_REGULATORY_CURRENCY_UNSET` 은 함께 병기하지 않는다), `FDS_REGULATORY_CURRENCY_UNSET`(legacy NULL — 비차단), `PACK_PROFILE_DIVERGENCE`(팩 배포 테넌트가 REST 로 전환됨), `FDS_CURRENCY_APPLIED_BINDING_PENDING`(2-pass 전환 중간 창 — FDS 규제통화 EXECUTED 후 AML 바인딩 완결 전 구간, FDS 금액 룰 무발동) |
+
 ### 3.17 NeutralEventRequest 블록 스키마 → `POST /aml/v1/transaction-events` (코드=truth, feature/aml-neutral-canonical-ingest)
 
 §2.1a 중립 수집 API 의 Party·Amounts·product 블록 상세. 필드는 엔진 domain record(`NeutralParty`·`NeutralAmounts`·`NeutralProductBlocks`)와 1:1. raw PII(성명·계좌·신분증번호)는 수신 경계에서만 존재하고 토큰화·vault 후 소멸(§2.1a PII 경계).
@@ -1528,6 +1611,7 @@ Controller/domain 오류는 `{ "error": { "code", "message", "details": "...", "
 | 409 | `AML.TENANT_DEPLOYMENT_MODEL_IMMUTABLE` | `deploymentModel` 직접 PUT 변경 시도(온보딩 흐름만 허용) |
 | 404 | `AML.TENANT_NOT_FOUND` | 대상 tenant 없음(§5 OpenAPI paths·PRD 부록 D 정합) |
 | 422 | `AML.TENANT_POLICY_UNBOUND` | **테넌트 관할·통화·시간대·Policy Pack revision 바인딩 누락/충돌(P0-16, `TenantPolicyUnboundException`)** — jurisdiction/base_currency/reporting_currency/timezone/policy_pack_code/policy_pack_version 미설정, timezone invalid/fixed-offset, 핀 Policy Pack revision 미존재, 또는 비-effective(비-ACTIVE·effective_from 미도달) revision. 중립 인입(`POST /aml/v1/transaction-events`)·policy-binding upsert(§2.7)에서 fail-closed — 구 service-global PH/PHP/Manila 기본으로 조용히 오귀속(오보고·미탐)하지 않고 거부한다 |
+| 422 | `AML.TENANT_CURRENCY_HISTORY_LOCKED` | **거래성 canonical 이벤트 보유 테넌트의 기준통화(`baseCurrency`) 변경 거부(다통화, PLAN 20260818)** — `PATCH .../tenants/{tenantId}/policy-binding`(§2.7)이 기존 바인딩 대비 `baseCurrency` 를 바꾸려 할 때, 해당 테넌트에 거래성 canonical 이벤트가 이미 존재하면 fail-closed 로 거부한다(단일 통화 윈도우 보호 — 이력 있는 테넌트의 통화 소급 변경은 CTR/STR 임계·FX 해석을 소급 오염시킨다). `baseCurrency` 외 필드(`reportingCurrency`/`timezone`/`policyPackVersion`) 변경은 이력과 무관하게 허용 |
 | 422 | `AML.ONBOARDING_PROVISION_NOT_APPLICABLE` | `MANAGED_DEDICATED`가 아닌 배포 모델에 provision 호출 |
 | 422 | `AML.ONBOARDING_REGISTER_NOT_APPLICABLE` | `SELF_HOSTED`가 아닌 배포 모델에 register 호출 |
 | 401 | `AML.INVALID_REGISTRATION_TOKEN` | self-hosted 등록 토큰 불일치 |
@@ -1803,6 +1887,106 @@ components:
         SELF_HOSTED 경로: REQUESTED→PACKAGE_ISSUED→CUSTOMER_DEPLOYED→REGISTERED.
         SHARED 경로: REQUESTED→ACTIVE(즉시).
         ACTIVE/REGISTERED 도달 시 tenant status=ACTIVE.
+    CurrencyProfileView:
+      type: object
+      description: '기준통화 프로파일 카탈로그 원소(§3.16a) — repo config/currency-profiles/*.json bundled read-only'
+      properties:
+        code: { type: string, example: php }
+        baseCurrency: { type: string, example: PHP }
+        jurisdiction: { type: string, example: PH }
+        timezone: { type: string, example: Asia/Manila }
+        ctrThresholdAmount: { type: number }
+        roundingUnit: { type: integer }
+        reportCutoffTime: { type: string, nullable: true, example: '17:00' }
+        complianceReview: { type: string, enum: [CONFIRMED, PROVISIONAL] }
+        thresholdBasis: { type: string }
+        amountFeatureKey: { type: string }
+        derivedFdsAmounts: { type: object, additionalProperties: { type: number } }
+    TenantCurrencyBinding:
+      type: object
+      description: 'aml-svc raw policy-binding read-back 투영(§2.7 GET .../policy-binding, 12키)'
+      properties:
+        tenantId: { type: string }
+        jurisdiction: { type: string }
+        baseCurrency: { type: string }
+        reportingCurrency: { type: string }
+        timezone: { type: string }
+        policyPackCode: { type: string }
+        policyPackVersion: { type: string }
+        policyPackEffectiveFrom: { type: string, format: date-time, nullable: true }
+        reportCutoffTime: { type: string, nullable: true }
+        calendarCoverage: { type: string, enum: [PRESENT, MISSING] }
+        policyPackResolved: { type: boolean }
+        transactionalHistory: { type: boolean }
+    CurrencyProfileApplyRequest:
+      type: object
+      required: [profileCode]
+      properties:
+        profileCode: { type: string }
+        reason: { type: string, nullable: true }
+    CurrencyProfileApplyStepResult:
+      type: object
+      properties:
+        step: { type: string, enum: [FDS_REGULATORY_CURRENCY, BINDING, CTR_THRESHOLD, REPORT_RULES, FDS_RULES], description: '나열 순서 = 실제 방출 순서(미실행 STEP 은 steps[] 미포함, §3.16a)' }
+        status: { type: string, enum: [APPLIED, SUBMITTED, SKIPPED, PENDING, NOT_FOUND, AMBIGUOUS, NOT_APPLICABLE, DEFERRED, FEATURE_KEY_MISMATCH, CURRENCY_MISMATCH, BLOCKED_HISTORY, FAILED, FAILED_RANGE] }
+        reasonCode: { type: string, nullable: true }
+        params: { type: object, additionalProperties: { type: string }, nullable: true }
+        approvalId: { type: string, nullable: true }
+        engineErrorCode: { type: string, nullable: true }
+        engineMessage: { type: string, nullable: true, description: developer-only(화면 미표시) }
+    CurrencyProfileApplyResponse:
+      type: object
+      properties:
+        tenantId: { type: string }
+        profileCode: { type: string }
+        steps: { type: array, items: { $ref: '#/components/schemas/CurrencyProfileApplyStepResult' } }
+        warnings: { type: array, items: { type: string }, description: '§3.16a apply warnings 코드 집합 9종(콜론 파라미터형 CTR_REPORTING_GAP:{ccy}·CONFIGURABLE_AMOUNT_RULE:{family}:{ruleCode} 포함) — 자유 서술 문자열 없음' }
+    CurrencyProfileStatusResponse:
+      type: object
+      description: '§3.16a — 모든 top-level 키가 항상 존재(조회 불가 소스는 null + STATUS_SOURCE_UNAVAILABLE warning)'
+      properties:
+        tenantId: { type: string }
+        bound: { type: boolean, nullable: true }
+        binding: { $ref: '#/components/schemas/TenantCurrencyBinding' }
+        ctrThresholds:
+          type: array
+          items:
+            type: object
+            properties:
+              currency: { type: string }
+              amount: { type: string }
+              updatedAt: { type: string, format: date-time }
+              activeForReporting: { type: boolean }
+        ctrPendingApprovalId: { type: string, nullable: true }
+        fdsRegulatoryCurrency: { type: string, nullable: true }
+        fdsRegulatoryCurrencyMatchesBinding: { type: boolean, nullable: true }
+        fdsRegulatoryCurrencyPendingApprovalId: { type: string, nullable: true }
+        fdsRules:
+          type: array
+          items:
+            type: object
+            properties:
+              ruleKey: { type: string }
+              resolution: { type: string }
+              ruleId: { type: string, nullable: true }
+              name: { type: string, nullable: true }
+              featureKeyMatched: { type: boolean, nullable: true }
+              currencyMatched: { type: boolean, nullable: true }
+              currentAmount: { type: string, nullable: true }
+              derivedAmount: { type: string, nullable: true }
+              drifted: { type: boolean, nullable: true }
+              pendingApprovalId: { type: string, nullable: true }
+              paramReadFailed: { type: boolean }
+        profileAlignment:
+          type: array
+          items:
+            type: object
+            properties:
+              profileCode: { type: string }
+              bindingMatched: { type: boolean, nullable: true }
+              ctrMatched: { type: boolean, nullable: true }
+              fdsRulesMatched: { type: boolean, nullable: true }
+        warnings: { type: array, items: { type: string } }
     TenantDto:
       type: object
       description: >
@@ -2262,9 +2446,121 @@ paths:
                 type: object
                 properties:
                   data: { $ref: '#/components/schemas/SimulationResponse' }
+  /api/v1/admin/aml/ctr-thresholds:
+    get:
+      summary: 테넌트 전체 통화의 CTR 임계 행 목록 (EXECUTED 반영값만 — §2.7, 다통화 U18)
+      operationId: listCtrThresholds
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        '200':
+          description: 통화 오름차순 정렬(findByTenantIdOrderByCurrency). 미설정 통화는 배열에서 생략(합성 폴백 없음 — F-077)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    currency: { type: string, example: PHP }
+                    amount: { type: number }
+                    updatedAt: { type: string, format: date-time }
+  /api/v1/admin/aml/ctr-thresholds/{currency}:
+    get:
+      summary: 단건 통화 CTR 임계 행 (행 부재 404 — 합성 DEFAULT_THRESHOLD 폴백 금지, §2.7)
+      operationId: getCtrThreshold
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - { name: currency, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 'CtrThresholdResponse{ currency, amount, updatedAt } — EXECUTED 반영값만(상신 스테이징 미반영)'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  currency: { type: string }
+                  amount: { type: number }
+                  updatedAt: { type: string, format: date-time }
+        '404': { description: 행 부재(합성 폴백 없음), content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   # ── bo-api 소유 서비스 관리·온보딩 엔드포인트 (§9·§3.16) ─────────────────────────────
   # 아래 경로는 bo-api가 소유·집약·인증하는 엔드포인트다. aml-svc 엔진이 아닌 bo-api가 구현하며,
   # aml-svc는 bo-api 온보딩 워크플로우의 위임 호출로 aml_tenants 갱신을 수신한다.
+  /api/v1/bo/aml/currency-profiles:
+    get:
+      summary: 기준통화 프로파일 카탈로그 목록 (bo-api 소유, §3.16a)
+      operationId: listCurrencyProfiles
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
+      responses:
+        '200':
+          description: 카탈로그 목록
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/CurrencyProfileView' } }
+  /api/v1/bo/aml/tenants/{tenantId}/currency-binding:
+    get:
+      summary: 테넌트 통화/Policy Pack 바인딩 read-back (bo-api 소유, aml-svc raw read-back 위임)
+      operationId: getCurrencyBinding
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string }, description: "'current' 별칭 허용(ambient Tenant-Id)" }
+      responses:
+        '200':
+          description: bound=false 이면 binding=null(미바인딩)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      bound: { type: boolean }
+                      binding: { $ref: '#/components/schemas/TenantCurrencyBinding' }
+  /api/v1/bo/aml/tenants/{tenantId}/currency-profile:apply:
+    post:
+      summary: 기준통화 프로파일 일괄 적용 (STEP 체인 — 4-eyes 상신 포함, bo-api 소유, §3.16a)
+      operationId: applyCurrencyProfile
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CurrencyProfileApplyRequest' }
+      responses:
+        '200':
+          description: 항상 200(실패는 steps[] 원소 단위 FAILED/BLOCKED_HISTORY 등으로 표현)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/CurrencyProfileApplyResponse' }
+        '400': { description: 'AML.BAD_REQUEST — profileCode blank/미등재/번들 부재', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/v1/bo/aml/tenants/{tenantId}/currency-profile:
+    get:
+      summary: 기준통화 프로파일 현황 (바인딩·CTR·FDS 룰·정렬 일치 여부, bo-api 소유, §3.16a)
+      operationId: getCurrencyProfileStatus
+      security: [ { OAuth2: ['aml:admin:policy'] } ]
+      parameters:
+        - { name: tenantId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 항상 200. 조회 불가 소스는 null + STATUS_SOURCE_UNAVAILABLE warning
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/CurrencyProfileStatusResponse' }
   /api/v1/bo/aml/tenants:
     get:
       summary: 서비스 목록 조회 (bo-api 소유)
@@ -2534,6 +2830,7 @@ paths:
 | 온보딩 상태 조회(읽기) | `GET /api/v1/bo/aml/tenants/{tenantId}/onboarding` | bo-api 온보딩 상태(`deployment_model`/`onboarding_status`/`infra_ref`·이력) |
 | self-hosted 인스턴스 등록 콜백 | `POST /api/v1/bo/aml/tenants/{tenantId}/onboarding/register` | bo-api 등록 수신(self-hosted 인스턴스 → `onboarding_status=REGISTERED`) |
 | 운영자 감사 화면 | `GET /api/v1/bo/aml/audit?event&eventCategory&actor&traceId&subjectId&from&to&page&size` | explicit AML-domain BO local row + aml-svc `{content,totalElements}` 저수준 page를 exact-total/stable-order merge. actor=부분검색, merge window=`offset+size≤10,000`, engine workspace provenance=`default` |
+| 기준통화 프로파일 일괄 셋업(AML-CUR-001, 다통화 PLAN 20260818) | `GET /api/v1/bo/aml/currency-profiles`, `GET .../tenants/{tenantId}/currency-binding`, `GET .../tenants/{tenantId}/currency-profile`, `POST .../tenants/{tenantId}/currency-profile:apply`(§3.16a) | repo `config/currency-profiles/*.json` bundled 카탈로그 + aml-svc `GET .../policy-binding`·`GET .../ctr-thresholds[/{currency}]`(§2.7) + FDS `GET .../compliance`·`GET .../fds/rules`(01-fds-api.md §2.7) 다중 소스 오케스트레이션. apply 는 CTR `CTR_THRESHOLD`·FDS `RULE_PARAM`/`TENANT_REGULATORY_CURRENCY` 4-eyes 상신을 파생시킨다 |
 
 - **운영자 IAM·승인 라인 정책**: bo-api 소유. aml-svc는 엔진 측 결재 게이트(`aml_approvals`)와 엔진 append-only 감사(`aml_audit_events`)만 보유한다.
 
@@ -2626,6 +2923,8 @@ AMLC 제출은 **raw PII 미전송** — 토큰화된 보고 참조·PDF 아티�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-08-19 | **통화 프로파일 spec 리뷰 중간·낮음 이격 보완(코드=truth, U13 후속 정합).** (1) **§3.16a apply `warnings[]` 코드 열거 확정(M1)** — `string[]` 서술을 방출 전체 집합 9종 표로 확정: `CTR_REPORTING_GAP:{ccy}`·`CONFIGURABLE_AMOUNT_RULE:{family}:{ruleCode}`·`CONFIGURABLE_RULES_UNCHECKED`·`CTR_PENDING_DIVERGENT`·`CALENDAR_UNPROVISIONED`·`FDS_REGULATORY_CURRENCY_MISMATCH`·`FDS_REGULATORY_CURRENCY_UNSET`·`FDS_CURRENCY_APPLIED_BINDING_PENDING`·`PACK_PROFILE_DIVERGENCE`(+ `STATUS_SOURCE_UNAVAILABLE:{소스}` 는 현황 전용 — 집합 분리 註). `FAILED` reasonCode 열거에 `PARAM_KEY_UNRESOLVED` 추가(총 8종 — bo-web `lib/currency-profile.ts` `CurrencyProfileApplyReasonCode` 유니온 1:1). (2) **§3.16a STEP enum 나열 순서를 실제 방출 순서로 정렬(L2)** — `FDS_REGULATORY_CURRENCY`→`BINDING`→`CTR_THRESHOLD`→`REPORT_RULES`→`FDS_RULES`, 미실행 STEP `steps[]` 미포함 명시(§5 schema enum 순서·description 동기). (3) **§3.16a `FdsRuleStatusRow.resolution` 값 집합 열거(L3)** — `MATCHED`/`NOT_FOUND`/`AMBIGUOUS`(bo-web `FdsRuleStatusResolution` 1:1). (4) **§5 OpenAPI paths 등재(M4)** — 엔진 `GET /api/v1/admin/aml/ctr-thresholds`·`GET .../ctr-thresholds/{currency}` 2행 신설(§2.7 표와 동일 계약 — 404=행 부재·합성 폴백 없음). (5) **§3.6a `RuleConditionView` leaf 정의 신설 + `unit` nullable 명기(M5)** — CTR 조건행 `unit` = 서버 해석 테넌트 기준(보고)통화 코드 또는 `null`(미바인딩/해석 불가 — PHP 폴백 금지), 클라이언트 합성 금지·3-상태 렌더 규칙 cross-ref. | 코드=truth. 근거=bo-api `aml/currencyprofile/service/CurrencyProfileApplyService`(WARN_* 상수·add 지점·STEP 방출 순서)·`aml/reports/service/AmlReportRuleParamService#conditionViews`·`aml/reports/dto/ReportRuleDtos.RuleConditionView`, aml-svc `adapter/in/rest/CtrThresholdAdminController`, bo-web `lib/currency-profile.ts`. 기능정의서 §13.4·§12-B.3 동일 작업 단위. |
+| 2026-08-19 | **다통화(법인별 자국통화) 기준통화 프로파일 일괄 셋업 역전파(코드=truth, PLAN 20260818-currency-profile-bo-setup U13).** (1) **§2.7 Tenant Policy Binding** — PATCH 행에 거래성 이력 보유 테넌트의 `baseCurrency` 변경 fail-closed(422 `AML.TENANT_CURRENCY_HISTORY_LOCKED`) 주석 + `reportCutoffTime` cutoff 무접촉 명시(응답 스키마 불변), 신규 **전용 `PUT .../policy-binding/report-cutoff-time`**(항상-쓰기·명시 null 허용) 행 + 신규 **raw `GET .../policy-binding`**(12키 read-back — `policyPackResolved`·`calendarCoverage`·`transactionalHistory` 포함, 4열 미설정 422) 행 추가. 같은 절에 엔진 CTR 임계 read 2종(`GET /api/v1/admin/aml/ctr-thresholds`·`GET .../ctr-thresholds/{currency}`, 행 부재 404·합성 폴백 없음) 신설 — 기준통화 프로파일 apply STEP `CTR_THRESHOLD`/현황 `ctrThresholds[]` 판정 정본. (2) **§3.16a 신설** — bo-api 소유 신규 엔드포인트 4종(`GET /currency-profiles`, `GET .../currency-binding`, `GET .../currency-profile`, `POST .../currency-profile:apply`) DTO 전수(`CurrencyProfileView`·`ApplyRequest`·`ApplyStepResult`·`ApplyResponse`·`CurrencyBindingResponse`·`StatusResponse`), STEP 5종(`BINDING`/`FDS_REGULATORY_CURRENCY`/`CTR_THRESHOLD`/`REPORT_RULES`/`FDS_RULES`)·상태 11종·FDS 저작 가드(`SFDS_TENANT:ADMIN`/`SFDS_RULE:OPERATE` 미보유 시 `FAILED(FDS_AUTHORITY_MISSING)`)·warnings 코드 계약 명세. (3) **§4 오류표** — `AML.TENANT_CURRENCY_HISTORY_LOCKED`(422) 신설. (4) **§5 OpenAPI** — 신규 bo-api 4종 paths + `CurrencyProfileView`/`TenantCurrencyBinding`/`CurrencyProfileApplyRequest`/`CurrencyProfileApplyStepResult`/`CurrencyProfileApplyResponse`/`CurrencyProfileStatusResponse` schema 6종 신설. (5) **§9 표** — AML-CUR-001 화면 행 추가. | 코드=truth. 근거=bo-api `aml/currencyprofile/{controller/CurrencyProfileController,dto/CurrencyProfileDtos,service/CurrencyProfileCatalogService,service/CurrencyProfileApplyService}`, aml-svc `adapter/in/rest/TenantPolicyBindingAdminController`·`CtrThresholdAdminController`. DB §02-aml-db.md §7 V24·integration §01-fds-integration.md·기능정의서 §13.4 동일 작업 단위. |
 | 2026-08-17 | **숫자 신고소득·동결 evidence window·관할 보고기한 fail-safe 정합화.** 숫자 amount 키 presence가 malformed/null일 때 legacy band 폴백을 막고, ANNUAL은 DECIMAL128 월할·원문 period provenance를 보존한다. public `kycEvidence`는 numeric 4키를 additive로 반환한다. TM alert는 `evidenceWindow`를 동결해 binding 변경 뒤에도 동일 관련거래를 재현하며 malformed snapshot은 current binding으로 재해석하지 않는다. `reportDeadlineAt`은 원본 binding이 PH+Asia/Manila일 때만 계산하고 다른 관할은 DRAFT 유지+null+구조화 WARN으로 명문화했다. 기존 STR 지연 bucket은 법정 dueAt이 아닌 legacy `created_at+72 elapsed hours` 운영 기준선임을 분리했다. | 코드=truth. 근거=aegis-aml `DeclaredIncomePolicy`·`IdentityProjectionService`·`EvidenceTimelineService`·`AlertEvidenceWindowResolver`·`ReportDeadlinePolicy`·`StrReportingStats`. DB §3.3/§3.10/§3.12 동기화. |
 | 2026-08-14 | **CDD `declaredIncomeBand` optional input과 internal `UNKNOWN` projection output 경계 역전파.** canonical 입력 enum 4종 유지, exact CDD completed omission/null/blank의 조건부 current-state sentinel, sentinel-only evidence 금지, re-CDD full replace/raw event 불변/replay·409/no-backfill을 명문화했다. §3.9 `CustomerProfileDto.kycEvidence`는 output `UNKNOWN` 가능, BO Java/read model `incomeMultiple=null`이며 기존 `NON_NULL` producer JSON은 key를 생략한다. bo-web은 생략/explicit null을 모두 배율 산출 불가로 소비하고 ko/en `미상`/`Unknown` 표시 계약을 분리한다. `UNKNOWN`은 amount/proxy/provenance를 만들지 않아 income predicate만 skip하고 다른 AML/FDS 평가를 막지 않는다. | 코드=truth. 근거=aegis-aml `IdentityProjectionService`·`DeclaredIncomeBandPolicy`·`AmlCustomerProfileService`·`CddSnapshotPanel` messages/tests. DB §3.3·기능정의서 v9.86 동기화. endpoint/DTO field/Flyway 신규 0. |
 | 2026-08-13 | **RA 모델 `signalScaling` 선택키 + RA 점수 `signalScaling` 근거 필드 + `pepAxis` 유효정책 블록 + `UnknownOutcome` 3값 역전파(코드=truth, aegis-aml `feature/pep-name-risk-score-scaling` `206b7558`. 전부 additive — 기존 필드 삭제·이름 변경 0, Flyway 신규 0).** (1) **§2.3 `POST .../ra-models`** — ONGOING `parameters` 허용키 **7 → 8**(`signalScaling` 선택키). 스키마 `{ "<origin>": { rules[], curve, floorScore, ceilingScore, minMultiplier, maxMultiplier } }`, 불변식 6종 + `STR_SANCTION` 거부 + origin 키 패턴을 **저장 시점 400** 으로 fail-fast. 종전 문서는 "`parameters` 는 §11.3 의 scenario별 top-level/nested unknown key 를 거부한다" 만 적었는데 그 허용키 목록에 새 키를 넣지 않으면 **4-eyes draft 저장 자체가 400** 이라 관리 메뉴→엔진 반영 폐루프가 물리적으로 성립하지 않는다 — 읽기·쓰기 두 경로가 함께 확장됐음을 명문화. 키 부재 = 미적용(항등원 1.0)이라 기존 ACTIVE 정의 무영향·전 테넌트 재승인 불요. (2) **§3.3 `RiskScoreResponse.signalScaling` 신설(12필드)** — 엔진은 `factorBreakdown.signalScaling` **중첩 객체**로 싣지만 `factorBreakdown` 노출 타입이 `Map<String, Double>` 이라 중첩을 담을 수 없어 `triggerAlerts`·`reviewShortened` 선례와 동형으로 전용 필드 파생 + 예약키 배제(미등재 시 요인으로 오인돼 **조용히 버려진다**). `rawScore` 는 `matchScore`(=overall)가 아니라 **이름 하위점수**이고 `severityDriver` 가 "배수를 바꿔도 점수가 안 움직이는" 경계를 기계 판정한다. (3) **§2.2 `GET .../wlf-engine-config` 응답 `pepAxis` 유효정책 블록 8필드**(읽기 전용·additive) — 건별 근거는 후보가 있었던 행에만 붙어 테넌트 유효값을 읽을 수 없었다. `:change` 요청 스키마 무변경(4-eyes 편집 승격은 범위 밖). (4) **§3.2 PEP 축 사유코드 3종 → 4종** — `PEP_CORROBORATION_UNKNOWN_RISK_SIGNAL` 신설, `pepAxis.decision` 에 `CUSTOMER_CORROBORATION_UNKNOWN_SIGNAL`, `unknownOutcome` 에 `RISK_SIGNAL`, 그 판정 전용 표식 2키(`riskSignal`·`signalOrigin`) 추가. status·차단 계약 무변경, STR 발동 게이트 무연결, **엔진 하류 소비 경로는 아직 없음(정책 결정 대기)** 을 사실대로 기록. 다른 판정의 근거 블록은 바이트 동일. | 코드=truth. 근거=aml-svc `domain/risk/{SignalScaling,OngoingRaParameters,RiskModelDefinitionValidator,AlertSignalMark}`·`application/usecase/OngoingRaService`(`signalScalingEvidence`)·`domain/screening/match/{PepAxisPolicy,WlfMatchVerdict}`·`adapter/in/rest/WlfEngineConfigurationController.PepAxisResponse`, bo-api `aml/ra/dto/RaDtos.SignalScaling`·`aml/ra/service/AmlRaService`(`signalScalingFromBreakdown`·`RESERVED_BREAKDOWN_KEYS`)·`aml/screening/dto/ScreeningDtos.PepAxisEvidence`·`aml/wlfconfig/dto/WlfEngineConfigDtos.WlfPepAxisPolicyView`. 검증=`RiskModelDefinitionValidatorTest`·`RaOngoingSignalScalingIntegrationTest`·`AmlRaServiceSignalScalingTest`·`WlfEngineConfigurationControllerTest`·`AmlWlfEngineConfigControllerTest`·`WlfPepAxisUnknownRiskSignalScreeningTest`. 설계서 §11.3a·§10.3b · DB §3.9 · 기능정의서 §6.1·§12-B.8 BR-007 동일 작업 단위. |
