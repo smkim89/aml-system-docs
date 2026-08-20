@@ -642,6 +642,8 @@ scoring(§10.3) 이전에 명단에서 **후보 엔트리 집합**을 만든다.
 
 후보 조회는 tunable 파라미터로 fail-closed 한계를 강제한다: `candidateCap`(기본 200) 도달 시 **silent truncation 금지** — `log.warn` + `score_breakdown.candidateStrategy.candidateCapHit` 증거 기록. `trgmFloor`(기본 0.30)·`phoneticEnabled`(기본 true)·후보 쿼리 스코프 한정 `statement_timeout`(기본 **10 s / 10000 ms**, 조회 성공 후 원복)은 timeout **fail-closed**(미탐 방지 — 조용한 recall 저하보다 가시적 실패)로 동작한다. PostgreSQL SQLState `57014` timeout이 발생하면 transaction은 이미 abort 상태이므로 같은 transaction에서 timeout reset SQL을 실행하지 않고 원 timeout을 typed port exception으로 보존해 rollback한다. public API는 이를 일반 500이나 `NO_MATCH`로 위장하지 않고 **503 `AML.SCREENING_UNAVAILABLE` / details `CANDIDATE_QUERY_TIMEOUT`**으로 반환한다. timeout 값·후보 SQL·V64 인덱스·매처 산식은 이 오류경계와 무관하게 불변이다. 결과 `score_breakdown.candidateStrategy` 스냅샷(§10.3 · API §3.2)에 `candidateStrategyVersion`(`wlf-cand-v2`)·`matcherVersion`(=definitionHash)·`trgmFloor`·`candidateCap`·`candidateCapScope`·`phoneticEnabled`·`candidateCapHit`·`candidateCount`·`strategyCounts`(전략별 후보수)·`axisCounts`(명단축별 후보수)·절단 시 `truncatedAxes[]`를 영속해 recall 을 재현·튜닝한다.
 
+**V71 runtime RLS 경계.** `%>`와 expression overlap은 leakproof가 아니어서 `aegis_app_runtime` RLS barrier 아래에서 V64 GIN을 잃었다. 후보 CTE를 고정 3열 SECURITY DEFINER 함수로 옮기고, NOLOGIN/non-super/BYPASSRLS 전용 owner에 watchlist 두 테이블 SELECT만 부여한다. 함수는 tenant GUC 일치 또는 elevated만 허용하며 missing/mismatch는 42501이다. 직접 테이블 RLS 정책 2종, candidate 의미·점수·응답은 불변이다. V71은 application credential이 아니라 일회성 privileged init job으로만 적용한다. 함수 planner GUC를 강제하지 않으며 실제 plan은 locked rare fixture와 배포 데이터 EXPLAIN으로 검증한다.
+
 ##### 10.2b-1 명단축별 후보 cap (`RecallAxis`, 2026-08-12 — 제재 미탐 차단)
 
 `candidateCap` 은 **전역 1개**가 아니라 **명단축(`RecallAxis`)별**로 적용한다. 축은 `SANCTIONS_LAW`(`SANCTIONS`·`LAW_ENFORCEMENT`) / `PEP` / `OTHER`(`RCA`·`ADVERSE_MEDIA`·`INTERNAL`·`VASP_RISK`) 3종이다.
@@ -1579,6 +1581,8 @@ flowchart LR
 | `SHARED` | 공유 DB + `tenant_id` 행 파티션 + RLS(`app.current_tenant`) | `tenant_id` 행 필터(소규모/체험 한정) |
 
 기본은 매니지드 전용(고객사별 전용 DB)으로 온보딩하며, 내부망·고PII 요건 고객은 self-hosted 설치형, 소규모/체험 고객만 공유 DB 옵션을 적용한다. 전용 배포에서 고객사 간 격리는 **배포 경계(전용 DB/스택)** 가 보장하므로 `tenant_id`는 단일 배포 내 상수이며, 고객사 간 격리를 `tenant_id` 행 필터에 의존하지 않는다.
+
+SHARED 배포의 WLF 후보조회만 V71의 bounded BYPASSRLS 함수 경계를 사용한다. 브라우저/API가 우회 role을 직접 획득하지 않으며 application login은 계속 non-superuser다. V71 privileged credential은 배포 init 단계에서만 사용하고 폐기한다.
 
 ### 16.2 Tenant별 설정
 
