@@ -633,14 +633,14 @@ UBO는 단순 JSON 배열이 아니라 별도 관계 graph로 관리한다.
 
 scoring(§10.3) 이전에 명단에서 **후보 엔트리 집합**을 만든다. 초기 구현은 exact-only 였다 — `primary_name_hash` 동치 OR `normalized_tokens` JSONB 교집합. 이 방식은 오타/변형 토큰 1건만으로 대상을 fuzzy 매처가 보기도 전에 후보에서 탈락시켜 미탐(false-negative)을 만든다. 후보 단계는 **recall 우선**(정밀도는 후단 `FuzzyMatchEngine` 이 책임)이므로 다음 4전략 UNION 으로 확장한다.
 
-| 전략 | 근거 | 인덱스(DB §7·V49) |
+| 전략 | 근거 | 인덱스(DB §7·V64) |
 |---|---|---|
 | S1 exact | `primary_name_hash` 동치 | `ix_wle_name` |
-| S2 token intersection | `normalized_tokens` 교집합 | `gin_wle_tokens` |
+| S2 token intersection | `normalized_tokens` 교집합 | `gin_wle_tokens_lower`(lower text[] expression GIN) |
 | S3 trigram | `normalized_name %> :query`(pg_trgm `word_similarity`, `pg_trgm.word_similarity_threshold`=`trgmFloor`) 부분·오타 토큰 회수 | `gin_wle_normalized_name_trgm`(GIN bitmap scan) |
-| S4 phonetic | `phonetic_codes`(라틴 토큰 double-metaphone) 집합 교집합 — Smith/Smythe·Catherine/Katharine 발음 유사 회수 | `gin_wle_phonetic_codes`(jsonb_path_ops) |
+| S4 phonetic | `phonetic_codes`(라틴 토큰 double-metaphone) 집합 교집합 — Smith/Smythe·Catherine/Katharine 발음 유사 회수 | `gin_wle_phonetic_lower`(lower text[] expression GIN) |
 
-후보 조회는 tunable 파라미터로 fail-closed 한계를 강제한다: `candidateCap`(기본 200) 도달 시 **silent truncation 금지** — `log.warn` + `score_breakdown.candidateStrategy.candidateCapHit` 증거 기록. `trgmFloor`(기본 0.30)·`phoneticEnabled`(기본 true)·후보 쿼리 스코프 한정 `statement_timeout`(기본 2s, 조회 성공 후 원복)은 timeout **fail-closed**(미탐 방지 — 조용한 recall 저하보다 가시적 실패)로 동작한다. PostgreSQL SQLState `57014` timeout이 발생하면 transaction은 이미 abort 상태이므로 같은 transaction에서 timeout reset SQL을 실행하지 않고 원 timeout을 typed port exception으로 보존해 rollback한다. public API는 이를 일반 500이나 `NO_MATCH`로 위장하지 않고 **503 `AML.SCREENING_UNAVAILABLE` / details `CANDIDATE_QUERY_TIMEOUT`**으로 반환한다. timeout 값·후보 SQL·V64 인덱스·매처 산식은 이 오류경계와 무관하게 불변이다. 결과 `score_breakdown.candidateStrategy` 스냅샷(§10.3 · API §3.2)에 `candidateStrategyVersion`(`wlf-cand-v2`)·`matcherVersion`(=definitionHash)·`trgmFloor`·`candidateCap`·`candidateCapScope`·`phoneticEnabled`·`candidateCapHit`·`candidateCount`·`strategyCounts`(전략별 후보수)·`axisCounts`(명단축별 후보수)·절단 시 `truncatedAxes[]`를 영속해 recall 을 재현·튜닝한다.
+후보 조회는 tunable 파라미터로 fail-closed 한계를 강제한다: `candidateCap`(기본 200) 도달 시 **silent truncation 금지** — `log.warn` + `score_breakdown.candidateStrategy.candidateCapHit` 증거 기록. `trgmFloor`(기본 0.30)·`phoneticEnabled`(기본 true)·후보 쿼리 스코프 한정 `statement_timeout`(기본 **10 s / 10000 ms**, 조회 성공 후 원복)은 timeout **fail-closed**(미탐 방지 — 조용한 recall 저하보다 가시적 실패)로 동작한다. PostgreSQL SQLState `57014` timeout이 발생하면 transaction은 이미 abort 상태이므로 같은 transaction에서 timeout reset SQL을 실행하지 않고 원 timeout을 typed port exception으로 보존해 rollback한다. public API는 이를 일반 500이나 `NO_MATCH`로 위장하지 않고 **503 `AML.SCREENING_UNAVAILABLE` / details `CANDIDATE_QUERY_TIMEOUT`**으로 반환한다. timeout 값·후보 SQL·V64 인덱스·매처 산식은 이 오류경계와 무관하게 불변이다. 결과 `score_breakdown.candidateStrategy` 스냅샷(§10.3 · API §3.2)에 `candidateStrategyVersion`(`wlf-cand-v2`)·`matcherVersion`(=definitionHash)·`trgmFloor`·`candidateCap`·`candidateCapScope`·`phoneticEnabled`·`candidateCapHit`·`candidateCount`·`strategyCounts`(전략별 후보수)·`axisCounts`(명단축별 후보수)·절단 시 `truncatedAxes[]`를 영속해 recall 을 재현·튜닝한다.
 
 ##### 10.2b-1 명단축별 후보 cap (`RecallAxis`, 2026-08-12 — 제재 미탐 차단)
 
