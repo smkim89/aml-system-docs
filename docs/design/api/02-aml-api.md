@@ -1270,6 +1270,8 @@ BUILT_IN `conditions[]`는 aml-svc 평가 카탈로그의 조건 키·연산자�
 | `subjectKind` | enum | §5.24 subject_kind(`PERSON`/`ENTITY`/`VESSEL`/`CRYPTO_ADDRESS`) |
 | `primaryNameHash` | string | 이름 HMAC(원문 미노출, DB `primary_name_hash`) |
 | `normalizedTokens` | array<string> | 정규화 토큰(매칭용, 원문 아님) |
+| `functions` | array<string> | **엔진 admin 응답 전용** PEP 직위 목록. `attributes.functions`의 문자열 배열을 값·순서 그대로 투영하며 부재/non-list/혼합 타입은 빈 배열. bo-api 공개 DTO 확장 아님 |
+| `refs` | array<string> | **엔진 admin 응답 전용** source links. `attributes.refs`의 문자열 배열을 값·순서 그대로 투영하며 부재/non-list/혼합 타입은 빈 배열. 파서 상한 5 불변 |
 | `version` | string | import 버전 |
 | `status` | enum | `ACTIVE`/`DELISTED` |
 | `createdAt` | string(date-time) | |
@@ -2206,6 +2208,15 @@ components:
         subjectKind: { type: string, enum: [PERSON, ENTITY, VESSEL, CRYPTO_ADDRESS] }
         primaryNameHash: { type: string, description: '이름 HMAC(원문 미노출)' }
         normalizedTokens: { type: array, items: { type: string } }
+        functions:
+          type: array
+          items: { type: string }
+          description: '엔진 admin 응답 전용 ordered PEP 직위 목록. 부재/non-list/혼합 타입은 []'
+        refs:
+          type: array
+          items: { type: string }
+          maxItems: 5
+          description: '엔진 admin 응답 전용 ordered source links. 부재/non-list/혼합 타입은 []'
         version: { type: string }
         status: { type: string, enum: [ACTIVE, DELISTED] }
         createdAt: { type: string, format: date-time }
