@@ -1046,6 +1046,8 @@ OPEN
 
 > subjectType 마스터는 **API §3.7 enum(전수 21종)** 이 정본이며 DB §5.16·연동 §8.3은 이에 동기화한다. `REPORT_RULE_PARAM`은 `COMPLIANCE_MANAGER` 승인선으로 aml-svc가 상신/실행을 소유한다(V41). `SELF_APPROVAL_DISABLED`(maker≠checker)는 subjectType이 아니라 전 결재 횡단 불변식이다.
 
+고정 보고 룰 변경 폐루프의 분모는 CTR ACTIVE 2종, STR ACTIVE 7종, STR DRAFT 1종이다. 실제 mutable 축은 통화별 공유 `CTR_THRESHOLD` 1개와 ACTIVE STR 3종의 6개 파라미터(`income_multiplier`, `count_threshold`, `window_hours`, `band_lower`, `band_upper`, `min_consecutive_days`)다. 검증기는 BO typed API에서 서로 다른 maker/checker 세션으로 full-set 상신·self-approval 409·승인 실행을 수행하고, 각 축을 독립적으로 변경해 fresh 경계 판정을 반전시킨다. fired case는 exact alert/보고 type+triggerRef/ONGOING RA 계보와 replay 신규 0을 확인하며, `finally`에서 시작 full snapshot(읽기전용 `name_match_threshold` 포함)과 CTR 임계를 복원한다. editable 0인 ACTIVE STR 4종도 reachability/replay를 별도 확인한다.
+
 ### 13.5 결재 시스템
 
 `aml-svc`에는 hanpass-ph 준법감시 담당이 개발팀 또는 벤더 도움 없이 AML 업무를 운영하기 위한 결재 시스템이 필요하다. 결재 시스템은 case workflow와 분리된 공통 업무 통제 계층이며, WLF·RA·TM·CDD/EDD·STR/CTR·명단 관리에 모두 적용된다.
