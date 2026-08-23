@@ -738,6 +738,8 @@ canonical varchar 경계는 DB §3.15와 동일하게 ingest 전에 검증한다
 
 응답 `ScreeningResponse` (DB `aml_screening_results`, `ScreeningController.ScreeningResponse` 정본):
 
+> **현재 이름 매처 스냅샷(2026-08-23, `wlf-name-v4`).** 아래 `scoreBreakdown.nameMatcher` 설명의 v3/7키 표기를 이 문장이 개정한다. 현재 형상은 `{version:"wlf-name-v4", dominantComponent, components{exact,tokenSet,edit,compact,alignment,containment,phonetic,boundarySet}}`이다. 기존 7키 값·순서와 dominant tie 우선순위는 보존되며, 마지막 `boundarySet`이 기존 최고점보다 엄격히 클 때만 dominant=`BOUNDARY_SET`, 사유 `NAME_TOKEN_BOUNDARY_SET`이 된다. 전체 토큰 exact partition만 1.0이고 문자 anagram·부분·오타 결합은 0이다. overall/임계/negative/멱등 응답 형상은 그 외 무변경이다.
+
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `screeningId` | string(uuid) | `screening_id` |

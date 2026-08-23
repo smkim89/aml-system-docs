@@ -660,13 +660,15 @@ WLF score는 설명 가능해야 한다.
 
 | Component | 예시 |
 |---|---|
-| Name similarity | exact, compact(구분자 무관), token alignment(퍼지 Jaccard), token containment(토큰 결손), token set, edit distance, phonetic(double-metaphone) — 7종 `max` 블렌드(매처 `wlf-name-v3`) |
+| Name similarity | exact, compact(구분자 무관), token alignment(퍼지 Jaccard), token containment(토큰 결손), token set, edit distance, phonetic(double-metaphone), boundary set(완전 토큰 결합·그룹 재배열) — 8종 `max` 블렌드(매처 `wlf-name-v4`) |
 | Date match | birth date/year/month partial |
 | Country match | nationality, residence, incorporation country |
 | Document match | hashed document reference |
 | Address match | normalized address token |
 | Relationship match | same UBO, representative, account |
 | Negative signal | strong mismatch, verified false positive |
+
+`boundary set`은 전체 토큰을 정확히 한 번씩 소비하는 연속 결합만 허용하고, 결합된 그룹끼리의 순서 변경만 허용한다. 예를 들어 `KIM SU MIN`과 `SUMIN KIM`은 1.0이지만 문자 anagram·부분 이름·오타 결합은 0이다. 기존 7성분의 값과 dominant 동점 순서는 그대로이며, `boundarySet`은 기존 최고점보다 엄격히 클 때만 `BOUNDARY_SET`/`NAME_TOKEN_BOUNDARY_SET`으로 우세한다. matcher version만 `wlf-name-v4`로 회전하고 overall 가중치·negative·프로파일 임계·저장 정밀도는 바뀌지 않는다.
 
 #### 10.3a 명단군별 typed engine profile (`AML-WLF-005`)
 

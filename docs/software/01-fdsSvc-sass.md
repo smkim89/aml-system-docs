@@ -605,6 +605,8 @@ hanpass-ph 해외송금(`remit-svc`) 인입 예시(`POST /api/v1/fds/events`):
 
 > 운영 5채널은 `wallet-svc`(PAY/QRPH→`WALLET_PAYMENT`, DEBIT/ATM→`WALLET_WITHDRAWAL`) 1개 소스가 2채널을 발생시킨다. `ChannelType.domain()`은 Phase 3 risk domain 분류(`WALLET`/`DOMESTIC_TRANSFER`/`OTHER` 등)에 쓰인다.
 
+신규 룰팩은 18종 전건이 위 canonical 채널을 사용한다. 특히 `XLS-01`(ATM 2곳)은 `channel.type = WALLET_WITHDRAWAL`과 `channelScope = WALLET_WITHDRAWAL`에서 동일 주체의 1시간 내 서로 다른 `merchantRef` 2곳을 판정한다. `ATM`/`ATM_WITHDRAWAL`은 `ChannelType` 밖 값이므로 사용하지 않는다. `setup_fds_rulepack.py`는 동명 ACTIVE 룰의 JSON 구조·채널 scope·outcome·evaluation mode를 정본과 비교하고, 드리프트 시 canonical replacement를 시뮬레이션·4-eyes 활성화한 뒤 구 룰을 disable/archive한다. 설명만 달라진 경우에는 기존 rule JSON 원문을 보존한다.
+
 ### 9.3 Payment rail
 
 | Rail | 예시 |
