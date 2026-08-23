@@ -668,7 +668,7 @@ WLF score는 설명 가능해야 한다.
 | Relationship match | same UBO, representative, account |
 | Negative signal | strong mismatch, verified false positive |
 
-`boundary set`은 전체 토큰을 정확히 한 번씩 소비하는 연속 결합만 허용하고, 결합된 그룹끼리의 순서 변경만 허용한다. 예를 들어 `KIM SU MIN`과 `SUMIN KIM`은 1.0이지만 문자 anagram·부분 이름·오타 결합은 0이다. 기존 7성분의 값과 dominant 동점 순서는 그대로이며, `boundarySet`은 기존 최고점보다 엄격히 클 때만 `BOUNDARY_SET`/`NAME_TOKEN_BOUNDARY_SET`으로 우세한다. matcher version만 `wlf-name-v4`로 회전하고 overall 가중치·negative·프로파일 임계·저장 정밀도는 바뀌지 않는다.
+`boundary set`은 전체 토큰을 정확히 한 번씩 소비하는 연속 결합만 허용하고, 결합된 그룹끼리의 순서 변경만 허용한다. 예를 들어 `KIM SU MIN`과 `SUMIN KIM`은 1.0이지만 문자 anagram·부분 이름·오타 결합은 0이다. 기존 7성분의 값과 dominant 동점 순서는 그대로이며, `boundarySet`은 기존 최고점보다 엄격히 클 때만 `BOUNDARY_SET`/`NAME_TOKEN_BOUNDARY_SET`으로 우세한다. 부분집합 DP의 자원 상한은 양쪽 각각 canonical 토큰 12개·총 256자이며 초과 입력은 이 additive 성분만 0으로 단락한다(기존 7성분은 계속 평가). matcher version만 `wlf-name-v4`로 회전하고 overall 가중치·negative·프로파일 임계·저장 정밀도는 바뀌지 않는다.
 
 #### 10.3a 명단군별 typed engine profile (`AML-WLF-005`)
 
