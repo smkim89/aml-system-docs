@@ -5,8 +5,8 @@
 | 항목 | 내용 |
 |------|------|
 | **문서 ID** | FS-AML-SAAS-001 |
-| **버전** | 9.91 |
-| **작성일** | 2026-08-20 |
+| **버전** | 9.93 |
+| **작성일** | 2026-08-24 |
 | **작성자** | Hanpass Global Team |
 | **상태** | 초안 |
 | **정본(아키텍처)** | `.claude/skills/_shared/target-architecture.md` (4서비스 모노레포 · Java 25 헥사고날 · Next.js · 멀티테넌시 · PII 마스킹 · 4-eyes · Policy Pack STR/CTR) |
@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **9.93** | **2026-08-24** | **Hanpass Global Team** | **§12.3 AML-WHK-001 BR-004 동일값 저장 감사 정정(F-048/RA-C15).** 같은 값 재저장은 자격증명 행·암호문·`updatedAt`·`updatedBy`를 갱신하지 않는 저장 멱등성을 유지한다. 다만 성공한 PUT 자체는 운영자 쓰기 추적을 위해 `POLICY_CHANGE`/`WEBHOOK_CREDENTIAL_SAVED`/`operation=REPLACE` 감사 1건을 남긴다. 시크릿 비노출·host-only 감사·즉시 반영·4-eyes 없음·권한 계약은 불변이다. | 코드=truth. 근거=aegis-aml `WebhookCredentialAdminService#save`, unit/Testcontainers 회귀, API §2.7a, 엔진 케이스 RA-C15. |
 | **9.92** | **2026-08-22** | **Hanpass Global Team** | **WLF 요청 이름 스냅샷·NAME 인라인 노출(P0-09 국지 카브아웃, 코드=truth).** AML-WLF-001/003의 스크리닝 목록·상세는 `requestName`(요청 `nameTokens` 순서 보존 스냅샷)과 `matchedEntryNames`/후보 `listName`(안정 entry id의 현재 게시본 명단명)을 `aml:case:read`만으로 바로 표시한다. 클릭·사유·`aml:pii:reveal` 호출·마스킹/회원 마스터 폴백은 없고, 과거 스냅샷 부재는 `—`이다. 매칭 명단명은 재sync로 바뀔 수 있음을 라벨로 명시하며, bo-api는 이름이 실제 포함된 목록/상세 요청당 `RAW_DATA_ACCESS` 1건을 남긴다. **② 상위승인 결재 큐는 approval API 기반으로 제외**하고, TM/근거거래/Subject360·NAME 이외 reveal 경로는 불변이다. | 코드=aml-svc `WlfScreeningService`·`ScreeningIdentityProjectionService`·`ScreeningController`, bo-api `AmlScreeningService`·`ScreeningDtos`; API §1.6/§2.4/§3.2·DB §3.21·SW §19.2 동기화. |
 | **9.91** | **2026-08-20** | **Hanpass Global Team** | **AML-WLF-001 거래 그룹 최신순·검토 큐 거래번호 검색 정합(코드=truth, PLAN `20260820-wlf-transaction-sort-search`).** ① §3.1 BR-011: 해외송금 `transactionRef` 그룹은 각 그룹에 표시되는 최신 sender/receiver/other 스크리닝의 `createdAt` 기준 **DESC**로 정렬하고, 동률은 `screeningId` DESC·`transactionRef` ASC로 결정한다. upstream 응답의 최초 등장 순서에 의존하지 않으며 역할별 최신 1건·거래번호 미보유 평면 폴백은 불변이다. ② §3.1 BR-001: ① 검토 필요의 검색 필터를 **거래번호·대상키·스크리닝ID 대소문자 무시 부분일치**로 명문화했다. bo-api 목록 API가 `q`를 받지 않으므로 현재 조회 응답 범위에 공용 `screeningMatchesQuery`를 적용한 뒤 그룹핑하며, 미지원 `q`를 서버로 전송하지 않는다. WLF 엔진·판정·점수·4-eyes·API/DB·신선도(F-022)·처리 이력 읽기 전용(F-007) 계약은 무변경이다. | 코드=truth. 근거=aegis-aml bo-web `lib/aml-screening.ts`·`components/aml/AmlWlfReview.tsx`·`aml-screening.test.ts`·`AmlWlfReview.queue-search.test.tsx`. |
 | **9.90** | **2026-08-19** | **Hanpass Global Team** | **AML-TM-001 ③ 최근 거래 탭 신설(코드=truth, PLAN 20260819-aml-tm-recent-transactions, 역전파 DOCS-1).** ① **API 행 추가**: aml-svc `GET /api/v1/aml/transactions`(§7.1 표) + bo-api `GET /api/v1/bo/aml/transactions`(위임). ② **BR-014 신설**: 알럿 발생 여부와 무관한 거래성 family 4종 최신순 브라우즈(거래번호/이벤트ID/회원키 정확일치 검색 3종, 음수 금액 부호 그대로·결측 파생 필드 `-` 표기·행 제외 없음, 알럿 동봉 시 알림 적체 탭 프리필 연결, 회수(RETIRED) 알럿 집계 제외 — F-034 정합) + 화면 탭 나열·BR-001 갱신. **기존 ① 알림 적체 탭은 알럿 보유 건 전용을 유지**(무변경) — 신규 탭이 그 공백(알럿 0건 PASS 거래 비노출)을 메운다. 정본 동기화: DB §7 V70(additive 인덱스 4종)·API §2.4/§2.5a 동일 작업 단위. | 코드=truth. 근거=aegis-aml aml-svc `TransactionQueryController`·`TransactionEventBrowseService`·`TransactionEventBrowseAdapter`(V70), bo-api `aml/transactions/{controller,service,dto}`, bo-web `AmlTmTransactions.tsx`·`useAmlTm.ts`. |
@@ -1610,7 +1611,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-001 (시크릿 전면 비노출)**: 조회 응답에는 **시크릿 필드 자체가 없다**(평문·암호문·마스킹 힌트 어느 것도 아님 — 존재 여부 불리언 `secretConfigured` 까지만). 화면은 마스킹된 문자열조차 렌더하지 않으며, 시크릿은 **편집 Modal 의 입력 전용 필드**로만 존재하고 **기존 값을 미리 채우지 않는다**(교체할 때마다 새 값을 다시 입력). 저장 형태는 엔진의 AES-GCM 암호문이며 응답·로그·감사 detail 어디에도 남지 않는다(API §2.7a).
 - **BR-002 (목적지 표기 정확성)**: `webhookUrl=null` 은 **"오버라이드 전용"** 으로 표기한다 — 목적지가 있는 것처럼 자리표시자로 덮으면 거짓 표시다. **미등록 상태에서는 이 문구를 쓰지 않는다**(등록 자체가 없는 것과 목적지만 없는 것은 다른 상태다). 목적지를 비우고 저장하면 빈 문자열이 아니라 `null` 로 전송된다.
 - **BR-003 (권한 분리 — 표시=read / 변경=admin)**: 저장은 `aml:admin:policy` 보유자만 가능하며, **쓰기 scope 미보유 세션에는 편집 진입점을 아예 렌더하지 않고 읽기 전용 안내만 표시**한다(서버 게이트와 같은 정확 scope 판정 재사용 — 눌러서 403 을 받게 두지 않는다). **조회는 두 scope 중 하나**(`aml:case:read` 또는 `aml:admin:policy`)로 연다 — `aml:admin:policy` 를 가진 유일한 역할 `AML_POLICY_ADMIN` 이 `aml:case:read` 를 갖지 않아 읽기를 1:1 로 좁히면 **유일한 쓰기 권한자가 덮어쓸 대상을 보지 못하는 모순**이 생기고, 이 화면이 주는 것은 시크릿 없는 마스킹 뷰라 **이미 값을 바꿀 수 있는 역할에게 읽기를 여는 것은 노출 증가가 아니다**(API §2.7a 근거 동일).
-- **BR-004 (저장 계약·거부 처리)**: 저장은 **upsert·즉시 반영·4-eyes 없음**이다. 판정 권위는 전적으로 엔진이며 bo-api 는 자체 검증을 두지 않는다 — 빈·공백 시크릿 **400**, 검증 actor 누락 **400**, scope 미보유 **403**, 미등록 테넌트 **400**(`unknown tenant`)이 원 상태·에러코드 그대로 화면까지 올라온다. **거부되어도 기존 등재분은 훼손되지 않는다**. 화면은 빈 시크릿을 전송 전에 한 번 더 막는다(중복 방어). 값 무변경 재저장은 멱등(행 갱신·감사 없음).
+- **BR-004 (저장 계약·거부 처리)**: 저장은 **upsert·즉시 반영·4-eyes 없음**이다. 판정 권위는 전적으로 엔진이며 bo-api 는 자체 검증을 두지 않는다 — 빈·공백 시크릿 **400**, 검증 actor 누락 **400**, scope 미보유 **403**, 미등록 테넌트 **400**(`unknown tenant`)이 원 상태·에러코드 그대로 화면까지 올라온다. **거부되어도 기존 등재분은 훼손되지 않는다**. 화면은 빈 시크릿을 전송 전에 한 번 더 막는다(중복 방어). 값 무변경 재저장은 자격증명 행·암호문·`updatedAt`·`updatedBy`를 갱신하지 않지만, 성공한 관리 PUT은 `WEBHOOK_CREDENTIAL_SAVED`/`REPLACE` 감사 1건을 남긴다(API §2.7a).
 - **BR-005 (공통화)**: 등록 현황 패널(상태 배지 + 메타 행 + 액션 슬롯)은 AMLC 계정 설정(§9.2 AML-REP-004)과 겹치는 마크업을 **공통 컴포넌트로 추출해 양쪽이 공유**한다(화면별 복제 저작 금지). 사용자 노출 문자열은 ko/en 카탈로그에 **동시** 등재한다.
 - **BR-006 (범위 밖)**: 저장 시점 SSRF 검증은 **하지 않는다**(엔진 결정 — 목적지는 매 전송 직전 `WebhookUrlPolicy` 로 재검증되며, 사설 IP 목적지도 등재는 정상 완료되고 전달 단계에서 실패로 수렴한다. API §8). 콜백 전송·재시도·서명 공식은 본 화면 소관이 아니다.
 
