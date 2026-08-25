@@ -64,6 +64,8 @@ BO session의 `platformOperator`는 횡단 tenant target을 고르는 data-scope
 
 local/demo bootstrap/provisioner는 명시적 `local|demo` positive profile + opt-in에서만 허용되는 infrastructure 편의이며 Flyway business seed가 아니다. AML REST simulator, bo-api, FDS escalation은 서로 다른 credential ID/secret을 사용한다. bo-api credential은 endpoint scope union과 별도 `COMPLIANCE`, `aml:pii:reveal` authority token을 포함하고 FDS credential은 `aml:internal:fds-escalation:write`만 가진다. P0-04 local lifecycle은 bootstrap bypass=false가 정본이다. 엔진 STR 열람 감사·모든 admin write의 maker/checker/actor identity는 v2로 서명된 `X-User-Subject`에서 파생한다. 공통 filter는 HMAC 성공 뒤 signed subject의 최대 128자·제어문자/CRLF 금지까지 검증한 값만 내부 verified attribute로 만들고 controller는 `TrustedActorResolver`로 이를 읽는다. signed subject 자체가 이 경계를 어기면 generic 401이다. body/query `makerId`·`checkerId`·`actor`는 생략 가능하며, 존재하면 trim·대소문자 무시 기준으로 같은 signed subject인지 확인하는 호환 assertion일 뿐 identity source가 아니다. body assertion 불일치·초과 길이·제어문자는 command 생성 전에 400으로 거부한다.
 
+엔진 전건 검증처럼 tenant/scope 음성 경계를 실 REST로 증명해야 하는 disposable local/demo 스택은 `AEGIS_AML_LOCAL_ADDITIONAL_CREDENTIALS_ENABLED=true`와 `AEGIS_AML_LOCAL_ADDITIONAL_CREDENTIALS_JSON`을 명시할 수 있다. JSON 각 행은 `tenantId/apiKey/secret/scopes[]`의 exact credential이며 secret 32자 이상·안전한 ID/scope·행 간 ID/secret 불중복을 기동 시 fail-closed 검증한다. 정상 cipher port로 암호화한 v2-only row만 저장하고 평문은 startup 직후 폐기한다. 이 opt-in component는 active profile이 전부 `local|demo`일 때만 존재하며 production credential lifecycle/API나 Flyway seed를 추가하지 않는다.
+
 scope 또는 role request attribute가 없으면 공통 filter가 local/demo positive profile과 opt-in을 확인한
 뒤 내부 request attribute에 정확히 `Boolean.TRUE`로 설정한 bootstrap marker가 있는 경우만 허용한다.
 그 밖에는 `ScopeGuard`가 403 `AML-AUTHZ-002`, `RoleGuard`가 403 `AML.FORBIDDEN_SCOPE`로 닫으며,
