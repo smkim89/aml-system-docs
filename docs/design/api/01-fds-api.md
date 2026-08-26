@@ -184,6 +184,8 @@ hanpass-ph 금액 임계 룰은 서버 파생 PHP 규제금액의 legacy alias `
 | `DOMESTIC_REMIT` | `transaction.phpEquivalent` | `≥ 112000` | `REVIEW` |
 | `WALLET_PAYMENT` | `transaction.phpEquivalent` | `≥ 168000` | `REVIEW` |
 | `WALLET_WITHDRAWAL` | `transaction.phpEquivalent` | `≥ 84000` | `CHALLENGE` |
+
+> **룰팩 18종 도달 가능성(2026-08-23).** `XLS-01`(ATM 2곳)은 별도 ATM 채널을 합성하지 않고 `WALLET_WITHDRAWAL`을 `channel.type`과 `channelScope` 양쪽에 사용한다. 같은 주체의 1시간 내 `merchantRef` distinct count 2에서 REVIEW, 1에서는 미발동한다. 동명 ACTIVE 정의가 구 비canonical 계약이면 `/admin/fds/rules` REST 상태기계로 canonical replacement를 생성·시뮬레이션·4-eyes 활성화한 후 구 정의를 disable/archive한다.
 | `DOMESTIC_REMIT` (분할입금) | `velocity(count, counterparty, 24h)` | `≥ 5` | `REVIEW` |
 
 > 기존 PHP 룰 DSL은 `transaction.phpEquivalent` alias를 유지하고, 비PHP profile-authored 룰은 `transaction.baseEquivalent`를 사용한다. 두 alias와 `transaction.amountBase`의 값 원천은 서버 파생 `amount_base` 하나다.

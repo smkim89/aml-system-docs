@@ -660,13 +660,15 @@ WLF score는 설명 가능해야 한다.
 
 | Component | 예시 |
 |---|---|
-| Name similarity | exact, compact(구분자 무관), token alignment(퍼지 Jaccard), token containment(토큰 결손), token set, edit distance, phonetic(double-metaphone) — 7종 `max` 블렌드(매처 `wlf-name-v3`) |
+| Name similarity | exact, compact(구분자 무관), token alignment(퍼지 Jaccard), token containment(토큰 결손), token set, edit distance, phonetic(double-metaphone), boundary set(완전 토큰 결합·그룹 재배열) — 8종 `max` 블렌드(매처 `wlf-name-v4`) |
 | Date match | birth date/year/month partial |
 | Country match | nationality, residence, incorporation country |
 | Document match | hashed document reference |
 | Address match | normalized address token |
 | Relationship match | same UBO, representative, account |
 | Negative signal | strong mismatch, verified false positive |
+
+`boundary set`은 전체 토큰을 정확히 한 번씩 소비하는 연속 결합만 허용하고, 결합된 그룹끼리의 순서 변경만 허용한다. 예를 들어 `KIM SU MIN`과 `SUMIN KIM`은 1.0이지만 문자 anagram·부분 이름·오타 결합은 0이다. 기존 7성분의 값과 dominant 동점 순서는 그대로이며, `boundarySet`은 기존 최고점보다 엄격히 클 때만 `BOUNDARY_SET`/`NAME_TOKEN_BOUNDARY_SET`으로 우세한다. 부분집합 DP의 자원 상한은 양쪽 각각 canonical 토큰 12개·총 256자이며 초과 입력은 이 additive 성분만 0으로 단락한다(기존 7성분은 계속 평가). matcher version만 `wlf-name-v4`로 회전하고 overall 가중치·negative·프로파일 임계·저장 정밀도는 바뀌지 않는다.
 
 #### 10.3a 명단군별 typed engine profile (`AML-WLF-005`)
 
@@ -1043,6 +1045,8 @@ OPEN
 | CTR/STR 고정 룰 파라미터 변경 | `REPORT_RULE_PARAM` |
 
 > subjectType 마스터는 **API §3.7 enum(전수 21종)** 이 정본이며 DB §5.16·연동 §8.3은 이에 동기화한다. `REPORT_RULE_PARAM`은 `COMPLIANCE_MANAGER` 승인선으로 aml-svc가 상신/실행을 소유한다(V41). `SELF_APPROVAL_DISABLED`(maker≠checker)는 subjectType이 아니라 전 결재 횡단 불변식이다.
+
+고정 보고 룰 변경 폐루프의 분모는 CTR ACTIVE 2종, STR ACTIVE 7종, STR DRAFT 1종이다. 실제 mutable 축은 통화별 공유 `CTR_THRESHOLD` 1개와 ACTIVE STR 3종의 6개 파라미터(`income_multiplier`, `count_threshold`, `window_hours`, `band_lower`, `band_upper`, `min_consecutive_days`)다. 검증기는 BO typed API에서 서로 다른 maker/checker 세션으로 full-set 상신·self-approval 409·승인 실행을 수행하고, 각 축을 독립적으로 변경해 fresh 경계 판정을 반전시킨다. fired case는 exact alert/보고 type+triggerRef/ONGOING RA 계보와 replay 신규 0을 확인하며, `finally`에서 시작 full snapshot(읽기전용 `name_match_threshold` 포함)과 CTR 임계를 복원한다. editable 0인 ACTIVE STR 4종도 reachability/replay를 별도 확인한다.
 
 ### 13.5 결재 시스템
 
