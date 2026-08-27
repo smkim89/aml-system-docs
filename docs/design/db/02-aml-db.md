@@ -1011,6 +1011,8 @@ V70은 TM "최근 거래" 브라우즈(API §2.4 `GET /api/v1/aml/transactions`)
 
 인덱스 `ix_aml_cdd_onboarding_decisions_target(tenant_id,target_ref,created_at DESC)`. 후속 RA나 모델 변경으로 갱신하지 않으며, replay가 현행 값을 재평가해 의사결정을 바꾸는 것을 금지한다. raw PII 없음.
 
+**HELD 운영 read model(2026-08-27, DDL 변경 없음)**: 1차 RA 화면의 별도 보류표는 이 불변 decision과 V34 `aml_ra_evaluation_jobs`를 `(tenant_id,event_id)`로 read-only join한다. `EDD_REQUIRED` + `ONBOARDING_RA_HELD` + `score_id IS NULL` + job `PENDING|PROCESSING`만 현재 업무로 보고, `COMPLETED`와 score-backed decision은 제외한다. `created_at`을 `receivedAt`으로 표시하고 targetRef 검색·최근 수신일·server page를 적용한다. retry 성공은 decision을 rewrite하지 않고 job만 `COMPLETED`로 수렴하므로 최초 HELD replay snapshot은 보존되면서 보류표에서는 사라진다.
+
 #### `aml_approvals` — 결재(maker-checker / 4-eyes) (설계서 §13.4~§13.5)
 
 | 컬럼 | 타입 | NULL | 제약 | 설명 |
@@ -1735,6 +1737,7 @@ hanpass-ph 운영 사용: `SANCTIONS_REVIEW`/`PEP_REVIEW`/`EDD_REVIEW`/`STR_REVI
 ## V34 RA 수동검토·자동 재처리·FDS 가중치 (2026-07-10)
 
 - `aml.aml_ra_evaluation_jobs`: PK `(tenant_id,event_id)`, canonical event FK, `PENDING|PROCESSING|COMPLETED`, attempts/reason/next-attempt. `FOR UPDATE SKIP LOCKED` claim과 memberRef advisory xact lock으로 다중 worker/인입 경쟁을 직렬화한다. 기존 ONBOARDING score가 이벤트 시점 이상을 이미 포함하면 완료 처리해 중복 append를 막는다.
+- 현재 HELD 조회는 위 job의 `status/attempts/next_attempt_at`과 V42 decision의 `target_ref/decision/reason/created_at`만 투영한다. tenant predicate를 두 테이블 join에 함께 고정하고 raw canonical payload를 읽지 않는다.
 - `aml.aml_ra_reviews`: PK `(tenant_id,review_id)`, UNIQUE `(tenant_id,score_id)`, risk score FK. `REQUIRED|COMPLETED`, SANCTION/PEP reason code JSON, 세 체크 boolean, note/actor/timestamps. COMPLETED는 세 체크+actor+timestamp를 DB CHECK로 강제한다.
 - ONBOARDING model `parameters.screening.listTypeScores={SANCTION:100,PEP:90}`를 additive 보강한다. 기존 `matchScore`는 하위호환 fallback이다.
 - ONGOING model `parameters.ruleSeverityWeights`에 `FDS_DECISION_APPLIED=55`, `FDS_CASE_ESCALATED=80`을 additive 보강한다.
