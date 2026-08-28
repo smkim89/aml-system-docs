@@ -153,7 +153,7 @@ durable worker(`AmlFanoutRetryScheduler`→`FanoutRetryService`)는 elevated DB 
 
 #### 3.1b-1 지연 성공 시 신호 소비 단계 재무장 (2026-08-13, 코드=truth)
 
-위 durable retry 는 **각 step 을 독립적으로** 되살린다. 그런데 step 들이 서로 독립이 아닌 축이 하나 있다 — **WLF 스크리닝 결과를 읽어서 평가하는 하위 단계**다. 인입은 WLF → TM/CTR/STR/RA 순서로 실행하지만 WLF 실패가 형제 단계 진행을 막지 않으므로(각 step 독립 가드·위 §3.1b), **WLF 만 실패한 인입의 STR·2차 상시 RA 는 스크리닝 신호 없이 `SUCCEEDED` 로 끝난다**. 이후 워커가 WLF step 만 claim 해 재시도하면 스크리닝 행은 뒤늦게 생기지만, 이미 `SUCCEEDED` 인 하위 단계를 다시 깨우는 경로가 없어 **그 위험 신호는 영원히 소비되지 않았다**(수취인 PEP 이름 위험 신호·송금인 제재 매칭이 STR·2차 RA 에 도달하지 못한다). readiness 가 잠시 `STALE` 이었다가 복구되는 **정상 장애 복구 경로**에서 발생한다.
+위 durable retry 는 **각 step 을 독립적으로** 되살린다. 그런데 step 들이 서로 독립이 아닌 축이 하나 있다 — **WLF 스크리닝 결과를 읽어서 평가하는 하위 단계**다. 후보조회 timeout·필수 적용본 부재 등 실제 WLF 실행 실패가 생기면 STR·2차 상시 RA가 스크리닝 신호 없이 먼저 끝날 수 있다. 이후 WLF가 지연 성공하면 이미 성공한 하위 단계를 재무장해 위험 신호를 소비한다. refresh STALE/FAILED/IMPORTING은 적용본이 있는 한 더 이상 이 retry 경로를 만들지 않지만, F-068 재무장 계약은 다른 실제 WLF 실패 복구를 위해 그대로 유지한다.
 
 - **선언(도메인 정본)** — `NeutralFanoutSteps.signalConsumersOf(producer)` 가 신호 생산 step 과 소비 step 의 관계를 순수 도메인으로 선언한다: producer `{SENDER_WLF, RECEIVER_WLF}` → consumer `{STR, ONGOING_RA}`.
   - `STR` 포함 근거 — STR 평가가 양당사자 스크리닝 행을 읽어 `pep`·`sanctionHit`·`PEP_NAME_RISK_SIGNAL` 입력을 만든다(WLF 신호의 **직접** 소비자).
@@ -640,7 +640,7 @@ API 키는 host env `AML_WATCHLIST_DILISENSE_API_KEY`(compose 미가공 경유, 
   - **획득(상호배제)** — `acquire` 는 리스가 비었거나 만료됐을 때만 잡는 조건부 UPDATE 다(`sync_run_id`·`sync_lease_expires_at`, TTL `aml.watchlist.sync-lease.ttl-seconds` **기본 900초**, 배치마다 갱신). **어떤 상태 변경보다 먼저** — 특히 `markImporting` 보다 먼저 — 잡으므로, 경합에서 진 run 이 승자의 readiness 를 fail-close 시키지 않는다. 실패한 run 은 `SyncResult(SKIPPED_CONCURRENT_RUN)` 성격으로 즉시 종료한다.
   - **소유권(CAS)** — `stillOwns` 는 같은 조건부 UPDATE 이며, 공유 상태를 바꾸는 모든 단계(배치 적재 `stageBatch`·`markImporting`·승격 `promote`·`touchUnchanged`·실패 보상)가 **자기 `@Transactional` 첫 문장**에서 이를 통과해야 실행된다(호출 직전 사전 점검은 왕복 절약용이고 결정적 가드는 트랜잭션 내부다). 리스가 만료돼 다른 run 이 이어받은 뒤 늦게 깨어난 run 은 승격도 보상도 하지 못한다.
   - **진 run 의 종료 계약** — 소유권을 잃은 run 은 `SanctionsSyncSupersededException` 으로 **예외 없이 `superseded` 종료**하며 readiness·`active_version` 을 **무변경**으로 둔다. 종전에는 늦게 실패한 run 의 보상이 먼저 승격한 run 의 `active_version` 에서 행을 빼내 이전 version 으로 되돌려 그 주체들이 제재 명단에서 사라졌다(미탐).
-  - **리스가 만료 기반인 이유** — 프로세스가 죽어도 소스가 영구 잠기지 않게 하기 위해서다(잠기면 명단이 늙어 48h freshness fail-close 로 이어진다). 세션 advisory lock 은 배치마다 커넥션이 풀로 반납돼, 트랜잭션 advisory lock 은 첫 커밋에 풀려 수십 분짜리 멀티 트랜잭션 run 을 감싸지 못한다.
+  - **리스가 만료 기반인 이유** — 프로세스가 죽어도 소스가 영구 잠기지 않게 하기 위해서다(잠기면 refresh가 멈추고 명단관리 freshness 경고가 누적된다). 세션 advisory lock 은 배치마다 커넥션이 풀로 반납돼, 트랜잭션 advisory lock 은 첫 커밋에 풀려 수십 분짜리 멀티 트랜잭션 run 을 감싸지 못한다.
   - **unchanged 스킵의 로컬 무결성 조건** — publisher version 이 같아도 "ACTIVE 행은 전부 `active_version` 에 있다" 불변식이 깨져 있으면 스킵하지 않고 재적재해 치유한다(DB §4 `ix_wle_active_version`). 이 조건이 없으면 위 구멍이 고착된다.
 - 운영 절차(키 주입·스텁 검증·영속 DB staleness 함정·수동 복구)는 구현 레포 운영 문서 `aegis-aml/docs/ops/dilisense-watchlist-source.md` §1~§4 가 정본이며 본 절과 동일 실측치를 쓴다.
 
@@ -657,9 +657,9 @@ EU_CFSL·UK_OFSI·AU_DFAT·JP_MOF_FEFTA 4종의 URL·특성 상세는 문서 미
 
 **스케줄·수동 트리거**: `SanctionsImportScheduler`(`adapter/in/scheduled`, `@Profile("!test")`, cron 기본 `0 20 3 * * *` UTC=마닐라 11:20, `aml.watchlist.sanctions.enabled` **기본 false**·데모 compose 만 env `true`, single-flight `AtomicBoolean`). 즉시 실행은 `POST .../watchlist-sources/{code}/sync`(API §2.4, scope `aml:admin:watchlist`) 수동 트리거. `DILISENSE_CONSOLIDATED` 는 기존 6소스와 같은 일일 sweep 대상이며, API 키 미설정·비활성 시 `DilisenseConfigurationException`을 `FAILED`로 흡수한다.
 
-**장애 시 동작(fail-safe·fail-closed)**: 외부망/파싱/DB 실패는 **예외 미전파** — `SyncResult(FAILED)`로 흡수, ERROR 로그 + 감사(`WATCHLIST_IMPORT`·action `FETCH_FAILED`), 소스 무변경(`last_imported_at`·freshness **미갱신**). 이후 `aml_watchlist_sources.last_imported_at` 48h 초과 시 `WatchlistFreshnessGateAdapter`가 해당 적용 소스로의 스크리닝을 **fail-closed 차단**(설계 의도 — 우회 금지). 감사 action: `AUTO_APPLY_IMPORT`(성공)·`SKIP_UNCHANGED`(동일 버전)·`FETCH_FAILED`(실패), category `WATCHLIST_IMPORT`(가정 A2). `AUTO_APPLY_IMPORT` 의 detail 에는 소스에 따라 파서 진단 카운터(미지 `sourceType` 등, **값>0 인 키만**)가 뒤에 덧붙을 수 있다(dilisense 경로 — 기존 7키의 순서·값은 불변). 설정 오류(키 미설정·비활성)로 인한 실패도 동일하게 `FETCH_FAILED`(`detail.error` = 예외 클래스 단순명)로 흡수된다. **데이터 없는 2xx 방어(v4.7)** — fetch 계층(`SanctionsXmlHttpFetcher`)은 2xx 라도 '데이터 없는 상태'(202/203/204/205) 또는 빈 본문(첫 바이트 없음)을 성공으로 통과시키지 않는다. 기존 `max-attempts`·백오프 안에서 재시도(202 는 비동기 생성 중일 수 있음 — 재시도 중 정상 본문이 오면 기존과 동일 적재)하고, 소진 시 `SanctionsFeedEmptyBodyException`(IllegalStateException 하위, HTTP 상태·쿼리 redact URL 포함) 으로 실패해 위 fail-safe 경로에 흡수된다 — `FETCH_FAILED` 감사 `detail.error` 로 '외부 빈 응답'이 즉시 구분된다(2026-07-31 OFAC 202/빈본문 실측 근거). 수동 `imports:fetch` 경로에서는 기존과 동일하게 409(상태 충돌)로 표면화된다. 감사 action 3종·48h fail-closed 게이트 계약 무변경.
+**장애 시 동작(fail-safe + last-applied serving)**: 외부망/파싱/DB 실패는 **예외 미전파** — `SyncResult(FAILED)`로 흡수, ERROR 로그 + 감사(`WATCHLIST_IMPORT`·action `FETCH_FAILED`), `active_version`·`last_imported_at`·기존 엔트리는 무변경이다. 운영자는 FAILED/48h 초과를 명단관리에서 확인하고 재sync하지만, 적용본이 있으면 RA/WLF는 그 버전으로 계속 평가한다. 적용본이 전혀 없는 필수 source만 `SCREENING_UNAVAILABLE` 대상이다. 감사 action과 데이터 없는 2xx 방어, 재시도·백오프·수동 imports 오류 계약은 불변이다.
 
-**bo-api 위임**: `POST /api/v1/bo/aml/watchlist-sources/{code}/sync` → `AmlEngineClient` 순수 위임(운영자 감사 후 엔진 호출). 제재명단 수집은 엔진 전용 표면 → **비위임(stub) 모드 fail-closed 503 `AML.ENGINE_UNAVAILABLE`**(위조 성공 카운트가 48h 게이트 오갱신 방지, 4-eyes 계약 대상 아님·가정 A10).
+**bo-api 위임**: `POST /api/v1/bo/aml/watchlist-sources/{code}/sync` → `AmlEngineClient` 순수 위임(운영자 감사 후 엔진 호출). 제재명단 수집은 엔진 전용 표면 → 비위임(stub) 모드 503 `AML.ENGINE_UNAVAILABLE`로 위조 성공·freshness 갱신을 만들지 않는다.
 
 ---
 

@@ -303,8 +303,8 @@ PK: `(tenant_id, relationship_id)`
 | `provider` | VARCHAR(128) | Y | NULL | | 제공처(UN/OFAC/internal 등 — generic 유지). **hanpass-ph 정합**: 실시간 제재·PEP 스크리닝 신호 소스는 `member-svc`의 `zoloz_aml_screening`(`decision`/`risk_level`/`total_hits`/`hit_results`)으로, screening 결과(§3.8)에 `member-svc` decision 을 정합 매핑한다. `source_type`(§5.4 SANCTIONS/PEP/RCA/ADVERSE_MEDIA/INTERNAL/LAW_ENFORCEMENT/VASP_RISK)는 유지 |
 | `status` | VARCHAR(32) | N | 'ACTIVE' | enum | `ACTIVE`/`DISABLED` |
 | `active_version` | VARCHAR(80) | Y | NULL | | 적용 중 import 버전(4-eyes 승인본) |
-| `last_imported_at` | TIMESTAMPTZ | Y | NULL | | freshness 모니터링(§20.2). **48h 신선도 초과 시 fail-closed**(스크리닝 차단·재import 강제 — `member-svc zoloz` 신호 포함 전 소스 동일 적용) |
-| `readiness_status` | VARCHAR(16) | N | 'MISSING' | enum,CHECK | **source readiness 상태기계(P0-06, V50)** — "지금 스크리닝에 실제 사용 가능한가"를 표현(생명주기 `status`(ACTIVE/DISABLED)와 직교). CHECK `ck_aml_watchlist_sources_readiness (readiness_status IN ('MISSING','IMPORTING','READY','STALE','FAILED','OVERRIDDEN'))`. §5.37 watchlist_readiness_status(6종) — `MISSING`(적용본 없음)/`IMPORTING`(fetch/import 진행 중, 네트워크 fetch 전 세팅)/`READY`(적용본 有·48h 이내)/`STALE`(적용본 48h 초과·파생)/`FAILED`(최근 import 실패)/`OVERRIDDEN`(긴급 override 로 강제 사용가능·시한부). backfill: `active_version` 有 → `READY`, 그 외 DEFAULT `MISSING`. 전이는 도메인 메서드(`WatchlistSource.markImporting/markReady/markFailed/markStale/override/clearOverride`)만 — 불법 점프(적용본 없이 READY) 불가. 도메인 `WatchlistReadinessStatus` enum·CHECK 와 1:1 |
+| `last_imported_at` | TIMESTAMPTZ | Y | NULL | | freshness 모니터링(§20.2). 48h 초과는 명단관리 경고·재import 대상이며 적용본이 있으면 RA/WLF 평가는 계속된다. |
+| `readiness_status` | VARCHAR(16) | N | 'MISSING' | enum,CHECK | **source refresh/readiness 상태기계(P0-06, V50)** — 명단 수집 운영 상태를 표현(생명주기 `status`와 직교). CHECK 6종은 불변: `MISSING`/`IMPORTING`/`READY`/`STALE`/`FAILED`/`OVERRIDDEN`. `MISSING`은 적용본 없음, 나머지 STALE/FAILED/IMPORTING은 적용본 보유 여부와 별개인 운영 상태다. 이 컬럼만으로 평가를 차단하지 않고 `active_version` 존재를 별도 확인한다. |
 | `readiness_override_expires_at` | TIMESTAMPTZ | Y | NULL | | **긴급 override 만료 시각(P0-06, V50)** — `OVERRIDDEN` 상태에서만 non-null. 게이트/조회 시 만료 판정(만료 시 자동 원상=파생 readiness 로 회귀). 사유·승인자·영향 건수는 감사(§3.15 `aml_audit_events` 카테고리 `WATCHLIST_READINESS`)에 남기고 이 컬럼은 시한만 보유 |
 | `sync_run_id` | UUID | Y | NULL | | **(V67)** 현재 이 소스를 동기화 중인 sync run 의 소유권 토큰. 배치 적재·승격(`active_version` 전진)·실패 보상은 이 값이 자기 runId 와 같을 때만 적용된다(늦게 깨어난 run 이 이미 승격된 결과를 되돌리지 못하게 하는 CAS 키). NULL = 진행 중인 run 없음 |
 | `sync_lease_expires_at` | TIMESTAMPTZ | Y | NULL | | **(V67)** 위 리스의 만료 시각(TTL 설정 `aml.watchlist.sync-lease.ttl-seconds` 기본 900초). 생성과 비교를 모두 PostgreSQL DB 시계 `now()`로 수행하고 애플리케이션은 절대 만료시각이 아닌 TTL(초)만 전달한다. TTL `0` 이하는 wall-clock 이동과 무관한 즉시 만료 sentinel `-infinity`로 저장한다. **만료된 리스만** 다른 run 이 이어받을 수 있어 프로세스 사망 시 자가 치유되며, 진행 중인 run 은 배치마다 갱신한다 |
@@ -312,11 +312,11 @@ PK: `(tenant_id, relationship_id)`
 
 PK: `(tenant_id, source_code)`
 
-> **effectiveReadiness(파생 시맨틱) — 게이트가 신뢰하는 값(P0-06)**: 스크리닝 게이트(`WatchlistReadinessGate`)는 저장 `readiness_status` 컬럼을 맹신하지 않고 적용본(`active_version`)+신선도 사실로부터 **effectiveReadiness(now)** 를 파생해 판정한다(stale 한 stored READY·만료된 override 불신). 규칙: ① `OVERRIDDEN` 이고 `readiness_override_expires_at` 미도래 → `OVERRIDDEN`(유효), 만료 → 아래 파생으로 회귀(clear 된 것처럼). ② `FAILED`/`IMPORTING` → stored 값 그대로(fetch 진행/직전 import 실패는 version+freshness 로 파생 불가한 in-flight 전이라 저장 컬럼이 소유). ③ 그 외(stored `MISSING`/`READY`/`STALE`) → 사실 파생: `active_version`+`last_imported_at` 有·48h 이내 ⇒ `READY`, 적용본 48h 초과 ⇒ `STALE`, 적용본 없음 ⇒ `MISSING`. 이로써 stored 컬럼이 READY 로 전진하지 못한(예: 직접 seed) 적용본+fresh 소스도 사용가능 판정된다. `isScreeningReady(now)` = effective ∈ {`READY`, 유효 `OVERRIDDEN`}. 코드 truth=도메인 `WatchlistSource.effectiveReadiness/deriveFromFacts/isScreeningReady`, `STALE_AFTER_SECONDS`=48h.
+> **effectiveReadiness(관리 파생 시맨틱)와 평가 가능성 분리(2026-08-27)**: `WatchlistSource.effectiveReadiness(now)`는 OVERRIDDEN 유효/만료, FAILED/IMPORTING stored 상태, `active_version`+`last_imported_at` 기반 READY/STALE/MISSING 파생을 그대로 유지한다. 이 값은 명단관리 진단·감사·refresh 조치 기준이다. RA/WLF 평가 가능성은 별도로 **`active_version IS NOT NULL`**을 사용한다. 따라서 적용본이 있는 STALE/FAILED/IMPORTING은 마지막 ACTIVE 엔트리로 평가하고, 적용본이 없는 필수 source만 차단한다. DB 컬럼·CHECK·마이그레이션 변경은 없다.
 
 ### 3.6a `aml_mandatory_watchlist_sources` — 필수 명단 source 정책 (P0-06, V51)
 
-tenant(+jurisdiction)별 **"스크리닝에 반드시 준비돼야 하는 source"** 정책. fail-closed 게이트(§3.6 effectiveReadiness)는 이 정책의 각 활성 entry 가 screening-ready(`READY` 또는 유효 `OVERRIDDEN`) 또는 승인된 `NOT_APPLICABLE` 여야 통과시키고, 하나라도 미준비면 **`SCREENING_UNAVAILABLE`**(NO_MATCH 아님·미탐 방지)로 차단한다. 정책이 비어있는 신규 tenant = 정책상 fail-closed(freshness 게이트의 vacuous-truth[빈 목록 allMatch=true] fail-open 제거).
+tenant(+jurisdiction)별 **"스크리닝에 적용본이 반드시 존재해야 하는 source"** 정책. 각 활성 entry에 `active_version`이 있거나 승인된 `NOT_APPLICABLE` waiver가 있어야 통과한다. 적용본이 없는 필수 source는 **`SCREENING_UNAVAILABLE`**로 차단하지만, 적용본이 있는 STALE/FAILED/IMPORTING은 차단하지 않는다. 정책이 비어있는 신규 tenant는 적용본 source가 1건도 없을 때 fail-closed다.
 
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
 |---|---|---|---|---|---|
@@ -1479,16 +1479,16 @@ hanpass-ph 운영 사용: `SANCTIONS_REVIEW`/`PEP_REVIEW`/`EDD_REVIEW`/`STR_REVI
 > DB가 물리 정본(CHECK **6종** — V26 4종 + V27 재이행 접수 2종). 도메인 enum `CddHistoryType` 및 bo-api `MemberLedgerDtos.HistoryType` 와 1:1. `CDD_*` 는 원장 존재 여부로 판정(§3.22f 적재 지점 a), `EDD_*` 는 EDD 착수/종료(`CddEddService`, 적재 지점 b), `*_REISSUE_REQUESTED` 는 즉시 재이행 접수(`DueDiligenceReissueService`, 적재 지점 c) — 실 재이행은 **계정계 연동 예정**(`TODO(계정계-연동)`), 계정계 재수행 결과의 `customer.cdd.completed` 재인입이 `CDD_REVIEW` 로 폐루프를 닫는다.
 
 ### 5.37 watchlist_readiness_status (`aml_watchlist_sources.readiness_status`, §3.6, P0-06 V50)
-`MISSING`(적용본 없음 — 사용 가능 데이터 없음) / `IMPORTING`(fetch/import 진행 중 — 네트워크 fetch 전·apply 전 세팅) / `READY`(적용본 有·48h 신선도 이내 — 사용가능) / `STALE`(적용본이 48h 창 초과 — 파생, 오래된 명단은 미탐 위험) / `FAILED`(최근 fetch/import 실패 — 데이터 불신) / `OVERRIDDEN`(긴급 override 로 강제 사용가능·시한부)
+`MISSING`(적용본 없음) / `IMPORTING`(fetch/import 진행 중) / `READY`(적용본 有·48h 이내) / `STALE`(적용본 48h 초과) / `FAILED`(최근 fetch/import 실패) / `OVERRIDDEN`(긴급 override·시한부). 6종은 명단관리 운영 상태이며 STALE/FAILED/IMPORTING이어도 `active_version`이 있으면 평가에는 계속 사용한다.
 
-> DB가 물리 정본(CHECK **6종**, `ck_aml_watchlist_sources_readiness`, V50). 도메인 enum `WatchlistReadinessStatus` 와 1:1. 생명주기 `status`(ACTIVE/DISABLED, §5.x)와 **직교**. 게이트는 저장 컬럼이 아니라 **effectiveReadiness(now) 파생값**을 신뢰한다(§3.6 후주 — OVERRIDDEN 유효/만료·FAILED·IMPORTING 은 stored, 그 외 적용본+신선도 사실 파생). 전이는 도메인 메서드(`markImporting/markReady/markFailed/markStale/override/clearOverride`)만.
+> DB가 물리 정본(CHECK **6종**, V50)이고 도메인 enum과 1:1이다. `effectiveReadiness(now)` 파생은 운영 진단에 사용하며, 평가 게이트는 `active_version` 존재를 신뢰한다. 전이 메서드와 감사 계약은 불변이다.
 
 ### 5.38 watchlist_source_capability (`aml_mandatory_watchlist_sources.capability`, §3.6a, P0-06 V51)
 `PROD`(운영 — 반드시 screening-ready(READY/유효 OVERRIDDEN)) / `NOT_APPLICABLE`(범위 밖 — 실 PEP/RCA provider 미연동 phase-2 A1, 사유·승인자·만료 있는 유효 waiver 로만 통과)
 
 > DB가 물리 정본(CHECK **2종**, `ck_aml_mandatory_ws_capability`, V51). 도메인 enum `WatchlistSourceCapability` 와 1:1. 필수 정책의 각 활성 entry 가 capability 별 판정을 통과해야 스크리닝 fail-closed 게이트를 넘는다(미준수=`SCREENING_UNAVAILABLE`).
 
-> **screening readiness 사유코드(비-persistent, `ScreeningReadinessReason` — API `SCREENING_UNAVAILABLE.details`)**: 게이트가 fail-closed 할 때 노출하는 사유(원문 PII 없음·source type/code 만) — `NO_MANDATORY_POLICY`(필수 정책 미설정 = 기본 fail-closed, strict)·`NO_READY_SOURCE`(정책 없음 fallback: screening-ready source 0건)·`MISSING_SOURCE`(필수 source 미등록)·`NOT_READY`(적용본 없음 MISSING/IMPORTING)·`STALE`(48h 초과)·`FAILED`(직전 import 실패)·`NOT_APPLICABLE_UNAPPROVED`(NOT_APPLICABLE 인데 유효 waiver 없음). enum 만·테이블 미저장.
+> **screening readiness 사유코드(비-persistent)**: wire enum 7종은 호환을 위해 유지한다. 현재 게이트는 적용본 없음 계열(`NO_MANDATORY_POLICY`/`NO_READY_SOURCE`/`MISSING_SOURCE`/`NOT_READY`/`FAILED`)과 `NOT_APPLICABLE_UNAPPROVED`만 차단에 사용한다. 적용본이 있는 STALE/FAILED/IMPORTING은 관리 상태로만 노출되고 `SCREENING_UNAVAILABLE` 사유가 아니다.
 
 ### 5.39 rescreen_job_status (`aml_wlf_rescreen_jobs.status`, §3.6b, P0-06 V52)
 `PENDING`(enqueue·대상 산출 대기) / `IN_PROGRESS`(worker 재검색 진행) / `COMPLETED`(전 target terminal) / `RETRYING`(일부 target 재시도 중) / `DEAD_LETTERED`(재시도 예산 소진 target 존재)
