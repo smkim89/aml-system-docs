@@ -1748,7 +1748,7 @@ CREATE TABLE aml_watchlist_sources (
   status VARCHAR(32) NOT NULL,
   active_version VARCHAR(80),
   last_imported_at TIMESTAMPTZ,                          -- freshness 모니터링(§20.2, DB §3.6)
-  readiness_status VARCHAR(16) NOT NULL DEFAULT 'MISSING',  -- source readiness 상태기계(P0-06, V50): MISSING/IMPORTING/READY/STALE/FAILED/OVERRIDDEN. status(ACTIVE/DISABLED)와 직교. effectiveReadiness 파생 게이트(§10.5, DB §3.6)
+  readiness_status VARCHAR(16) NOT NULL DEFAULT 'MISSING',  -- source refresh 관리 상태(P0-06, V50): MISSING/IMPORTING/READY/STALE/FAILED/OVERRIDDEN. 평가 가능성은 active_version 존재(§10.5, DB §3.6)
   readiness_override_expires_at TIMESTAMPTZ,             -- 긴급 override 만료(P0-06, V50): OVERRIDDEN 에서만 non-null·만료 시 자동 원상. 사유·승인자는 WATCHLIST_READINESS 감사(§10.5, DB §3.6)
   PRIMARY KEY (tenant_id, source_code)
 );

@@ -324,7 +324,7 @@ tenant(+jurisdiction)별 **"스크리닝에 적용본이 반드시 존재해야 
 | `jurisdiction` | VARCHAR(8) | N | '*' | PK | 관할권 = tenant `defaultRegion` 단위(세분 jurisdiction=phase-2 A2). 와일드카드 센티넬 `'*'`(nullable 차원을 PK 로 total 유지 — 애플리케이션이 `null`↔`'*'` 접기). 게이트에서 `'*'` 는 항상 적용 |
 | `source_type` | VARCHAR(64) | N | — | PK,enum,CHECK | §5.4 watchlist_source_type. CHECK `ck_aml_mandatory_ws_source_type (source_type IN ('SANCTIONS','PEP','RCA','ADVERSE_MEDIA','INTERNAL','LAW_ENFORCEMENT','VASP_RISK'))` |
 | `source_code` | VARCHAR(80) | N | '*' | PK | 특정 source 코드 고정 시 지정, 미지정(`'*'`)이면 해당 source_type 의 아무 등록 source 로 충족. 와일드카드 센티넬 `'*'` |
-| `capability` | VARCHAR(16) | N | 'PROD' | enum,CHECK | §5.38 watchlist_source_capability(2종). CHECK `ck_aml_mandatory_ws_capability (capability IN ('PROD','NOT_APPLICABLE'))`. `PROD`=반드시 screening-ready / `NOT_APPLICABLE`=범위 밖(실 PEP/RCA provider 미연동 phase-2 A1 — 승인된 waiver 로만 통과) |
+| `capability` | VARCHAR(16) | N | 'PROD' | enum,CHECK | §5.38 watchlist_source_capability(2종). `PROD`=반드시 적용본(`active_version`) 존재 / `NOT_APPLICABLE`=범위 밖(승인된 waiver로만 통과) |
 | `not_applicable_reason` | TEXT | Y | NULL | | `NOT_APPLICABLE` 사유(범위 밖 근거) |
 | `not_applicable_approved_by` | VARCHAR(128) | Y | NULL | | waiver 승인자 |
 | `not_applicable_expires_at` | TIMESTAMPTZ | Y | NULL | | waiver 만료 — 미도래(non-expired)여야 유효. 만료 시 게이트가 `NOT_APPLICABLE_UNAPPROVED` 로 fail-closed |
@@ -1484,7 +1484,7 @@ hanpass-ph 운영 사용: `SANCTIONS_REVIEW`/`PEP_REVIEW`/`EDD_REVIEW`/`STR_REVI
 > DB가 물리 정본(CHECK **6종**, V50)이고 도메인 enum과 1:1이다. `effectiveReadiness(now)` 파생은 운영 진단에 사용하며, 평가 게이트는 `active_version` 존재를 신뢰한다. 전이 메서드와 감사 계약은 불변이다.
 
 ### 5.38 watchlist_source_capability (`aml_mandatory_watchlist_sources.capability`, §3.6a, P0-06 V51)
-`PROD`(운영 — 반드시 screening-ready(READY/유효 OVERRIDDEN)) / `NOT_APPLICABLE`(범위 밖 — 실 PEP/RCA provider 미연동 phase-2 A1, 사유·승인자·만료 있는 유효 waiver 로만 통과)
+`PROD`(운영 — 일치 source의 적용본 `active_version` 필수) / `NOT_APPLICABLE`(범위 밖 — 사유·승인자·만료 있는 유효 waiver로만 통과). OVERRIDDEN은 관리 상태이며 적용본을 대체하지 않는다.
 
 > DB가 물리 정본(CHECK **2종**, `ck_aml_mandatory_ws_capability`, V51). 도메인 enum `WatchlistSourceCapability` 와 1:1. 필수 정책의 각 활성 entry 가 capability 별 판정을 통과해야 스크리닝 fail-closed 게이트를 넘는다(미준수=`SCREENING_UNAVAILABLE`).
 
