@@ -99,3 +99,5 @@ graph LR
 | Stage | Status |
 |---|---|
 | S1~S6 | TODO |
+
+> **실태 메모(2026-09-02, PLAN 20260902-aml-case-workbench)**: BOA-S5-05(AML-CASE-001 목록)·BOA-S5-06(AML-CASE-002 4탭 드릴다운)은 조사관 작업대 재구성(aml-svc U1~U6·U13 + bo-web U8~U12)으로 엔진·화면 구현이 완료됐다 — 워크벤치 단일 응답(`/workbench`)·체크리스트 실행(`aml_case_checklist_items`, V72)·발단 계보 A6 토큰·생성/배정/상태변경 감사 타임라인·관계 읽기·목록 서버 필터(priority/targetRef/dueSoon)·수동 생성 모달까지 반영. **BOA-S5-04(케이스 프록시)도 완료** — 기존 CRUD/PATCH/timeline/`:close`🔒/`:reject-relationship`🔒 위임에 더해 신규 워크벤치/체크리스트/관계 3종 bo-api 위임(U7, `AmlCaseController`·`AmlCaseRelationshipController`·`CaseDtos`, 엔진 응답 필드 1:1 + `sourceOrigin` 파생, 생성/변경 body `actor`=인증 principal·`dueAt` 전달)이 착지했다. 잔여는 BOA-S5-06 범위 밖으로 명시된 **STR_REVIEW tipping-off 열람 게이트(COMPLIANCE role 한정 조회)·열람 감사 기록**(배너만 구현, PRD §8.1 BR-007) — 별도 요건으로 후속 처리.
