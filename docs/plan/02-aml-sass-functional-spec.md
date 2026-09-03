@@ -5,8 +5,8 @@
 | 항목 | 내용 |
 |------|------|
 | **문서 ID** | FS-AML-SAAS-001 |
-| **버전** | 9.94 |
-| **작성일** | 2026-08-27 |
+| **버전** | 9.95 |
+| **작성일** | 2026-09-03 |
 | **작성자** | Hanpass Global Team |
 | **상태** | 초안 |
 | **정본(아키텍처)** | `.claude/skills/_shared/target-architecture.md` (4서비스 모노레포 · Java 25 헥사고날 · Next.js · 멀티테넌시 · PII 마스킹 · 4-eyes · Policy Pack STR/CTR) |
@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **9.95** | **2026-09-03** | **Hanpass Global Team** | **계정계 연동 — 회원 심사결과 확정·WLF 결재 상태 통지·조회(코드=truth, PLAN 20260903-aml-decision-status-webhooks, 사용자 지시로 F-084 부분 해제).** ① **§1.1 개요 신설 문단** — `docs/aml-fds-workflow-guide.md` §① L65("최종 회원승인 판단은 채널 몫") 원칙 유지 + 결재 확정 시점의 통지(웹훅)·조회(read-back API) 2경로 신설을 명시. ② **§12-A.4 AML-RA-003 BR-008 신설** — SubjectPanel 아래 "회원 심사결과" 카드(`MemberDecisionCard`, `GET /api/v1/bo/aml/customers/{ref}/decision`) — 결정 배지·출처·근거·확정 시각/결재자·연결 케이스·대기 결재·인입 스냅샷·이력. ③ **§3.2 AML-WLF-002 BR-007 신설** — 승인(EXECUTED) 시 요청별 `callbackUrl`(F-084 부분 해제) 우선·없으면 테넌트 목적지로 `AmlScreeningResolved`(데이터 보강)/FP 화이트리스트 `AmlScreeningWhitelistChanged` 웹훅 발행 + 거래별 조회 `GET /aml/screenings?transactionRef=\|targetRef=`(bo-api 미러 `by-transaction`). ④ **§8.1 AML-CASE-001 BR-009 신설** — `EDD_CLOSE`(온보딩 보류 발단 한정)/`RELATIONSHIP_REJECT` 결재 EXECUTED 시 `AmlMemberDecisionResolved` 웹훅(반려는 미발행). | 코드=truth. 근거=aegis-aml aml-svc `MemberDecisionController`·`QueryMemberDecisionUseCase`·`MemberDecisionService`·`WebhookOutboxEmitter`·`V74__member_decisions_and_screening_callback.sql`; bo-api `AmlRiskReadController`·`RaDtos.MemberDecision*`·`AmlScreeningController`; bo-web `MemberDecisionCard.tsx`. API §2.1·§2.2·§2.3·§8.1, DB §3.8·§3.22g·§7(V74) 동일 작업 단위. |
 | **9.94** | **2026-08-27** | **Hanpass Global Team** | **AML-RA-001 1차 RA `평가 보류·EDD 대상` 별도 업무표 신설(코드=truth, `fix/ra-held-decision-visibility`).** score-only 1차 목록에서 누락되던 `EDD_REQUIRED/ONBOARDING_RA_HELD`를 실제 점수와 분리해 targetRef·decision/reason·retry 상태/횟수·다음 재시도·수신시각으로 표시한다. 엔진/BFF typed API는 tenant·targetRef 부분검색·최근 30일 toggle·server page를 지원하고 `PENDING|PROCESSING` + score-null 현재 건만 반환한다. retry 성공 후 표에서 사라지고 실제 ONBOARDING 점수 목록에만 1회 나타난다. 가짜 score/등급/조치 합성 0, V42 snapshot/replay·RA 산식·WLF freshness·기존 1차/2차 dedupe 계약 무변경. | 근거=aegis-aml `HeldOnboardingRa*`·bo-api `RaDtos/AmlRaService/AmlRiskReadController`·bo-web `AmlRiskMonitoring/useAmlRisk`; API §2.7/§3.3e·DB V34/V42 read model·RA-C21 동기화. |
 | **9.93** | **2026-08-24** | **Hanpass Global Team** | **§12.3 AML-WHK-001 BR-004 동일값 저장 감사 정정(F-048/RA-C15).** 같은 값 재저장은 자격증명 행·암호문·`updatedAt`·`updatedBy`를 갱신하지 않는 저장 멱등성을 유지한다. 다만 성공한 PUT 자체는 운영자 쓰기 추적을 위해 `POLICY_CHANGE`/`WEBHOOK_CREDENTIAL_SAVED`/`operation=REPLACE` 감사 1건을 남긴다. 시크릿 비노출·host-only 감사·즉시 반영·4-eyes 없음·권한 계약은 불변이다. | 코드=truth. 근거=aegis-aml `WebhookCredentialAdminService#save`, unit/Testcontainers 회귀, API §2.7a, 엔진 케이스 RA-C15. |
 | **9.92** | **2026-08-22** | **Hanpass Global Team** | **WLF 요청 이름 스냅샷·NAME 인라인 노출(P0-09 국지 카브아웃, 코드=truth).** AML-WLF-001/003의 스크리닝 목록·상세는 `requestName`(요청 `nameTokens` 순서 보존 스냅샷)과 `matchedEntryNames`/후보 `listName`(안정 entry id의 현재 게시본 명단명)을 `aml:case:read`만으로 바로 표시한다. 클릭·사유·`aml:pii:reveal` 호출·마스킹/회원 마스터 폴백은 없고, 과거 스냅샷 부재는 `—`이다. 매칭 명단명은 재sync로 바뀔 수 있음을 라벨로 명시하며, bo-api는 이름이 실제 포함된 목록/상세 요청당 `RAW_DATA_ACCESS` 1건을 남긴다. **② 상위승인 결재 큐는 approval API 기반으로 제외**하고, TM/근거거래/Subject360·NAME 이외 reveal 경로는 불변이다. | 코드=aml-svc `WlfScreeningService`·`ScreeningIdentityProjectionService`·`ScreeningController`, bo-api `AmlScreeningService`·`ScreeningDtos`; API §1.6/§2.4/§3.2·DB §3.21·SW §19.2 동기화. |
@@ -207,6 +208,8 @@
 - **운영(검토·판정·결재) 화면**: bo-api 를 경유하여 `aml-svc`(AML 엔진)의 Admin API(`/api/v1/admin/aml/*`)를 위임 호출합니다.
 
 AML 엔진 자체의 ingest·screening·RA·TM 평가는 서비스(테넌트) 시스템이 Public API로 사용하며 본 백오피스의 화면 대상이 아닙니다(책임 경계 §1.6).
+
+> **계정계(코어뱅킹) 연동 — 결재 확정 통지·조회(2026-09-03 보강, PLAN 20260903-aml-decision-status-webhooks)**: 회원 CDD 인입(1차 RA)에 대한 **"최종 회원승인 판단은 채널(계정계) 몫"** 원칙(`docs/aml-fds-workflow-guide.md` §① L65 정본)은 불변이다. 엔진은 그 판단을 대신하지 않되, 백오피스 4-eyes 결재로 회원 관계가 **확정(승인/거절)되는 시점**의 상태값을 계정계가 알 수 있도록 **통지(웹훅)와 조회(read-back API)** 두 경로를 제공한다 — 회원(고객 관계) 확정은 §8.1 AML-CASE-001 BR-009·§12-A.4 AML-RA-003 BR-008, WLF 스크리닝 확정은 §3.2 AML-WLF-002 BR-007 참조.
 
 ### 1.2 화면 범위 (태스크 BO 화면 인벤토리)
 
@@ -742,6 +745,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-004**: 상세 패널에서 **이전 판정 이력**을 표시해 동일 대상의 과거 판정 맥락을 확인할 수 있다.
 - **BR-005**: 결재 payload_hash 고정. 상신 후 payload 변경 시 `AML.APPROVAL_PAYLOAD_CHANGED`로 무효화(재상신 필요). 만료(`EXPIRED`)된 결재는 실행되지 않음.
 - **BR-006**: 승인·반려 결과는 탭 **③ 처리 이력**에 기록. 모든 결재 이력은 감사(`aml_audit_events`, eventCategory=`WLF_DECISION`)에 작업자·traceId 기록.
+- **BR-007 (2026-09-03 — 결재 실행 웹훅 + 거래별 조회 계약, 코드=truth, PLAN 20260903-aml-decision-status-webhooks, 사용자 지시로 F-084 부분 해제)**: BR-002 승인(EXECUTED) 시 계정계에도 상태가 통지된다 — `POST /api/v1/aml/screen` 요청에 **요청별 `callbackUrl`?**(additive, ≤2048자·SSRF 사전검증 실패 시 400)이 실려 있었으면 승인 실행 시점에 그 URL 로, 없으면 테넌트 사전등록 `webhook_url`로 **`AmlScreeningResolved`** 웹훅(데이터 보강: `transactionRef`·`targetType`·`score`·`approvalId`·`decidedBy`·`decidedAt`·`matchedEntries[]`)이 발행된다(반려는 미발행 — BR-003). FP 화이트리스트(AML-WL-003) 등록/취소 결재 실행도 동형으로 **`AmlScreeningWhitelistChanged`** 를 발행한다. 계정계는 **거래별 조회 API** `GET /api/v1/aml/screenings?transactionRef=…`(해당 거래의 sender+receiver 스크리닝 전건) 또는 `?targetRef=…`(대상 최신 1건)로 폴링할 수도 있다 — 응답은 기존 `ScreeningResponse` + additive `pendingDecision`(대기 중인 `WLF_DECISION` 결재)·`callbackConfigured`(요청별 콜백 등록 여부, URL 원문 미노출). bo-api 미러 `GET /api/v1/bo/aml/screenings/by-transaction?transactionRef=&targetRef=`(기존 `GET /api/v1/bo/aml/screenings` 8-파라미터 목록 계약은 무변경).
 
 ---
 
@@ -1319,6 +1323,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 - **BR-006**: 모든 timeline·상태 전이·결재는 `traceId`로 연결되어 case timeline evidence(`GET /evidence/aml/cases/{caseId}/timeline`)와 1:1 추적(설계서 §20.3). 상태 전이 위반은 `AML.INVALID_STATE_TRANSITION`.
 - **BR-007**: **정보누설금지(tipping-off, 특정금융정보법 §4의2) 경계** — STR 관련 케이스(`STR_REVIEW`)는 **준법감시 전담 role(COMPLIANCE scope)만 조회**합니다. 일반 상담/운영 화면에는 STR 진행 사실(케이스 존재 포함)을 플래그로 노출하지 않으며, STR 케이스 화면 상단에 상시 경고 배너("본 화면 정보의 외부 누설은 특정금융정보법 제4조의2 위반입니다")를 표시하고 열람을 감사(`aml_audit_events`)에 기록합니다(설계서 §19.2a). **(v9.86 실태 명시, PLAN 20260902-aml-case-workbench DoD 8)**: 상단 경고 배너는 케이스 상세(AML-CASE-002)에 구현되어 있으나, **COMPLIANCE role 열람 게이트(비전담 조회 차단)·열람 감사 기록은 케이스 상세 화면에는 미구현(별도 요건)** — 현재 이 게이트가 실제로 적용되는 화면은 규제 보고 상세(AML-REP-002, §12-A.8)뿐이다. 케이스 상세에 임의로 열람 게이트를 추가하지 않는다(기존 동작 무변경).
 - **BR-008 (v9.86, PLAN 20260902-aml-case-workbench U11)**: `[+ 케이스]` 버튼(`aml:case:update` 스코프)이 수동 생성 모달을 연다 — 입력: 케이스 타입(운영 6종 우선 노출)·대상 식별자(`targetRef`)·우선순위·담당자·기한·사유(필수) → `POST .../cdd/cases` 성공 시 상세로 이동. 목록 서버 필터는 `케이스 타입/상태/우선순위/담당자`(텍스트)/`대상 식별자` 외 **`기한 임박`** 탭이 서버 `dueSoon=true`(72시간 이내 + 비종결) 파라미터로 위임된다(API §2.7). 페이지네이션은 엔진 total 미제공으로 범위 밖 — 캡션에 "최대 50건" 명시. 입력한 사유는 케이스 `CREATED` 타임라인 note 에 `MANUAL;REASON=<사유>`(알림 전환은 `ALERT_HANDOFF=…;ACTION=…;REASON=<사유>`)로 영속되어 조사관이 개설 근거를 타임라인에서 확인한다.
+- **BR-009 (2026-09-03 — EDD 종결·관계거절 결재 확정의 계정계 통지·조회, 코드=truth, PLAN 20260903-aml-decision-status-webhooks)**: BR-003 의 `EDD_CLOSE`(온보딩 보류 발단 한정)·`RELATIONSHIP_REJECT` 4-eyes 결재가 **EXECUTED** 되면 계정계(코어뱅킹)에도 "승인/거절이 완료된 시점"의 상태값이 전달된다 — 회원의 최신 CDD 인입 `callbackUrl`(있으면) 또는 테넌트 사전등록 목적지로 웹훅 `AmlMemberDecisionResolved`(§12-A.4 AML-RA-003 BR-008 카드가 같은 값을 조회로도 노출)가 발행된다. 반려는 상태 변경이 없으므로 통지도 없다 — workflow-guide §① L65 원칙("최종 회원승인 판단은 채널 몫")을 침범하지 않고, 엔진은 **결재 확정 사실만 통지·조회**로 제공한다(자동 판단 위임 아님). 계정계는 폴링 대안으로 `GET /api/v1/aml/customers/{customerRef}/decision`(API §2.3)을 사용할 수 있다.
 
 ---
 
@@ -1672,7 +1677,7 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
 | **기능 ID** | AML-RA-003 |
 | **진입** | AML-RA-001 고위험 목록 행 클릭(대상 식별자 컨텍스트) |
 | **권한** | 조회 `aml:case:read` / EDD 케이스 생성·주기 변경·즉시 재이행 접수 `aml:case:update` / **당연고위험 등재 상신 `aml:case:update`·경영진 승인/반려 `aml:admin:approval`**(v9.48 BR-006) |
-| **API** | `GET /aml/customers/{customerRef}/risk` · `POST .../cdd/cases`(EDD 착수) · `POST /api/v1/bo/aml/customers/{customerRef}/review-cycle:change`🔒(PERIODIC_REVIEW_CHANGE) · `POST /api/v1/bo/aml/members/{memberRef}/reissue:request`(즉시 재이행 접수, API §2.x) · **`GET /api/v1/bo/aml/high-risk-registry/registrations/{customerRef}`**(당연고위험 등재 상태 read-back, v9.48) · **`POST /api/v1/bo/aml/high-risk-registry/registrations`🔒(HRR_REGISTRATION·승인선 EXECUTIVE_APPROVAL)**·**공통 결재함 `:approve`/`:reject`**(경영진 승인/반려, §8 재사용) |
+| **API** | `GET /aml/customers/{customerRef}/risk` · `POST .../cdd/cases`(EDD 착수) · `POST /api/v1/bo/aml/customers/{customerRef}/review-cycle:change`🔒(PERIODIC_REVIEW_CHANGE) · `POST /api/v1/bo/aml/members/{memberRef}/reissue:request`(즉시 재이행 접수, API §2.x) · **`GET /api/v1/bo/aml/high-risk-registry/registrations/{customerRef}`**(당연고위험 등재 상태 read-back, v9.48) · **`POST /api/v1/bo/aml/high-risk-registry/registrations`🔒(HRR_REGISTRATION·승인선 EXECUTIVE_APPROVAL)**·**공통 결재함 `:approve`/`:reject`**(경영진 승인/반려, §8 재사용) · **`GET /api/v1/bo/aml/customers/{customerRef}/decision`**(회원 심사결과 확정 read-back, 2026-09-03 BR-008) |
 
 - **구성**: 탭 `factor breakdown`/`관계·UBO`/`재심사 이력`. ① 대상/등급(점수·등급·재심사일·권고 조치 `requiredAction`), ② factor breakdown(고위험 국가·UBO 불명·WLF match·고위험국가 송금·거래 행동 등 기여도 분해), ③ EDD 체크리스트 실행(항목·필수·증빙·상태, 정의는 AML-CDD-001).
 - **BR-001**: `[EDD 케이스 착수]` → **케이스 자동 생성(강화된 고객확인) → AML-CASE-002 이동**(발단=`score_id`). 등급 조정 필요 시 → AML-RA-002(RISK_OVERRIDE 4-eyes).
@@ -1687,6 +1692,11 @@ AML/FDS는 고객 PII·거래·제재 데이터의 규제·보안 요건상 **�
   - **근거가 없으면 렌더하지 않는다** — 1차(ONBOARDING) 행, 스케일링 정의가 없는 서비스, 스케일 대상 알럿이 없는 재산정에서는 패널 자체가 없다(빈 카드·"해당 없음" 표기도 두지 않는다).
   - **정의 편집 동선으로 연결한다** — 패널에서 `위험 점수 가산 관리`(AML-RA-002 ⑤ 탭 딥링크)로 이동해 그 배수를 만든 정의를 4-eyes 로 조정한다.
   - **raw PII 없음** — 점수·룰 코드·참조 토큰만 표시하며, 라벨·커브명은 ko/en 카탈로그에서 매핑한다.
+
+- **BR-008 (2026-09-03 — "회원 심사결과" 카드, 코드=truth, PLAN 20260903-aml-decision-status-webhooks, 사용자 지시로 F-084 부분 해제)**: SubjectPanel 아래(관리자 액션 패널 BR-005 와 별개) `MemberDecisionCard`(bo-web `components/aml/MemberDecisionCard.tsx`) 카드를 신설한다 — `GET /api/v1/bo/aml/customers/{customerRef}/decision`(엔진 `MemberDecisionView` 1:1 미러, bo-api §API 2.3) 을 조회해 계정계가 "결재를 통해 승인/거절이 완료된 시점" 의 상태값을 화면에서도 확인할 수 있게 한다.
+  - **표시 항목**: 결정 배지(`APPROVED`/`REJECTED`/`EDD_REQUIRED`/`REPORTED`, ko/en 카탈로그 `enum.memberDecision.*`)·출처(`source`: `INGEST`/`EDD_CLOSE`/`RELATIONSHIP_REJECT`)·근거(`reason`)·확정 시각/결재자(`decidedAt`/`decidedBy`)·연결 케이스(`caseId` → `[케이스 상세 ▶ → AML-CASE-002]` 딥링크)·대기 결재(`pendingApproval` — 상태 배지 + `[결재 대기함 ▶ → /aml/approvals]` 딥링크)·인입 스냅샷(`ingestDecision` — CDD 인입 원문 결정·근거·시각)·이력(`history[]`, 최신순 상한 10 표시).
+  - **회원 미존재(404)는 조용히 "결정 없음" 으로 강등**하고(에러 배너 승격 없음 — 케이스 상세 패널 선례와 동형), 그 외 조회 실패만 `unavailable` 문구로 구분한다. 온보딩 보류(`EDD_REQUIRED`) 중에도 카드는 정상 렌더(200 응답)된다.
+  - raw PII 미노출 — 참조 토큰·enum·시각만 표시. i18n(ko/en) `amlCust.memberDecision.*` 카탈로그 키 동시 추가.
 
 ### 12-A.5 AML-CDD-001 · CDD/EDD 체크리스트 / 재심사 주기 관리 (앞단, 4-eyes)
 

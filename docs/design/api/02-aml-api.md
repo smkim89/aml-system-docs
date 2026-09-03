@@ -154,6 +154,8 @@ DTO는 raw PII를 노출하지 않는다(DB §2.2). 식별은 `customerRef`/`ent
 
 > **인입 파이프라인 step 7f — FDS 고객 프로필 동기화 outbox.** 신규 CDD가 ACCEPTED되면 동일 트랜잭션에서 `aggregateType=FDS_CUSTOMER_PROFILE`, `eventType=aml.customer.profile.updated`, `aggregateRef=customerRef` outbox를 생성한다. payload는 `sourceEventId/occurredAt/nationality/country/registeredAt/kycCompletedAt/kycLevel/dataScope`만 포함하고 raw name·DOB·문서 식별자는 제외한다. relay가 FDS 내부 API로 전달하며 실패는 기존 outbox retry/backoff로 재시도하므로 FDS 장애가 AML CDD ingest를 rollback하지 않는다. REPLAYED/DUPLICATE는 step 7f에 도달하지 않아 중복 enqueue하지 않는다.
 
+> **회원 심사결과 확정은 별개 후속 계약(PLAN 20260903-aml-decision-status-webhooks, 코드=truth).** 위 `customer.cdd.completed` 인입 결정(`aml_cdd_onboarding_decisions`, V42)은 인입 시점의 **불변 스냅샷**이며 이후 어떤 4-eyes 결재도 이 행을 갱신하지 않는다(F-076). 계정계가 "결재를 통해 승인/거절이 완료된 시점"의 상태값을 읽으려면 별도로 **회원(고객 관계) 심사결과 확정**(append-only `aml_member_decisions`, V74)을 쓴다 — 온보딩 보류(`EDD_REQUIRED`) 회원의 EDD 케이스 종결(`EDD_CLOSE`) 4-eyes 결재가 **EXECUTED**되거나 관계거절(`RELATIONSHIP_REJECT`) 결재가 **EXECUTED**될 때만 행이 append되고, 같은 트랜잭션에서 웹훅 `AmlMemberDecisionResolved`(§8.1)가 아웃박스 enqueue된다. 결재 **반려**는 행·웹훅 모두 없음(F-020 `rejectPathNeverEmits` 선례). 조회는 §2.3 `GET /api/v1/aml/customers/{customerRef}/decision`, DB는 §3.x `aml_member_decisions`(DB 문서), 목적지 우선순위·payload 는 §8.1/§12.1a(`docs/aml-data.md`).
+
 ### 2.1a 중립(canonical) 수집 API — `POST /aml/v1/transaction-events` (코드=truth, feature/aml-neutral-canonical-ingest)
 
 소스 중립(canonical) 수집 API. 해외송금·국내송금·카드결제·월렛충전·월렛결제 5개 product 를 **단일 Envelope**(`docs/aml-data.md` §3~§7, ISO 20022/FATF R.16/ISO 4217·3166·8601)로 수신하고, 하나의 POST 로 WLF 스크리닝 + CTR/STR 평가(TM 파이프라인)를 팬아웃한다. 기존 `POST /api/v1/aml/events`(§3.1, 내부 canonical 저장 경로)와 별개의 공개 수집 표면이며, 원천 시스템은 자기 컬럼을 이 표준 필드로 매핑만 하면 동일 API 로 인입한다.
@@ -256,8 +258,9 @@ filter가 설정한 local-bootstrap `Boolean.TRUE` marker 외에는 403으로 �
 
 | 메서드 | 경로 | scope | 멱등 | 설명 | DB |
 |---|---|---|---|---|---|
-| POST | `/api/v1/aml/screen` | `aml:screen:evaluate` | Y | 실시간 WLF/제재/PEP screening. **hanpass-ph 해외송금은 거래당 sender(송금 회원)·receiver(수취인) 2회 호출**(§3.2 `transactionRef`로 연결). **COUNTERPARTY 대상은 요청 신원(이름 토큰·country·dob)을 스크리닝 `targetRef` 키로 reveal vault 에 암호화 투영**(2026-07-15 — WLF 상세 수취인 원문 reveal 결선, DB §3.21; 응답·DTO 불변) | `aml_screening_results`, `aml_pii_vault`(COUNTERPARTY 투영) |
-| GET | `/api/v1/aml/screenings/{screeningId}` | `aml:screen:evaluate` **또는** `aml:case:read` (requireAny) | — | screening 결과 조회 — 소스시스템 read-back(`aml:screen:evaluate`) 외에 BO 검토 화면 위임(bo-api, `aml:case:read`)도 허용. BO 위임 credential 은 evaluate scope 를 의도적으로 미보유(BOA-S1-01·PRD §1.4)하므로 읽기 전용 상세는 `aml:case:read` 로 열린다(P0-04 credential 분리 후 WLF 상세 403 회귀 교정) | `aml_screening_results` |
+| POST | `/api/v1/aml/screen` | `aml:screen:evaluate` | Y | 실시간 WLF/제재/PEP screening. **hanpass-ph 해외송금은 거래당 sender(송금 회원)·receiver(수취인) 2회 호출**(§3.2 `transactionRef`로 연결). **COUNTERPARTY 대상은 요청 신원(이름 토큰·country·dob)을 스크리닝 `targetRef` 키로 reveal vault 에 암호화 투영**(2026-07-15 — WLF 상세 수취인 원문 reveal 결선, DB §3.21; 응답·DTO 불변). **`callbackUrl`?**(요청별 아웃바운드 웹훅 목적지, PLAN 20260903-aml-decision-status-webhooks — 사용자 지시로 F-084 부분 해제) additive — 길이 ≤2048자, 수신 시 `WebhookUrlPolicy` SSRF 사전검증(실패 **400**), 저장은 `aml_screening_results.callback_url`(V74), 응답에는 원문 미노출·`callbackConfigured:boolean`만 동봉(§3.2) | `aml_screening_results`, `aml_pii_vault`(COUNTERPARTY 투영) |
+| GET | `/api/v1/aml/screenings/{screeningId}` | `aml:screen:evaluate` **또는** `aml:case:read` (requireAny) | — | screening 결과 조회 — 소스시스템 read-back(`aml:screen:evaluate`) 외에 BO 검토 화면 위임(bo-api, `aml:case:read`)도 허용. BO 위임 credential 은 evaluate scope 를 의도적으로 미보유(BOA-S1-01·PRD §1.4)하므로 읽기 전용 상세는 `aml:case:read` 로 열린다(P0-04 credential 분리 후 WLF 상세 403 회귀 교정). **`pendingDecision`/`callbackConfigured` additive**(PLAN 20260903-aml-decision-status-webhooks DoD 4, §3.2) | `aml_screening_results` |
+| GET | `/api/v1/aml/screenings?transactionRef=…\|targetRef=…` | `aml:screen:evaluate` **또는** `aml:case:read` (requireAny) | — | **계정계 WLF 상태조회 read-back**(신규, PLAN 20260903-aml-decision-status-webhooks DoD 4) — 둘 중 하나 필수(둘 다 공란이면 **400**, 둘 다 지정 시 `transactionRef` 우선). `transactionRef`는 해당 거래의 sender+receiver 스크리닝 전건(최신순, **상한 200건** — `ScreeningResultJpaAdapter` 정적 상한, 초과분 절단·hasMore 신호 없음), `targetRef`는 대상의 최신 스크리닝 1건(0~1건)을 반환한다. 각 원소는 기존 `ScreeningResponse`(§3.2) + additive `pendingDecision{approvalId,targetStatus,makerId,submittedAt}`(비-terminal `WLF_DECISION` 4-eyes 결재, Q5)·`callbackConfigured:boolean`(요청별 `callbackUrl` 등록 여부, URL 원문 미노출). bo-api 미러 `GET /api/v1/bo/aml/screenings/by-transaction?transactionRef=&targetRef=`(필드 1:1, 기존 `GET /api/v1/bo/aml/screenings` 8-파라미터 목록 계약은 무변경) | `aml_screening_results` |
 
 > **WLF 스크리닝 대상 = 해외송금 + 국내송금 양당사자(sender + receiver)(hanpass-ph 데모 정합)**: 송금계열 2 product — 해외송금(`CROSS_BORDER_REMITTANCE`, `remit-svc` cross-border)·국내송금(`DOMESTIC_TRANSFER`) — 거래는 송금인(sender = 회원 본인, `targetType=CUSTOMER`, `targetRef`=member UUID keyed token)과 수취인(receiver = 상대방, `targetType=COUNTERPARTY`, 해외송금 수취인 키=이름+국가+전화 토큰)을 **각각 1건씩** screen 한다(수취국 PH/VN/ID 제재 = 진양성). 두 결과는 동일 `transactionRef`(거래번호 keyed token)로 묶여 케이스/증빙에서 거래 단위로 연결된다. receiver 스크리닝은 워치리스트 receiver 엔트리와 매칭하며 `subjectIdentity`(§3.2) 4필드(NAME/NATIONALITY/GENDER/DOB)는 주체 무관 균일(COUNTERPARTY 미보유 필드는 reveal stub 이 빈 값) — 국내송금 receiver 에도 동일 적용된다. 국내송금 receiver 식별은 `domesticTransfer.creditAccount.accountHolderName`(이름) + 상대방 국가(A6, 기본 `PH`)로 해결하고, sender 스크리닝과 동일 `transactionReference` 로 키잉되어 STR party-aware receiver lineage(계약 1·6)가 소비한다. 회원가입·월렛충전·월렛결제 등 잔여(비-송금계열) 거래는 sender(`CUSTOMER`)만 screen. FP 화이트리스트(§2.7·§3.2)는 `(targetRef::matchedEntryId)` fingerprint를 키로 하므로 **특정 거래가 아니라 동일 대상의 재screening 전반에 거래간(across-transaction) 유효**하다(동일 FP 매칭은 `AUTO_DISCOUNTED`로 자동 감점). 엔진 도메인 비변경 — 데모/시뮬레이터/시드 한정. TM STR_PEP·STR_SANCTION 은 receiver COUNTERPARTY 스크리닝 계보를 수취인 명단 평가에 재사용(§3.4a·기능정의서 §7.1 BR-013).
 
@@ -272,7 +275,30 @@ filter가 설정한 local-bootstrap `Boolean.TRUE` marker 외에는 403으로 �
 | POST | `/api/v1/aml/risk-assessments/evaluate` | `aml:ra:evaluate` | Y | 고객(회원)/법인 위험평가 실행(회원가입 RA·재평가) | `aml_risk_scores` |
 | GET | `/api/v1/aml/risk-assessments/{scoreId}` | `aml:ra:evaluate` | — | RA 결과 조회 | `aml_risk_scores` |
 | GET | `/api/v1/aml/customers/{customerRef}/risk` | `aml:case:read` | — | **대상 stage-aware operative 등급 조회**(PLAN 20260722-ra-tm-2nd-stage-fixed-scenario-consistency, "TM 진입 시 2차 고정") — 상시평가(ONGOING) 점수가 이력에 하나라도 있으면 최신 상시평가(ONGOING) 점수, 없으면 최신 온보딩(ONBOARDING) 점수를 유효 평가로 반환(구 "최신 evaluated_at=유효 등급" 규칙을 대체). 온보딩 모델 재평가(system 재점수)가 상시평가 진입 대상의 유효 평가구분을 1차로 되돌리지 않는다. `onboardingReview` 보조 블록은 최신 온보딩 점수 기준으로 별도 유지(§2.6 후주). | `aml_risk_scores` |
+| GET | `/api/v1/aml/customers/{customerRef}/decision` | `aml:case:read` **또는** `aml:event:write` (requireAny) | — | **회원(고객 관계) 심사결과 확정 read-back**(신규, PLAN 20260903-aml-decision-status-webhooks DoD 2) — 계정계가 "결재를 통해 승인/거절이 완료된 시점"의 상태값을 폴링한다. `aml:event:write`(계정계 인입 credential, `aml:case:read` 미보유)도 requireAny 로 허용. 응답 `MemberDecisionDto`(아래)는 확정 행(`aml_member_decisions`)과 CDD 인입 스냅샷(`aml_cdd_onboarding_decisions`)을 병합해 최신순 정렬한 것으로, **`history[0]`이 현재 결정**이다. 온보딩 보류(`EDD_REQUIRED`) 중에도 **200**이며 회원 자체가 없을 때만 **404**. bo-api 미러 `GET /api/v1/bo/aml/customers/{ref}/decision`(scope `aml:case:read`, 필드 1:1) | `aml_member_decisions`,`aml_cdd_onboarding_decisions` |
 | POST | `/api/v1/admin/aml/risk-scores/{scoreId}:complete-review` | `aml:case:update` | — | SANCTION/PEP 1차 RA 체크리스트 완료. actor=`X-User-Subject`, 세 체크 항목 필수, replay 멱등 | `aml_ra_reviews`, `aml_audit_events(RA_REVIEW)` |
+
+> **`MemberDecisionDto`(§2.3 `GET .../decision`, 코드 `MemberDecisionController.MemberDecisionResponse`/bo-api `RaDtos.MemberDecision` 1:1, PLAN 20260903-aml-decision-status-webhooks).** 스칼라 필드(`decision`~`requiredAction`)는 `history[0]`을 그대로 미러하며, 회원 프로필은 있으나 결정/스냅샷이 아직 없으면 `null`이다.
+>
+> | 필드 | 타입 | 설명 |
+> |---|---|---|
+> | `memberRef` | string | 회원 키(= `customerRef` = 엔진 `targetRef`) |
+> | `decision` | enum | **`MemberDecisionKind`**: `APPROVED`\|`REJECTED`\|`EDD_REQUIRED`\|`REPORTED`(EDD 케이스가 STR 제출로 종결된 경우만, 관계 유지 여부는 채널 판단 — workflow-guide §① L65) |
+> | `source` | enum | **`MemberDecisionSource`**: `INGEST`(비영속 — CDD 인입 스냅샷 파생)\|`EDD_CLOSE`\|`RELATIONSHIP_REJECT` |
+> | `reason` | string\|null | 결재 사유(확정 행 `EDD_CLOSE`/`RELATIONSHIP_REJECT`, 자유문) 또는 **인입 스냅샷 `OnboardingDecisionReason` enum 원문**(INGEST — `aml_cdd_onboarding_decisions.reason` NOT NULL 이므로 non-null, 예 `ONBOARDING_RA_HELD`; 2라운드 QA B1 미러). 확정 행의 결재 사유 공란일 때만 `null` |
+> | `decidedAt` | string(date-time) | 확정/인입 시각 |
+> | `decidedBy` | string\|null | 결재 checker(확정 행) 또는 `null`(INGEST) |
+> | `approvalId`/`caseId` | string(uuid)\|null | 결재 실행 근거(확정 행만, INGEST는 `null`) |
+> | `caseType`/`finalStatus` | enum\|null | 케이스 유형·종결 상태(확정 행만) |
+> | `scoreId`/`riskGrade`/`requiredAction` | string\|enum\|null | 결재 실행 시점 operative RA 점수 스냅샷 |
+> | `mandatoryHighRisk` | boolean | 회원의 **현재** operative RA 점수 기준(항상 최신 — `history[0]`의 source 와 무관) |
+> | `ingestDecision` | object\|null | 최신 CDD 인입 스냅샷 `{eventId, decision(`OnboardingDecision` 원문), reason, createdAt}` — 회원이 CDD 인입된 적 없으면 `null` |
+> | `pendingApproval` | object\|null | 비-terminal `EDD_CLOSE`/`RELATIONSHIP_REJECT` 4-eyes 결재 `{approvalId, subjectType, status, makerId, submittedAt}` — 없으면 `null`(Q1: 반려 시에도 `null`로 복귀) |
+> | `history` | array | 확정 행 + 인입 스냅샷 병합·최신순(상한 50), 원소는 위 스칼라 필드와 동형(`decidedBy`~`requiredAction`) |
+>
+> **`MemberDecisionKind` ↔ `OnboardingDecision`(§3.1 CDD 인입 응답, `aml-data.md` §12.1) 매핑표** — 두 enum 은 별개 타입이며 응답 필드명도 분리(`ingestDecision.decision`=`OnboardingDecision` 원문, `decision`=`MemberDecisionKind`): `APPROVE`→`APPROVED` · `REJECT`→`REJECTED` · `EDD_REQUIRED`→`EDD_REQUIRED`. `REPORTED`는 결재(`EDD_CLOSE`, finalStatus=`REPORTED`) 경로에서만 생성되며 `OnboardingDecision` 대응값이 없다.
+>
+> **회원 결정을 만들지 않는 4-eyes 결재(제외 명시)**: `HRR_REGISTRATION`(당연고위험 등재 — `AmlHighRiskRegistrationApproved` 콜백이 별도 담당, §8.1)·`PEP_APPROVAL`(PEP 관계 승인 — 등급·EDD 판정에 반영되어 EDD 케이스 처분으로 귀결)·`RISK_OVERRIDE`(등급 수동 조정 — 점수 이력이지 온보딩 승인/거절 아님)·`HIGH_RISK_REGISTRY`(참조 리스트 변경 — 회원 개별 결정 아님). 이들은 `history`에도 나타나지 않는다. `EDD_CLOSE`는 **온보딩 보류 발단**(케이스 `caseType==EDD_REVIEW` **∧** 확정 전 회원의 현재 결정이 `EDD_REQUIRED`)일 때만 회원 결정을 만든다 — 이미 `APPROVED`인 회원의 2차 RA(ONGOING)·FDS 발단 EDD_REVIEW 종결은 상시감시 결과라 회원 결정을 만들지 않는다(workflow-guide §① L65 정합). `RELATIONSHIP_REJECT`는 케이스 유형·현재 결정과 무관하게 항상 `REJECTED` 회원 결정을 만든다.
 
 ### 2.4 Transaction Monitoring API (Public) — 설계서 §12
 
@@ -746,6 +772,7 @@ canonical varchar 경계는 DB §3.15와 동일하게 ingest 전에 검증한다
 | `addressTokens` | array<string> | — | 주소 정규화 토큰 |
 | `relationshipRefs` | array<string> | — | 관계 ref(공유 계좌·반복 수취인 등) |
 | `transactionRef` | string | — | **해외송금 거래번호 keyed token**. 동일 거래의 sender·receiver screening을 묶는 키(§13). receiver 키 자체가 (이름+국가+전화)이므로 동일 수취인은 거래간 누적·FP 화이트리스트 재사용된다 |
+| `callbackUrl` | string | — | **요청별 아웃바운드 웹훅 목적지 오버라이드**(PLAN 20260903-aml-decision-status-webhooks — 사용자 지시로 F-084 부분 해제). 이 스크리닝의 결재 실행 결과(`AmlScreeningResolved`/`AmlScreeningWhitelistChanged`, §8.1)를 받을 목적지. 길이 ≤2048자. 수신 시 `WebhookUrlPolicy`(SSRF 정책, §8 서명 게이트와 동일 규칙)로 **1회 사전검증**하며 위반 시 **400**으로 요청 자체를 거부한다(§12.1 CDD `callbackUrl`이 형식검증 없이 발송 시점에만 재검증하는 것과 다른 계약). 값이 없으면 목적지는 테넌트 사전등록 `webhook_url`(§8)로 폴백. 저장은 `aml_screening_results.callback_url`(V74). 발송 시점에도 §8 SSRF 게이트를 재검증한다(수신 통과 후 목적지가 더 이상 안전하지 않으면 relay 가 실패로 기록) |
 
 응답 `ScreeningResponse` (DB `aml_screening_results`, `ScreeningController.ScreeningResponse` 정본):
 
@@ -774,6 +801,8 @@ canonical varchar 경계는 DB §3.15와 동일하게 ingest 전에 검증한다
 | `decidedAt` | string(date-time) | 판정 시각(DB `decided_at`, nullable) |
 | `createdAt` | string(date-time) | 결과 행 생성 시각(DB `created_at`, `ScreeningResponse.createdAt` 코드=truth). review-queue/history 기간필터·SLA 기준. **신규 영속 결과(`POST /api/v1/aml/screen` 유효 Idempotency-Key insert 경로)는 non-null 보장** — insert 후 DB `created_at` read-back(`ScreeningResultInserter` saveAndFlush+refresh), 응답은 `createdAt`만 population하는 additive 계약으로 신규/replay 응답이 대칭이다(2026-07-28 fix/wlf-freshness-createdat). `/internal/v1/aml/screen`도 동일 유스케이스라 유효 키 시 동형 non-null. **미영속(simulate 등 비저장)·blank Idempotency-Key 경로 한정으로 null 가능** — `decidedAt`(판정 시각)와 병기·구분 |
 | `expiresAt` | string(date-time) | 실시간 결과 만료(§15.7) |
+| `pendingDecision` | object\|null | **가산(additive) 필드**(PLAN 20260903-aml-decision-status-webhooks DoD 4, `GET .../screenings/{id}`·`GET .../screenings?transactionRef=\|targetRef=` 한정 — 심사 대기열/결정 제출 표면은 항상 `null`). 이 스크리닝에 걸린 비-terminal `WLF_DECISION` 4-eyes 결재 `{approvalId, targetStatus(`TRUE_MATCH`\|`FALSE_POSITIVE`\|`ESCALATED`), makerId, submittedAt}`(Q5). 없으면 `null` |
+| `callbackConfigured` | boolean | **가산(additive) 필드**(PLAN 20260903-aml-decision-status-webhooks DoD 4, read-back 표면 `GET .../screenings/{id}`·`GET .../screenings?…` **및 `POST /api/v1/aml/screen` 응답**(영속된 `callback_url` 기준 — 멱등 replay 시에도 영속값) — 그 외 표면은 `false` 고정. **내부 메시 `POST /internal/v1/aml/screen` 은 `callbackUrl` 을 수락·검증·영속하지만 응답은 `false` 고정**(비대칭, 내부 호출자는 read-back 표면으로 확인)). 이 스크리닝에 요청별 `callbackUrl`(§3.2)이 등록돼 있는지 여부. URL 원문은 노출하지 않는다 |
 
 > **bo-api enrichment와 passthrough.** `matchedCandidates[]`·`riskGrade`·`requiredActions[]`·`subjectIdentity` 등은 bo-api가 명단/화면 read model로 enrich할 수 있다. 반면 `requestName`·`matchedEntryNames`·후보 `listName`은 엔진이 허용한 WLF NAME 값을 변형·합성·마스킹하지 않고 전달하며, `matchedRules[]`, `ruleVersion`, `scoreBreakdown`(`candidateStrategy` 후보 recall 스냅샷 포함), `appliedPolicy`도 재계산하거나 하드코딩 임계로 덮지 않는다. raw PII는 승인된 NAME 카브아웃 외 어느 경로에도 추가하지 않는다.
 
@@ -2894,14 +2923,18 @@ paths:
 ### 8.1 이벤트 타입 (`eventName`)
 | eventName | 트리거 | 발행 주체(엔진) | 핵심 payload(camelCase, raw PII 미포함) |
 |---|---|---|---|
-| `AmlScreeningResolved` | WLF 판정 확정(TRUE_MATCH/FALSE_POSITIVE 등 결재 EXECUTED) | Screening | `screeningId`,`targetRef`,`status`(§5.5),`watchlistSourceType`,`reasonCodes`[] |
+| `AmlScreeningResolved` | WLF 판정 확정(TRUE_MATCH/FALSE_POSITIVE 등 결재 EXECUTED) | Screening | 기존 `screeningId`,`targetRef`,`status`(§5.5),`watchlistSourceType`,`reasonCodes`[] + **additive**(PLAN 20260903-aml-decision-status-webhooks DoD 5) `transactionRef`,`targetType`,`score`,`approvalId`,`decidedBy`,`decidedAt`,`matchedEntries`[] |
 | `AmlCaseStatusChanged` | case 상태 전이 | Case Mgmt | `caseId`,`caseType`(§5.8),`fromStatus`,`toStatus`(§5.9),`closeReason`(nullable) |
 | `AmlReportSubmitted` | STR/CTR 제출·FIU 회신 결과 | Reporting | `reportId`,`reportType`(§5.10),`status`(§5.11: SUBMITTED/ACKNOWLEDGED/SUBMISSION_FAILED/REJECTED — FIU 회신 폐루프, 설계서 §14.1a),`submittedRef`(nullable),`fiuAckRef`(nullable),`submissionErrorCode`(nullable) |
 | `AmlHighRiskRegistrationApproved` | `HRR_REGISTRATION`(당연고위험 등재) 4-eyes 승인 EXECUTED(**거절 시 미발행**) | RA(1차 온보딩 파생) | `memberRef`,`approvalId`,`decision`("APPROVED"),`tier`(§5 `ClassificationTier`),`checkerId`,`approvedAt` |
+| `AmlMemberDecisionResolved` | (신규, PLAN 20260903-aml-decision-status-webhooks) `EDD_CLOSE`/`RELATIONSHIP_REJECT` 4-eyes 결재 EXECUTED(**거절 시 미발행**) | Member Decision(§2.3) | `memberRef`,`decision`(`APPROVED`\|`REJECTED`\|`EDD_REQUIRED`\|`REPORTED`),`source`(`EDD_CLOSE`\|`RELATIONSHIP_REJECT`),`reason`,`approvalId`,`caseId`,`caseType`,`finalStatus`,`scoreId`,`riskGrade`,`requiredAction`,`checkerId`,`decidedAt` |
+| `AmlScreeningWhitelistChanged` | (신규, PLAN 20260903-aml-decision-status-webhooks) `FP_WHITELIST`(등록/취소) 4-eyes 결재 EXECUTED | Screening | `whitelistId`,`targetRef`,`targetType`,`matchedEntryId`,`action`(`GRANTED`\|`REVOKED`),`approvalId`,`checkerId`,`executedAt`,`expiresAt`(nullable) |
 
-> 4종은 정본 콜백 집합(2026-07-24 `AmlHighRiskRegistrationApproved` 신설). enum 코드값은 DB §5와 동일. payload는 token/hash·마스킹만(원문 미포함).
+> 6종은 정본 콜백 집합(2026-07-24 `AmlHighRiskRegistrationApproved` 신설, 2026-09-03 `AmlMemberDecisionResolved`·`AmlScreeningWhitelistChanged` 신설 + `AmlScreeningResolved` data additive 보강). enum 코드값은 DB §5와 동일. payload는 token/hash·마스킹만(원문 미포함).
 >
 > **(2026-07-24 예외 — 목적지 원천)** 위 3종(screening/case/report)은 콜백 URL 원천이 `aml_api_credentials.webhook_url`(테넌트 사전등록, 아래 SSRF 정책 문단 참조)이지만, `AmlHighRiskRegistrationApproved` 는 **CDD 요청(`customer.cdd.completed`, aml-data §12.1 `callbackUrl`)이 실어 보낸 요청별 URL** 로 직접 발행된다(테넌트 사전등록 URL 아님) — `HRR_REGISTRATION` 상신 시 그 요청의 `callbackUrl` 이 승인 행에 결부되고, 승인(approve) 완료 시점에 그 URL 로 콜백이 나간다. **서명 시크릿은 URL 오버라이드 여부와 무관하게 여전히 테넌트 사전등록 자격증명(`aml_api_credentials`, `credential_type=WEBHOOK`) 소유** — 목적지만 요청별로 바뀔 뿐 신뢰 앵커는 테넌트다. SSRF 3단계 검증(아래 문단)은 이 요청별 URL 에도 매 전송 직전 동일 적용된다(완화 없음).
+>
+> **(2026-09-03 신설, PLAN 20260903-aml-decision-status-webhooks — 목적지 우선순위 확장)** `AmlMemberDecisionResolved`·`AmlScreeningResolved`·`AmlScreeningWhitelistChanged` 도 같은 요청별-URL 우선 패턴을 따른다: ① **회원 결정** — 그 회원의 최신 `customer.cdd.completed` 인입 `callbackUrl`(`aml_canonical_events.callback_url`, §12.1) 우선 → 없으면 테넌트 `webhook_url`. ② **WLF(스크리닝/화이트리스트)** — 원 스크리닝의 요청별 `callbackUrl`(`aml_screening_results.callback_url`, §3.2, V74) 우선 → 없으면 테넌트 `webhook_url`. 서명 시크릿은 두 경우 모두 여전히 테넌트 사전등록 자격증명 소유(목적지만 오버라이드). 결재 **반려**는 세 이벤트 모두 미발행(F-020 선례).
 
 ### 8.2 공통 envelope
 ```json
@@ -2916,7 +2949,7 @@ paths:
   "data": { /* §8.1 핵심 payload */ }
 }
 ```
-- 모든 키 **camelCase** 직렬화. `eventFamily`는 `eventName` 접두(screening/case/report)에서 도출.
+- 모든 키 **camelCase** 직렬화. `eventFamily`는 `eventName` 접두에서 도출(`AmlScreening*`→`screening`, `AmlCase*`→`case`, `AmlReport*`→`report`, `AmlHighRiskRegistration*`→`hrr`, **`AmlMember*`→`member`**(신규, PLAN 20260903-aml-decision-status-webhooks), 그 외→`unknown`).
 
 ### 8.3 서명·검증
 - 헤더 `X-Signature: hmac-sha256=<hex>` = HMAC-SHA256(secret, `timestamp + "." + rawBody`). 헤더 `X-Webhook-Timestamp`(epoch ms) 동봉, 수신 측 ±5분 허용으로 replay 방어.
@@ -3040,6 +3073,7 @@ AMLC 제출은 **raw PII 미전송** — 토큰화된 보고 참조·PDF 아티�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-09-03 | **회원 심사결과 확정 read-back + WLF 결재 웹훅 보강(코드=truth, PLAN 20260903-aml-decision-status-webhooks, 사용자 지시로 F-084 부분 해제).** §2.1 `customer.cdd.completed` 후주에 결재 실행 시점 확정 계약(`aml_member_decisions`, V74) 신설 문단. §2.2 `POST /aml/screen` 행에 `callbackUrl`? additive(SSRF 사전검증 400·`callbackConfigured` 응답), 신규 행 `GET /aml/screenings?transactionRef=\|targetRef=`(requireAny, `pendingDecision`/`callbackConfigured` additive), 기존 `GET /aml/screenings/{id}` 행에 동일 additive 표기. §2.3 신규 행 `GET /aml/customers/{customerRef}/decision`(requireAny `aml:case:read`\|`aml:event:write`, 404=회원 미존재·보류 중 200) + `MemberDecisionDto` 스키마·`OnboardingDecision` 매핑표·제외 결재 유형 서술. §3.2 `ScreenRequest.callbackUrl` 행 + `ScreeningResponse.pendingDecision`/`callbackConfigured` 행. §8.1 신규 `AmlMemberDecisionResolved`(family `member`)·`AmlScreeningWhitelistChanged` 행 + `AmlScreeningResolved` data additive + 목적지 우선순위(요청/인입별 URL → 테넌트) 신설 문단. §8.2 `eventFamily` 파생 규칙에 `AmlMember*`→`member` 추가. bo-api 미러: `GET /api/v1/bo/aml/customers/{ref}/decision`·`GET /api/v1/bo/aml/screenings/by-transaction?transactionRef=&targetRef=`(기존 `GET /api/v1/bo/aml/screenings` 8-파라미터 목록 계약 무변경). | 코드=truth. 근거=aml-svc `MemberDecisionController`·`ScreeningController`·`QueryMemberDecisionUseCase`·`MemberDecisionService`·`WebhookOutboxEmitter`·`domain/decision/MemberDecision`·`domain/enums/{MemberDecisionKind,MemberDecisionSource}`·`V74__member_decisions_and_screening_callback.sql`; bo-api `AmlRiskReadController`·`RaDtos.MemberDecision*`·`AmlScreeningController`·`ScreeningDtos`. `docs/aml-data.md` §11.6a·§12.1·§12.1a·§12.6 동일 작업 단위(U0). 엔진 케이스 RA-C22/WLF-C23(사용자 승인 후 카탈로그 append). |
 | 2026-08-25 | **§2.7 legacy invalid timezone raw read fail-closed 정합.** policy-binding GET은 4열 null/blank뿐 아니라 이미 저장된 invalid/fixed-offset timezone도 `422 AML.TENANT_POLICY_UNBOUND`로 거부해 raw 잘못된 값을 노출하지 않는다. valid timezone + stale/DRAFT policy-pack pin의 기존 `200 + policyPackResolved=false` 3상태는 유지한다. CTR event-time 관할 일합산은 §11.2의 기존 거래 instant 정본 이격을 코드가 수렴한 것이므로 wire 문서 변경은 없다. | 코드=truth. 근거=aegis-aml `TenantPolicyBindingAdminController`, `TmEvaluationService`, `EvaluateTmUseCase.TransactionSignals`, CTR-C13. |
 | 2026-08-24 | **§2.7a 동일값 Webhook 자격증명 PUT 감사 계약 정정(F-048/RA-C15).** 같은 값 재PUT 은 자격증명 행·AES-GCM 암호문·`updatedAt`·`updatedBy`를 회전시키지 않는 저장 멱등성을 유지하되, 성공한 관리 쓰기 호출은 `POLICY_CHANGE`/`WEBHOOK_CREDENTIAL_SAVED`/`operation=REPLACE` 감사 1건을 append한다. 아래 2026-08-10 신설 이력의 "같은 값 재PUT 감사 없음"은 본 행으로 명시 폐기되며 현재 계약이 아니다. 감사 detail에는 시크릿이 없고 목적지는 host까지만 남긴다. | 코드=truth. 근거=aegis-aml `WebhookCredentialAdminService#save`, `WebhookCredentialAdminServiceTest`, `WebhookCredentialAdminIntegrationTest`, 엔진 케이스 RA-C15. |
 | 2026-08-22 | **WLF 요청 이름 스냅샷·NAME 인라인 읽기 카브아웃(코드=truth).** §1.6·§2.4 P0-09·§3.2·§3.4b에 `requestName`/`matchedEntryNames`를 추가했다. 요청명은 persisted `screeningId`의 `WLFREQ-{screeningId}` vault NAME 스냅샷이며 `nameTokens` 순서 보존 결합값, 과거 결과는 폴백 없이 생략한다. 매칭 명단명은 안정 entry id의 vault NAME을 현재 게시본으로 해소하므로 재sync로 표기가 바뀔 수 있다. `aml:case:read`만 두 NAME 값을 읽고 `aml:screen:evaluate` 단독은 키를 받지 않으며, bo-api가 이름이 실제 반환된 읽기 요청당 `RAW_DATA_ACCESS` 1건을 남긴다. 알림·근거거래·Subject360 및 비-NAME reveal 계약은 불변이다. | 코드=aml-svc `WlfScreeningService`·`ScreeningIdentityProjectionService`·`ScreeningController`, bo-api `AmlScreeningService`·`ScreeningDtos`. DB §3.21·SW §19.2·기능정의서 AML-WLF-001/002/003 동기화. |
