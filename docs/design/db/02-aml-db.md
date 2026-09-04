@@ -765,7 +765,7 @@ PK: `(tenant_id, report_id, indicator_code)`. FK `(tenant_id, report_id)`→`aml
 | 컬럼 | 타입 | NULL | 기본값 | 제약 | 설명 |
 |---|---|---|---|---|---|
 | `tenant_id` | VARCHAR(64) | N | — | PK | |
-| `version` | BIGINT | N | 1 | | 참조 리스트 변경 시마다 증가(결재 EXECUTED 적용 시점). subjectRef `UPDATE\|<version>` 와 일치 |
+| `version` | BIGINT | N | 1 | | 참조 리스트 변경 시마다 증가 — **결재 EXECUTED 적용 시점 현재+1**(상신 후 자동 등재가 발생하면 subjectRef 의 `UPDATE\|<version>` 예상값과 다를 수 있음, 2026-09-04 정정) |
 | `created_at/created_by/updated_at/updated_by` | (공통) | | | | |
 
 PK: `(tenant_id)`. FK `(tenant_id)`→`aml_tenants`. 1 tenant = 1 row(GET 첫 접근 시 seed). PII 미저장.
@@ -1699,6 +1699,7 @@ hanpass-ph 운영 사용: `SANCTIONS_REVIEW`/`PEP_REVIEW`/`EDD_REVIEW`/`STR_REVI
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-09-04 | **§3.19 `aml_high_risk_registry.version` 주석 정정 — 결재 EXECUTED 적용 시점 현재+1(코드=truth, PLAN 20260904-aml-hrr-registry-apply-staged, aegis-aml F-093). DDL·마이그레이션 신규 0.** 참조 리스트 변경 결재 EXECUTED 적용은 상신 스냅샷 전량 교체가 아니라 대상 listType 만 교체하고 자동 등재 2종(`PEP_INDIVIDUALS`·`RA_HIGH_RISK_CUSTOMERS`)은 적용 시점 저장본을 보존하는 것으로 정정됨에 따라, `version` 컬럼 설명을 "subjectRef `UPDATE\|<version>` 와 일치"에서 **"결재 EXECUTED 적용 시점 현재+1(상신 후 자동 등재가 발생하면 subjectRef 의 `UPDATE\|<version>` 예상값과 다를 수 있음)"**으로 정정했다 — 종전 서술은 상신 시점 목표 version 을 절대값으로 기록하던 결함 코드의 사실이었다. 스키마·컬럼·인덱스·제약 전부 무변경. | 코드=truth. 근거=aegis-aml aml-svc `HighRiskRegistryService#applyStaged`·`ReferenceListType#isAutoRegistered`. API §HRR admin surface·PRD §12-B.6 BR-002/003/004 동일 작업 단위. |
 | 2026-09-03 | **회원 심사결과 확정 append-only 테이블 + 스크리닝 요청별 콜백 URL(V74, PLAN 20260903-aml-decision-status-webhooks, 사용자 지시로 F-084 부분 해제).** 신규 §3.22g `aml_member_decisions`(EDD_CLOSE/RELATIONSHIP_REJECT 결재 EXECUTED 시점 append, `aml_cdd_onboarding_decisions`(§3.15, V42) 불변 스냅샷과 병합해 계정계 read-back `history[0]`을 구성) + `aml_screening_results.callback_url`(§3.8) additive + `ix_ace_cdd_customer_ref_time` 부분 인덱스. §7 V74 행 등재(범위 V41~V74). | 코드=truth. 근거=aegis-aml `V74__member_decisions_and_screening_callback.sql`·`domain/decision/MemberDecision`·`domain/enums/{MemberDecisionKind,MemberDecisionSource}`·`MemberDecisionService`. API §2.3·§3.2·§8.1 동일 작업 단위. |
 | 2026-08-23 | **제재 sync 리스 clock-domain 단일화(F-085, 코드=truth).** `sync_lease_expires_at` 생성과 만료 비교를 PostgreSQL DB 시계에 고정하고 포트는 절대 `Instant` 대신 TTL 초만 받는다. TTL 0 이하는 `-infinity` 즉시 만료로 저장해 NTP/wall-clock 역행에도 다음 run 인수가 결정적이다. 상호배제·runId CAS·V67 DDL/인덱스·상태 전이는 무변경이다. | 근거=aegis-aml `WatchlistSourceJpaRepository`·`WatchlistSourceStorePort`·`SanctionsSyncLeaseClockDomainIntegrationTest`·`SanctionsLeaseClockDomainGuardTest`. 신규 Flyway 0. |
 | 2026-08-22 | **WLF 요청 이름 스냅샷·NAME 인라인 노출(P0-09 국지 카브아웃, 코드=truth).** §3.21에 `WLFREQ-{screeningId}` target_ref 네임스페이스를 추가했다. 결과 행/JSONB에는 평문을 넣지 않고 vault 암호문 NAME만 새 insert winner가 적재하므로 DDL·Flyway는 0건이다. entry id vault NAME은 재sync 때 최신 feed 표기로 갱신되어 매칭 명단 기재명은 현재 게시본이고, 과거 결과에는 요청명 폴백이 없다. | API §1.6/§3.2·SW §19.2·기능정의서 AML-WLF-001/002/003 동기화. |
