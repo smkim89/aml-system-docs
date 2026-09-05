@@ -5,7 +5,7 @@
 > 공통 inbound 인증 정본: [`../api/00-common-machine-auth.md`](../api/00-common-machine-auth.md) (wire v2·credential version·nonce replay 의미론).
 > 책임 서비스: **`services/fds-svc`** (Java 25, Spring Boot 3.5.x, 헥사고날, `adapter/out/persistence`). AML 규제 케이스는 `aml-svc`, 결재·감사·IAM 운영은 `bo-api`가 별도 스키마로 보유한다.
 >
-> **대상 시스템 = hanpass-ph + 통화 프로필 배포**: 한국→필리핀 5거래유형을 기본으로 하며 AUD/KRW/JPY 분리 배포 metadata를 지원한다. 본 문서는 실제 저장소 Flyway(V1~V33)·도메인 enum과 1:1로 확정한다.
+> **대상 시스템 = hanpass-ph + 통화 프로필 배포**: 한국→필리핀 5거래유형을 기본으로 하며 AUD/KRW/JPY 분리 배포 metadata를 지원한다. 본 문서는 실제 저장소 Flyway(V1~V34)·도메인 enum과 1:1로 확정한다.
 
 ## 목차
 1. [범위·원칙](#1-범위원칙)
@@ -1051,7 +1051,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 
 ## 8. Flyway 마이그레이션 순서
 
-스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V33, 누락 없음)이다.
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V34, 누락 없음)이다.
 
 | 버전 | 파일 | 내용(실제) | 비고 |
 |---|---|---|---|
@@ -1088,6 +1088,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | V31 | `V31__base_equivalent_feature_catalog.sql` | `_global/default` enabled NUMBER `transaction.baseEquivalent`를 Transaction 카테고리·라벨 `거래금액(규제 기준통화)`로 upsert. 서버 파생 `amount_base`의 통화중립 rule alias이며 PHP-only `phpEquivalent`와 구분 | additive catalog |
 | V32 | `V32__tenant_regulatory_currency_subject_kind.sql` | **다통화(법인별 자국통화) — 테넌트 규제통화 전환 4-eyes subject_kind(PLAN 20260818, U17).** `fds_approval_requests.subject_kind` CHECK 를 `DROP … ADD` 로 재빌드(10종 verbatim 보존, V7 동형 재빌드 선례) + `TENANT_REGULATORY_CURRENCY`(11번째 값) 추가. 대상=`fds_tenants.tenant_id`(`POST .../compliance/regulatory-currency:change`, API §4.8a). 신규 테이블·컬럼 없음(CHECK 재생성만) | additive CHECK 재생성 |
 | V33 | `V33__legacy_rule_archive_audit_chain.sql` | **V28 legacy archive 감사 chain backfill(F-006).** V28이 직접 ARCHIVED 전환한 canonical 21 UUID 중 `RULE_ARCHIVE` 감사 부재 target만 `(tenant_demo, default)` 현 chain tail 뒤에 UUID 순으로 append한다. `actor_subject`·detail provenance=`system:migration/V28`, 기존 rule/audit UPDATE 0, 결정적 audit UUID·micros 증가 시각·V22 `prev_hash/row_hash` 공식 사용, core `sha256`/`md5`만 사용(`pgcrypto`·extension 권한 불요), 동일 target 재실행 중복 0 | additive append-only audit backfill |
+| V34 | `V34__rule_pending_approval_orphan_repair.sql` | **승인 없는 PENDING_APPROVAL 룰 DRAFT 복구(aegis-aml PLAN 20260905 U2 — 결함 산출물 1회성 복구).** `ApprovalService.reject` 가 `RULE` 반려 시 룰을 되돌리지 않던 결함(도메인 `Rule.reject()` 미배선, 2026-09-05 수정)으로 `PENDING_APPROVAL` 에 고착된 룰을 복구한다 — 대상 = 같은 tenant/workspace 에 `subject_kind='RULE' AND subject_ref=rule_id AND status='SUBMITTED'` 인 `fds_approval_requests` 행이 없는 `fds_rules.status='PENDING_APPROVAL'` 룰 → `status='DRAFT'`, `updated_by='system:V34-pending-approval-repair'`. SUBMITTED 승인이 남은 룰(정상 결재 진행 중)은 불변. 승인 행·`fds_audit_logs`(hash chain) 은 건드리지 않는다(오체인 위험 > 이득, 이후 반려는 애플리케이션이 `RULE_UPDATE action=REJECT` 감사). 멱등(대상 0행 무해), 신규 테이블·컬럼 없음 | data repair |
 
 > **서비스 간 companion migration**: bo-api `V19__cancel_legacy_group_approvals.sql`은 위 V17의 local fallback 대응이다. 모든 기존 local `GROUP` payload를 원 JSONB와 원 `payload_hash`를 담은 exact 4필드 tombstone으로 보존하고, 비종결 4상태만 `CANCELLED`로 바꾼다. 이는 fds-svc V17 파일 목록에 포함되지 않는 bo-api migration이다.
 
@@ -1139,6 +1140,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-09-05 | v4.16 | **룰 활성화 반려 상태전이 복구·마이그레이션 표 동기화(코드=truth, aegis-aml PLAN 20260905-fds-rule-reject-transition-sim-residue U2·U6).** (1) §8 마이그레이션 표에 실파일 2행 추가 — `V33__legacy_rule_archive_audit_chain.sql`(누락 보정 — V28 아카이브 감사 provenance 21행 append) · `V34__rule_pending_approval_orphan_repair.sql`(열린 SUBMITTED 승인이 없는 PENDING_APPROVAL 룰 → DRAFT 복구, 감사 chain 무접촉). (2) 헤더 "V1~V32"→"V1~V34" 2곳. 스키마 변경 없음 | 코드 truth=`services/fds-svc/src/main/resources/db/migration/{V33,V34}__*.sql`. API `01-fds-api.md` §4.9 v4.24 동일 작업 단위 |
 | 2026-08-19 | v4.15 | **다통화(법인별 자국통화) — 테넌트 규제통화 전환 4-eyes subject_kind 역전파(V32, 코드=truth, PLAN 20260818-currency-profile-bo-setup U13, r20 이격).** (1) **§5.23** `subject_kind` **10종→11종**(`TENANT_REGULATORY_CURRENCY` 추가, 대상=`fds_tenants.tenant_id`). (2) **§ 마이그레이션 표 V32 행 추가**(`V32__tenant_regulatory_currency_subject_kind.sql` — CHECK 재빌드만, 신규 테이블·컬럼 없음). (3) **헤더 "현행 V1~V31"→"V1~V32" 문구 갱신** + §10 downstream enum 노트 11종 동기화. | 코드 truth=`services/fds-svc/.../db/migration/V32__tenant_regulatory_currency_subject_kind.sql`·`adapter/in/rest/TenantAdminController`. API `01-fds-api.md` §4.8a·§8 동일 작업 단위. |
 | 2026-08-24 | v4.16 | **V28 legacy archive 감사 hash-chain backfill(V33, F-006).** §5.32에 21개 `RULE_ARCHIVE` provenance·V22 chain append·재실행 중복 0·core hash 함수 사용/pgcrypto 불요 계약을 추가하고 §8 migration 표/헤더를 V33으로 갱신했다. | 코드 truth=`V33__legacy_rule_archive_audit_chain.sql`·`LegacyRuleArchiveAuditMigrationIntegrationTest`·`FdsAuditHashChainVerificationService`. |
 | 2026-08-17 | v4.14 | **통화중립 규제금액 feature(V31).** `_global/default` catalog에 `transaction.baseEquivalent` NUMBER를 추가하고, 서버 파생 `amount_base`를 전 통화 `amountBase/baseEquivalent`로 노출하며 `phpEquivalent`는 PHP-only legacy alias로 한정했다. | 코드 truth=`V31__base_equivalent_feature_catalog.sql`·`DomainFeatureKeys`·`FeatureComputeAdapter`. |
