@@ -5,7 +5,7 @@
 | 항목 | 내용 |
 |------|------|
 | **문서 ID** | FS-FDS-001 |
-| **버전** | 6.28 |
+| **버전** | 6.30 |
 | **작성일** | 2026-08-05 |
 | **작성자** | SM Kim |
 | **상태** | 메뉴 IA 운영/설정 2영역 재구성: §1.0 정보구조·메뉴 체계 신설, §16.1 인벤토리 영역/기능그룹 열 추가·순서 재정렬, 짝 PPT v8.0 재빌드 |
@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **6.30** | **2026-09-06** | **SM Kim** | **§6.1 SFDS-RULE-001 룰 목록 "시뮬레이터 룰 포함" 토글(기본 해제 — bo-api `includeSimulator`, `[SIM-` 부산물 기본 숨김)·§7.2 SFDS-GRP-002 폼 도움말 공통 `FormField hint`(aria-describedby)·저장 안내 `Callout` 통합 역전파(코드=truth, aegis-aml PLAN 20260906-fds-rule-list-simulator-noise U2·U3).** 사용자 지시 "버전처럼 겹쳐 보이는 룰 정리" — 엔진 이력은 보존, 운영자 화면만 노이즈 제거 | `services/bo-web/components/fds/FdsRuleList.tsx`·`components/common/FormField.tsx`·`components/fds/FdsRiskGroups.tsx`·`services/bo-api/.../FdsRuleGroupService` |
 | **6.29** | **2026-09-06** | **SM Kim** | **§7.2 SFDS-GRP-002 식별자 종류 전화번호(PHONE) 신설·전화/계좌 원문 서버측 해시 안내 + 운영자 블랙리스트 룰팩 BL-01~05 역전파(코드=truth, aegis-aml PLAN 20260906-fds-operator-blacklists U5·U6·U7, 사용자 지시로 F-025·F-032 잠금 해제).** 원문 미저장(aml-data §11.7.9 `SHA-256(숫자만)`), 룰팩 18→23종·리스크그룹 5→7종. API `01-fds-api.md` v4.25·DB v4.17 동일 작업 단위 | `services/bo-web/lib/fds-groups.ts`·`components/fds/FdsRiskGroups.tsx`·`services/bo-api/.../FdsRuleGroupService`·`scripts/setup_fds_rulepack.py` |
 | **6.28** | **2026-08-05** | **SM Kim** | **§8.1 SFDS-DEC-001 결정 목록 금액 표기 폴백 역전파(코드=truth, fix/bo-api-stats-fds-wlf-mappers — F-2).** 목록 「거래번호·내역」 보조줄이 `amount`/`currency` 만 읽어, **해외송금·월렛 등 flat 금액이 없는 canonical 이벤트 행의 금액이 통째로 공란**(회랑만 표시)이던 결함을 교정. 해당 이벤트는 송금·수취 leg 와 서버 파생 규제통화 환산액만 운반하므로 `amount`=null 이 **엔진 진실**이며(엔진 `DecisionResponse` 동일), 화면이 엔진이 실제로 내려준 `amountBase`/`baseCurrency`(테넌트 기준통화)로 **폴백**하도록 정정한다(워크플로우 가이드 §3-5 plane parity — 화면은 엔진 응답의 재표현). 둘 다 없으면 금액 미표기(공란 허용, 금액 생성 금지). 목록은 canonical 이벤트를 조인하지 않으므로(N+1 방지) **leg 원통화(`sendCurrency`/`receiveCurrency`)는 상세(§8.2)에서만 표기**됨을 명문화. API·DTO·엔진 계약 불변(표시 폴백만). | 근거=bo-web `components/fds/FdsDecisionInvestigation.tsx#rowAmountLabel`. 회귀 `FdsDecisionInvestigation.amount.test.tsx`. bo-api·엔진 무변경 |
 | **6.27** | **2026-07-20** | **SM Kim** | **§6.3 SFDS-RULE-003 룰 빌더 in_group(리스크그룹 명단) 조건 후보 확장·발견성 개선 역전파(코드=truth, feature/fds-in-group-feature-candidates-discoverability — 사용자 확정 방향).** ① **in_group 대상 피처 후보 확장**: 하드코딩 5키에서 엔진(`FeatureComputeAdapter` 문자열 materialize 피처) 파리티로 확장 — baseline 7키(`device.ip`·`device.ref`·`subject.ref`·`counterparty.ref`·`merchant.mcc` + 신규 **`merchant.ref`·`instrument.ref`**) + 카탈로그 게이트 3키(서버 피처 카탈로그 STRING 등재 시에만 노출: `geo.country`·`subject.country`·`merchant.country`). 후보는 `lib/fds-rule-conditions.ts` `inGroupFeatureCandidates(features)` 로 도출(엔진 미materialize 피처 금지 — 절대 매칭 안 되는 죽은 룰 방지). ② **발견성**: in_group 조건 추가 버튼 라벨을 "리스크그룹 명단 조건 추가"로 명확화, 설명 힌트(`inGroupHint`: 선택 피처 값이 리스크그룹(명단)에 포함되면 조건 성립·NOT 배제 토글) + 그룹 셀렉터 라벨 "리스크그룹(명단)"(ko/en 동시). in_group 조건은 여전히 `{type:in_group,feature,group,negated}` canonical DSL 로 컴파일·엔진 평가(로직 무변경). BR-010(단층 AND/OR·조건 트리)에 in_group 후보 도출 정본(엔진 파리티)·발견성 라벨 반영. | 근거=bo-web `components/common/MetricConditionBuilder.tsx`·`lib/fds-rule-conditions.ts`(`inGroupFeatureCandidates`)·`messages/bundles/{ko,en}/common-ui.json`, fds-svc `FeatureComputeAdapter`(문자열 피처 정본)·`domain/rule/RuleDslParser`(in_group). `docs/qa/engine-rule-cases.md` FDS-C34(신규 5키 전건 발동) 참조. 코드=truth. |
@@ -1108,7 +1109,7 @@ path·query·body가 tenant/workspace target을 받는 BO FDS endpoint는 인증
 |------|------|
 | **기능 ID** | SFDS-RULE-001 |
 | **권한** | `SFDS_RULE:READ` (목록 조회) / `SFDS_RULE:AUTHOR` (신규 버튼) |
-| **API** | `GET /api/v1/admin/fds/rules?ruleSetId=&channelScope=&status=` |
+| **API** | `GET /api/v1/admin/fds/rules?ruleSetId=&channelScope=&status=&includeSimulator=`(20260906 — `includeSimulator` 기본 false: 이름 `[SIM-` 접두 시뮬레이터/검증 러너 부산물 룰(아카이브 이력의 동명 중복 포함)을 bo-api 가 기본 숨김, 체크 시 엔진 원본 전량) |
 
 #### 화면 레이아웃
 
@@ -1116,7 +1117,7 @@ path·query·body가 tenant/workspace target을 받는 BO FDS endpoint는 인증
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ 룰 목록  [서비스: hanpass-ph ▼]                                 [+ 새 룰]  │
 ├──────────────────────────────────────────────────────────────────────────┤
-│ [채널 ▼] [상태 ▼] [동작 ▼] [평가 ▼]                       🔍 룰 이름      │
+│ [채널 ▼] [상태 ▼] [동작 ▼] [평가 ▼] [ ] 시뮬레이터 룰 포함     🔍 룰 이름      │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ 이름                       │ 채널    │ 동작    │ 평가 │ 상태 │           │
 │ ───────────────────────────┼─────────┼─────────┼──────┼──────┼───────────│
@@ -1519,7 +1520,7 @@ sequenceDiagram
 #### 동작
 
 - **단건/일괄 추가**: 식별자 종류 + 식별자 + 사유 + 만료일. CSV 업로드로 대량 등록(검증 후 미리보기 → 확정).
-- **식별자 종류(displayKind, 20260906 코드=truth `lib/fds-groups.ts`)**: 회원(SUBJECT_MEMBER)·계좌(ACCOUNT)·전화번호(PHONE, 신설)·수단(INSTRUMENT)·단말(DEVICE)·가맹점(MERCHANT)·셀러(SELLER)·IP·이메일(EMAIL)·상대방(COUNTERPARTY). **전화번호·계좌는 원문(숫자, `+`, 하이픈)을 입력하면 bo-api 가 서버측에서 `SHA-256(숫자만)` 해시(aegis-aml `docs/aml-data.md` §11.7.9 canonical)로 치환해 엔진에 저장**하고 목록에는 해시가 표시된다(원문 미저장·미로깅, 이미 64자 hex 면 무변환). 화면은 두 종류 선택 시 도움말(`riskGroups.identifierHashHint` — 전화는 국가코드 포함 E.164 로 입력해야 거래 파생 해시와 일치함을 안내)을 노출한다. 해시·거부 규칙은 코드형 `displayKind` 에만 적용된다 — 해시 대상이 아닌 코드형 종류에 원문(숫자 8자리+)이 오면 400 으로 거부하고, `displayKind` 부재는 개발용 fallback 경로에서만 그룹 종류로 폴백(엔진 위임 경로는 400), 레거시 한국어 라벨 값은 종전 동작 유지. 멤버 삭제는 화면이 목록의 저장값(해시)을 그대로 보내므로 별도 정규화 없이 등재값과 일치한다. 등재된 해시는 룰팩 블랙리스트 룰(BL-01 회원·BL-02 단말·BL-03 계좌·BL-04 회원 전화·BL-05 수취인 전화, 전부 BLOCK — 전화는 `fds_phone_blacklist` 명단 1개를 회원·수취인 양쪽이 공유)과 거래 인입 시 엔진이 파생한 해시(`subject.phoneHash`·`counterparty.phoneHash`·`counterparty.accountNoHash`)로 대조된다.
+- **식별자 종류(displayKind, 20260906 코드=truth `lib/fds-groups.ts`)**: 회원(SUBJECT_MEMBER)·계좌(ACCOUNT)·전화번호(PHONE, 신설)·수단(INSTRUMENT)·단말(DEVICE)·가맹점(MERCHANT)·셀러(SELLER)·IP·이메일(EMAIL)·상대방(COUNTERPARTY). **전화번호·계좌는 원문(숫자, `+`, 하이픈)을 입력하면 bo-api 가 서버측에서 `SHA-256(숫자만)` 해시(aegis-aml `docs/aml-data.md` §11.7.9 canonical)로 치환해 엔진에 저장**하고 목록에는 해시가 표시된다(원문 미저장·미로깅, 이미 64자 hex 면 무변환). 화면은 두 종류 선택 시 도움말(`riskGroups.identifierHashHint` — 전화는 국가코드 포함 E.164 로 입력해야 거래 파생 해시와 일치함을 안내)을 노출한다(20260906 — 공통 `FormField` 의 `hint` prop 으로 렌더, 입력과 `aria-describedby` 연결; 저장 결과 안내 `savedMemberKindNote` 는 공통 `Callout`(info, `role=status`) 로 통합). 해시·거부 규칙은 코드형 `displayKind` 에만 적용된다 — 해시 대상이 아닌 코드형 종류에 원문(숫자 8자리+)이 오면 400 으로 거부하고, `displayKind` 부재는 개발용 fallback 경로에서만 그룹 종류로 폴백(엔진 위임 경로는 400), 레거시 한국어 라벨 값은 종전 동작 유지. 멤버 삭제는 화면이 목록의 저장값(해시)을 그대로 보내므로 별도 정규화 없이 등재값과 일치한다. 등재된 해시는 룰팩 블랙리스트 룰(BL-01 회원·BL-02 단말·BL-03 계좌·BL-04 회원 전화·BL-05 수취인 전화, 전부 BLOCK — 전화는 `fds_phone_blacklist` 명단 1개를 회원·수취인 양쪽이 공유)과 거래 인입 시 엔진이 파생한 해시(`subject.phoneHash`·`counterparty.phoneHash`·`counterparty.accountNoHash`)로 대조된다.
 - **해제**: 사유 필수. 해제 이력 보존(7년).
 - **연장**: 만료일 갱신(사유 권장).
 - **추가·해제·연장은 결재 없이 즉시 반영**(20260720, 사용자 확정 방향) — 요청 즉시 `fds_risk_group_members`에 mutation되고 `GROUP_UPDATE` 감사(actor=요청자)가 남는다. `SFDS_GROUP:OPERATE` 권한·`fds:admin:group` scope 인가는 무변경.
