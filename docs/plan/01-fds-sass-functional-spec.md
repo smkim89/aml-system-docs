@@ -5,7 +5,7 @@
 | 항목 | 내용 |
 |------|------|
 | **문서 ID** | FS-FDS-001 |
-| **버전** | 6.30 |
+| **버전** | 6.31 |
 | **작성일** | 2026-08-05 |
 | **작성자** | SM Kim |
 | **상태** | 메뉴 IA 운영/설정 2영역 재구성: §1.0 정보구조·메뉴 체계 신설, §16.1 인벤토리 영역/기능그룹 열 추가·순서 재정렬, 짝 PPT v8.0 재빌드 |
@@ -18,6 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
+| **6.31** | **2026-09-07** | **SM Kim** | **§6.1 BR-007a 룰팩 23종 → 22종(코드=truth, aegis-aml PLAN 20260907-fds-rulepack-overlap-cleanup).** 사용자 지시(계층 겹침 정리)로 `LGC-02` 폐기 — GATE-06 과 동일 축(counterparty 집중 건수)·단방향 포함. 폐기 룰은 `RETIRED_RULEPACK_SPECS` 로 archive(멱등, REST-only). 수용 리스크(국내송금 BLOCK→REVIEW 축소·비국내 채널 커버리지 0) 명시. 카탈로그 FDS-C37/C40~C44 카디널리티 22·FDS-C45 신규 | `scripts/setup_fds_rulepack.py`·`tools/sim-web/rulehit.py` |
 | **6.30** | **2026-09-06** | **SM Kim** | **§6.1 SFDS-RULE-001 룰 목록 "시뮬레이터 룰 포함" 토글(기본 해제 — bo-api `includeSimulator`, `[SIM-` 부산물 기본 숨김)·§7.2 SFDS-GRP-002 폼 도움말 공통 `FormField hint`(aria-describedby)·저장 안내 `Callout` 통합 역전파(코드=truth, aegis-aml PLAN 20260906-fds-rule-list-simulator-noise U2·U3).** 사용자 지시 "버전처럼 겹쳐 보이는 룰 정리" — 엔진 이력은 보존, 운영자 화면만 노이즈 제거. QA r1 명세 리뷰 반영: §6.1 BR-008(기본 숨김 규칙화)·§6.3 BR-015(복제 원본 목록 승계)·§6.6 BR-006(시뮬레이션 대상 목록 승계·딥링크 잔여 리스크)·§6.7 BR-004(효과성 통계 상시 제외, 토글 없음) 추가 | `services/bo-web/components/fds/FdsRuleList.tsx`·`components/common/FormField.tsx`·`components/fds/FdsRiskGroups.tsx`·`services/bo-api/.../FdsRuleGroupService` |
 | **6.29** | **2026-09-06** | **SM Kim** | **§7.2 SFDS-GRP-002 식별자 종류 전화번호(PHONE) 신설·전화/계좌 원문 서버측 해시 안내 + 운영자 블랙리스트 룰팩 BL-01~05 역전파(코드=truth, aegis-aml PLAN 20260906-fds-operator-blacklists U5·U6·U7, 사용자 지시로 F-025·F-032 잠금 해제).** 원문 미저장(aml-data §11.7.9 `SHA-256(숫자만)`), 룰팩 18→23종·리스크그룹 5→7종. API `01-fds-api.md` v4.25·DB v4.17 동일 작업 단위 | `services/bo-web/lib/fds-groups.ts`·`components/fds/FdsRiskGroups.tsx`·`services/bo-api/.../FdsRuleGroupService`·`scripts/setup_fds_rulepack.py` |
 | **6.28** | **2026-08-05** | **SM Kim** | **§8.1 SFDS-DEC-001 결정 목록 금액 표기 폴백 역전파(코드=truth, fix/bo-api-stats-fds-wlf-mappers — F-2).** 목록 「거래번호·내역」 보조줄이 `amount`/`currency` 만 읽어, **해외송금·월렛 등 flat 금액이 없는 canonical 이벤트 행의 금액이 통째로 공란**(회랑만 표시)이던 결함을 교정. 해당 이벤트는 송금·수취 leg 와 서버 파생 규제통화 환산액만 운반하므로 `amount`=null 이 **엔진 진실**이며(엔진 `DecisionResponse` 동일), 화면이 엔진이 실제로 내려준 `amountBase`/`baseCurrency`(테넌트 기준통화)로 **폴백**하도록 정정한다(워크플로우 가이드 §3-5 plane parity — 화면은 엔진 응답의 재표현). 둘 다 없으면 금액 미표기(공란 허용, 금액 생성 금지). 목록은 canonical 이벤트를 조인하지 않으므로(N+1 방지) **leg 원통화(`sendCurrency`/`receiveCurrency`)는 상세(§8.2)에서만 표기**됨을 명문화. API·DTO·엔진 계약 불변(표시 폴백만). | 근거=bo-web `components/fds/FdsDecisionInvestigation.tsx#rowAmountLabel`. 회귀 `FdsDecisionInvestigation.amount.test.tsx`. bo-api·엔진 무변경 |
@@ -1152,7 +1153,7 @@ path·query·body가 tenant/workspace target을 받는 BO FDS endpoint는 인증
 - **BR-005**: 조회 결과 1만 건 초과 시 팝업 노출 — 기간/조건 좁히기 안내 후 재조회.
 - **BR-006 (v4.0 벤치마크 보강)**: 목록에 **효과성 요약 컬럼(최근 30일 탐지 건수·오탐율 %)** 을 표시한다 — 화면 파생값(탐지 결정·케이스 종결 `FP_*` 피드백 집계). 오탐율 비정상(과소·과다 추출) 룰은 튜닝 후보 배지 ⚠. 룰 행 `[효과성 ▶]` 클릭 시 **SFDS-STAT-001 룰 효과성 통계**로 드릴다운(룰 번호 컨텍스트) — 실계 운영 시스템의 룰 라이프사이클(정의→임계값→시뮬레이션→배치→효과성 평가) 벤치마크 반영(AML-TM-001 ② BR-006과 동일 패턴).
 - **BR-007 (룰 아카이브, PLAN 20260717 U-F5/U-W3)**: 목록은 `상태` 필터 미지정 시 `보관`(ARCHIVED) 행을 **기본 제외**한다(과거 이력은 상태 필터에서 `보관`을 명시 선택해야만 노출). 룰 전량 대체 배경 — 사용자 지시로 레거시 시드 룰 21건을 신규 룰팩으로 전량 교체하며 아카이브했다(§2 갱신 참조).
-- **BR-007a (룰팩 18종 전건 실행 가능, 2026-08-23)**: 룰 적중 셀렉터는 제외 룰 없이 18종을 전부 노출한다. `XLS-01`은 월렛/ATM 출금 canonical 채널 `WALLET_WITHDRAWAL`에서 서로 다른 merchant 2곳을 1시간 distinct-count로 판정하며, `ATM`/`ATM_WITHDRAWAL` 같은 비canonical 채널을 만들지 않는다. 룰팩 setup 재실행은 동명 ACTIVE의 행위 계약까지 비교해 구 정의를 4-eyes replacement로 수렴시키고, 2회차 신규 생성은 0이어야 한다.
+- **BR-007a (룰팩 22종 전건 실행 가능, 2026-08-23 신설·2026-09-07 개정)**: 룰 적중 셀렉터는 제외 룰 없이 현행 룰팩 전건(2026-09-06 블랙리스트 5종 추가로 23종 → **2026-09-07 `LGC-02`(수취계좌 집중, RECEIVE_ACCOUNT_NUMBER 승계) 폐기로 22종** — 사용자 지시 계층 겹침 정리: GATE-06(국내송금 분할입금 검토)과 동일 축·단방향 포함이라 폐기, 폐기 룰은 `setup_fds_rulepack.py` `RETIRED_RULEPACK_SPECS` 가 재실행 시 archive(멱등). 수용 리스크: 국내송금 수취처 집중은 BLOCK→REVIEW 계층 축소, 비국내 채널 수취처 집중 탐지 룰 없음)을 전부 노출한다. `XLS-01`은 월렛/ATM 출금 canonical 채널 `WALLET_WITHDRAWAL`에서 서로 다른 merchant 2곳을 1시간 distinct-count로 판정하며, `ATM`/`ATM_WITHDRAWAL` 같은 비canonical 채널을 만들지 않는다. 룰팩 setup 재실행은 동명 ACTIVE의 행위 계약까지 비교해 구 정의를 4-eyes replacement로 수렴시키고, 2회차 신규 생성은 0이어야 한다.
 - **BR-008 (시뮬레이터 부산물 기본 숨김, 코드=truth — PLAN 20260906-fds-rule-list-simulator-noise U1·U2)**: 목록은 이름이 `[SIM-` 로 시작하는 시뮬레이터 부산물 룰(`scripts/verify_no_sim_residue.py` 의 `SIM_RULE_PREFIX` 와 동일 술어)을 **기본 제외**한다(bo-api `GET /fds/rules?includeSimulator=false` 기본값, 엔진 이력은 보존·삭제 없음). 필터 줄의 `시뮬레이터 룰 포함` 체크박스(기본 해제, i18n `fds.ruleList.includeSimulator`)로 해제하면 `includeSimulator=true` 로 재조회해 ARCHIVED 상태 필터와 조합할 수 있다. 룰 상세(`GET /fds/rules/{id}`)·통화 프로파일 적용은 필터 비적용(직접 조회 보존).
 
 ### 6.2 SFDS-RULE-002 · 룰 상세 + 버전 히스토리
