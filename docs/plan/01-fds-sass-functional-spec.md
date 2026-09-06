@@ -18,7 +18,7 @@
 
 | 버전 | 일자 | 작성자 | 변경 내역 |
 |------|------|--------|----------|
-| **6.30** | **2026-09-06** | **SM Kim** | **§6.1 SFDS-RULE-001 룰 목록 "시뮬레이터 룰 포함" 토글(기본 해제 — bo-api `includeSimulator`, `[SIM-` 부산물 기본 숨김)·§7.2 SFDS-GRP-002 폼 도움말 공통 `FormField hint`(aria-describedby)·저장 안내 `Callout` 통합 역전파(코드=truth, aegis-aml PLAN 20260906-fds-rule-list-simulator-noise U2·U3).** 사용자 지시 "버전처럼 겹쳐 보이는 룰 정리" — 엔진 이력은 보존, 운영자 화면만 노이즈 제거 | `services/bo-web/components/fds/FdsRuleList.tsx`·`components/common/FormField.tsx`·`components/fds/FdsRiskGroups.tsx`·`services/bo-api/.../FdsRuleGroupService` |
+| **6.30** | **2026-09-06** | **SM Kim** | **§6.1 SFDS-RULE-001 룰 목록 "시뮬레이터 룰 포함" 토글(기본 해제 — bo-api `includeSimulator`, `[SIM-` 부산물 기본 숨김)·§7.2 SFDS-GRP-002 폼 도움말 공통 `FormField hint`(aria-describedby)·저장 안내 `Callout` 통합 역전파(코드=truth, aegis-aml PLAN 20260906-fds-rule-list-simulator-noise U2·U3).** 사용자 지시 "버전처럼 겹쳐 보이는 룰 정리" — 엔진 이력은 보존, 운영자 화면만 노이즈 제거. QA r1 명세 리뷰 반영: §6.1 BR-008(기본 숨김 규칙화)·§6.3 BR-015(복제 원본 목록 승계)·§6.6 BR-006(시뮬레이션 대상 목록 승계·딥링크 잔여 리스크)·§6.7 BR-004(효과성 통계 상시 제외, 토글 없음) 추가 | `services/bo-web/components/fds/FdsRuleList.tsx`·`components/common/FormField.tsx`·`components/fds/FdsRiskGroups.tsx`·`services/bo-api/.../FdsRuleGroupService` |
 | **6.29** | **2026-09-06** | **SM Kim** | **§7.2 SFDS-GRP-002 식별자 종류 전화번호(PHONE) 신설·전화/계좌 원문 서버측 해시 안내 + 운영자 블랙리스트 룰팩 BL-01~05 역전파(코드=truth, aegis-aml PLAN 20260906-fds-operator-blacklists U5·U6·U7, 사용자 지시로 F-025·F-032 잠금 해제).** 원문 미저장(aml-data §11.7.9 `SHA-256(숫자만)`), 룰팩 18→23종·리스크그룹 5→7종. API `01-fds-api.md` v4.25·DB v4.17 동일 작업 단위 | `services/bo-web/lib/fds-groups.ts`·`components/fds/FdsRiskGroups.tsx`·`services/bo-api/.../FdsRuleGroupService`·`scripts/setup_fds_rulepack.py` |
 | **6.28** | **2026-08-05** | **SM Kim** | **§8.1 SFDS-DEC-001 결정 목록 금액 표기 폴백 역전파(코드=truth, fix/bo-api-stats-fds-wlf-mappers — F-2).** 목록 「거래번호·내역」 보조줄이 `amount`/`currency` 만 읽어, **해외송금·월렛 등 flat 금액이 없는 canonical 이벤트 행의 금액이 통째로 공란**(회랑만 표시)이던 결함을 교정. 해당 이벤트는 송금·수취 leg 와 서버 파생 규제통화 환산액만 운반하므로 `amount`=null 이 **엔진 진실**이며(엔진 `DecisionResponse` 동일), 화면이 엔진이 실제로 내려준 `amountBase`/`baseCurrency`(테넌트 기준통화)로 **폴백**하도록 정정한다(워크플로우 가이드 §3-5 plane parity — 화면은 엔진 응답의 재표현). 둘 다 없으면 금액 미표기(공란 허용, 금액 생성 금지). 목록은 canonical 이벤트를 조인하지 않으므로(N+1 방지) **leg 원통화(`sendCurrency`/`receiveCurrency`)는 상세(§8.2)에서만 표기**됨을 명문화. API·DTO·엔진 계약 불변(표시 폴백만). | 근거=bo-web `components/fds/FdsDecisionInvestigation.tsx#rowAmountLabel`. 회귀 `FdsDecisionInvestigation.amount.test.tsx`. bo-api·엔진 무변경 |
 | **6.27** | **2026-07-20** | **SM Kim** | **§6.3 SFDS-RULE-003 룰 빌더 in_group(리스크그룹 명단) 조건 후보 확장·발견성 개선 역전파(코드=truth, feature/fds-in-group-feature-candidates-discoverability — 사용자 확정 방향).** ① **in_group 대상 피처 후보 확장**: 하드코딩 5키에서 엔진(`FeatureComputeAdapter` 문자열 materialize 피처) 파리티로 확장 — baseline 7키(`device.ip`·`device.ref`·`subject.ref`·`counterparty.ref`·`merchant.mcc` + 신규 **`merchant.ref`·`instrument.ref`**) + 카탈로그 게이트 3키(서버 피처 카탈로그 STRING 등재 시에만 노출: `geo.country`·`subject.country`·`merchant.country`). 후보는 `lib/fds-rule-conditions.ts` `inGroupFeatureCandidates(features)` 로 도출(엔진 미materialize 피처 금지 — 절대 매칭 안 되는 죽은 룰 방지). ② **발견성**: in_group 조건 추가 버튼 라벨을 "리스크그룹 명단 조건 추가"로 명확화, 설명 힌트(`inGroupHint`: 선택 피처 값이 리스크그룹(명단)에 포함되면 조건 성립·NOT 배제 토글) + 그룹 셀렉터 라벨 "리스크그룹(명단)"(ko/en 동시). in_group 조건은 여전히 `{type:in_group,feature,group,negated}` canonical DSL 로 컴파일·엔진 평가(로직 무변경). BR-010(단층 AND/OR·조건 트리)에 in_group 후보 도출 정본(엔진 파리티)·발견성 라벨 반영. | 근거=bo-web `components/common/MetricConditionBuilder.tsx`·`lib/fds-rule-conditions.ts`(`inGroupFeatureCandidates`)·`messages/bundles/{ko,en}/common-ui.json`, fds-svc `FeatureComputeAdapter`(문자열 피처 정본)·`domain/rule/RuleDslParser`(in_group). `docs/qa/engine-rule-cases.md` FDS-C34(신규 5키 전건 발동) 참조. 코드=truth. |
@@ -1153,6 +1153,7 @@ path·query·body가 tenant/workspace target을 받는 BO FDS endpoint는 인증
 - **BR-006 (v4.0 벤치마크 보강)**: 목록에 **효과성 요약 컬럼(최근 30일 탐지 건수·오탐율 %)** 을 표시한다 — 화면 파생값(탐지 결정·케이스 종결 `FP_*` 피드백 집계). 오탐율 비정상(과소·과다 추출) 룰은 튜닝 후보 배지 ⚠. 룰 행 `[효과성 ▶]` 클릭 시 **SFDS-STAT-001 룰 효과성 통계**로 드릴다운(룰 번호 컨텍스트) — 실계 운영 시스템의 룰 라이프사이클(정의→임계값→시뮬레이션→배치→효과성 평가) 벤치마크 반영(AML-TM-001 ② BR-006과 동일 패턴).
 - **BR-007 (룰 아카이브, PLAN 20260717 U-F5/U-W3)**: 목록은 `상태` 필터 미지정 시 `보관`(ARCHIVED) 행을 **기본 제외**한다(과거 이력은 상태 필터에서 `보관`을 명시 선택해야만 노출). 룰 전량 대체 배경 — 사용자 지시로 레거시 시드 룰 21건을 신규 룰팩으로 전량 교체하며 아카이브했다(§2 갱신 참조).
 - **BR-007a (룰팩 18종 전건 실행 가능, 2026-08-23)**: 룰 적중 셀렉터는 제외 룰 없이 18종을 전부 노출한다. `XLS-01`은 월렛/ATM 출금 canonical 채널 `WALLET_WITHDRAWAL`에서 서로 다른 merchant 2곳을 1시간 distinct-count로 판정하며, `ATM`/`ATM_WITHDRAWAL` 같은 비canonical 채널을 만들지 않는다. 룰팩 setup 재실행은 동명 ACTIVE의 행위 계약까지 비교해 구 정의를 4-eyes replacement로 수렴시키고, 2회차 신규 생성은 0이어야 한다.
+- **BR-008 (시뮬레이터 부산물 기본 숨김, 코드=truth — PLAN 20260906-fds-rule-list-simulator-noise U1·U2)**: 목록은 이름이 `[SIM-` 로 시작하는 시뮬레이터 부산물 룰(`scripts/verify_no_sim_residue.py` 의 `SIM_RULE_PREFIX` 와 동일 술어)을 **기본 제외**한다(bo-api `GET /fds/rules?includeSimulator=false` 기본값, 엔진 이력은 보존·삭제 없음). 필터 줄의 `시뮬레이터 룰 포함` 체크박스(기본 해제, i18n `fds.ruleList.includeSimulator`)로 해제하면 `includeSimulator=true` 로 재조회해 ARCHIVED 상태 필터와 조합할 수 있다. 룰 상세(`GET /fds/rules/{id}`)·통화 프로파일 적용은 필터 비적용(직접 조회 보존).
 
 ### 6.2 SFDS-RULE-002 · 룰 상세 + 버전 히스토리
 
@@ -1322,6 +1323,7 @@ ver │ status      │ author        │ approver      │ activatedAt        �
 - **BR-012 (인라인 시뮬레이션)**: 빌더 하단 ① 인라인 시뮬레이션은 작성 중(미저장 `ruleJson`) 조건을 기존 `POST /api/v1/admin/fds/rules/simulations`로 **즉시 백테스트**한다. 결과 표시는 **SFDS-RULE-006(룰 시뮬레이션)과 공통 컴포넌트**를 재사용한다(중복 화면 아님). read-only(결재 불필요)이며, 결과 비율은 **거래(이벤트) 기준**·표본 **최대 500건 근사**다.
 - **BR-013 (룰 추천)**: ② 룰 추천은 **수치형 피처 select + 목표 적중률(%) + 방향(이상=GTE/이하=LTE)** 입력으로 `POST /api/v1/admin/fds/rules/recommendations`를 호출해 **목표 적중률 percentile로 단일 피처 임계값을 역산**하고, 추천 임계값을 단일조건 룰로 **엔진 재평가**해 예상 적중률을 검증한다. 추천 임계값·예상 적중률·인접 대안(±1·2%p)을 제시하고, `[빌더에 적용]`으로 `featureKey`·`threshold`(=⑤ 기준값)를 폼에 주입한다. read-only(결재 불필요), 비율은 **거래 기준**·표본 **최대 500건 근사**, 비수치 피처/빈 표본은 graceful(`sampleSize=0`)이다. raw PII·개별 피처값은 미반환(집계·임계값만).
 - **BR-014 (리스크그룹 소속 조건 저작, 신규 — PLAN 20260717-fds-legacy-rule-overhaul U-W2)**: 조건 행 종류에 **리스크그룹 소속(in_group)** 이 추가됐다 — 대상 피처(카탈로그 select) + 리스크그룹(select, `/admin/fds/risk-groups` 에 REST 로 등재된 그룹만 후보, A10) + 포함(member)/미포함(negated) 토글로 저작하며 `buildRuleJson()` 이 `{"type":"in_group","feature":…,"group":…,"negated":…}`(`RuleDslParser.parseInGroup` 1:1)로 컴파일한다. 대상 피처·그룹 라벨이 카탈로그에 미등재면 원문 키를 폴백 표시한다. 블랙리스트 IP·단말·사기신고계좌 그룹, 환금성 MCC 그룹 등을 이 조건으로 저작한다(갭 분석 §2.1 ⑤·A10).
+- **BR-015 (복제 원본 목록 기본 숨김 승계, 코드=truth — PLAN 20260906-fds-rule-list-simulator-noise)**: `[복제]` 원본 선택 목록은 bo-api 룰 목록(`includeSimulator` 기본 false)을 승계하므로 `[SIM-` 시뮬레이터 부산물 룰은 원본 후보에서 기본 제외된다(§6.1 BR-008).
 
 ### 6.4 SFDS-RULE-004 · 기준값(임계치) 빠른 변경 (Hot-reload)
 
@@ -1439,6 +1441,7 @@ sequenceDiagram
 - **BR-003**: raw PII 미노출 — 대상 식별자는 토큰/마스킹 표시.
 - **BR-004**: 결과는 `simulationId` 로 저장되어 결재 상신(`§6.5`) 시 첨부·비교 지표로 사용. 즉시 평가 룰은 첨부 필수.
 - **BR-005**: 권고(임계치 조정 시 Hit·오탐 변화)는 참고용 추정치 — 실제 적용은 빌더(SFDS-RULE-003) 또는 빠른 변경(SFDS-RULE-004)으로 수행.
+- **BR-006 (대상 룰 목록 기본 숨김 승계, 코드=truth — PLAN 20260906-fds-rule-list-simulator-noise)**: 대상 룰 셀렉트는 bo-api 룰 목록(`includeSimulator` 기본 false)을 그대로 쓰므로 `[SIM-` 부산물 룰이 기본 제외된다(§6.1 BR-008). `?ruleId=` 딥링크로 부산물 룰이 지정되면 실행은 되지만 셀렉트에 매칭 항목이 없어 빈 라벨로 보인다 — 잔여 리스크(후속: 선택 룰 미존재 안내).
 
 ### 6.7 SFDS-STAT-001 · 룰 효과성 통계 (v4.0 벤치마크 보강, 2탭)
 
@@ -1455,6 +1458,7 @@ sequenceDiagram
 - **BR-001**: 전 항목 **read-only 집계 파생값**(bo-api 소유, 30~60초 캐시·raw PII 미포함 — DASH-001/002와 동일 원칙). 개별 건 드릴다운은 SFDS-DEC-001(결정)·SFDS-CASE-001(케이스)로 연결.
 - **BR-002**: ② 오탐 피드백은 **케이스 종결 사유 코드 `FP_*` 누적**(§11.2 BR-002 폐루프)이 원천 — 종결 사유 코드 8종 중 `FP_THRESHOLD`/`FP_NORMAL_PATTERN`/`FP_DATA_QUALITY` 3종 집계(DB §4.11 `close_reason`). DASH-002 '룰 hit rate/오탐' 위젯의 상세 분석 화면.
 - **BR-003**: 효과성 지표는 룰 튜닝 거버넌스의 판단 근거만 제공 — 임계 조정·중지·재작성은 SFDS-RULE-003/004/005 결재(4-eyes `RULE`) 경유(본 화면에서 직접 변경 불가).
+- **BR-004 (시뮬레이터 부산물 상시 제외, 코드=truth — aegis-aml PLAN 20260906-fds-rule-list-simulator-noise A3)**: 룰 효과성 표(① 룰별 행)는 이름이 `[SIM-` 로 시작하는 시뮬레이터 부산물 룰을 **항상 제외**한다(§6.1 BR-008 의 토글 없음 — 통계는 운영 룰만 대상). bo-api `ruleScaffold()` 가 엔진 목록을 집계하기 전에 제외한다.
 
 ---
 
