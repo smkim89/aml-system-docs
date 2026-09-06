@@ -5,7 +5,7 @@
 > 공통 inbound 인증 정본: [`../api/00-common-machine-auth.md`](../api/00-common-machine-auth.md) (wire v2·credential version·nonce replay 의미론).
 > 책임 서비스: **`services/fds-svc`** (Java 25, Spring Boot 3.5.x, 헥사고날, `adapter/out/persistence`). AML 규제 케이스는 `aml-svc`, 결재·감사·IAM 운영은 `bo-api`가 별도 스키마로 보유한다.
 >
-> **대상 시스템 = hanpass-ph + 통화 프로필 배포**: 한국→필리핀 5거래유형을 기본으로 하며 AUD/KRW/JPY 분리 배포 metadata를 지원한다. 본 문서는 실제 저장소 Flyway(V1~V35)·도메인 enum과 1:1로 확정한다.
+> **대상 시스템 = hanpass-ph + 통화 프로필 배포**: 한국→필리핀 5거래유형을 기본으로 하며 AUD/KRW/JPY 분리 배포 metadata를 지원한다. 본 문서는 실제 저장소 Flyway(V1~V36)·도메인 enum과 1:1로 확정한다.
 
 ## 목차
 1. [범위·원칙](#1-범위원칙)
@@ -966,6 +966,30 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | created_at | TIMESTAMPTZ | N | now() | |
 | created_by | VARCHAR(128) | N | DEFAULT `system` | |
 
+### 5.35a fds_aml_notify_outbox (FDS 차단 판정 → AML 거래 통지 전용 아웃박스 · 연동 §4.4a · V36, aegis-aml PLAN 20260906-fds-block-aml-propagation)
+
+`fds_webhook_outbox`(§5.35, 테넌트향 콜백 4종 event_name CHECK)와 **분리된 채널**. `EvaluateDecisionService` 가 `BLOCK` 판정을 natural-key 신규 저장할 때 같은 트랜잭션에서 1행 적재하고, 전용 릴레이(`AmlNotifyRelayScheduler`, `!test`)가 `AmlHandoffPort.notifyDecision` 으로 전송한다.
+
+| 컬럼 | 타입 | NULL | 기본 | 설명 |
+|---|---|---|---|---|
+| `tenant_id` | varchar(64) | N | | 테넌트 |
+| `workspace_id` | varchar(64) | N | `'default'` | 워크스페이스(sandbox 는 미적재) |
+| `outbox_id` | uuid | N | | PK 3번째 키 |
+| `event_id` | varchar(128) | N | | `decision-blocked:{decisionId}` — `UNIQUE(tenant_id, event_id)` |
+| `event_name` | varchar(64) | N | | `fds.decision.blocked` |
+| `decision_id` | uuid | N | | `fds_decisions.decision_id` |
+| `transaction_ref` | varchar(256) | Y | | 계정계 거래참조 |
+| `data_scope` | varchar(128) | Y | | = workspace_id(AML 봉투 `dataScope`) |
+| `payload` | jsonb | N | | `fds.aml.decision.v1` 봉투(`matchedRules[]` 룰별 outcome 포함, 원문 PII 없음) |
+| `status` | varchar(32) | N | `'PENDING'` | CHECK `PENDING/DISPATCHING/DISPATCHED/FAILED/DEAD_LETTERED` |
+| `attempt` | integer | N | 0 | 시도 횟수 |
+| `next_attempt_at` | timestamptz | Y | | 지수 백오프 다음 시도 |
+| `dispatched_at` | timestamptz | Y | | 전송 완료 시각 |
+| `error_code` | varchar(120) | Y | | 마지막 실패 코드 |
+| `trace_id` | varchar(128) | Y | | 추적 |
+| `created_at` | timestamptz | N | `now()` | |
+
+인덱스 `ux_fds_aml_notify_outbox_event (tenant_id, event_id)` UNIQUE · `ix_fds_aml_notify_outbox_claim (tenant_id, workspace_id, status, next_attempt_at, created_at)`. RLS ENABLE+FORCE, `fds_rls_tenant`(`aegis_app_runtime`, `(app.tenant_id, app.workspace_id)` 2-튜플 또는 `app.elevated`)·`fds_rls_owner`. 코드 truth: `domain/amlnotify/AmlNotifyOutboxRow`·`AmlNotifyOutboxJpaEntity`·`AmlNotifyOutboxEmitter`·`AmlNotifyRelayService`.
 ### 5.36 fds_rule_param_overrides (룰 변수 편집 4-eyes · API §5.9b · V7)
 룰 튜닝 변수(파라미터)의 tenant/workspace/rule 별 override 값. 변수 카탈로그는 `fds_rules.rule_json`의 수치 리프값에서 파생하며(별도 카탈로그 테이블 없음), 승인 완료된 `RULE_PARAM` 결재(§5.23)가 이 테이블에 override set을 **원자적으로 upsert**한다(`RuleParamService.applyApproved`). 판정 엔진은 결정마다 override를 fresh read(캐시 없음)해 새 임계값을 즉시 반영한다. 상신(maker)은 즉시 반영하지 않고 `fds_approval_requests`(subject_kind=`RULE_PARAM`, subjectRef=`rule_id`) 생성 → checker 승인 후 적용(작성자≠승인자). 멀티테넌시 `(tenant_id, workspace_id, …)` 선두. (저장소 파일 `V7__rule_param_overrides.sql`.)
 
@@ -1053,7 +1077,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 
 ## 8. Flyway 마이그레이션 순서
 
-스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V35, 누락 없음)이다.
+스키마 `fds`. 네이밍 `V{n}__{desc}.sql`, additive only(기존 마이그레이션 수정·삭제 금지 — 롤백·변경은 신규 보정 migration). `services/fds-svc/src/main/resources/db/migration/`. 아래 표는 **저장소 실제 파일명·내용과 1:1**(현행 V1~V36, 누락 없음)이다.
 
 | 버전 | 파일 | 내용(실제) | 비고 |
 |---|---|---|---|
@@ -1092,6 +1116,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | V33 | `V33__legacy_rule_archive_audit_chain.sql` | **V28 legacy archive 감사 chain backfill(F-006).** V28이 직접 ARCHIVED 전환한 canonical 21 UUID 중 `RULE_ARCHIVE` 감사 부재 target만 `(tenant_demo, default)` 현 chain tail 뒤에 UUID 순으로 append한다. `actor_subject`·detail provenance=`system:migration/V28`, 기존 rule/audit UPDATE 0, 결정적 audit UUID·micros 증가 시각·V22 `prev_hash/row_hash` 공식 사용, core `sha256`/`md5`만 사용(`pgcrypto`·extension 권한 불요), 동일 target 재실행 중복 0 | additive append-only audit backfill |
 | V34 | `V34__rule_pending_approval_orphan_repair.sql` | **승인 없는 PENDING_APPROVAL 룰 DRAFT 복구(aegis-aml PLAN 20260905 U2 — 결함 산출물 1회성 복구).** `ApprovalService.reject` 가 `RULE` 반려 시 룰을 되돌리지 않던 결함(도메인 `Rule.reject()` 미배선, 2026-09-05 수정)으로 `PENDING_APPROVAL` 에 고착된 룰을 복구한다 — 대상 = 같은 tenant/workspace 에 `subject_kind='RULE' AND subject_ref=rule_id AND status='SUBMITTED'` 인 `fds_approval_requests` 행이 없는 `fds_rules.status='PENDING_APPROVAL'` 룰 → `status='DRAFT'`, `updated_by='system:V34-pending-approval-repair'`. SUBMITTED 승인이 남은 룰(정상 결재 진행 중)은 불변. 승인 행·`fds_audit_logs`(hash chain) 은 건드리지 않는다(오체인 위험 > 이득, 이후 반려는 애플리케이션이 `RULE_UPDATE action=REJECT` 감사). 멱등(대상 0행 무해), 신규 테이블·컬럼 없음 | data repair |
 | V35 | `V35__identifier_hash_feature_catalog.sql` | **식별자 해시 피처 카탈로그(aegis-aml PLAN 20260906-fds-operator-blacklists U3, aml-data §11.7.9).** `fds_feature_catalog` `_global`/`default` 3행 upsert(`ON CONFLICT … DO UPDATE` 멱등, V31 동형) — `counterparty.accountNoHash`(STRING, '수취 계좌 해시')·`subject.phoneHash`(STRING, '회원 전화 해시')·`counterparty.phoneHash`(STRING, '수취인 전화 해시'). 룰빌더 측정기준 노출용(엔진은 DSL feature key 를 카탈로그로 검증하지 않음). 신규 컬럼·DDL 없음 | additive seed(카탈로그) |
+| V36 | `V36__fds_aml_notify_outbox.sql` | **AML 판정 통지 전용 아웃박스(aegis-aml PLAN 20260906-fds-block-aml-propagation, §5.35a).** 신규 `fds_aml_notify_outbox` — PK `(tenant_id, workspace_id, outbox_id)`, `UNIQUE(tenant_id, event_id)`(`event_id=decision-blocked:{decisionId}` 멱등), claim 인덱스 `(tenant_id, workspace_id, status, next_attempt_at, created_at)`, `status` CHECK 5종(PENDING/DISPATCHING/DISPATCHED/FAILED/DEAD_LETTERED), `payload` JSONB. RLS ENABLE+FORCE + `fds_rls_tenant`/`fds_rls_owner` 2정책을 **스스로 선언**(V18 1회성 루프는 신규 테이블 미소급). `fds_webhook_outbox` 무변경 | additive DDL |
 
 > **서비스 간 companion migration**: bo-api `V19__cancel_legacy_group_approvals.sql`은 위 V17의 local fallback 대응이다. 모든 기존 local `GROUP` payload를 원 JSONB와 원 `payload_hash`를 담은 exact 4필드 tombstone으로 보존하고, 비종결 4상태만 `CANCELLED`로 바꾼다. 이는 fds-svc V17 파일 목록에 포함되지 않는 bo-api migration이다.
 
@@ -1143,6 +1168,7 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-09-06 | v4.18 | **AML 판정 통지 전용 아웃박스 역전파(코드=truth, aegis-aml PLAN 20260906-fds-block-aml-propagation U3).** (1) §8 마이그레이션 표 V36 행(`V36__fds_aml_notify_outbox.sql`) 추가. (2) §5.35a `fds_aml_notify_outbox` 절 신설(컬럼·인덱스·RLS 자체 선언). (3) 헤더 "V1~V35"→"V1~V36" 2곳. `fds_webhook_outbox` 무변경 | 코드 truth=`services/fds-svc/src/main/resources/db/migration/V36__fds_aml_notify_outbox.sql`. 연동 `01-fds-integration.md` §4.4a v2.2·AML DB V75 동일 작업 단위 |
 | 2026-09-06 | v4.17 | **식별자 해시 피처 카탈로그 역전파(코드=truth, aegis-aml PLAN 20260906-fds-operator-blacklists U3·U8).** (1) §8 마이그레이션 표 V35 행 추가(`V35__identifier_hash_feature_catalog.sql` — 카탈로그 3행 upsert, 스키마 변경 없음). (2) §5.20 에 V35 시드 note 신설(`counterparty.accountNoHash`·`subject.phoneHash`·`counterparty.phoneHash` STRING — canonical payload `counterparty.accountNoHash`/`originator.phoneHash`/`counterparty.phoneHash` 원천, aml-data §11.7.9 `SHA-256(숫자만)`). (3) 헤더 "V1~V34"→"V1~V35" 2곳. API `01-fds-api.md` v4.25 동일 작업 단위 | 코드 truth=`services/fds-svc/src/main/resources/db/migration/V35__identifier_hash_feature_catalog.sql`·`adapter/out/feature/FeatureComputeAdapter` |
 | 2026-09-05 | v4.16 | **룰 활성화 반려 상태전이 복구·마이그레이션 표 동기화(코드=truth, aegis-aml PLAN 20260905-fds-rule-reject-transition-sim-residue U2·U6).** (1) §8 마이그레이션 표에 실파일 2행 추가 — `V33__legacy_rule_archive_audit_chain.sql`(누락 보정 — V28 아카이브 감사 provenance 21행 append) · `V34__rule_pending_approval_orphan_repair.sql`(열린 SUBMITTED 승인이 없는 PENDING_APPROVAL 룰 → DRAFT 복구, 감사 chain 무접촉). (2) 헤더 "V1~V32"→"V1~V34" 2곳. 스키마 변경 없음 | 코드 truth=`services/fds-svc/src/main/resources/db/migration/{V33,V34}__*.sql`. API `01-fds-api.md` §4.9 v4.24 동일 작업 단위 |
 | 2026-08-19 | v4.15 | **다통화(법인별 자국통화) — 테넌트 규제통화 전환 4-eyes subject_kind 역전파(V32, 코드=truth, PLAN 20260818-currency-profile-bo-setup U13, r20 이격).** (1) **§5.23** `subject_kind` **10종→11종**(`TENANT_REGULATORY_CURRENCY` 추가, 대상=`fds_tenants.tenant_id`). (2) **§ 마이그레이션 표 V32 행 추가**(`V32__tenant_regulatory_currency_subject_kind.sql` — CHECK 재빌드만, 신규 테이블·컬럼 없음). (3) **헤더 "현행 V1~V31"→"V1~V32" 문구 갱신** + §10 downstream enum 노트 11종 동기화. | 코드 truth=`services/fds-svc/.../db/migration/V32__tenant_regulatory_currency_subject_kind.sql`·`adapter/in/rest/TenantAdminController`. API `01-fds-api.md` §4.8a·§8 동일 작업 단위. |
