@@ -989,7 +989,7 @@ tenant 알림 채널 설정(PRD TNT-002 ⑤). `(tenant_id, workspace_id)` scope 
 | `trace_id` | varchar(128) | Y | | 추적 |
 | `created_at` | timestamptz | N | `now()` | |
 
-인덱스 `ux_fds_aml_notify_outbox_event (tenant_id, event_id)` UNIQUE · `ix_fds_aml_notify_outbox_claim (tenant_id, workspace_id, status, next_attempt_at, created_at)`. RLS ENABLE+FORCE, `fds_rls_tenant`(`aegis_app_runtime`, `(app.tenant_id, app.workspace_id)` 2-튜플 또는 `app.elevated`)·`fds_rls_owner`. 코드 truth: `domain/amlnotify/AmlNotifyOutboxRow`·`AmlNotifyOutboxJpaEntity`·`AmlNotifyOutboxEmitter`·`AmlNotifyRelayService`.
+인덱스 `ux_fds_aml_notify_outbox_event (tenant_id, event_id)` UNIQUE · `ix_fds_aml_notify_outbox_claim (tenant_id, workspace_id, status, next_attempt_at, created_at)`. RLS ENABLE+FORCE, `fds_rls_tenant`(`aegis_app_runtime`, `(app.tenant_id, app.workspace_id)` 2-튜플 또는 `app.elevated`)·`fds_rls_owner`. 런타임 롤 권한은 마이그레이션이 직접 `GRANT SELECT, INSERT, UPDATE, DELETE … TO aegis_app_runtime` 으로 부여한다(fds 스키마는 테이블별 GRANT 관례 — aml V75 는 스키마 기본 권한에 의존해 GRANT 절 없음). 코드 truth: `domain/amlnotify/AmlNotifyOutboxRow`·`AmlNotifyOutboxJpaEntity`·`AmlNotifyOutboxEmitter`·`AmlNotifyRelayService`.
 ### 5.36 fds_rule_param_overrides (룰 변수 편집 4-eyes · API §5.9b · V7)
 룰 튜닝 변수(파라미터)의 tenant/workspace/rule 별 override 값. 변수 카탈로그는 `fds_rules.rule_json`의 수치 리프값에서 파생하며(별도 카탈로그 테이블 없음), 승인 완료된 `RULE_PARAM` 결재(§5.23)가 이 테이블에 override set을 **원자적으로 upsert**한다(`RuleParamService.applyApproved`). 판정 엔진은 결정마다 override를 fresh read(캐시 없음)해 새 임계값을 즉시 반영한다. 상신(maker)은 즉시 반영하지 않고 `fds_approval_requests`(subject_kind=`RULE_PARAM`, subjectRef=`rule_id`) 생성 → checker 승인 후 적용(작성자≠승인자). 멀티테넌시 `(tenant_id, workspace_id, …)` 선두. (저장소 파일 `V7__rule_param_overrides.sql`.)
 

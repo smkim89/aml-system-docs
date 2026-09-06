@@ -997,6 +997,7 @@ FDS 가 `BLOCK` 판정을 내린 거래(계정계 동일 `transactionRef`)를 AM
 | `trace_id` | varchar(64) | Y | | 추적 |
 
 인덱스 `ix_aml_fds_tx_decisions_ref (tenant_id, transaction_ref, decided_at DESC)`. RLS: `aml_rls_tenant`(`aegis_app_runtime`, `app.tenant_id` 또는 `app.elevated`)·`aml_rls_owner`(`CURRENT_USER`) ENABLE+FORCE. 코드 truth: `domain/FdsTransactionDecision`·`FdsTransactionDecisionJpaEntity`·`FdsTransactionDecisionService`(`INSERT … ON CONFLICT DO NOTHING`, 신규 저장 시 감사 1건).
+
 ### 3.15 지원 인프라 테이블 (도메인 테이블을 떠받치는 필수 보조)
 
 설계서 §8(canonical event), §13.5(결재·아웃박스), §15.7(idempotency), §19.3(append-only audit), API §1.1(인증)이 요구하는 보조 테이블 7종(canonical_events/approvals/audit_events/evidence_exports/outbox/**api_credentials/auth_nonces**). hanpass-ph 운영 도메인 테이블(§3.1~§3.12, §3.8a FP whitelist, §3.10a TM 시나리오, §3.17~§3.22 IRA/HRR/PII vault/cadence) 전반을 떠받친다.

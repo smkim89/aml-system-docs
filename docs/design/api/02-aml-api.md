@@ -1053,6 +1053,7 @@ snapshot 없는 legacy 알럿만 현재 정책 기반 fallback을 쓴다.
 | `corridor` | string\|null | corridor(송금국-수취국) |
 | `occurredAt` | string(date-time) | 거래 발생 시각 |
 | `fdsDecisionRef` | string\|null | 연계 FDS 판정 ref |
+| `fdsDecision` | object \| null | FDS 차단 판정 통지(aegis-aml PLAN 20260906-fds-block-aml-propagation) — `{outcome, decidedAt, matchedRules[{ruleId,ruleName,versionNo,outcome}], reasonCodes[]}`. 같은 `transactionRef` 의 `aml_fds_transaction_decisions` 최신 1건(§3.22h), 없으면 `null`(키 항상 존재). `AlertRelatedTransactionsService` 가 페이지 단위 1회 배치 조회로 엔리치(평가 윈도우 계약 무변경) |
 
 > raw PII 미포함 — `memberRef`·`transactionRef`·`counterpartyRef` 는 업무 식별자/마스킹 토큰으로 노출하고 계좌·지갑 등 원문 PII 는 금지(§1.6·§19.2). party 식별정보(송금인·수취인 신원)는 §3.2 `subjectIdentity` 규약을 상속한다 — evidence JSONB 및 목록 응답에는 마스킹 토큰(`targetRef`/`counterpartyRef`)만 영속·실린다. **`counterpartyName`(수취인 원문 이름)은 이 `aml:case:read` 경로에서 자동 산출하지 않는다(P0-09 — 구 read-path auto-reveal 제거): 항상 `counterpartyName=null` 로 반환되고 화면은 `counterpartyRef` 토큰으로 폴백한다.** 원문은 오직 감사되는 별도 reveal API `POST /internal/v1/aml/pii/reveal`(§2.6, `aml:pii:reveal` scope + 사유 + `RAW_DATA_ACCESS` 감사·fail-closed)에서만 요청 한정 transient cleartext 로 산출한다 — evidence JSONB 에는 미영속(§3.4a evidence 스키마와 정합).
 
@@ -1368,6 +1369,7 @@ BUILT_IN `conditions[]`는 aml-svc 평가 카탈로그의 조건 키·연산자�
 | `dataScope` | string | N | FDS workspaceId — 헤더 `X-Data-Scope` 와 일치 필수 |
 
 응답 `202 { recorded: boolean, decisionId }`. 원문 PII 없음(참조 토큰·룰명·enum 만).
+
 ### 3.11 CddChecklistDto / PeriodicReviewPolicyRequest (Admin, 정책 store)
 
 `CddChecklistDto`(GET/POST `/admin/aml/cdd/checklists`):
@@ -2343,6 +2345,11 @@ paths:
         '400': { description: valid signature with wrong caller/dataScope or invalid payload }
         '401': { description: unsigned, invalid signature, target/context/body tamper, or nonce replay }
         '403': { description: valid signature with insufficient endpoint scope }
+  /internal/v1/aml/fds-decisions:
+    post:
+      summary: FDS 차단 판정 통지 수신(fds.decision.blocked, aegis-aml PLAN 20260906-fds-block-aml-propagation)
+      requestBody: { $ref: '#/components/schemas/FdsDecisionNotifyRequest' }
+      responses: { '202': { description: '{ recorded, decisionId }' }, '400': { description: 'eventType/필수필드/caller/dataScope 위반' } }
   /api/v1/aml/screen:
     post:
       summary: 실시간 WLF/제재/PEP screening
@@ -2412,6 +2419,7 @@ paths:
                         occurredAt: { type: string, format: date-time }
                         alertCount: { type: integer, format: int64, description: "(tenant_id, transaction_ref) 매칭 중 status<>'RETIRED' 만 집계" }
                         firedRuleCodes: { type: array, items: { type: string }, description: distinct scenario_code 최대 5건(RETIRED 제외) }
+                        fdsDecision: { $ref: '#/components/schemas/FdsDecisionView', nullable: true }
                   page: { type: integer }
                   size: { type: integer }
                   totalCount: { type: integer, format: int64 }
