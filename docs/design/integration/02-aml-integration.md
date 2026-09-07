@@ -153,7 +153,7 @@ durable worker(`AmlFanoutRetryScheduler`→`FanoutRetryService`)는 elevated DB 
 
 #### 3.1b-1 지연 성공 시 신호 소비 단계 재무장 (2026-08-13, 코드=truth)
 
-위 durable retry 는 **각 step 을 독립적으로** 되살린다. 그런데 step 들이 서로 독립이 아닌 축이 하나 있다 — **WLF 스크리닝 결과를 읽어서 평가하는 하위 단계**다. 후보조회 timeout·필수 적용본 부재 등 실제 WLF 실행 실패가 생기면 STR·2차 상시 RA가 스크리닝 신호 없이 먼저 끝날 수 있다. 이후 WLF가 지연 성공하면 이미 성공한 하위 단계를 재무장해 위험 신호를 소비한다. refresh STALE/FAILED/IMPORTING은 적용본이 있는 한 더 이상 이 retry 경로를 만들지 않지만, F-068 재무장 계약은 다른 실제 WLF 실패 복구를 위해 그대로 유지한다.
+위 durable retry 는 **각 step 을 독립적으로** 되살린다. 그런데 step 들이 서로 독립이 아닌 축이 하나 있다 — **WLF 스크리닝 결과를 읽어서 평가하는 하위 단계**다. 후보조회 timeout·필수 적용본 부재 등 실제 WLF 실행 실패가 생기면 STR·2차 상시 RA가 스크리닝 신호 없이 먼저 끝날 수 있다. 이후 WLF가 지연 성공하면 이미 성공한 하위 단계를 재무장해 위험 신호를 소비한다. refresh STALE/FAILED(IMPORTING 제외)은 적용본이 있는 한 더 이상 이 retry 경로를 만들지 않지만, F-068 재무장 계약은 다른 실제 WLF 실패 복구를 위해 그대로 유지한다.
 
 - **선언(도메인 정본)** — `NeutralFanoutSteps.signalConsumersOf(producer)` 가 신호 생산 step 과 소비 step 의 관계를 순수 도메인으로 선언한다: producer `{SENDER_WLF, RECEIVER_WLF}` → consumer `{STR, ONGOING_RA}`.
   - `STR` 포함 근거 — STR 평가가 양당사자 스크리닝 행을 읽어 `pep`·`sanctionHit`·`PEP_NAME_RISK_SIGNAL` 입력을 만든다(WLF 신호의 **직접** 소비자).
