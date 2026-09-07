@@ -1000,7 +1000,7 @@ bo-api V19 이전 local `GROUP` 이력은 API projection에서 임의로 현 gen
 
 ## 10. OpenAPI(YAML) 스니펫
 
-> **런타임 OpenAPI(springdoc, 코드=truth `OpenApiConfig`, aegis-aml PLAN 20260904-external-ingest-api-docs)**: 실제 서비스가 생성하는 문서는 machine-auth v2 헤더를 apiKey 스킴 5종(`X-Api-Key`·`X-Auth-Version`·`X-Timestamp`·`X-Nonce`·`X-Signature`)으로 선언하고 전역 `security` 에 **AND** 로 요구한다(`ApiKeyHmac` 단일 스킴 표기는 축약). 그룹은 `account-system`(`POST /api/v1/fds/events`, Swagger UI 기본 선택)·`external`(`/api/v1/fds/**`·`/api/v1/evidence/fds/**`)·`admin`(`/api/v1/admin/fds/**`) 3종이며 `GET /api-docs/{group}` 으로 받는다. Swagger UI·`/api-docs/**` 는 무인증이라 로컬·사내망 한정이며, 계정계 연동 가이드는 aegis-aml `docs/integration/account-system-ingest-api.md` 다.
+> **런타임 OpenAPI(springdoc, 코드=truth `OpenApiConfig`, aegis-aml PLAN 20260904-external-ingest-api-docs)**: 실제 서비스가 생성하는 문서는 machine-auth v2 헤더를 apiKey 스킴 5종(`X-Api-Key`·`X-Auth-Version`·`X-Timestamp`·`X-Nonce`·`X-Signature`)으로 선언하고 전역 `security` 에 **AND** 로 요구한다(`ApiKeyHmac` 단일 스킴 표기는 축약). 그룹은 `account-system`(`POST /api/v1/fds/events`, Swagger UI 기본 선택)·`external`(`/api/v1/fds/**`·`/api/v1/evidence/fds/**`)·`admin`(`/api/v1/admin/fds/**`) 3종이며 `GET /api-docs/{group}` 으로 받는다. `account-system` 그룹에는 POST 전용 커스터마이저(`OpenApiConfig.postOnly()`)가 붙어 같은 경로의 조회(GET) 오퍼레이션은 제외된다. Swagger UI·`/api-docs/**` 는 machine-auth 필터 밖(무인증)이라 로컬·사내망 한정이며 **`aws` 프로파일에서는 `springdoc.api-docs`/`swagger-ui` 비활성**이고, 계정계 연동 가이드는 aegis-aml `docs/integration/account-system-ingest-api.md` 다.
 
 ```yaml
 openapi: 3.0.3
