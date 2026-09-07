@@ -312,7 +312,7 @@ PK: `(tenant_id, relationship_id)`
 
 PK: `(tenant_id, source_code)`
 
-> **effectiveReadiness(관리 파생 시맨틱)와 평가 가능성 분리(2026-08-27)**: `WatchlistSource.effectiveReadiness(now)`는 OVERRIDDEN 유효/만료, FAILED/IMPORTING stored 상태, `active_version`+`last_imported_at` 기반 READY/STALE/MISSING 파생을 그대로 유지한다. 이 값은 명단관리 진단·감사·refresh 조치 기준이다. RA/WLF 평가 가능성은 별도로 **`active_version IS NOT NULL`**을 사용한다. 따라서 적용본이 있는 STALE/FAILED(IMPORTING 제외)은 마지막 ACTIVE 엔트리로 평가하고, 적용본이 없는 필수 source만 차단한다. DB 컬럼·CHECK·마이그레이션 변경은 없다.
+> **effectiveReadiness(관리 파생 시맨틱)와 평가 가능성 분리(2026-08-27)**: `WatchlistSource.effectiveReadiness(now)`는 OVERRIDDEN 유효/만료, FAILED/IMPORTING stored 상태, `active_version`+`last_imported_at` 기반 READY/STALE/MISSING 파생을 그대로 유지한다. 이 값은 명단관리 진단·감사·refresh 조치 기준이다. RA/WLF 평가 가능성은 별도로 **`active_version IS NOT NULL AND effectiveReadiness ≠ IMPORTING`** 을 사용한다. 따라서 적용본이 있는 STALE/FAILED(IMPORTING 제외)은 마지막 ACTIVE 엔트리로 평가하고, 적용본이 없는 필수 source만 차단한다. DB 컬럼·CHECK·마이그레이션 변경은 없다.
 
 ### 3.6a `aml_mandatory_watchlist_sources` — 필수 명단 source 정책 (P0-06, V51)
 
