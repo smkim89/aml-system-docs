@@ -802,7 +802,7 @@ CUSTOMER 축 판정 우선순위는 **MATCH > MISMATCH > UNKNOWN** 이다 — �
 
 ### 10.5 Source refresh 상태기계·적용본 존재 게이트·durable rescreen (P0-06)
 
-WLF 스크리닝은 명단 수집 상태를 생명주기와 직교하는 readiness 상태기계로 관측한다. 평가 가능성은 그 상태가 아니라 마지막 적용본(`activeVersion`) 존재로 판정한다. 적용본이 없을 때만 `SCREENING_UNAVAILABLE`로 차단하고, STALE/FAILED(IMPORTING 제외)이더라도 적용본이 있으면 그 ACTIVE 엔트리로 계속 평가한다. 코드 truth: `WatchlistReadinessStatus`·`WatchlistSource`·`MandatoryWatchlistSource`·`WatchlistReadinessGateAdapter`·`WlfScreeningService`.
+WLF 스크리닝은 명단 수집 상태를 생명주기와 직교하는 readiness 상태기계로 관측한다. 평가 가능성은 그 상태가 아니라 마지막 적용본(`activeVersion`) 존재로 판정한다(단 `IMPORTING` 진행 중인 소스는 임포트가 끝날 때까지 적격 제외 — 2026-09-07 결정 A). 적용본이 없을 때만 `SCREENING_UNAVAILABLE`로 차단하고, STALE/FAILED(IMPORTING 제외)이더라도 적용본이 있으면 그 ACTIVE 엔트리로 계속 평가한다. 코드 truth: `WatchlistReadinessStatus`·`WatchlistSource`·`MandatoryWatchlistSource`·`WatchlistReadinessGateAdapter`·`WlfScreeningService`.
 
 **① readiness 상태기계(`WatchlistReadinessStatus` 6종, DB §3.6)**: `MISSING`→`IMPORTING`→{`READY`|`FAILED`}, READY는 48h 경과 시 STALE 파생, any→OVERRIDDEN 전이는 그대로다. `effectiveReadiness(now)`도 운영 진단을 위해 기존 규칙대로 파생한다. 다만 평가 게이트는 `isScreeningReady`가 아니라 `activeVersion != null`을 사용한다. FAILED/IMPORTING 중에도 직전 적용본은 유지되며, partial/가짜 명단을 합성하지 않는다.
 
