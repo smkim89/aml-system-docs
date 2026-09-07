@@ -1736,6 +1736,8 @@ Controller/domain 오류는 `{ "error": { "code", "message", "details": "...", "
 
 ## 5. OpenAPI(YAML) 스니펫
 
+> **런타임 OpenAPI(springdoc, 코드=truth `OpenApiConfig`, aegis-aml PLAN 20260904-external-ingest-api-docs)**: 실제 서비스가 생성하는 문서는 위 스니펫과 달리 machine-auth v2 헤더를 apiKey 스킴 5종(`X-Api-Key`·`X-Auth-Version`·`X-Timestamp`·`X-Nonce`·`X-Signature`)으로 선언하고 전역 `security` 에 **AND** 로 요구한다(`ApiKeyHmac` 단일 스킴 표기는 축약). 그룹은 `account-system`(`POST /api/v1/aml/events`·`POST /api/v1/aml/screen`·`POST /aml/v1/transaction-events`, Swagger UI 기본 선택)·`public`(`/api/v1/aml/**`·`/api/v1/evidence/aml/**`)·`admin`(`/api/v1/admin/aml/**`) 3종이며 `GET /api-docs/{group}` 으로 받는다. Swagger UI·`/api-docs/**` 는 machine-auth 필터 밖(무인증)이라 로컬·사내망 한정이고, 계정계 연동 가이드는 aegis-aml `docs/integration/account-system-ingest-api.md` 다.
+
 ```yaml
 openapi: 3.1.0
 info:
@@ -3126,6 +3128,7 @@ AMLC 제출은 **raw PII 미전송** — 토큰화된 보고 참조·PDF 아티�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-09-07 | **런타임 OpenAPI 그룹·machine-auth v2 스킴 노트 추가(코드=truth, aegis-aml PLAN 20260904-external-ingest-api-docs).** OpenAPI 스니펫 위에 springdoc 실제 생성 문서의 apiKey 스킴 5종 AND 요구·그룹 3종(`account-system`/`public`/`admin`, `/api-docs/{group}`)·Swagger 무인증 경계·계정계 연동 가이드 포인터를 명시했다. 엔드포인트·DTO 무변경. |
 | 2026-09-07 | **§2.7 재스크린 잡 pause/resume 2행 신설(코드=truth, aegis-aml PLAN 20260907-aml-rescreen-timeout-circuit).** 워커 인프라 타임아웃 서킷과 함께 운영자 정지 수단 제공. 기존 API 무변경. | api-designer. 코드 truth=`WatchlistRescreenJobAdminController`·`RescreenJobPauseService`. DB V76·integration §3.1c 동일 작업 단위. |
 | 2026-09-06 | **FDS 차단 판정 AML 전파 — 거래 조회 행 `fdsDecision` additive·`POST /internal/v1/aml/fds-decisions` 신설(코드=truth, aegis-aml PLAN 20260906-fds-block-aml-propagation).** §2.4 `GET /api/v1/aml/transactions` 행·alert related-transactions 행에 `fdsDecision{outcome, decidedAt, matchedRules[], reasonCodes[]}`(없으면 `null`, 키 항상 존재), §2.6 내부 엔드포인트 행·§3.10a DTO 표 추가. 기존 계약 무변경(additive). | api-designer. 코드 truth=aml-svc `TransactionQueryController.TransactionRowDto`·`AlertController.RelatedTransactionDto`·`FdsDecisionInternalController`. integration §3.2 v4.17·DB §3.22h·V75 동일 작업 단위. |
 | 2026-09-04 | **HRR 자동 등재 회원 4-eyes 등재 해제 경로 신설(코드=truth, PLAN 20260904-aml-hrr-deregistration, aegis-aml F-095).** §12-B.6 admin surface 절에 **`POST .../registrations/{customerRef}:deregister`** 신규 행(🔒`HRR_REGISTRATION`·`subjectRef=DEREGISTER\|customerRef`·승인선 `EXECUTIVE_APPROVAL` — 202/200 NOOP/400/409 `AML.HRR_DEREGISTRATION_BLOCKED` 계약) 추가, 기존 `GET .../registrations/{customerRef}` 응답에 `deregistrationPending`·`pendingDeregistrationApprovalId` 2필드 additive, bo-api 위임 노트(`POST /api/v1/bo/aml/high-risk-registry/registrations/{customerRef}:deregister` — 202 + `alreadyDeregistered`/`pending` 세분, 감사 `HRR_DEREGISTRATION_SUBMITTED`, Flyway V25) 신설. §8.1 콜백 표에 `AmlHighRiskRegistrationRevoked`(family `hrr`) 행 추가 + "6종"→"7종". | 코드=truth. 근거=aml-svc `HighRiskCustomerRegistrationService`·`HighRiskRegistry#removeFromReferenceList`·`OnboardingSnapshotReassessmentSupport`·`ApprovalDispatchService`·`WebhookOutboxEmitter`, bo-api `AmlHighRiskRegistryController`·`AmlHighRiskRegistryService`. `02-aml-sass-functional-spec.md` §12-B.6 BR-009·DB §3.20·§5.16·integration §3.4 동일 작업 단위. |

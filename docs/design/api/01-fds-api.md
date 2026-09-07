@@ -1000,6 +1000,8 @@ bo-api V19 이전 local `GROUP` 이력은 API projection에서 임의로 현 gen
 
 ## 10. OpenAPI(YAML) 스니펫
 
+> **런타임 OpenAPI(springdoc, 코드=truth `OpenApiConfig`, aegis-aml PLAN 20260904-external-ingest-api-docs)**: 실제 서비스가 생성하는 문서는 machine-auth v2 헤더를 apiKey 스킴 5종(`X-Api-Key`·`X-Auth-Version`·`X-Timestamp`·`X-Nonce`·`X-Signature`)으로 선언하고 전역 `security` 에 **AND** 로 요구한다(`ApiKeyHmac` 단일 스킴 표기는 축약). 그룹은 `account-system`(`POST /api/v1/fds/events`, Swagger UI 기본 선택)·`external`(`/api/v1/fds/**`·`/api/v1/evidence/fds/**`)·`admin`(`/api/v1/admin/fds/**`) 3종이며 `GET /api-docs/{group}` 으로 받는다. Swagger UI·`/api-docs/**` 는 무인증이라 로컬·사내망 한정이며, 계정계 연동 가이드는 aegis-aml `docs/integration/account-system-ingest-api.md` 다.
+
 ```yaml
 openapi: 3.0.3
 info:
@@ -2002,6 +2004,7 @@ integration·tasks·PRD가 그대로 참조할 API 명칭을 확정한다.
 
 | 일자 | 버전 | 변경 내용 | 비고 |
 |---|---|---|---|
+| 2026-09-07 | **런타임 OpenAPI 그룹·machine-auth v2 스킴 노트 추가(코드=truth, aegis-aml PLAN 20260904-external-ingest-api-docs).** §10 스니펫 위에 springdoc 실제 생성 문서의 apiKey 스킴 5종 AND 요구·그룹 `account-system`(`/api-docs/account-system`)·Swagger 무인증 경계·계정계 연동 가이드 포인터를 명시했다. 엔드포인트·DTO 무변경. |
 | 2026-09-07 | v4.27 | **룰팩 22종 역전파(코드=truth, aegis-aml PLAN 20260907-fds-rulepack-overlap-cleanup).** 사용자 지시 계층 겹침 정리로 `LGC-02` 폐기 — `setup_fds_rulepack.py` `RETIRED_RULEPACK_SPECS` 가 동명 ACTIVE/DRAFT/DISABLED 룰을 disable→archive(REST-only·멱등, `POST /rules/{id}/disable`·`/archive` 기존 계약). 엔진 REST 무변경. §룰팩 도달 가능성 문구 22종 | 코드 truth=`scripts/setup_fds_rulepack.py`·`scripts/verify_engine_manual_cases.py`(FDS-C45) |
 | 2026-09-06 | v4.26 | **bo-api 룰 목록 시뮬레이터 부산물 기본 숨김 역전파(코드=truth, aegis-aml PLAN 20260906-fds-rule-list-simulator-noise U1).** §4.6 `GET /api/v1/admin/fds/rules` 행에 bo-api plane `includeSimulator`(기본 false, `[SIM-` 접두 제외, 통계 scaffold 항상 제외, 단건/통화 프로파일 스캔 비적용, `includeSimulator=true`=엔진 parity 경로) 명시. 엔진 REST 무변경 | 코드 truth=`services/bo-api/.../fds/controller/FdsRuleGroupController`·`service/FdsRuleGroupService` |
 | 2026-09-06 | v4.25 | **운영자 블랙리스트 5종·식별자 해시 canonical 역전파(코드=truth, aegis-aml PLAN 20260906-fds-operator-blacklists U2·U5·U8, 사용자 지시로 F-025·F-032·FDS-C37 잠금 해제).** §5 `OriginatorDto.phoneHash`·`CounterpartyDto.phone/phoneHash` 추가(raw phone 은 수용 즉시 `SHA-256(숫자만)` 파생 후 폐기, 해시 필드 원문 422 `FDS-PII-REJECTED` — `accountNoHash` A4 가드를 3경로로 일반화·`+` 포함), 신규 feature `subject.phoneHash`·`counterparty.phoneHash`·`counterparty.accountNoHash`(STRING, V35 카탈로그). §4.7 멤버 등록 — bo-api 가 `displayKind` PHONE/ACCOUNT 원문을 서버측 해시로 치환(엔진 body·멱등키·감사 원문 부재). 룰팩 18→23종(BL-01~05: 회원·단말·계좌·회원 전화·수취인 전화 BLOCK)·리스크그룹 5→7종(`fds_member_blacklist`·`fds_phone_blacklist`) | 코드 truth=`services/fds-svc/.../adapter/in/rest/dto/IngestEventRequest`·`IngestController`·`application/usecase/IngestEventService`·`adapter/out/feature/FeatureComputeAdapter`·`domain/event/ForbiddenPiiScanner`·`services/bo-api/.../fds/service/FdsRuleGroupService`·`services/common-security/.../IdentifierHash`. 엔진 케이스 FDS-C41~C43 |
