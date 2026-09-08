@@ -141,6 +141,7 @@ TreeEvaluation = status, treeId, version, definitionHash, outcome(nullable), lea
 공통 피처 계산 실패는 기존 fail_policy를 따른다. 트리 자체 오류는 ERROR로 기록하고 기존 룰과 REVIEW fallback을 결합한다.
 인입 저장과 평가 트랜잭션은 기존 계약대로 분리된다. 평가 인프라 장애 시 인입은 보존하되 decision=null이며, 부분 결정/조치/outbox는 생성하지 않는다.
 `matchedRules`에는 실제 룰만 유지한다. tree-only BLOCK도 기존 BLOCK 통지 채널로 AML에 전달하며, 빈 matchedRules를 가짜 룰로 채우지 않는다.
+BO 판정 요약은 EVALUATED/ERROR 트리가 있을 때 룰 평가·트리 평가·최종 결과를 각각 표시한다. 트리 단독 차단을 인입/데이터 품질 오류로 설명하지 않는다. 새 FDS_TREE_EVALUATED/FDS_TREE_ERROR 사유와 알려진 피처 라벨은 ko/en 카탈로그를 따른다.
 
 ### 거버넌스·저장
 
@@ -163,4 +164,5 @@ sim-web `setup.fds-tree`는 BO에서 설정한 포인터를 읽기 확인하며,
 
 FDS-C46~C51은 REST 경계/조합/버전/복원과 실제 BO·sim-web 브라우저 흐름을 검증한다.
 2×2 테넌트·워크스페이스 및 ASYNC lookup, 저장소 손상·인프라 fault는 명시된 Testcontainers 클래스와 결합한다. 이러한 in-process 증거를 실제 REST 실행이라고 표시하지 않는다.
+유효한 scope의 조회 200과 다른 workspace에 원래 인증키를 보낸 요청의 401/FDS-AUTH-002를 구분한다. 후자는 credential의 tenant/workspace 결속 검사이며, 올바른 인증 후의 403 권한 검사·404 리소스 격리 검사를 대체하지 않는다.
 기존 FDS45 + 신규6 + 횡단9 = 60개의 선택된 카탈로그 사례가 gate이며, 모든 결과·원복·미실행 여부는 코드 저장소 PLAN 및 case artifact에 남긴다.
