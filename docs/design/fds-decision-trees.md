@@ -86,7 +86,7 @@ flowchart TD
 
 ### 4.3 저장·API·결재
 
-- 신규 테이블 후보: `fds_decision_trees`, `fds_decision_tree_versions`, `fds_tree_simulations`, `fds_tree_deployments`; `fds_decisions`에 nullable `tree_evaluation JSONB` 추가(기존 행 nullable).
+- 구현 테이블: `fds_decision_trees`, `fds_decision_tree_versions`, `fds_tree_simulations`, `fds_tree_deployments`; `fds_decisions`에 nullable `tree_evaluation JSONB` 추가(기존 행 nullable).
 - tenant/workspace 선두 복합키·FK·RLS. deployment PK에 channel/evaluationPhase, generation 포함. 동일 scope 동시 상신은 409, 승인 시 이전 generation이 다르면 stale approval 거부.
 - simulation은 JSON 결과+고정 input IDs/hash를 저장하고 policy/evidence 보존 정책 적용, 자동 purge 없음. list는 페이지 size 1~100, default 20.
 - 새 approval subjectKind `DECISION_TREE`를 engine enum/DB CHECK/BO exact permission/FE ko·en·결재 필터에 함께 추가한다. RULE subjectKind로 위장하지 않는다.
@@ -97,3 +97,70 @@ flowchart TD
 - 비밀/원문 PII/전체 snapshot을 UI에 반환하지 않는다. trace는 nodeId·피처 label·operator·분기 결과·reasonCode, 허용된 값만 마스킹/요약한다.
 - tree-only BLOCK의 ruleDecision=ALLOW, matchedRules=[]는 정직한 결과다. 최종 BLOCK 근거는 treeEvaluation과 reasonCode로 조회. AML 통지의 기존 필수 필드를 비우거나 가짜 룰로 채우지 않는다.
 
+
+
+## 구현 계약 보충 (2026-09-09)
+
+### HTTP 경로 및 응답
+
+엔진 base = `/api/v1/admin/fds/decision-trees`, BO base = `/api/v1/bo/fds/decision-trees`.
+BO는 typed delegate이며 엔진 미구성 시 503; 엔진 저장소를 직접 조회하거나 stub 정책을 생성하지 않는다.
+
+| method / path suffix | 요청 | 응답 / 권한 |
+|---|---|---|
+| GET / | query, includeArchived, page(0~1000000), size(1~100; 기본20) | `{rows,total,page,size}` / READ |
+| POST / | name, description, definition | Tree / 201 / AUTHOR |
+| GET /{treeId} | — | `{tree,versions,deployments}` / READ |
+| POST /{treeId}/versions | name, description, definition, expectedRevision | 새 immutable version을 가진 Tree / 201 / AUTHOR |
+| GET /{treeId}/versions[/{version}] | — | VersionView 배열 또는 단건 / READ |
+| POST /{treeId}/simulations | version, decisionIds(1~50 distinct UUID); Idempotency-Key 필수 | Simulation / 엔진 201(신규)·200(replay), BO 200 / AUTHOR |
+| GET /{treeId}/simulations[/{simulationId}] | — | 최근 50건 또는 단건 / READ |
+| GET /deployments | — | tenant/workspace의 scope 포인터 목록 / READ |
+| POST /{treeId}/deployments | operation(ACTIVATE/STOP/ROLLBACK), channelType, evaluationPhase, version, expectedGeneration, simulationId, reason | `{approvalRequestId,payloadHash,status:SUBMITTED}` / 202 / OPERATE |
+| POST /{treeId}/archive | expectedRevision | Tree / 200 / OPERATE |
+
+STOP은 version/simulationId를 보내지 않으며 현재 활성 treeId를 대상으로 한다. ROLLBACK은 같은 활성 트리의 더 낮은 버전과 그 버전의 simulation 증거를 선택한다.
+실제 승인/반려는 기존 결재 API를 사용한다. 새 `DECISION_TREE` subject의 checker 권한은 정확히 `SFDS_RULE:APPROVE`이다.
+
+Tree: tenantId, workspaceId, treeId, name, description, latestVersion, revision, archived, createdBy, createdAt, updatedAt.
+VersionView: treeId, version, definition, definitionHash, createdBy, createdAt, numericLiterals, browserEditable.
+Deployment: channelType, evaluationPhase, treeId(nullable), version(nullable), generation, pendingApprovalId(nullable), updatedBy, updatedAt.
+
+### 숫자 및 개인정보 경계
+
+- Draft/version 요청은 원문 JSON에서 scoped BigDecimal mapper로 파싱한다. BO version definition readback도 exact decimal reader를 사용한다. 다른 API의 mapper 설정은 바꾸지 않는다.
+- numericLiterals는 nodeId별 정확한 숫자 표기 문자열이다. 브라우저가 손실 없이 편집할 수 없는 버전은 browserEditable=false로 제공한다. 화면은 이 값을 정확히 조회하고 편집만 제한하며, 저장된 버전의 simulation/배포는 가능하다. API BigDecimal 값의 범위를 JS Number에 맞춰 줄이지 않는다.
+- 문자열 literal은 기존 ForbiddenPiiScanner의 이메일/주민번호/카드/계좌 패턴을 검사한다. opaque ref의 숫자 예외와 canonical hex hash는 유지한다. hash 항목의 원문 전화/계좌형 값은 거부한다. 에러·trace에 거부된 원문 값을 넣지 않는다.
+- TreeEvaluation.path는 nodeId, featureKey, operator, branch(TRUE/FALSE/MISSING)만 반환한다. 실제 고객 피처 값과 비교 literal은 결정 trace에 포함하지 않는다.
+
+### 결정 증거 및 실패
+
+신규 정상 결정 응답은 기존 필드에 ruleDecision, treeEvaluation을 추가한다. 상세 BO projection은 evaluationPhase도 전달한다.
+TreeEvaluation = status, treeId, version, definitionHash, outcome(nullable), leafId, reasonCode, path.
+상태는 EVALUATED / NOT_CONFIGURED / NOT_EVALUATED / ERROR이며 simulation은 UNAVAILABLE도 사용한다. 기존 결정의 증거가 없는 경우 nullable로 유지한다.
+공통 피처 계산 실패는 기존 fail_policy를 따른다. 트리 자체 오류는 ERROR로 기록하고 기존 룰과 REVIEW fallback을 결합한다.
+인입 저장과 평가 트랜잭션은 기존 계약대로 분리된다. 평가 인프라 장애 시 인입은 보존하되 decision=null이며, 부분 결정/조치/outbox는 생성하지 않는다.
+`matchedRules`에는 실제 룰만 유지한다. tree-only BLOCK도 기존 BLOCK 통지 채널로 AML에 전달하며, 빈 matchedRules를 가짜 룰로 채우지 않는다.
+
+### 거버넌스·저장
+
+- FDS V37: tree/version/simulation/deployment 4테이블, tenant/workspace 선두 복합키·FK·forced RLS. version update/delete 불가.
+- FDS V38: `DECISION_TREE` approval CHECK 확장, simulation 증거 update/delete 불가.
+- FDS V39: fds_decisions.tree_evaluation nullable JSONB 추가. 저장 값은 `{ruleDecision,treeEvaluation}`. 기존 자연 멱등키 및 과거 행은 변경하지 않는다.
+- 배포 상신/승인은 tree master → scope 포인터 순서로 잠근다. 같은 scope 동시 상신은 1건만 성공한다. 승인 대기 중 새 draft version을 만들어도 pending version/hash는 불변이다.
+- 승인 payload는 tree/version/hash·scope·operation·generation·simulationId에 결속한다. JPA approval INSERT는 JDBC 포인터 FK 갱신 전에 flush하여 같은 트랜잭션에서 원자적으로 반영한다.
+- 조회·시뮬레이션·승인 후 사용 버전 이력은 archive 후에도 보존한다. 기존 event/decision/outbox replay는 최초 결과를 반환하며 tree 배포 교체로 중복 조치를 생성하지 않는다.
+
+### BO 메뉴 및 시뮬레이터
+
+FDS 설정의 정책 그룹에 `/fds/decision-trees`를 추가한다(기존 FDS 14개 메뉴 보존 + 신규1 = 15).
+`/new`는 AUTHOR, 목록/상세는 READ, 배포·중지·롤백·보관은 OPERATE, 결재는 APPROVE로 분리한다.
+화면은 조건·TRUE/FALSE/MISSING 분기 편집, 버전 비교, 저장 결정 표본 simulation, 성공 이력 선택, 승인 요청, 결정 경로 조회를 제공한다.
+sim-web `setup.fds-tree`는 BO에서 설정한 포인터를 읽기 확인하며, `fds.dual-evaluate`는 명시 memberRef/ref로 실제 거래를 인입한다.
+미완성 preview는 requiredParams/body=null/signed=false를 반환하고 execute는 필수 키 누락을 거부한다. 사업 식별자를 자동 채우지 않는다.
+
+### 검증 증거의 구분
+
+FDS-C46~C51은 REST 경계/조합/버전/복원과 실제 BO·sim-web 브라우저 흐름을 검증한다.
+2×2 테넌트·워크스페이스 및 ASYNC lookup, 저장소 손상·인프라 fault는 명시된 Testcontainers 클래스와 결합한다. 이러한 in-process 증거를 실제 REST 실행이라고 표시하지 않는다.
+기존 FDS45 + 신규6 + 횡단9 = 60개의 선택된 카탈로그 사례가 gate이며, 모든 결과·원복·미실행 여부는 코드 저장소 PLAN 및 case artifact에 남긴다.

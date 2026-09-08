@@ -1217,3 +1217,15 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 ## 2026-09-08 확장: 디시전트리 자산·배포·평가 증거
 
 거래 인입의 룰·트리 독립 평가, 결정 결합, 버전·시뮬레이션·4-eyes 배포, 관리 메뉴의 추가 계약은 [FDS 정책 디시전트리 계약](../fds-decision-trees.md)을 따른다. 기존 룰 DSL/회귀 계약을 유지하며 새 자산과 증거를 추가한다.
+
+
+### 5.37~5.40 디시전트리 자산 (FDS V37~V39)
+
+| 테이블 | 키/핵심 컬럼 | 제약 |
+|---|---|---|
+| fds_decision_trees | tenant_id,workspace_id,tree_id PK; name,description,latest_version,revision,archived,created_by,created_at,updated_at | workspace FK, revision>0 |
+| fds_decision_tree_versions | tenant_id,workspace_id,tree_id,version PK; definition JSONB,definition_hash,created_by,created_at | tree FK, immutable UPDATE/DELETE trigger |
+| fds_tree_simulations | tenant_id,workspace_id,simulation_id PK; tree_id,version,definition_hash,request_key,input_hash,channel_type,evaluation_phase,result JSONB,created_by,created_at | UNIQUE(scope,tree,request_key), version FK, immutable evidence trigger |
+| fds_tree_deployments | tenant_id,workspace_id,channel_type,evaluation_phase PK; tree_id,version,generation,pending_approval_id,updated_by,updated_at | scope당1, nullable tree/version 동반, version/approval composite FK, generation>=0 |
+
+4테이블 모두 forced RLS 및 tenant/workspace predicate를 적용한다. fds_decisions의 추가 nullable tree_evaluation JSONB는 ruleDecision과 treeEvaluation을 함께 저장한다. 신규 approval subject_kind는 DECISION_TREE다. 기존 Flyway·decision 자연키·matched_rules 의미는 유지한다.
