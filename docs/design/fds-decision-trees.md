@@ -1,6 +1,6 @@
 # FDS 정책 디시전트리 계약
 
-2026-09-08 사용자 요청에 따른 개발 계약. 기존 룰 엔진과 거래 피처 기반 트리를 모두 평가한다. 구현 브랜치 feature/fds-dual-evaluation. 구현/검증 상태는 코드 저장소 PLAN을 따른다.
+2026-09-08 사용자 요청에 따른 개발 계약. 기존 룰 엔진과 거래 피처 기반 트리를 모두 평가한다. 구현 전달 브랜치 `feature/fds-dual-evaluation-delivery`. 2026-09-09 로컬 검증에서 FDS51+횡단9 전건 성공 증거를 확보했으며, 상세 결과는 코드 저장소 `docs/qa/fds-dual-evaluation-verification-20260909.md`와 PLAN을 따른다. PR/CI/merge 상태는 별도 전달 기록으로 구분한다.
 
 ## 3. 거래 평가 계약
 
