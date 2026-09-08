@@ -116,6 +116,7 @@ BO는 typed delegate이며 엔진 미구성 시 503; 엔진 저장소를 직접 
 | POST /{treeId}/simulations | version, decisionIds(1~50 distinct UUID); Idempotency-Key 필수 | Simulation / 엔진 201(신규)·200(replay), BO 200 / AUTHOR |
 | GET /{treeId}/simulations[/{simulationId}] | — | 최근 50건 또는 단건 / READ |
 | GET /deployments | — | tenant/workspace의 scope 포인터 목록 / READ |
+| GET /context | — | `{regulatoryCurrency}` / READ; tenant 설정 우선, 서비스 설정 fallback, 둘 다 없으면 null |
 | POST /{treeId}/deployments | operation(ACTIVATE/STOP/ROLLBACK), channelType, evaluationPhase, version, expectedGeneration, simulationId, reason | `{approvalRequestId,payloadHash,status:SUBMITTED}` / 202 / OPERATE |
 | POST /{treeId}/archive | expectedRevision | Tree / 200 / OPERATE |
 
@@ -131,6 +132,7 @@ Deployment: channelType, evaluationPhase, treeId(nullable), version(nullable), g
 - Draft/version 요청은 원문 JSON에서 scoped BigDecimal mapper로 파싱한다. BO version definition readback도 exact decimal reader를 사용한다. 다른 API의 mapper 설정은 바꾸지 않는다.
 - numericLiterals는 nodeId별 정확한 숫자 표기 문자열이다. 브라우저가 손실 없이 편집할 수 없는 버전은 browserEditable=false로 제공한다. 화면은 이 값을 정확히 조회하고 편집만 제한하며, 저장된 버전의 simulation/배포는 가능하다. API BigDecimal 값의 범위를 JS Number에 맞춰 줄이지 않는다.
 - 문자열 literal은 기존 ForbiddenPiiScanner의 이메일/주민번호/카드/계좌 패턴을 검사한다. opaque ref의 숫자 예외와 canonical hex hash는 유지한다. hash 항목의 원문 전화/계좌형 값은 거부한다. 에러·trace에 거부된 원문 값을 넣지 않는다.
+- 기존 feature catalog의 BOOL은 트리 BOOLEAN, ENUM은 STRING으로 정규화한다. 기존 카탈로그와 룰 DSL의 타입 어휘는 변경하지 않는다.
 - TreeEvaluation.path는 nodeId, featureKey, operator, branch(TRUE/FALSE/MISSING)만 반환한다. 실제 고객 피처 값과 비교 literal은 결정 trace에 포함하지 않는다.
 
 ### 결정 증거 및 실패
@@ -157,6 +159,8 @@ BO 판정 요약은 EVALUATED/ERROR 트리가 있을 때 룰 평가·트리 평�
 FDS 설정의 정책 그룹에 `/fds/decision-trees`를 추가한다(기존 FDS 14개 메뉴 보존 + 신규1 = 15).
 `/new`는 AUTHOR, 목록/상세는 READ, 배포·중지·롤백·보관은 OPERATE, 결재는 APPROVE로 분리한다.
 화면은 조건·TRUE/FALSE/MISSING 분기 편집, 버전 비교, 저장 결정 표본 simulation, 성공 이력 선택, 승인 요청, 결정 경로 조회를 제공한다.
+등록/상세는 context API의 기준통화를 표시한다. 조건은 값 타입과 단위 의미를 안내하며 transaction.amountBase는 조회한 기준통화, transaction.amount는 거래 통화로 표시한다. 미설정 통화를 임의 보충하지 않는다.
+시뮬레이션 통계는 총수=평가 완료+오류+미평가이며, 선택 버전의 전체 leaf 수 및 branch×3(TRUE/FALSE/MISSING) 간선 수를 커버리지 분모로 삼는다. 성공 행에서 중복을 제거한 유효 방문만 분자로 센다. 버전/해시가 다르면 커버리지를 표시하지 않는다. 결과 표는 원결정·룰·트리·결합 후보를 나란히 제공하며, 결과 trace에 leaf 사유 코드도 표시한다.
 sim-web `setup.fds-tree`는 BO에서 설정한 포인터를 읽기 확인하며, `fds.dual-evaluate`는 명시 memberRef/ref로 실제 거래를 인입한다.
 미완성 preview는 requiredParams/body=null/signed=false를 반환하고 execute는 필수 키 누락을 거부한다. 사업 식별자를 자동 채우지 않는다.
 
