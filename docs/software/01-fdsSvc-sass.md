@@ -2485,3 +2485,8 @@ hanpass-ph FDS(`fds-svc`)는 Hanpass `FdsSvc`를 참조 구현으로 삼되, 그
 | 2026-06-06 | v1.2 | doc-consistency 높음 이격(설계서 담당) 정합: (1) §12.8 Decision 응답 예시 `HOLD_TRANSACTION`→`HOLD_FUNDS` 정정. (2) §11.2 `action_type`를 API `ActionType` 정본 **23종**으로 동기화(REQUIRE_SECOND_APPROVAL/BLOCK_WITHDRAWAL/SUSPEND_API_KEY/SUSPEND_EMPLOYEE_SESSION/REQUEST_TRAVEL_RULE_INFO/OPEN_AML_CASE/REGULATORY_REPORT 추가). (3) §11.2a 신설 — `OPEN_*_CASE=OPEN_CASE+case_type`, `OPEN_COMPLIANCE_CASE=OPEN_AML_CASE(+CRYPTO_TRAVEL_RULE/AML_REVIEW)`, `SUSPEND_MERCHANT→SUSPEND_INSTRUMENT`, `SEND_SECURITY_ALERT→SEND_ALERT`, `CHALLENGE/REVIEW`는 decision으로 재분류. (4) §11.5 approval_status 8종 상태머신·scope(`subjectKind`/`payloadHash`/`expiresAt`/`maxExecutions`) 보강 + `APPROVAL_REQUIRED`는 approval_status가 아닌 action_status임을 명문화, `SELF_APPROVAL_DISABLED`를 횡단 제약으로 주석(approval_line 6종 유지). (5) §12.8 Rule Simulation 경로 `/api/v1/admin/fds/rules/simulations`로 정정, OAuth2 scope **11종**으로 보강, 운영자 집계 API(대시보드/고객사/감사) bo-api 소유 경계 명문화(엔진 API 미추가). 정본=API/DB enum, target-architecture. | system-architect |
 | 2026-06-06 | v1.1 | 정본(4서비스 모노레포·Java25 헥사고날) 정합화: §6.1 4서비스 매핑·§6.2 `com.hanpass.fds` 헥사고날 레이아웃 추가, §13.0 `tenant/workspace/data-scope` 3단 격리 신설(`workspace_id` 격리키), §14 DDL 격리/PII 규칙 명시, 부록 A 산출물 일습 매핑·부록 B 변경 이력 추가. 도메인 모델·enum·규제 pack은 변경 없음(부트스트랩 정합화). | system-architect |
 | (초기) | v1.0 | SaaS FDS Platform 신규 구축 설계서 초기 셋업 | — |
+
+
+## 2026-09-08 확장: 정책 트리 이중 평가
+
+거래 인입의 룰·트리 독립 평가, 결정 결합, 버전·시뮬레이션·4-eyes 배포, 관리 메뉴의 추가 계약은 [FDS 정책 디시전트리 계약](../design/fds-decision-trees.md)을 따른다. 기존 룰 DSL/회귀 계약을 유지하며 새 자산과 증거를 추가한다.

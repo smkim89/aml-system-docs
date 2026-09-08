@@ -1212,3 +1212,20 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 | 2026-06-08 | v1.3 | **격리(isolation_mode) → 배포 모델(deployment topology) 재설계** 동기화(설계서 `01-fdsSvc-sass.md` v1.5 §13/§11.6.11/§11.6.11a/§14.1/§12.8 + 정본 target-architecture §4.1 기준): (1) §2를 '배포 모델(§2.1)+멀티테넌시 키 재정의(§2.2)'로 재작성 — 전용 배포가 기본, `tenant_id`=배포의 고객사(전용 단일)·`workspace_id`=서비스/환경·`data_scope`=권한 필터, 격리 1차 경계=배포. (2) §4.1에 `deployment_model`(3종)·`onboarding_status`(8종) enum 추가 + §4.1a 온보딩 상태머신(Mermaid) 신설, 구 `isolation_mode` enum(`SHARED`/`SCHEMA`/`DB`) 폐기 명시. (3) §5.1 `fds_tenants`: `isolation_mode` 컬럼 DROP → `deployment_model`(default `MANAGED_DEDICATED`)·`onboarding_status`(default `REQUESTED`)·`infra_ref` 추가, `default_region` 유지 + 마이그레이션 주석. (4) §8에 V17 마이그레이션(컬럼 추가/백필/DROP, `SHARED→SHARED`·`SCHEMA`/`DB→MANAGED_DEDICATED`) 추가. (5) §9에 고객사 관리(배포/온보딩) 소유 경계 추가(bo-api 전용 온보딩 엔드포인트, fds-svc 엔진 API 미보유). (6) §10 downstream 명칭에 배포/온보딩 메타·enum·엔드포인트 확정. | data-modeler |
 | 2026-06-08 | v1.3.1 | doc-consistency(fds) cross:naming low 정합화: §4.1 `onboarding_status` 표시값 `CUSTOMER_DEPLOYED` 라벨을 '고객배포'→**'고객배포완료'**로 정정해 상위 설계서 `01-fdsSvc-sass.md` v1.5 §11.6.11a 정본 라벨과 동일화(코드값·종수·상태머신은 기존 일치, 표시 라벨만 동기화). default_region DEFAULT 'KR'·PII 여권번호 미저장 목록(§7.1)은 본 DB가 이미 정본이라 변경 없음(설계서 측 정렬 대상). | data-modeler |
 | 2026-06-08 | v1.3.2 | QA #4 MED 정합화(cross:naming-tenancy-pii): §4.1a Mermaid 다이어그램에서 비정규 상태명 `ACTIVE_SHARED`(enum 8종 코드값에 없음) 제거 — `state "SHARED" as H { REQUESTED --> ACTIVE_SHARED : 즉시 }` 컨테이너를 최상위 전이 `REQUESTED --> ACTIVE : SHARED 즉시`로 교체. 본문 텍스트(§4.1a 하단 bullet)·설계서 §11.6.11a는 이미 `ACTIVE`로 올바르게 표기. enum 8종 코드값 및 그 외 상태머신 내용 변경 없음. | data-modeler |
+
+
+## 2026-09-08 확장: 디시전트리 자산·배포·평가 증거
+
+거래 인입의 룰·트리 독립 평가, 결정 결합, 버전·시뮬레이션·4-eyes 배포, 관리 메뉴의 추가 계약은 [FDS 정책 디시전트리 계약](../fds-decision-trees.md)을 따른다. 기존 룰 DSL/회귀 계약을 유지하며 새 자산과 증거를 추가한다.
+
+
+### 5.37~5.40 디시전트리 자산 (FDS V37~V39)
+
+| 테이블 | 키/핵심 컬럼 | 제약 |
+|---|---|---|
+| fds_decision_trees | tenant_id,workspace_id,tree_id PK; name,description,latest_version,revision,archived,created_by,created_at,updated_at | workspace FK, revision>0 |
+| fds_decision_tree_versions | tenant_id,workspace_id,tree_id,version PK; definition JSONB,definition_hash,created_by,created_at | tree FK, immutable UPDATE/DELETE trigger |
+| fds_tree_simulations | tenant_id,workspace_id,simulation_id PK; tree_id,version,definition_hash,request_key,input_hash,channel_type,evaluation_phase,result JSONB,created_by,created_at | UNIQUE(scope,tree,request_key), version FK, immutable evidence trigger |
+| fds_tree_deployments | tenant_id,workspace_id,channel_type,evaluation_phase PK; tree_id,version,generation,pending_approval_id,updated_by,updated_at | scope당1, nullable tree/version 동반, version/approval composite FK, generation>=0 |
+
+4테이블 모두 forced RLS 및 tenant/workspace predicate를 적용한다. fds_decisions의 추가 nullable tree_evaluation JSONB는 ruleDecision과 treeEvaluation을 함께 저장한다. 신규 approval subject_kind는 DECISION_TREE다. 기존 Flyway·decision 자연키·matched_rules 의미는 유지한다.

@@ -2470,3 +2470,8 @@ bo-web nav의 exact capability는 코드 `lib/nav.ts`와 동일하게 고정한�
 ---
 
 > 본 기능정의서(v3.6)는 설계서 `docs/software/01-fdsSvc-sass.md` v1.9를 정본으로 삼아 DB(`01-fds-db.md` v1.5)·API(`01-fds-api.md` v1.9)·integration(`01-fds-integration.md` v1.1)·tasks(`docs/tasks/fds/`)와 100% 동기화한 백오피스(Admin Console) 화면 정의서이다. 룰 엔진 내부 동작·DSL 평가 로직·DB DDL 상세·멀티테넌시 인프라는 설계서·DB 설계서를 정본으로 한다. 짝 문서 `docs/plan/BO-FDS-SASS-Planning_v5.0.pptx`(SFDS-TNT-002 5탭·SFDS-RULE-002 5탭·SFDS-CASE-002 4탭 탭 연속 전개 + 드릴다운 진입 트리거 배너 + APPR-001 POLICY_PACK 행·CASE-002 재오픈·종결 사유 코드 + REG-002 진입 배너 추가, 45슬라이드)는 본 문서의 기능 ID·권한·BR·표시 용어를 1:1 기준으로 한다.
+
+
+## 2026-09-08 확장: 디시전트리 관리 화면
+
+거래 인입의 룰·트리 독립 평가, 결정 결합, 버전·시뮬레이션·4-eyes 배포, 관리 메뉴의 추가 계약은 [FDS 정책 디시전트리 계약](../design/fds-decision-trees.md)을 따른다. 기존 룰 DSL/회귀 계약을 유지하며 새 자산과 증거를 추가한다.
