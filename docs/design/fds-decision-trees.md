@@ -67,7 +67,7 @@ flowchart TD
 - root 1개, nodeId 중복/미정 간선/cycle/도달 불가 거부. 최대 node=128, root depth 0 기준 간선 깊이=16(방문 node≤17), JSON=64KiB.
 - 금액 피처는 서버 파생 baseEquivalent/amountBase를 사용한다. 등록 화면은 기준통화·값 타입·단위를 노출한다.
 - feature catalog와 실제 materialized key를 검증한다. 원문 PII나 임의 code/SpEL/SQL 실행식은 받지 않는다.
-- 트리 예시 템플릿은 초안 생성만 수행하며 운영 임계/자동 활성화는 제공하지 않는다. 운영자가 설정하는 범용 관리 기능이므로 특정 채널·업무 임계를 제품 코드에 고정하지 않는다.
+- 트리 예시 템플릿은 초안 생성만 수행하며 자동 활성화는 제공하지 않는다. 운영자가 설정하는 범용 관리 기능이므로 특정 채널·업무 임계를 **제품 코드**에 고정하지 않는다. 채널별 기본(baseline) 정의는 제품 코드가 아닌 **통화 프로파일 배포 자산**(`config/decision-trees/<code>.json` → 통화 팩 `R__baseline_decision_trees.sql`)으로 제공하며, 활성 포인터는 여전히 4-eyes 가 소유한다(§5, 2026-09-09 사용자 지시).
 
 ### 4.2 관리 UX·라이프사이클
 
@@ -171,3 +171,31 @@ FDS-C46~C51은 REST 경계/조합/버전/복원과 실제 BO·sim-web 브라우�
 2×2 테넌트·워크스페이스 및 ASYNC lookup, 저장소 손상·인프라 fault는 명시된 Testcontainers 클래스와 결합한다. 이러한 in-process 증거를 실제 REST 실행이라고 표시하지 않는다.
 유효한 scope의 조회 200과 다른 workspace에 원래 인증키를 보낸 요청의 401/FDS-AUTH-002를 구분한다. 후자는 credential의 tenant/workspace 결속 검사이며, 올바른 인증 후의 403 권한 검사·404 리소스 격리 검사를 대체하지 않는다.
 기존 FDS45 + 신규6 + 횡단9 = 60개의 선택된 카탈로그 사례가 gate이며, 모든 결과·원복·미실행 여부는 코드 저장소 PLAN 및 case artifact에 남긴다.
+
+
+## 5. PH baseline 트리 팩 (2026-09-09 사용자 지시)
+
+초기 배포 시 `/fds/decision-trees` 목록이 비어 있지 않도록, 필리핀 서비스 구조(hanpass-ph 5 상품 + 파트너 인바운드)에 맞춘 기본 정책 트리 5종을 **PHP 통화 팩 마이그레이션**으로 등록한다. 활성 포인터는 마이그레이션이 만들지 않는다.
+
+### 5.1 자산·정본
+
+- 정본: 코드 저장소 `config/decision-trees/php.json`(통화 프로파일 글롭 `config/currency-profiles/*.json` 밖). 금액 literal 은 `{"ctrRatio": r}` 로 적고 생성기가 `round_to(r × ctrThresholdAmount, roundingUnit)` 정수로 치환한다(₱500,000 기준: 1.0→500,000·0.9→450,000·0.4→200,000·0.2→100,000·0.1→50,000·0.04→20,000·4.0→2,000,000). `ctrRatio` 는 룰팩 `_ratios.json` 과 별개의 트리 전용 비율 축이다.
+- 생성물: `services/fds-svc/src/main/resources/db/currency/php/R__baseline_decision_trees.sql`(`scripts/generate_currency_packs.py`, `--check` parity). `fds_decision_trees` + `fds_decision_tree_versions`(version 1) 만 `tenant_demo/default` 에 `ON CONFLICT DO NOTHING` 으로 시드하며 `fds_workspaces` 행이 있을 때만 쓴다. `created_by = 'system:currency-profile'`, tree_id 는 `(tenant, workspace, code)` 기반 결정적 UUIDv5. 통화 수치(CTR 임계·반올림 단위·테넌트)는 프로파일 JSON 을 참조만 하며 복제하지 않는다(F-078 단일 정본 원칙 유지). `fds_tree_deployments`·`fds_tree_simulations`·`fds_approval_requests`·감사 로그는 만들지 않는다.
+- hash: `definition_hash` 는 엔진 `DecisionTreeCodec.hash` 와 동일한 직렬화(record 필드 순서·null 포함·정수 literal)로 생성하고 Testcontainers 테스트(`FdsPhBaselineDecisionTreePackIntegrationTest`)가 parity 를 고정한다. 정본이 바뀌어도 version 1 은 덮어쓰지 않는다 — 개정은 관리 메뉴/REST 의 새 버전 경로다.
+
+### 5.2 트리 5종
+
+| 코드 | 적용 scope(채널 × INLINE/ASYNC) | 분기(→ leaf) |
+|---|---|---|
+| `PH_CROSS_BORDER_REMIT_BASELINE` (PH 해외송금 baseline) | CROSS_BORDER_REMIT | [KYC 경과 ≤1일 ∧ ≥200k]→REVIEW · [계정변경 ≤24h ∧ ≥100k]→REVIEW · [신규단말 ∧ 심야 ∧ ≥50k]→REVIEW · 24h 수취국 distinct ≥3→REVIEW · 30일 합계 ≥2,000k→MONITOR · else ALLOW |
+| `PH_DOMESTIC_TRANSFER_BASELINE` (PH 국내송금·인바운드 baseline) | DOMESTIC_REMIT · INBOUND_REMIT · BANK_TRANSFER | 명의 불일치→REVIEW · [신규 수취인 ∧ 계정변경 ≤24h ∧ ≥20k]→REVIEW · [신규 수취인 ∧ 신규단말 ∧ ≥50k]→REVIEW · 1:N 패턴→REVIEW · 24h 수취인 distinct ≥5→REVIEW · N:1 패턴→REVIEW · [가입 ≤3일 ∧ ≥100k]→REVIEW · 24h 합계 ≥500k→MONITOR · else ALLOW |
+| `PH_WALLET_CASH_IN_BASELINE` (PH 월렛충전 baseline) | CASH_IN | ≥CTR(500k)→REVIEW(GATE-02 BLOCK@560k 직하 구간) · [450k≤ ∧ 동일채널 7일 ≥3건]→REVIEW · 24h 합계 ≥500k→MONITOR · [VOUCHER ∧ ≥100k]→REVIEW · 수동승인→MONITOR · [가입 ≤1일 ∧ ≥100k]→REVIEW · 10분 ≥3건→MONITOR · else ALLOW |
+| `PH_WALLET_PAYMENT_BASELINE` (PH 월렛결제 baseline) | WALLET_PAYMENT | [해외 가맹점 ∧ ≥100k]→REVIEW · [신규단말 ∧ 단말변경 ≤24h ∧ ≥50k]→REVIEW · [10분 ≥5건 ∧ 심야]→REVIEW / [10분 ≥5건]→MONITOR · 가맹점 10분 ≥30건→MONITOR · [잔액 전액 소진 ∧ ≥100k]→MONITOR · else ALLOW |
+| `PH_WALLET_WITHDRAWAL_BASELINE` (PH 월렛출금(ATM) baseline) | WALLET_WITHDRAWAL | [계정변경 ≤24h ∧ ≥50k]→REVIEW · [3시간 내 단말 교체 ∧ ≥50k]→REVIEW · [심야 ∧ 1h ≥3건]→REVIEW · [잔액 전액 인출 ∧ 가입 ≤7일]→REVIEW · 동일채널 7일 ≥10건→MONITOR · else ALLOW |
+
+공통 규약: leaf 는 ALLOW/MONITOR/REVIEW 만 쓴다 — CHALLENGE(SEND_ALERT)가 룰 REVIEW(OPEN_CASE)를 덮어 케이스 개설이 사라지는 §3.1 결합 특성 때문이며, BLOCK 은 룰팩(BL·GATE-02)이 담당한다. MONITOR 는 기록만(액션 0). 결측 간선(onMissing)은 룰 DSL 과 같은 미발동 경로다. 심야는 엔진 `time.hourOfDay` 가 UTC 기준이므로 UTC 14~22(PHT 22~06)로 표현한다. 룰팩 22종의 단일 조건(GATE 금액·XLS-B01·LGC-03·XLS-21·XLS-01)과 같은 leaf 는 두지 않고 신호 조합만 판정한다. `counterparty.firstForSubject` 는 국내이체 도메인에서만 산출되므로 국내송금 트리 전용이다. 카드결제(CARD_NOT_PRESENT) 트리는 범위 밖(후속 후보). 월렛결제 트리의 `merchant.country NE 'PH'` 는 인입 소스가 가맹점 국가를 ISO 3166-1 alpha-2 대문자로 보낸다는 계약을 전제한다(엔진은 국가코드를 정규화하지 않으므로 `ph`/`PHL` 은 해외로 판정된다). `time.hourOfDay` 는 엔진 상수 `JURISDICTION_ZONE=UTC` 전제이며 이 상수가 바뀌면 심야 분기 3곳의 시간대를 함께 개정해야 한다.
+
+### 5.3 활성화·검증
+
+- 활성화는 `scripts/setup_fds_decision_trees.py`(룰팩 ⓪‴ 과 동형·멱등): 채널·단계별로 이미 활성이면 건너뛰고(`ALREADY_ACTIVE`), 저장 결정이 없으면 `SKIPPED_NO_DECISION`, 타인 상신 대기 중이면 `PENDING_OTHER`(미적용·건너뜀), 있으면 결정 최대 5건(응답 순 앞 5건)으로 simulation(전 행 EVALUATED 아니면 실패 행 제외 후 새 키로 1회 재시도) → maker 상신(ACTIVATE) → checker 승인 → 포인터 확인(`ACTIVATED`). 상태 코드와 종료코드: 종료 0 = 전 scope ∈ {`ACTIVATED`, `ALREADY_ACTIVE`, `SKIPPED_NO_DECISION`, `PENDING_OTHER`}(`PENDING_OTHER`·`SKIPPED_NO_DECISION` 은 적용되지 않은 상태이므로 운영자가 출력 JSON 으로 확인), 종료 1 = `MISSING_ASSET`(팩 미적용 — 트리를 생성하지 않음)·`SIMULATION_NOT_PROVING`. 옵션: `--dry-run`(GET 만, 예정 상태 `WOULD_ACTIVATE`/`WOULD_STOP`), `--scope CHANNEL:PHASE`(반복, 부분 실행), `--create-missing`(팩 미적용 스택에서만 정본 정의를 REST 로 등록, 기본 off), `--stop`(baseline 포인터를 STOP 상신·승인으로 되돌림 — `STOPPED`/`NOT_ACTIVE`). sim-web ⑪ 스테이지 `setup.fds-tree-baseline` 이 같은 함수를 호출한다. 운영 배포에서는 같은 스크립트 또는 관리 메뉴의 4-eyes 로 적용한다.
+- 검증은 `scripts/verify_fds_decision_tree_baseline.py`: 팩 parity → 채널별 프라이밍 거래 → 활성화 → 트리별 미발동/발동 거래(격리 주체 `SIM-DTB-`) 의 `treeEvaluation`·최종 결정·케이스 개설 대조 → replay 멱등 → 원상복원(`finally`). 엔진 카탈로그 행(FDS-C52~C55)은 잠금 해제 지시 후 append 한다.

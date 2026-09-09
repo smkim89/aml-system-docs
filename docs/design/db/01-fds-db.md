@@ -1228,4 +1228,6 @@ API 설계·integration·tasks가 그대로 참조할 명칭을 확정한다.
 | fds_tree_simulations | tenant_id,workspace_id,simulation_id PK; tree_id,version,definition_hash,request_key,input_hash,channel_type,evaluation_phase,result JSONB,created_by,created_at | UNIQUE(scope,tree,request_key), version FK, immutable evidence trigger |
 | fds_tree_deployments | tenant_id,workspace_id,channel_type,evaluation_phase PK; tree_id,version,generation,pending_approval_id,updated_by,updated_at | scope당1, nullable tree/version 동반, version/approval composite FK, generation>=0 |
 
+통화 팩 `db/currency/php/R__baseline_decision_trees.sql`(생성 파일, 정본 `config/decision-trees/php.json`)이 `fds_decision_trees`·`fds_decision_tree_versions`(version 1) 에 PH baseline 5종을 `tenant_demo/default` 로 시드한다 — 포인터·simulation·approval 행은 만들지 않는다([계약 §5](../../fds-decision-trees.md)).
+
 4테이블 모두 forced RLS 및 tenant/workspace predicate를 적용한다. fds_decisions의 추가 nullable tree_evaluation JSONB는 ruleDecision과 treeEvaluation을 함께 저장한다. 신규 approval subject_kind는 DECISION_TREE다. 기존 Flyway·decision 자연키·matched_rules 의미는 유지한다.
