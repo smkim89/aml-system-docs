@@ -1597,7 +1597,16 @@ RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenari
 
 **FDS 저작 가드(r12 — apply 는 화면 게이트와 별개로 FDS capability 를 추가 검사한다)**: `STEP FDS_REGULATORY_CURRENCY` 상신은 `SFDS_TENANT:ADMIN`(+ 플랫폼/수퍼 역할), `STEP FDS_RULES` 상신은 `SFDS_RULE:OPERATE` 를 요구한다. 미보유 시 해당 STEP 만 `FAILED(FDS_AUTHORITY_MISSING)` 로 fail-closed(다른 STEP 은 계속 진행). 읽기(`GET .../currency-profile` 현황)는 이 게이트를 거치지 않고 `aml:admin:policy` 만으로 판정한다.
 
-**`ApplyResponse`**(`POST .../currency-profile:apply` — 항상 `200`, 실패는 STEP 단위): `{ tenantId, profileCode, steps: ApplyStepResult[], warnings: string[] }`.
+**`ApplyResponse`**(`POST .../currency-profile:apply` — 항상 `200`, 실패는 STEP 단위): `{ tenantId, profileCode, steps: ApplyStepResult[], warnings: string[], countryAssetSteps: ApplyStepResult[] }`. `steps[]`(F-081 잠금 — `FDS_REGULATORY_CURRENCY`/`BINDING`/`CTR_THRESHOLD`/`REPORT_RULES`/`FDS_RULES`, 목록·순서·상태 로직 불변)와 **분리된 `countryAssetSteps`** 가 국가별 자산 STEP 2종을 항상 `[WATCHLIST_SOURCES, COUNTRY_RISK]` 순서로 담는다(`ApplyStepResult` 와 동형 원소).
+
+**국가별 자산 STEP(`countryAssetSteps`)**: 각 STEP 은 독립적으로 실패를 격리(FAILED 후 다음 STEP 계속)하며 재-apply 는 신규 등록·상신 0(멱등)이다.
+
+| STEP | 동작 | status 어휘 |
+|---|---|---|
+| `WATCHLIST_SOURCES`(공개 제재 소스 등록) | 프로파일이 `mandatoryWatchlistSources` 키를 **선언한 경우에만** 공개 제재 소스 6종 중 부재분을 `POST /admin/aml/watchlist-sources` 로 등록하고, 실효 필수(OFAC_SDN·UN_CONSOLIDATED ∪ 프로파일 선언분) 부재분을 `POST /admin/aml/mandatory-sources`(upsert) 로 등록한다. **sync 는 트리거하지 않는다** | 키 미선언(php)=`NOT_APPLICABLE`, 신규 등록=`APPLIED`(params `registeredSources`·`registeredSourceCodes`·`registeredMandatory`·`registeredMandatoryCodes`), 신규 0=`SKIPPED`, 실패=`FAILED`(reasonCode `ENGINE_UNAVAILABLE`·`ENGINE_REJECTED`) |
+| `COUNTRY_RISK`(국가위험 baseline) | 프로파일 `countryRiskBaseline` 중 현재 ACTIVE 등급과 부재/상이한 국가만 `POST /admin/aml/country-risk:change`(4-eyes maker 상신, basis `CURRENCY_PROFILE_BASELINE:<code>`)로 1회 상신 — 승인은 결재함 | baseline 미선언(php)=`NOT_APPLICABLE`, 상신=`PENDING`(`approvalId`·params `submittedCountries`), 변경 없음=`SKIPPED`, 동일 국가 결재 대기 409(`AML.STATE_CONFLICT`)=`SKIPPED`(reasonCode `COUNTRY_RISK_PENDING_EXISTS`), 실패=`FAILED` |
+
+sync·HRR 레지스트리·FDS 룰팩·WEBHOOK 자격증명·디시전트리 활성화는 apply 비대상이다(REST 셋업 스크립트 소유 — aegis-aml `docs/aml-data.md` §11.3b 소유 매트릭스).
 
 **apply `warnings[]` 코드 열거(방출 전체 집합 — 코드=truth `CurrencyProfileApplyService` 상수·add 지점, 자유 서술 문자열 없음)**:
 
@@ -2064,6 +2073,7 @@ components:
         tenantId: { type: string }
         profileCode: { type: string }
         steps: { type: array, items: { $ref: '#/components/schemas/CurrencyProfileApplyStepResult' } }
+        countryAssetSteps: { type: array, items: { $ref: '#/components/schemas/CurrencyProfileApplyStepResult' }, description: '국가별 자산 STEP 2종(WATCHLIST_SOURCES·COUNTRY_RISK, 항상 이 순서) — steps[] 와 분리(§3.16a)' }
         warnings: { type: array, items: { type: string }, description: '§3.16a apply warnings 코드 집합 9종(콜론 파라미터형 CTR_REPORTING_GAP:{ccy}·CONFIGURABLE_AMOUNT_RULE:{family}:{ruleCode} 포함) — 자유 서술 문자열 없음' }
     CurrencyProfileStatusResponse:
       type: object
@@ -3131,6 +3141,7 @@ AMLC 제출은 **raw PII 미전송** — 토큰화된 보고 참조·PDF 아티�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-09-29 | **§3.16a apply 응답 `countryAssetSteps` 가산(코드=truth, aegis-aml PLAN feature-20260929-country-profile-e2e U2·U5).** `ApplyResponse` 에 국가별 자산 STEP 2종(`WATCHLIST_SOURCES`·`COUNTRY_RISK`)을 담는 신규 필드 `countryAssetSteps` 를 추가했다 — F-081 잠금 `steps[]` 는 목록·순서·상태 불변. 상태 어휘 `APPLIED`·`SKIPPED`·`PENDING`·`NOT_APPLICABLE`·`FAILED`, reasonCode `COUNTRY_RISK_PENDING_EXISTS`·`ENGINE_UNAVAILABLE`·`ENGINE_REJECTED`(OpenAPI `CurrencyProfileApplyResponse.countryAssetSteps` 동기). 호출: `GET/POST /admin/aml/watchlist-sources`·`/mandatory-sources`, `GET /admin/aml/country-risk`·`POST /admin/aml/country-risk:change`. | 코드=truth. 근거=aegis-aml bo-api `CurrencyProfileCountryAssetSteps`·`CurrencyProfileDtos.ApplyResponse`. 검증=카탈로그 X-C11(`scripts/verify_currency_profile_country_assets_closed_loop.py`). |
 | 2026-09-10 | **§3.3 `forcedFloorEvidence` bo-api 미러 정정 — 4키 고정 매핑 폐기, 6키 보존(explicit·breakdown 폴백 양경로, 코드=truth, aegis-aml PLAN 20260910-aml-hrr-floor-followups).** F-115 QA 로그 후속(#2) — 레지스트리 원소(`{listType,subjectRef,tier}`)의 `subjectRef`/`tier` 가 bo-api 미러에서 소실된다던 구 문구를 폐기하고, `RaDtos.ForcedFloorEvidence` 를 6키(`listType, screeningId, entryId, label, subjectRef, tier`)로 확장해 **explicit 필드 매퍼**(`AmlRaService.forcedFloorEvidence()`)와 **`factorBreakdown.forcedFloor.evidence` 폴백 매퍼**(`AmlRaService.forcedFloorEvidenceMarkers()`) **두 경로 모두** 두 키를 보존함을 명시. 엔진 응답 계약·신규 엔드포인트 없음(bo-api 미러 DTO additive 정정만). | api-designer. 코드 truth=bo-api `aml/ra/{dto/RaDtos.ForcedFloorEvidence,service/AmlRaService#forcedFloorEvidence,service/AmlRaService#forcedFloorEvidenceMarkers}`. PRD §12-A.4 BR-004 ①·§12-B.6 BR-005 동일 작업 단위. |
 | 2026-09-10 | **§3.3 `RiskScoreResponse.mandatoryHighRiskReasons` 값집합 정정 — 당연고위험(HRR) 레지스트리 floor 는 등재 이후의 모든 온보딩 재파생에서 유지(코드=truth, aegis-aml PLAN 20260910-aml-hrr-floor-on-recdd).** 값집합 (a) 의 예시 코드를 실제 `HighRiskRegistry.matchedReferences` 파생값(참조 리스트 이름 `RA_HIGH_RISK_CUSTOMERS`/`PEP_INDIVIDUALS`/`HIGH_NET_WORTH`/`PRODUCT`/`VASP`)로 정정(구 예시 `HIGH_RISK_REGISTRY` 는 실제 코드가 아니었음). **온보딩 파생(`OnboardingRaDerivationService`)이 최초 CDD 뿐 아니라 등재 이후의 모든 재파생(재이행 re-CDD·국가정책 재평가)에서 레지스트리 floor 를 스크리닝/국가위험 floor 와 병합**하도록 수정 — 종전에는 이 조회가 없어 명단(WLF) 매치가 소멸한 등재 회원의 재CDD 가 `mandatoryHighRisk=false` 로 착지했다(§2.1 CDD 응답 `mandatoryHighRiskReasons` 도 같은 값 소스). 신규 엔드포인트·필드 없음(값집합·파생 규칙 정정만), `POST /api/v1/aml/events`·`GET .../risk` 계약 형태 불변. 엔진 케이스 RA-C30 검증. | api-designer. 코드 truth=aml-svc `application/usecase/OnboardingRaDerivationService`·`domain/registry/HighRiskRegistry#forcedFloorFor`. DB §3.9·PRD §5(d)·§5.1 BR-013·§12-A.4 BR-010·§12-B.6 BR-010 동일 작업 단위. |
 | 2026-09-10 | **§2.x 회원원장 read `GET .../members/{memberRef}/cdd-history` 응답 행에 `ingestDecision{decision, reason, riskGrade, requiredAction, scoreId, createdAt}\|null` additive(코드=truth, aegis-aml PLAN 20260910-aml-member-history-decision-column).** CDD 행(`CDD_INITIAL`/`CDD_REVIEW`)마다 그 인입의 온보딩 판정 스냅샷(`aml_cdd_onboarding_decisions`, DB §3.22f, F-076 불변)을 `event_id` 조인으로 읽기 시 병기 — 이력 행·판정 스냅샷 모두 무수정, 그 외 유형·스냅샷 부재는 `null`. bo-api 미러(`MemberLedgerDtos.IngestDecision`). 엔드포인트 신규 없음, 기존 9필드·`GET .../customers/{ref}/decision`(§2.3) 계약 무변경. **(2026-09-10 QA 명세 리뷰 정정)** 엔진은 `ingestDecision` 키 존재+명시 `null`, bo-api 미러는 `@JsonInclude(NON_NULL)` 로 키 생략 — 소비자는 생략=null 동일 처리(F-076 ③ 선례 동형). | api-designer. 코드 truth=aml-svc `application/usecase/MemberLedgerService`·`application/port/{in/QueryMemberLedgerUseCase,out/CddOnboardingDecisionStorePort}`, bo-api `aml/memberledger/dto/MemberLedgerDtos`. DB §3.22f·PRD §12-A.10 BR-005 동일 작업 단위. |
