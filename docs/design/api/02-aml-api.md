@@ -1578,6 +1578,8 @@ RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenari
 | `thresholdBasis` | string | 임계 산정 근거 설명 |
 | `amountFeatureKey` | string | FDS 룰 DSL 참조 금액 피처 키 — `baseCurrency=="PHP"` 면 `transaction.phpEquivalent`, 그 외는 `transaction.baseEquivalent` |
 | `derivedFdsAmounts` | map<string,number> | 룰코드 → 파생 금액 임계(ratio × CTR 임계, HALF_EVEN 반올림) |
+| `mandatoryWatchlistSources` | string[] (선택) | 프로파일이 선언한 관할별 추가 필수 워치리스트 소스 코드(예: AUD `["AU_DFAT"]`). **키 부재 = 미선언**(php — apply `WATCHLIST_SOURCES` 가 `NOT_APPLICABLE`), 빈 배열 `[]` 은 선언했으나 추가 필수 없음(krw·jpy) |
+| `countryRiskBaseline` | `{country, riskBand}[]` (선택) | 프로파일이 선언한 국가위험 baseline. `country` = ISO 3166-1 alpha-2, `riskBand` = 엔진 `RiskGrade` 문자열(`LOW`/`MEDIUM`/`HIGH`/`PROHIBITED`). **키 부재 = 미선언**(php — apply `COUNTRY_RISK` 가 `NOT_APPLICABLE`). 카탈로그 로드 시 riskBand enum·중복 국가를 검증한다 |
 
 **`GET /tenants/{tenantId}/currency-binding`** — raw 바인딩 read-back 프록시(aml-svc `GET .../policy-binding` 위임, §2.7). 응답 `{ bound: boolean, binding: TenantCurrencyBinding | null }` — 미바인딩(엔진 422)이면 `bound=false, binding=null`.
 
@@ -1603,8 +1605,10 @@ RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenari
 
 | STEP | 동작 | status 어휘 |
 |---|---|---|
-| `WATCHLIST_SOURCES`(공개 제재 소스 등록) | 프로파일이 `mandatoryWatchlistSources` 키를 **선언한 경우에만** 공개 제재 소스 6종 중 부재분을 `POST /admin/aml/watchlist-sources` 로 등록하고, 실효 필수(OFAC_SDN·UN_CONSOLIDATED ∪ 프로파일 선언분) 부재분을 `POST /admin/aml/mandatory-sources`(upsert) 로 등록한다. **sync 는 트리거하지 않는다** | 키 미선언(php)=`NOT_APPLICABLE`, 신규 등록=`APPLIED`(params `registeredSources`·`registeredSourceCodes`·`registeredMandatory`·`registeredMandatoryCodes`), 신규 0=`SKIPPED`, 실패=`FAILED`(reasonCode `ENGINE_UNAVAILABLE`·`ENGINE_REJECTED`) |
-| `COUNTRY_RISK`(국가위험 baseline) | 프로파일 `countryRiskBaseline` 중 현재 ACTIVE 등급과 부재/상이한 국가만 `POST /admin/aml/country-risk:change`(4-eyes maker 상신, basis `CURRENCY_PROFILE_BASELINE:<code>`)로 1회 상신 — 승인은 결재함 | baseline 미선언(php)=`NOT_APPLICABLE`, 상신=`PENDING`(`approvalId`·params `submittedCountries`), 변경 없음=`SKIPPED`, 동일 국가 결재 대기 409(`AML.STATE_CONFLICT`)=`SKIPPED`(reasonCode `COUNTRY_RISK_PENDING_EXISTS`), 실패=`FAILED` |
+| `WATCHLIST_SOURCES`(공개 제재 소스 등록) | 프로파일이 `mandatoryWatchlistSources` 키를 **선언한 경우에만** 공개 제재 소스 6종 중 부재분을 `POST /admin/aml/watchlist-sources` 로 등록하고, 실효 필수(OFAC_SDN·UN_CONSOLIDATED ∪ 프로파일 선언분) 부재분을 `POST /admin/aml/mandatory-sources`(upsert) 로 등록한다. **필수 소스 준비 게이트** — 대상 소스의 `activeVersion`(적용 스냅샷)이 있는 필수 소스만 등록하고, 스냅샷 없는 필수 소스는 등록을 보류한다(sync 는 트리거하지 않으므로 신선 스택에서는 필수 소스가 보류되는 것이 정상). 등록 소스마다 도메인 감사 이벤트를 기록한다 | 키 미선언(php)=`NOT_APPLICABLE`, 신규 등록=`APPLIED`(params `registeredSources`·`registeredSourceCodes`·`registeredMandatory`·`registeredMandatoryCodes`), 신규 0=`SKIPPED`, 실패=`FAILED`(reasonCode `ENGINE_UNAVAILABLE`·`ENGINE_REJECTED`), 호출자에게 `aml:admin:watchlist` 권한(또는 BO_SUPER_ADMIN)이 없으면 `SKIPPED`(reasonCode `WATCHLIST_AUTHORITY_MISSING`, 엔진 호출 0), 통화 변경 결재 대기·대상 프로파일이 현재 바인딩과 상이=`DEFERRED`(reasonCode `CURRENCY_CHANGE_PENDING`, 엔진 호출 0). 필수 소스 보류 시 reasonCode `MANDATORY_SOURCE_NOT_READY` + params `deferredMandatoryCodes`(콤마 구분 소스 코드) + 응답 `warnings` 에 동일 코드 1건(상태는 등록 실적에 따라 `APPLIED`/`SKIPPED` 유지) |
+| `COUNTRY_RISK`(국가위험 baseline) | 프로파일 `countryRiskBaseline` 중 현재 ACTIVE 등급과 부재/상이한 국가만 `POST /admin/aml/country-risk:change`(4-eyes maker 상신, basis `CURRENCY_PROFILE_BASELINE:<code>`)로 1회 상신 — 승인은 결재함. 상신 전 SUBMITTED `COUNTRY_RISK` 결재를 조회해 대기 국가를 제외한다(`pendingCountries`). 상신은 bo-api `AmlCountryRiskService` 의 maker 검증·basis 검증·`COUNTRY_RISK_CHANGE_SUBMITTED` 감사를 재사용한다 | baseline 미선언(php)=`NOT_APPLICABLE`, 상신=`PENDING`(`approvalId`·params `submittedCountries`·(대기 국가 제외 시) `pendingCountries`), 변경 없음=`SKIPPED`, 전 대상 국가가 이미 결재 대기=`SKIPPED`(reasonCode `COUNTRY_RISK_PENDING_EXISTS`), 그 외 엔진 409=`FAILED`(reasonCode `ENGINE_REJECTED`), 통화 변경 결재 대기=`DEFERRED`(reasonCode `CURRENCY_CHANGE_PENDING`, 엔진 호출 0), 실패=`FAILED` |
+
+**국가 자산 STEP 신규 어휘(status·reasonCode·params)**: status 에 `DEFERRED` 를 추가한다(기존 `steps[]` 의 `DEFERRED` 사유 `CTR_GAP_FAIL_CLOSED`·`FDS_CURRENCY_PENDING` 과 별개로 국가 자산 STEP 은 `CURRENCY_CHANGE_PENDING` 만 사용). reasonCode 신규 3종: `MANDATORY_SOURCE_NOT_READY`·`WATCHLIST_AUTHORITY_MISSING`·`CURRENCY_CHANGE_PENDING`(기존 `COUNTRY_RISK_PENDING_EXISTS`·`ENGINE_UNAVAILABLE`·`ENGINE_REJECTED` 유지 — bo-web `CurrencyProfileApplyReasonCode` 유니온 1:1). params 신규 키: `deferredMandatoryCodes`(WATCHLIST_SOURCES, 콤마 구분)·`pendingCountries`(COUNTRY_RISK, 콤마 구분). `warnings[]` 는 필수 소스 보류 시 코드 `MANDATORY_SOURCE_NOT_READY` 를 추가 방출한다(기존 9종 집합에 가산 → 10종). 신선 스택(필수 소스 sync 전)에서 첫 apply 의 정상 기대값은 공개 소스 6종 등록·필수 소스 전량 보류이며, 이후 sync 완료 뒤 재-apply 로 필수 소스가 등록된다.
 
 sync·HRR 레지스트리·FDS 룰팩·WEBHOOK 자격증명·디시전트리 활성화는 apply 비대상이다(REST 셋업 스크립트 소유 — aegis-aml `docs/aml-data.md` §11.3b 소유 매트릭스).
 
@@ -2035,6 +2039,15 @@ components:
         thresholdBasis: { type: string }
         amountFeatureKey: { type: string }
         derivedFdsAmounts: { type: object, additionalProperties: { type: number } }
+        mandatoryWatchlistSources: { type: array, items: { type: string }, description: '선택 — 키 부재=미선언(php), 빈 배열=선언했으나 추가 필수 없음(§3.16a)' }
+        countryRiskBaseline:
+          type: array
+          description: '선택 — 키 부재=미선언(php)(§3.16a)'
+          items:
+            type: object
+            properties:
+              country: { type: string, example: KR }
+              riskBand: { type: string, enum: [LOW, MEDIUM, HIGH, PROHIBITED] }
     TenantCurrencyBinding:
       type: object
       description: 'aml-svc raw policy-binding read-back 투영(§2.7 GET .../policy-binding, 12키)'
@@ -2060,10 +2073,10 @@ components:
     CurrencyProfileApplyStepResult:
       type: object
       properties:
-        step: { type: string, enum: [FDS_REGULATORY_CURRENCY, BINDING, CTR_THRESHOLD, REPORT_RULES, FDS_RULES], description: '나열 순서 = 실제 방출 순서(미실행 STEP 은 steps[] 미포함, §3.16a)' }
+        step: { type: string, enum: [FDS_REGULATORY_CURRENCY, BINDING, CTR_THRESHOLD, REPORT_RULES, FDS_RULES, WATCHLIST_SOURCES, COUNTRY_RISK], description: '앞 5종 = steps[](나열 순서 = 실제 방출 순서, 미실행 STEP 은 미포함), 뒤 2종 = countryAssetSteps[](항상 이 순서, §3.16a)' }
         status: { type: string, enum: [APPLIED, SUBMITTED, SKIPPED, PENDING, NOT_FOUND, AMBIGUOUS, NOT_APPLICABLE, DEFERRED, FEATURE_KEY_MISMATCH, CURRENCY_MISMATCH, BLOCKED_HISTORY, FAILED, FAILED_RANGE] }
-        reasonCode: { type: string, nullable: true }
-        params: { type: object, additionalProperties: { type: string }, nullable: true }
+        reasonCode: { type: string, nullable: true, description: '국가 자산 STEP 신규: MANDATORY_SOURCE_NOT_READY·WATCHLIST_AUTHORITY_MISSING·CURRENCY_CHANGE_PENDING(§3.16a)' }
+        params: { type: object, additionalProperties: { type: string }, nullable: true, description: '국가 자산 STEP 신규 키: deferredMandatoryCodes(WATCHLIST_SOURCES)·pendingCountries(COUNTRY_RISK) — 콤마 구분(§3.16a)' }
         approvalId: { type: string, nullable: true }
         engineErrorCode: { type: string, nullable: true }
         engineMessage: { type: string, nullable: true, description: developer-only(화면 미표시) }
@@ -2074,7 +2087,7 @@ components:
         profileCode: { type: string }
         steps: { type: array, items: { $ref: '#/components/schemas/CurrencyProfileApplyStepResult' } }
         countryAssetSteps: { type: array, items: { $ref: '#/components/schemas/CurrencyProfileApplyStepResult' }, description: '국가별 자산 STEP 2종(WATCHLIST_SOURCES·COUNTRY_RISK, 항상 이 순서) — steps[] 와 분리(§3.16a)' }
-        warnings: { type: array, items: { type: string }, description: '§3.16a apply warnings 코드 집합 9종(콜론 파라미터형 CTR_REPORTING_GAP:{ccy}·CONFIGURABLE_AMOUNT_RULE:{family}:{ruleCode} 포함) — 자유 서술 문자열 없음' }
+        warnings: { type: array, items: { type: string }, description: '§3.16a apply warnings 코드 집합 9종 + 국가 자산 STEP 필수 소스 보류 MANDATORY_SOURCE_NOT_READY(콜론 파라미터형 CTR_REPORTING_GAP:{ccy}·CONFIGURABLE_AMOUNT_RULE:{family}:{ruleCode} 포함) — 자유 서술 문자열 없음' }
     CurrencyProfileStatusResponse:
       type: object
       description: '§3.16a — 모든 top-level 키가 항상 존재(조회 불가 소스는 null + STATUS_SOURCE_UNAVAILABLE warning)'
@@ -3141,6 +3154,7 @@ AMLC 제출은 **raw PII 미전송** — 토큰화된 보고 참조·PDF 아티�
 
 | 일자 | 변경 | 비고 |
 |---|---|---|
+| 2026-09-30 | **§3.16a `CurrencyProfileView` 선언 필드 2종·국가 자산 STEP 신규 계약 역전파(코드=truth, aegis-aml PLAN fix-20260930-country-profile-e2e-qa1 FX-A·B·C).** `CurrencyProfileView` 에 선택 필드 `mandatoryWatchlistSources`(string[], 키 부재=미선언)·`countryRiskBaseline`(`{country,riskBand}[]`) 가산. `countryAssetSteps` 에 status `DEFERRED`, reasonCode 3종(`MANDATORY_SOURCE_NOT_READY`·`WATCHLIST_AUTHORITY_MISSING`·`CURRENCY_CHANGE_PENDING`), params `deferredMandatoryCodes`·`pendingCountries`, warnings `MANDATORY_SOURCE_NOT_READY` 를 가산하고 필수 소스 준비 게이트(스냅샷 있는 필수 소스만 등록)·권한(`aml:admin:watchlist`)·통화 변경 결재 대기 DEFERRED·대기 국가 제외 규칙을 명세. OpenAPI `CurrencyProfileView`·`CurrencyProfileApplyStepResult` 동기. | 코드=truth. 근거=aegis-aml bo-api `CurrencyProfileCountryAssetSteps`·`CurrencyProfileApplyService`·`CurrencyProfileCatalogService`, repo `docs/aml-data.md` §11.3b. 검증=카탈로그 X-C11. |
 | 2026-09-29 | **§3.16a apply 응답 `countryAssetSteps` 가산(코드=truth, aegis-aml PLAN feature-20260929-country-profile-e2e U2·U5).** `ApplyResponse` 에 국가별 자산 STEP 2종(`WATCHLIST_SOURCES`·`COUNTRY_RISK`)을 담는 신규 필드 `countryAssetSteps` 를 추가했다 — F-081 잠금 `steps[]` 는 목록·순서·상태 불변. 상태 어휘 `APPLIED`·`SKIPPED`·`PENDING`·`NOT_APPLICABLE`·`FAILED`, reasonCode `COUNTRY_RISK_PENDING_EXISTS`·`ENGINE_UNAVAILABLE`·`ENGINE_REJECTED`(OpenAPI `CurrencyProfileApplyResponse.countryAssetSteps` 동기). 호출: `GET/POST /admin/aml/watchlist-sources`·`/mandatory-sources`, `GET /admin/aml/country-risk`·`POST /admin/aml/country-risk:change`. | 코드=truth. 근거=aegis-aml bo-api `CurrencyProfileCountryAssetSteps`·`CurrencyProfileDtos.ApplyResponse`. 검증=카탈로그 X-C11(`scripts/verify_currency_profile_country_assets_closed_loop.py`). |
 | 2026-09-10 | **§3.3 `forcedFloorEvidence` bo-api 미러 정정 — 4키 고정 매핑 폐기, 6키 보존(explicit·breakdown 폴백 양경로, 코드=truth, aegis-aml PLAN 20260910-aml-hrr-floor-followups).** F-115 QA 로그 후속(#2) — 레지스트리 원소(`{listType,subjectRef,tier}`)의 `subjectRef`/`tier` 가 bo-api 미러에서 소실된다던 구 문구를 폐기하고, `RaDtos.ForcedFloorEvidence` 를 6키(`listType, screeningId, entryId, label, subjectRef, tier`)로 확장해 **explicit 필드 매퍼**(`AmlRaService.forcedFloorEvidence()`)와 **`factorBreakdown.forcedFloor.evidence` 폴백 매퍼**(`AmlRaService.forcedFloorEvidenceMarkers()`) **두 경로 모두** 두 키를 보존함을 명시. 엔진 응답 계약·신규 엔드포인트 없음(bo-api 미러 DTO additive 정정만). | api-designer. 코드 truth=bo-api `aml/ra/{dto/RaDtos.ForcedFloorEvidence,service/AmlRaService#forcedFloorEvidence,service/AmlRaService#forcedFloorEvidenceMarkers}`. PRD §12-A.4 BR-004 ①·§12-B.6 BR-005 동일 작업 단위. |
 | 2026-09-10 | **§3.3 `RiskScoreResponse.mandatoryHighRiskReasons` 값집합 정정 — 당연고위험(HRR) 레지스트리 floor 는 등재 이후의 모든 온보딩 재파생에서 유지(코드=truth, aegis-aml PLAN 20260910-aml-hrr-floor-on-recdd).** 값집합 (a) 의 예시 코드를 실제 `HighRiskRegistry.matchedReferences` 파생값(참조 리스트 이름 `RA_HIGH_RISK_CUSTOMERS`/`PEP_INDIVIDUALS`/`HIGH_NET_WORTH`/`PRODUCT`/`VASP`)로 정정(구 예시 `HIGH_RISK_REGISTRY` 는 실제 코드가 아니었음). **온보딩 파생(`OnboardingRaDerivationService`)이 최초 CDD 뿐 아니라 등재 이후의 모든 재파생(재이행 re-CDD·국가정책 재평가)에서 레지스트리 floor 를 스크리닝/국가위험 floor 와 병합**하도록 수정 — 종전에는 이 조회가 없어 명단(WLF) 매치가 소멸한 등재 회원의 재CDD 가 `mandatoryHighRisk=false` 로 착지했다(§2.1 CDD 응답 `mandatoryHighRiskReasons` 도 같은 값 소스). 신규 엔드포인트·필드 없음(값집합·파생 규칙 정정만), `POST /api/v1/aml/events`·`GET .../risk` 계약 형태 불변. 엔진 케이스 RA-C30 검증. | api-designer. 코드 truth=aml-svc `application/usecase/OnboardingRaDerivationService`·`domain/registry/HighRiskRegistry#forcedFloorFor`. DB §3.9·PRD §5(d)·§5.1 BR-013·§12-A.4 BR-010·§12-B.6 BR-010 동일 작업 단위. |
