@@ -1610,6 +1610,8 @@ RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenari
 
 **국가 자산 STEP 신규 어휘(status·reasonCode·params)**: status 에 `DEFERRED` 를 추가한다(기존 `steps[]` 의 `DEFERRED` 사유 `CTR_GAP_FAIL_CLOSED`·`FDS_CURRENCY_PENDING` 과 별개로 국가 자산 STEP 은 `CURRENCY_CHANGE_PENDING` 만 사용). reasonCode 신규 3종: `MANDATORY_SOURCE_NOT_READY`·`WATCHLIST_AUTHORITY_MISSING`·`CURRENCY_CHANGE_PENDING`(기존 `COUNTRY_RISK_PENDING_EXISTS`·`ENGINE_UNAVAILABLE`·`ENGINE_REJECTED` 유지 — bo-web `CurrencyProfileApplyReasonCode` 유니온 1:1). params 신규 키: `deferredMandatoryCodes`(WATCHLIST_SOURCES, 콤마 구분)·`pendingCountries`(COUNTRY_RISK, 콤마 구분). `warnings[]` 는 필수 소스 보류 시 코드 `MANDATORY_SOURCE_NOT_READY` 를 추가 방출한다(기존 9종 집합에 가산 → 10종). 신선 스택(필수 소스 sync 전)에서 첫 apply 의 정상 기대값은 공개 소스 6종 등록·필수 소스 전량 보류이며, 이후 sync 완료 뒤 재-apply 로 필수 소스가 등록된다.
 
+**필수 소스 준비 판정 한계(2026-09-30)**: bo-api 는 `GET /admin/aml/watchlist-sources` 행의 `activeVersion` 존재로 준비 여부를 판정한다. 행에 `readinessStatus` 가 실리면 `IMPORTING` 도 제외하는 전방호환 분기가 있으나 현 `WatchlistSourceDto` 는 이 필드를 내려주지 않으므로 실효 판정은 `activeVersion` 뿐이다 — 재임포트 중(IMPORTING) 소스를 준비로 볼 수 있으나 엔진 readiness gate 가 스크리닝 시점에 계속 차단한다(잔여, 엔진 응답 확장은 별도 작업).
+
 sync·HRR 레지스트리·FDS 룰팩·WEBHOOK 자격증명·디시전트리 활성화는 apply 비대상이다(REST 셋업 스크립트 소유 — aegis-aml `docs/aml-data.md` §11.3b 소유 매트릭스).
 
 **apply `warnings[]` 코드 열거(방출 전체 집합 — 코드=truth `CurrencyProfileApplyService` 상수·add 지점, 자유 서술 문자열 없음)**:
