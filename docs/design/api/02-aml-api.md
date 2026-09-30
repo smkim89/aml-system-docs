@@ -1578,7 +1578,7 @@ RA `POST .../ra-models/{modelCode}/simulate`·TM `POST .../tm-scenarios/{scenari
 | `thresholdBasis` | string | 임계 산정 근거 설명 |
 | `amountFeatureKey` | string | FDS 룰 DSL 참조 금액 피처 키 — `baseCurrency=="PHP"` 면 `transaction.phpEquivalent`, 그 외는 `transaction.baseEquivalent` |
 | `derivedFdsAmounts` | map<string,number> | 룰코드 → 파생 금액 임계(ratio × CTR 임계, HALF_EVEN 반올림) |
-| `mandatoryWatchlistSources` | string[] (선택) | 프로파일이 선언한 관할별 추가 필수 워치리스트 소스 코드(예: AUD `["AU_DFAT"]`). **키 부재 = 미선언**(php — apply `WATCHLIST_SOURCES` 가 `NOT_APPLICABLE`), 빈 배열 `[]` 은 선언했으나 추가 필수 없음(krw·jpy) |
+| `mandatoryWatchlistSources` | string[] (선택) | 프로파일이 선언한 관할별 추가 필수 워치리스트 소스 코드(예: AUD `["AU_DFAT"]`·JPY `["JP_MOF_FEFTA"]`). **키 부재 = 미선언**(php — apply `WATCHLIST_SOURCES` 가 `NOT_APPLICABLE`), 빈 배열 `[]` 은 선언했으나 추가 필수 없음(krw) |
 | `countryRiskBaseline` | `{country, riskBand}[]` (선택) | 프로파일이 선언한 국가위험 baseline. `country` = ISO 3166-1 alpha-2, `riskBand` = 엔진 `RiskGrade` 문자열(`LOW`/`MEDIUM`/`HIGH`/`PROHIBITED`). **키 부재 = 미선언**(php — apply `COUNTRY_RISK` 가 `NOT_APPLICABLE`). 카탈로그 로드 시 riskBand enum·중복 국가를 검증한다 |
 
 **`GET /tenants/{tenantId}/currency-binding`** — raw 바인딩 read-back 프록시(aml-svc `GET .../policy-binding` 위임, §2.7). 응답 `{ bound: boolean, binding: TenantCurrencyBinding | null }` — 미바인딩(엔진 422)이면 `bound=false, binding=null`.
